@@ -9,7 +9,12 @@ deadlines, `lib/net.obx`, and the HTTP server gate without Postgres
 (2026-11-03): the `blocking` extern marker (SPEC 12) and the helper pool in
 both runtimes, sqlite's steps on it, postgres on libpq's asynchronous API
 with a connection pool, and the server gate with Postgres; section 5
-records it. Stage C1 is complete; C2 (worker processes) is next.
+records it. Stage C1 is complete. Stage C2 is done (2026-11-03):
+`task.workers` (forked worker processes under a supervisor that restarts,
+gives up and drains), signals as events of the loop (`task.waitSignal`,
+`task.terminated`), `net.listenReusePort` and listeners shared across the
+fork, in both runtimes; httpd with worker processes and the C2 gate;
+section 5 records how it was built.
 
 ## 0. Decisions
 
@@ -586,6 +591,8 @@ leaks under `OBX_CHECK=1` after a graceful shutdown.
 Section 9 records an idea under consideration, process futures, that would
 subsume this stage if adopted.
 
+The plan was:
+
 - `task.workers(n, f: &fn())` runs `f` in n forked children. It flushes
   stdout before forking, and it forks before any connection or helper thread
   exists. A supervisor in the parent restarts a crashed worker and forwards
@@ -600,6 +607,137 @@ subsume this stage if adopted.
 
 Gate: throughput scales with cores; killing a worker loses only its
 in-flight requests.
+
+How it was built (2026-11-03, branch `c2`; SPEC 16, `lib/README.md`):
+
+- **API** (`lib/task.obx`). `workers(n, f: &fn(int)): Result[[]WorkerEnd,
+  GaveUp]` and `workersWith(n, p: WorkerPolicy, f)`; `f` gets the worker's
+  index. `WorkerEnd {index, pid, code, signal, drained, restarts}` per
+  worker, `GaveUp {crashes, ends}`, `WorkerPolicy {maxCrashes, windowMs,
+  backoffMs, maxBackoffMs, drainMs}` (defaults 5, 10 s, 100 ms, 5 s, no
+  drain limit). `stopWorkers()` in a worker asks for the drain. Signals:
+  `watchSignals(sigs)`, `waitSignal(sigs)`, `terminated()`. `net`:
+  `listenReusePort(addr)`. No language change: `f` is a closure (`&fn`), so
+  a worker reaches what the program made before the call, as a copy.
+- **The supervisor is obx** (`workersWith`, shared by both backends) over
+  a few runtime calls: `obxlib_workers_begin` (the refusal checks, then
+  `SIGTERM`, `SIGINT` and `SIGCHLD` blocked), `obxlib_proc_fork`,
+  `obxlib_proc_wait` (`waitpid(-1, WNOHANG)`, then `sigtimedwait` on the
+  three signals with the time to the next restart or `SIGKILL`; it returns
+  a child's end, a signal with its sender's pid, or a timeout),
+  `obxlib_proc_kill`, `obxlib_workers_end`. The supervisor runs no task
+  while it waits (it is one process with nothing else to do), so it needs
+  no event loop and no signal handler; blocking the signals and waiting for
+  them synchronously means no handler ever runs in obx code and no system
+  call sees `EINTR`.
+- **Refusal** (exit 15, a new code, SPEC 14, at the caller's line through
+  `Where`): the helper pool has started (a lock a helper thread holds at
+  the fork stays held in the child forever: malloc's, stdio's, libpq's),
+  another task exists (the child would get a copy of it, half-run), or the
+  event loop holds a registration (the child shares the parent's epoll
+  instance; a registration made in the child would show up in the parent).
+  Registrations are counted: `net` sockets, the signal watch, and C
+  libraries' descriptors waited on through `obxlib_fd_wait` (libpq's;
+  those are probed with `EPOLL_CTL_MOD` at the check, since a library may
+  have closed its descriptor, which drops it from the set unseen). A
+  listener is not registered until its first `accept` waits, so one made
+  before `workers` passes.
+- **The child**: a new epoll set (the inherited one is closed), the signal
+  mask from before `workers`, `PR_SET_PDEATHSIG` with `SIGTERM` (and a
+  `SIGTERM` to itself if the supervisor is already gone), then `f(i)`, then
+  `obxlib_worker_exit(0)`: the globals' drops, flush, the leak check,
+  `exit`. A runtime error
+  in `f` ends the worker with its code as in any program (panic 12, stack
+  overflow 4, ...).
+- **Fork path per backend.** The C backend calls libc's `fork`. The native
+  runtime uses system call 57 in a static program; in a dynamically linked
+  one (a program with any C library) it calls libc's `fork` through a new
+  `rt_n_libc` hook, with libc's `fflush(NULL)` first: libc's `fork` updates
+  the thread id libc keeps for the calling thread and runs `pthread_atfork`
+  handlers, which a raw fork would skip, leaving the child's libc with the
+  parent's id. Both reset the native runtime's `rt_main_tid` (the stack
+  overflow handler's test) in the child. design/native.md section 8.
+- **Signals as events**: `obxlib_sig_watch` blocks the signals on the
+  program's thread and adds a `signalfd` to the epoll set (level
+  triggered); the loop reads it and wakes every task waiting for that
+  signal, or keeps it pending. signalfd rather than a self-pipe: with a
+  self-pipe a handler runs asynchronously inside whatever obx code is
+  running (it may only write a byte, and every blocking system call must
+  then handle `EINTR`); with signalfd the signal stays blocked and is read
+  like a socket, so nothing runs asynchronously. The helper threads block
+  every signal from their start (C1c), so a blocked signal never goes to a
+  helper and takes its default action there: the property signalfd needs.
+  A test (`task_signal_wait`) sends signals to the process while tasks wait.
+- **Restart policy.** A crash (a signal, or an exit code other than 0,
+  outside a drain) is restarted after the worker's backoff: 100 ms,
+  doubled for each crash in a row of that worker (a run that lasted the
+  window ends the row), at most 5 s. More than `maxCrashes` crashes of all
+  workers together within `windowMs` give up: no more restarts, `SIGTERM`
+  to the rest, `Err(GaveUp)` when they have ended (a program then exits non
+  zero, as httpd does). A worker that returns is done and not restarted. A
+  failed fork counts as a crash. The give-up defaults are systemd's
+  (`StartLimitBurst=5` within `StartLimitIntervalSec=10s`).
+- **Drain.** `SIGTERM` or `SIGINT` to the supervisor is forwarded to every
+  worker and restarts stop; a worker that watches the signal finishes and
+  returns, one that does not is ended by it (both count as drained). A
+  second signal from outside, or `drainMs`, sends `SIGKILL`. The
+  supervisor reads the sender (`si_pid`), so a worker's `stopWorkers`
+  (`SIGTERM` to the supervisor) is never taken for that second signal:
+  several workers may ask.
+- **Listener sharing.** Two ways, both in `net`: a listener made before
+  the fork and shared (one accept queue; each worker registers it in its
+  own epoll set at its first `accept`, with `EPOLLEXCLUSIVE`, so a new
+  connection wakes one waiting worker, not all), or `listenReusePort` in
+  each worker (one queue per worker, the kernel hashing connections across
+  them). Measured with httpd (below) they serve the same request rates.
+  httpd uses the shared listener by default for what the kill test shows:
+  connections queued at a killed worker's own `SO_REUSEPORT` socket are
+  reset with it, while the shared queue survives any worker; and port 0
+  needs no first socket to fix the port. Its cost is balance: with
+  keep-alive connections opened in a burst, a shared queue gives them out
+  unevenly (the counts per worker in the table), where reuseport's hash is
+  even; under these loads the rates were the same anyway.
+  `httpd ADDR POOL WORKERS reuseport` picks the other.
+- **OBX_CHECK.** At its end a worker drops the program's globals as the
+  end of `main` does (the compiler now puts those drops in a function of
+  their own, `gx_end`, which `main` calls and hands to the runtime with
+  `rt_on_end`), then checks that its count of live objects is not above
+  the count at its fork: what the supervisor's frames held at the fork is
+  still there (the worker exits without unwinding them) and is not the
+  worker's to free. The check is one-sided because a worker may free
+  objects it inherited (the moved listener, a global's old value), so an
+  inherited object freed in a worker hides a leak of one. A leak in a
+  worker is exit 5 for that worker, which the supervisor sees as a crash.
+- **Gate** (`cmd/http_gate.py --workers 1,2,4,8 --db 4 --listen both`;
+  PERFORMANCE.md has the tables): 256 keep-alive connections from 8 load
+  processes on four cores, the workers on the other four. `GET /`: 72,200
+  req/s native with 1 worker, 115,500 with 2, 134,900 with 4, 133,200 with 8
+  (via C 64,200 / 113,800 / 135,100 / 134,100); the ceiling past 4 is the
+  machine (loopback TCP on both sides; with 1,024 connections 153,900 at 8
+  workers, all 16 hardware threads 80 to 95 % busy). `GET /db` with a pool
+  of 4 per worker: 22,500 / 36,800 / 51,100 / 71,300 (3.2 times at 8). Both
+  listener modes give the same rates. Kill test (4 workers, `SIGKILL` to
+  one under load, the load reconnecting): shared listener, 36 requests lost
+  native and 44 via C, exactly the killed worker's connections; restarted
+  after 105–108 ms; the server stops cleanly afterwards with the restart
+  counted. With `SO_REUSEPORT` 59 and 65 lost for 55 and 59 connections:
+  its own accept queue dies with it. PASS on both backends.
+- **Tests**: `lib/tests/run/task_workers_{basic,restart,giveup,drain,codes,globals,listen,trap_pool,trap_task,trap_socket}.obx`,
+  `task_signal_wait.obx`, `net_listen_reuseport.obx`; both backends under
+  `OBX_CHECK=1` (run_native.py `--lib`), and ASan (`redteam/rt.py`, which
+  now runs each program in a directory of its own, since these tests write
+  files). TSan: the fork is refused once a thread exists, so a worker test
+  has no thread for TSan to watch; they are not in the TSan list (under
+  TSan a worker's stack overflow is reported as `SIGSEGV`, TSan's own
+  handler coming first, so `task_workers_codes` would differ there).
+- **What is left.** No per-worker CPU pinning (a program can call
+  `sched_setaffinity` in `f`). `/stats` in httpd is per worker. The
+  supervisor cannot be asked for its workers' states while it runs, and it
+  runs no tasks: a program that wants its own event loop beside the workers
+  needs process futures (section 9). The supervisor reaps with
+  `waitpid(-1)`, so a child the program made otherwise (through C) before
+  the call would be taken for a worker's end and ignored; a worker's own
+  children are its own business.
 
 ### Without threads
 

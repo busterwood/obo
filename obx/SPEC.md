@@ -975,14 +975,16 @@ exits with:
 | 12 | `panic` or `assert` |
 | 13 | a task parked inside `Shared.with`, or a nested `with` on the same value (section 16) |
 | 14 | deadlock: every task is parked, with no socket waited on and no timer pending (section 16) |
+| 15 | `task.workers` cannot fork safely: the helper pool has started, another task exists, or the event loop holds a registration (section 16) |
 
-For codes 13 and 14 the location is the program's call of a `task`
+For codes 13, 14 and 15 the location is the program's call of a `task`
 function (its call site, section 15), and for code 13 the open `with` is
 named as well:
 
     obx: a task parked inside Shared.with (the with at a.obx:37) at a.obx:41
     obx: Shared.with on a value whose with is already open (the with at a.obx:30) at a.obx:35
     obx: deadlock: every task is parked at a.obx:41
+    obx: task.workers while other tasks exist at a.obx:52
 
 In the first, 41 is the call that would park (`wait`, `task.all`,
 `task.any`, `task.yield`, `task.sleep`, a `net` call that can park:
@@ -1118,3 +1120,52 @@ loop for sockets (`net`) and timers. The rules the language relies on:
   socket is not a deadlock, even when nothing will ever arrive.
 - A write to a socket whose peer has closed is an error (`EPIPE` or
   `ECONNRESET`), never `SIGPIPE`.
+- Signals (stage C2): `task.watchSignals(sigs)` takes the signals `sigs`
+  (`SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGTERM`, or any
+  other from 1 to 31 that a program may handle; one it may not, such as
+  `SIGKILL` or `SIGSEGV`, is a panic) from their default action for good:
+  from then on an arrival is an event of the loop. `task.waitSignal(sigs)`
+  (which watches them too) parks until one of them arrives and gives its
+  number; `task.terminated()` is `waitSignal` of `SIGTERM` and `SIGINT`. An
+  arrival goes to every task waiting for that signal at the time; when none
+  is, it is kept for the next wait (two arrivals before a wait are one). A
+  task parked in `waitSignal` is not a deadlock. Cancellation and deadlines
+  apply as to any park (`Err(Cancelled)`). The watched signals are blocked
+  on the program's thread and read from a `signalfd` in the event loop; the
+  helper threads block every signal.
+- Worker processes (stage C2): `task.workers(n, f)` forks `n` processes;
+  process `i` runs `f(i)` (`f: &fn(int)`, a closure: it may capture what
+  the program made before) and then ends with exit 0, or with the code of
+  the runtime error that stopped it (a panic is 12, and so on). The calling
+  process is their supervisor until all have ended, and runs no task
+  meanwhile. Before the first fork the program's output is flushed, so
+  nothing written before is written twice. A worker shares no memory with
+  the supervisor or the other workers: each has a copy of what existed at
+  its fork (copy on write). `task.workers` stops the program with exit 15
+  (section 14) when it cannot fork safely: the helper pool has started
+  (threads exist), another task exists, or the event loop holds a
+  registration (a socket that has been waited on, or a signal watch). A
+  listener made before the call and not yet used is not a registration: it
+  joins each worker's own event loop at its first `accept`, so the workers
+  share one accept queue (the kernel wakes one of them per connection,
+  `EPOLLEXCLUSIVE`). The supervisor (`task.workersWith(n, policy, f)` sets
+  its `WorkerPolicy`):
+  - restarts a worker that crashed (ended by a signal, or with a code other
+    than 0) after a backoff (100 ms, doubled for each crash in a row of that
+    worker, at most 5 s); once more than `maxCrashes` (5) crashes happen
+    within `windowMs` (10 s) it starts none again, sends the others
+    `SIGTERM`, and returns `Err(GaveUp)` when they have ended;
+  - forwards `SIGTERM` and `SIGINT` to every worker and starts none again
+    (a drain: a worker that watches them finishes its work; one that does
+    not is ended by the signal). A second such signal from outside, or
+    `drainMs` (default 0: no limit), sends `SIGKILL` to the workers left.
+    A worker asks for the drain with `task.stopWorkers()`, which signals
+    the supervisor; that request is never the second signal;
+  - returns `Ok` with a `WorkerEnd` per worker (index, pid of its last
+    process, exit code or signal, whether it ended in a drain, restarts).
+  A worker dies with `SIGTERM` when its supervisor dies (`PR_SET_PDEATHSIG`).
+  At its end a worker drops the program's globals, as the end of `main`
+  does (set-once globals with their drop methods, then the others). With
+  `OBX_CHECK=1` it then checks that the objects it made are freed (exit 5
+  otherwise): the live objects must not be more than at its fork, whose
+  objects are the supervisor's.

@@ -52,7 +52,14 @@ As of 2026-11-03:
   on libpq's socket, with a connection pool. An HTTP/1.1 server example
   holds 10,000 idle keep-alive connections at 13 KB each and serves 69,000
   requests/s on one core, or 23,000 with a Postgres query each through a
-  pool (PERFORMANCE.md). Next: worker processes for several cores (C2).
+  pool (PERFORMANCE.md). Stage C2 is built too: `task.workers` forks worker
+  processes under a supervisor that restarts a crashed one and drains them
+  all on `SIGTERM`, signals arrive as events of the loop, and a listener
+  made before the fork is shared by the workers. The server with 8 workers
+  serves 133,000 requests/s (the machine's loopback limit with the load on
+  the other cores) and 71,000 with a Postgres query each; a worker killed
+  under load loses only the requests in flight on its connections and is
+  back in about 100 ms.
 
 ## Layout
 

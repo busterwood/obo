@@ -30,7 +30,7 @@ Source files use the `.obx` extension.
 | [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite and their runners |
 | `redteam/` | the red-team corpora and harnesses (rounds 1 to 5; ASan, UBSan, and TSan for the task tests) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
-| `design/` | design notes: the generic-core decision, the native backend, concurrency (stage C1, tasks in one process, is built) |
+| `design/` | design notes: the generic-core decision, the native backend, concurrency (stages C1, tasks in one process, and C2, worker processes, are built) |
 | [bench/](bench/README.md) | benchmarks, native against C (results in [../PERFORMANCE.md](../PERFORMANCE.md)) |
 
 Its predecessors (obo 0.19, the original garbage-collected obx and the

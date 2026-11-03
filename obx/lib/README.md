@@ -35,8 +35,8 @@ for leaks.
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
-| `task.obx` | 270 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines |
-| `net.obx` | 440 | TCP over IPv4 and IPv6 for tasks: listen, accept, connect, read, write |
+| `task.obx` | 596 | concurrent tasks on one thread: Scope, Future, Promise, Shared, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
+| `net.obx` | 461 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write |
 
 ### std (prelude)
 
@@ -203,7 +203,8 @@ does for `PQexecParams`'s types and values.
 
 Concurrent tasks on one thread (SPEC 16; design/concurrency.md, stages
 C1a and C1b): stackful coroutines, scheduled cooperatively, with one epoll
-loop for the sockets of `net` and the timers.
+loop for the sockets of `net` and the timers; signals as events of that
+loop and worker processes for several cores (stage C2), at the end.
 
 Every function below that can park (`scope`, `scoped`, `wait`, `all`, `any`,
 `yield`, `sleep`) and `with` has a last parameter `w: Where`, the caller's location,
@@ -274,6 +275,58 @@ process may use only one CPU: then about 6 us). The library's blocking
 calls: sqlite's `sqlite3_step` and `sqlite3_exec`; postgres's
 `PQconnectStart`, `PQconnectPoll` and `PQcancel`.
 
+**Signals** (SPEC 16, stage C2). A watched signal is an event of the loop
+instead of its default action (for `SIGTERM` and `SIGINT`, the end of the
+process); watching cannot be undone.
+
+- `watchSignals(sigs: &[]int)` starts watching without waiting, so that an
+  arrival before the first wait is kept, not lost. Constants: `SIGHUP`,
+  `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGTERM` (any signal 1 to 31
+  a program may handle works; `SIGKILL`, `SIGSTOP` and the faults are a
+  panic).
+- `waitSignal(sigs: &[]int): Result[int, Cancelled]` watches `sigs` and
+  parks until one arrives: its number. Every task waiting for it then gets
+  it; with none waiting it is kept for the next wait (repeats before a wait
+  are one). `terminated(): Result[int, Cancelled]` waits for `SIGTERM` or
+  `SIGINT`. Cancellation and `within` end the wait as usual.
+
+**Worker processes** (SPEC 16, stage C2): the way a program uses several
+cores. Make what the workers share first (a listener, read-only data; each
+gets a copy), then:
+
+- `workers(n: int, f: &fn(int)): Result[[]WorkerEnd, GaveUp]` forks `n`
+  processes, runs `f(i)` in process `i` and ends it (exit 0; a runtime
+  error ends it with its code), and supervises them until all have ended;
+  `workersWith(n, p: WorkerPolicy, f)` with a policy of its own.
+- The supervisor restarts a crashed worker (a signal or an exit code other
+  than 0) after a backoff, gives up after more than `p.maxCrashes` crashes
+  within `p.windowMs` (sends the others `SIGTERM`, then `Err(GaveUp)`),
+  forwards `SIGTERM` and `SIGINT` to every worker (a drain: no restarts;
+  after `p.drainMs`, when it is more than 0, or a second signal from
+  outside, `SIGKILL`), and returns when all have ended.
+- `WorkerPolicy {maxCrashes, windowMs, backoffMs, maxBackoffMs, drainMs}`;
+  `workerPolicy()` gives the defaults 5, 10,000, 100, 5,000 and 0 (the
+  backoff doubles for each crash in a row of one worker, up to
+  `maxBackoffMs`; a run that lasted `windowMs` ends the row).
+- `WorkerEnd {index, pid, code, signal, drained, restarts}` (`toStr`: `worker
+  2 (pid 4711): exit 0, drained, 1 restart`): the last process of each
+  worker; `code` is -1 when `signal` ended it. `GaveUp {crashes, ends}`.
+- `stopWorkers(): bool` (in a worker) asks the supervisor for the drain
+  (every worker gets `SIGTERM`, this one too); asking again, or from
+  several workers, is one request. False outside a worker.
+- A worker that serves calls `watchSignals(&[SIGTERM, SIGINT])` first and
+  stops when `terminated()` returns (dropping its accept loop's future
+  cancels the loop and its connections).
+- `workers` stops the program with exit 15 at its call when the fork would
+  not be safe: after the helper pool has started, while another task
+  exists, or while the event loop holds a registration (a socket that has
+  been waited on, a signal watch, a database connection's socket). Open
+  database connections and pools in each worker.
+- The supervisor runs no task while it supervises. Output written before the
+  call is flushed first. A worker drops the globals at its end, as `main`'s
+  end does; then under `OBX_CHECK=1` it checks its own objects: the count of
+  live objects must not be above the one at its fork.
+
 ### net
 
 TCP over IPv4 and IPv6 for tasks (SPEC 16; design/concurrency.md, stage C1b).
@@ -288,7 +341,17 @@ meanwhile, and a plain program (its main task) uses the same calls.
   (IPv6 in RFC 5952 form). A malformed address is `EINVAL`.
 - `listen(addr): Result[Listener, IoError]` (`SO_REUSEADDR`, backlog 4096);
   `Listener`: `localAddr(): str`, `accept(): Result[Conn, IoError]`,
-  `close()`.
+  `close()`. A listener joins the event loop at its first `accept`, so one
+  made before `task.workers` is shared by the workers: one accept queue,
+  each worker accepting from it in its own loop (`EPOLLEXCLUSIVE`: one
+  waiting worker is woken per connection).
+- `listenReusePort(addr): Result[Listener, IoError]` is `listen` with
+  `SO_REUSEPORT`: several sockets, in one process or in workers, listen on
+  one port and the kernel spreads new connections between them by a hash of
+  the addresses. Each socket has its own queue: connections queued at one
+  whose process dies are reset. With port 0 each call gets a port of its
+  own, so take the port from a first socket and close it before the
+  workers listen.
 - `connect(addr): Result[Conn, IoError]`: a non-blocking connect that parks
   until it is done (`ECONNREFUSED` and the like come from it).
 - `Conn`: `read(buf: mut &[byte]): Result[int, IoError]` (0: the peer has
@@ -310,7 +373,8 @@ meanwhile, and a plain program (its main task) uses the same calls.
 
 A `Conn` is used by one task at a time (it is owned; a split into read and
 write halves is not there yet). `cmd/httpd.obx` is an HTTP/1.1 server built
-on it, and `cmd/httpload.obx` a load client.
+on it (with worker processes and a shared listener: `httpd ADDR POOL
+WORKERS`), and `cmd/httpload.obx` a load client.
 
 `both` and `forEach` (concurrent children that borrow the parent's locals)
 are not there yet: a task's function is a plain `fn`, and passing borrows
@@ -481,9 +545,13 @@ errno, a static buffer):
 | `obxlib_task_forget(t)`, `obxlib_task_join(t, w)`, `obxlib_task_detach(t)` | a dropped future (cancel, drop the result when there is one); cancel and park until finished; `spawn`'s future, given up without cancelling |
 | `obxlib_task_yield(w)`, `obxlib_task_cancelled()`, `obxlib_task_check(w)` | yield to the run queue (also polls sockets and timers every 64 calls); whether the running task is cancelled; the checks before an operation that can park: exit 13 inside `with`, then cancelled (1) or past the deadline (3) |
 | `obxlib_task_sleep(ms, w)`, `obxlib_task_within(ms)`, `obxlib_task_restore(old)` | park on a timer; set the running task's deadline (the earlier wins), giving the old one; put it back |
-| `obxlib_net_listen(fam, addr, port, backlog)`, `obxlib_net_connect(fam, addr, port, &pending)`, `obxlib_net_accept(fd)` | non-blocking sockets registered with epoll (edge-triggered, once); fd or -errno (`pending`: the connect is in progress) |
+| `obxlib_net_listen(fam, addr, port, backlog, reuseport)`, `obxlib_net_connect(fam, addr, port, &pending)`, `obxlib_net_accept(fd)` | non-blocking sockets registered with epoll (edge-triggered, once; a listener at its first wait, with `EPOLLEXCLUSIVE` when the kernel takes it); fd or -errno (`pending`: the connect is in progress) |
 | `obxlib_net_read(fd, b, n)`, `obxlib_net_write(fd, b, n)` | `read`, `send` with `MSG_NOSIGNAL`; count or -errno (`-EAGAIN`: park) |
-| `obxlib_net_wait(fd, dir, w)` | park until the socket is readable (0) or writable (1): 0, or 1 cancelled, 3 past the deadline |
+| `obxlib_net_wait(fd, dir, w)` | park until the socket is readable (0) or writable (1): 0, or 1 cancelled, 3 past the deadline, -errno (a listener's registration failed) |
+| `obxlib_sig_watch(mask)`, `obxlib_sig_wait(mask, w)` | block the signals of `mask` (bit s-1 for signal s) and read them from a `signalfd` in the epoll set: 0 or -errno; park until one arrives: its number, -1 cancelled, -3 deadline |
+| `obxlib_workers_begin(w)`, `obxlib_workers_end()` | the checks before the first fork (exit 15 at `w`), then block `SIGTERM`, `SIGINT`, `SIGCHLD`; drop what is pending and restore the mask |
+| `obxlib_proc_fork()`, `obxlib_proc_wait(ms, &status)`, `obxlib_proc_kill(pid, sig)` | flush and fork (the child: a new epoll set, the old mask, `PR_SET_PDEATHSIG`); the supervisor's wait: a child's pid (`status`: its wait status), `-sig` for `SIGTERM`/`SIGINT` (`status`: the sender's pid) or 0 after `ms`; `kill` |
+| `obxlib_worker_exit(code)`, `obxlib_worker_stop()` | a worker's end (flush; under `OBX_CHECK=1` its leak check); `SIGTERM` to the supervisor, -1 when not a worker |
 | `obxlib_fd_wait(fd, dir, ms, cancellable, w)` | park until a descriptor a C library reads itself (libpq's socket) is readable (0), writable (1) or either (2): armed one-shot in the epoll set each time; ends at cancellation and the deadline when `cancellable`, after `ms` when `ms >= 0`; 0, 1 cancelled, 3 deadline or `ms`, -errno |
 | `obxlib_net_addr(fd, peer, out)`, `obxlib_net_nodelay(fd, on)`, `obxlib_net_soerror(fd)`, `obxlib_net_shutdown(fd, how)`, `obxlib_net_close(fd)` | the local or peer address (family, port, 16 address bytes); `TCP_NODELAY`; `SO_ERROR`; `shutdown`; close (and forget the fd's waiters) |
 | `obxlib_task_promise(resdrop)`, `obxlib_task_complete(t, r)`, `obxlib_task_abandon(t)` | promises |

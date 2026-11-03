@@ -663,6 +663,35 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 (kept current; the next agent starts here)
 
+2026-11-03, worker processes and signals (branch `c2`, design/concurrency.md
+stage C2). `native/rt.c` has rt.h's new helpers with raw system calls:
+`signalfd4` in the epoll set for `task.waitSignal` (`RT_SIG_TAG`, level
+triggered; the watched signals blocked with `rt_sigprocmask`), and for
+`task.workers` the fork, `wait4(-1, WNOHANG)`, `rt_sigtimedwait` (the
+kernel's sigset is one 64-bit word, `sigsetsize` 8; the sender's pid is at
+offset 16 of the siginfo, `si[4]`, not 12), `kill`, `prctl(PR_SET_PDEATHSIG)`
+and `getppid`. The fork is the one place where a dynamically linked program
+must not use the raw call: libc keeps the thread's id in its thread
+structure (`raise`, `abort`, its recursive locks and `pthread_self`-based
+checks use it), and only its `fork` updates that in the child and runs the
+`pthread_atfork` handlers (libpq and others register none today, but a
+library may). So `rt_n_libc` has two more hooks, x64gen's `HOOKS` `fork`
+(5th) and `fflush` (6th, `fflush(NULL)` before the fork, so C stdio
+buffered by a library is not written twice): with libc loaded they are
+bound and used; a static program has no libc and forks with system call 57.
+Either way the child sets `rt_main_tid` again (the fault handler's test that
+a fault is on the program's thread: without it a worker's stack overflow
+would not be exit 4) and makes a new epoll set. The leak check per
+worker compares `rt_live` with its value at the fork. Tests: the
+`task_workers_*`, `task_signal_wait` and `net_listen_reuseport` library
+tests, which run_native.py compares on both backends; `task_workers_codes`
+is dynamically linked (an `extern "c" fn kill`), so it takes the libc fork,
+the others the raw one. For the leak check a worker first drops the
+globals, as the end of `main` does: the drops are now a function of their
+own, `gx_end(void*)`, which `main` calls after the program's entry and
+passes to the runtime first (`rt_on_end`, a new obxrt.h entry), in both
+backends (emit.obx). The runtime's text grew from 56,816 to 60,240 bytes.
+
 2026-11-03, the seventh performance step (branch `sieve`, section 4: the
 sieve of Eratosthenes as fast natively as in plain C). `bench/sieve.obx` is
 the program as one would write it: ten rounds of `array(n + 1, true)` with
