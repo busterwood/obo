@@ -36,7 +36,7 @@ As of 2026-11-03:
   arithmetic loops; eza lists 3.7 MB of long tree in about 200 ms. The
   figures are in [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library and eza tests, a
-  native-against-C comparison over 1,512 programs, and five red-team rounds
+  native-against-C comparison over 1,532 programs, and five red-team rounds
   under ASan and UBSan (`obx/tools/gate.sh full`, about 35 s).
 - **Concurrency:** decided in
   [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with

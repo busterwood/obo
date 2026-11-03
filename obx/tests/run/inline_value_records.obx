@@ -1,0 +1,111 @@
+// Value records with reference-counted fields through copies, dups, drops and
+// returns, in the shapes the native backend rewrites (compiler/opt.obx): a
+// copy read field by field becomes its fields, a field never read loses its
+// dup and drop, and small accessors returning records are inlined. A copy is
+// a snapshot: writing or dropping the source afterwards changes nothing in it.
+// Run with OBX_CHECK=1: every count must come back to zero.
+// expect: 3 n3 t3
+// expect: 6
+// expect: n1 9 n1
+// expect: snapshot n2 t2 7
+// expect: dropped 4 n4
+// expect: inner n0 x0 5
+// expect: moved n2 t2
+// expect: kinds 9
+// expect: swap n1 n0 n0
+// expect: loop 45 n9
+
+type Tag = value record {
+    name: str
+    weight: int
+}
+
+type Node = value record {
+    k: int
+    s: str
+    tag: Tag
+    a: int
+}
+
+type Box = record {
+    nodes: []Node
+}
+
+fn mk(i: int): Node {
+    return Node{k: i, s: "n" + i.toStr(), tag: Tag{name: "t" + i.toStr(), weight: i + 4}, a: i * 2}
+}
+
+fn (b: &Box) nd(i: int): Node { return b.nodes[i] }
+
+fn (b: &Box) kind(i: int): int {
+    let n = b.nd(i)
+    return n.k
+}
+
+fn (b: &Box) name(i: int): str {
+    let n = b.nd(i)
+    return n.s
+}
+
+fn (b: &Box) tagOf(i: int): Tag { return b.nd(i).tag }
+
+fn pick(n: Node, first: bool): str { return if first { n.s } else { n.tag.name } }
+
+fn twice(n: Node): Node {
+    var m = n
+    m.k = n.k * 2
+    return m
+}
+
+fn main() {
+    var b = Box{nodes: []}
+    for i in 0..10 { append(mut &b.nodes, mk(i)) }
+
+    let n3 = b.nd(3)
+    println(n3.k.toStr() + " " + n3.s + " " + n3.tag.name)
+    println(twice(n3).k.toStr())
+    println(b.name(1) + " " + b.nodes[9].k.toStr() + " " + pick(b.nd(1), true))
+
+    // a snapshot: later writes to the source do not show
+    let n2 = b.nodes[2]
+    b.nodes[2].s = "changed"
+    b.nodes[2].tag = Tag{name: "other", weight: 0}
+    println("snapshot " + n2.s + " " + n2.tag.name + " " + b.tagOf(3).weight.toStr())
+
+    // the source dropped while the copy lives; its unread string is not needed
+    let n4 = b.nodes[4]
+    let keep = b.nodes[4].s
+    b.nodes = []
+    println("dropped " + n4.k.toStr() + " " + keep)
+
+    var c = Box{nodes: [mk(0), mk(5)]}
+    let t = c.nodes[0].tag
+    let inner = c.nodes[0]
+    println("inner " + inner.s + " x" + inner.k.toStr() + " " + c.nodes[1].k.toStr())
+
+    // a copy moved into another local
+    var d = Box{nodes: [mk(1), mk(2)]}
+    let m0 = d.nodes[1]
+    let m1 = m0
+    println("moved " + m1.s + " " + m1.tag.name)
+
+    var sum = 0
+    for i in 0..2 { sum += d.kind(i) + c.kind(i) }
+    for i in 0..2 { sum += c.kind(i) }
+    println("kinds " + (sum - 4 + t.weight - 4 + 0).toStr())
+
+    let old = replace(mut &d.nodes[0], c.nodes[0])
+    swap(mut &c.nodes, 0, 1)
+    println("swap " + old.s + " " + d.name(0) + " " + c.name(1))
+
+    var e = Box{nodes: []}
+    for i in 0..10 { append(mut &e.nodes, mk(i)) }
+    var total = 0
+    var last = ""
+    for i in 0..10 {
+        let x = e.nd(i)
+        total += x.k
+        if i == 9 { last = x.s }
+    }
+    println("loop " + total.toStr() + " " + last)
+}

@@ -1,0 +1,65 @@
+// Value records with heap strings passed by value (receiver and parameter)
+// to small functions that are inlined natively, reading none, one or all of
+// the fields: the argument is a copy (dup glue) of a record still in use, so
+// the copy's counts are its own. Under OBX_CHECK=1 nothing may leak; a copy
+// once taken for the record itself, with the original's drops cancelling the
+// copy's dup, leaked the path (fixed in compiler/opt.obx).
+// expect: true
+// expect: none 1
+// expect: op read
+// expect: all 125 read a5
+// expect: param 125 a5
+// expect: true
+// expect: arm 125
+// expect: loop 10 x9
+// expect: kept a5 read
+// expect: moved true a5
+
+type E = value record {
+    errno: int
+    op: str
+    path: str
+}
+
+fn (e: E) isCancelled(): bool { return e.errno == 125 }
+fn (e: E) none(): int { return 1 }
+fn (e: E) opOf(): str { return e.op }
+fn (e: E) all(): str { return e.errno.toStr() + " " + e.op + " " + e.path }
+fn errnoOf(e: E): int { return e.errno }
+fn pathOf(e: E): str { return e.path }
+fn same(e: E): E { return e }
+
+fn mk(i: int): E { return E{errno: 125, op: "read", path: "a" + intToStr(i)} }
+
+fn get(): Result[int, E] { return Err(mk(5)) }
+
+fn main() {
+    let e = mk(5)
+    println(e.isCancelled().toStr())
+    println("none " + e.none().toStr())
+    println("op " + e.opOf())
+    println("all " + e.all())
+    println("param " + errnoOf(e).toStr() + " " + pathOf(e))
+    let f = same(e)
+    println(f.isCancelled().toStr())
+    match get() {
+        Ok(n) { println("ok") }
+        Err(x) {
+            let b = x.isCancelled()
+            if b { println("arm " + errnoOf(x).toStr()) }
+        }
+    }
+    var es: []E = []
+    for i in 0..10 { append(mut &es, E{errno: i, op: "x" + intToStr(i), path: "p"}) }
+    var n = 0
+    var last = ""
+    for i in 0..10 {
+        let c = es[i]
+        n += c.none()
+        last = c.opOf()
+    }
+    println("loop " + n.toStr() + " " + last)
+    println("kept " + e.path + " " + f.op)
+    let g = e
+    println("moved " + g.isCancelled().toStr() + " " + g.path)
+}

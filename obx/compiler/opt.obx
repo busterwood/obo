@@ -1,0 +1,1207 @@
+// opt: inlining in the IR, between lower and the native backend (design/native.md, sections
+// 4 and 8).
+//
+// A call of a small function of the program at the root of a statement (`f(...);`,
+// `T d = f(...);`, `x = f(...);` for a local x or a member of one, `return f(...);`) becomes
+// the function's body, in place: the arguments are evaluated in order into new locals (or
+// stand for the parameters where nothing can tell), the body's locals are new locals of the
+// caller, and its returns store the result where the call's value went. A call that is an
+// argument of such a call is first moved into a declaration of its own before the statement,
+// when what is evaluated before it cannot change or be changed by it.
+//
+// Functions are optimized callees first (a depth-first walk of the calls), so a body that is
+// inlined has had its own calls inlined; a call into a function still being optimized (a
+// recursive one) stays a call. `x = g(x)`, where g returns its parameter changed, changes x in
+// place. After a function's calls are inlined, its value records copied from a place and
+// only read field by field become their fields (the section "value records in fields"), and
+// at the end the functions nothing names any more (every call inlined) are dropped.
+//
+// Only the native backend runs this pass; the C backend prints the IR as lower built it, and
+// gcc inlines on its own. OBX_INLINE=n sets the size limit (0: no inlining).
+
+import "./ir"
+import "os"
+
+// The most nodes a body may have to be inlined (counted after its own inlining, in the form
+// it is inlined in), and the most nodes inlining may add to one function.
+pub const INLINE_LIMIT = 25
+const GROWTH = 20000
+
+// What a call's value is for.
+const D_NONE = 0          // nothing: `f(...);`
+const D_DECL = 1          // a new local: `T d = f(...);`
+const D_ASSIGN = 2        // a place: `x = f(...);`
+const D_RETURN = 3        // the caller's result: `return f(...);`
+
+// How a parameter of the body being inlined is bound (per local: mk, with mv).
+const M_NONE = -1         // not a local of the body being inlined
+const M_LOCAL = 0         // mv: the caller's local that stands for it
+const M_EXPR = 1          // mv: an expression of the caller (an argument), copied where it is named
+const M_DEREF = 2         // mv: a pointer local of the caller; the parameter is what it points to
+
+type Opt = record {
+    u: ir.Ir
+    state: []int            // per function: 0 not seen, 1 being optimized, 2 done
+    form: []int             // ... when done: its body in the form it is inlined in (S_BLOCK), or -1
+    size: []int             // ... the nodes of that form
+    rets: []int             // ... its returns
+    refs: []int             // ... the times the bodies and the globals name it (calls, values)
+    ro: []int               // ... a bit per parameter (the first 62) that the form does not write
+    aTaken: []bool          // per local: its address (or a member's) is taken
+    mk: []int               // per local of the body being inlined: how it is bound (M_*)
+    mv: []int
+    bound: []int            // the locals with an mk, to reset
+    budget: int             // tail: the statements it may still write
+    limit: int
+    cur: int                // the function being optimized
+    grown: int              // ... the nodes inlining added to it
+    // the call being inlined: what its value is for, and where
+    dest: int               // D_*
+    dl: int                 // D_DECL: the new local
+    lv: int                 // D_ASSIGN: the place (a node of the caller)
+    aty: int                // D_ASSIGN: the type of the assignment
+    single: bool            // the body's only return is its last statement
+    nrvo: int               // D_DECL: the body's local that is dl (its result), or -1
+    // value records in fields (scalars)
+    dupF: int               // rt_str_dup, rt_str_drop
+    dropF: int
+    stamp: int              // the function being rewritten
+    sStamp: []int           // per local: stamp when sCand is set
+    sCand: []int            // ... the candidate it stands for
+    cands: []Cand
+    adj: int
+}
+
+// The program p with small functions inlined at their calls.
+pub fn optimize(p: ir.Ir): ir.Ir {
+    var o = Opt{u: p, state: [], form: [], size: [], rets: [], ro: [], refs: [], aTaken: [], mk: [], mv: [], bound: [], budget: 0, cur: -1,
+        grown: 0, limit: 0, dest: D_NONE, dl: -1, lv: -1, aty: -1, single: false, nrvo: -1,
+        dupF: -1, dropF: -1, stamp: 0, sStamp: [], sCand: [], cands: [], adj: -1}
+    o.limit = INLINE_LIMIT
+    let ev = os.envOr("OBX_INLINE", "")
+    if ev != "" { o.limit = parseInt(ev).unwrapOr(INLINE_LIMIT) }
+    for f in 0..len(o.u.funcs) {
+        append(mut &o.state, 0)
+        append(mut &o.form, -1)
+        append(mut &o.size, 0)
+        append(mut &o.rets, 0)
+        append(mut &o.refs, 0)
+        append(mut &o.ro, 0)
+    }
+    for f in 0..o.u.nRtFuncs {
+        if o.u.funcs[f].name == "rt_str_dup" { o.dupF = f }
+        if o.u.funcs[f].name == "rt_str_drop" { o.dropF = f }
+    }
+    for l in 0..len(o.u.locals) {
+        append(mut &o.sStamp, 0)
+        append(mut &o.sCand, -1)
+        append(mut &o.aTaken, false)
+        append(mut &o.mk, M_NONE)
+        append(mut &o.mv, -1)
+    }
+    for v in 0..len(o.u.globals) { o.walkList(o.u.globals[v].init, W_CALLEES, -1) }
+    for f in 0..len(o.u.funcs) {
+        if o.u.funcs[f].body >= 0 { o.visit(f) }
+    }
+    o.dropDead()
+    return replace(mut &o.u, ir.newIr())
+}
+
+// ---------------------------------------------------------------- nodes
+
+fn (o: mut &Opt) mk1(k: int, ty: int, a: int, b: int, c: int): int {
+    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: 0, f: 0.0, s: ""})
+    o.grown += 1
+    return len(o.u.nodes) - 1
+}
+
+fn (o: mut &Opt) local(name: str, ty: int, taken: bool): int {
+    append(mut &o.u.locals, ir.Local{name: name, ty: ty})
+    append(mut &o.aTaken, taken)
+    append(mut &o.sStamp, 0)
+    append(mut &o.sCand, -1)
+    append(mut &o.mk, M_NONE)
+    append(mut &o.mv, -1)
+    return len(o.u.locals) - 1
+}
+
+fn (o: mut &Opt) block(xs: &[]int): int { return o.mk1(ir.S_BLOCK, ir.TY_VOID, o.u.list(xs), -1, -1) }
+
+fn (o: &Opt) items(s: int): []int {
+    var out: []int = []
+    if o.u.nk(s) != ir.S_BLOCK {
+        append(mut &out, s)
+        return out
+    }
+    let l = o.u.nodes[s].a
+    for j in 0..o.u.listLen(l) { append(mut &out, o.u.listAt(l, j)) }
+    return out
+}
+
+// The function call x calls directly, or -1.
+fn (o: &Opt) callee(x: int): int {
+    if o.u.nk(x) != ir.E_CALL { return -1 }
+    let c = o.u.nodes[x].a
+    if o.u.nk(c) != ir.E_DECAY || o.u.nk(o.u.nodes[c].a) != ir.E_FUNC { return -1 }
+    return o.u.nodes[o.u.nodes[c].a].a
+}
+
+// ---------------------------------------------------------------- walks
+
+// Over the tree x: op W_CALLEES visits the functions x calls directly, counts the functions it
+// names (refs) and marks the locals whose addresses (or members') are taken; W_RETURNS counts
+// the returns; W_WRITES the assignments of local l (or a member) and the taking of its
+// address; W_EFFECTS the nodes with an effect (calls, assignments, increments); W_NAMES the
+// names of local l.
+const W_CALLEES = 1
+const W_RETURNS = 3
+const W_WRITES = 4
+const W_EFFECTS = 5
+const W_NAMES = 6
+
+// The operands of each node kind (KIDS[k]): none, a, a and b, a b and c, a call (a and the list
+// b), a compound literal (the list b), a block (the list a), a declaration (b and the list c),
+// a for (a b c d); -1: no such kind.
+const K_NONE = 0
+const K_A = 1
+const K_AB = 2
+const K_ABC = 3
+const K_CALL = 4
+const K_CLIT = 5
+const K_BLOCK = 6
+const K_DECL = 7
+const K_FOR = 8
+const KIDS: []int = [-1, 0, 0, 0, 0, 0, 0, 4, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 1, 5, 1, 2, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 1, 3, 2, 8, 0, 0, 1, 6, 2, 0, 0, 0]
+
+// The cost of each node kind, the measure of a body's size: the leaves (constants, locals,
+// globals, functions), the casts, the decays, the initializer entries and the blocks cost
+// nothing (they are operands of the code the others make, or no code), a call of the program 3
+// (the arguments' moves, the call, the result), the rest 1 (a call of the runtime too: most are
+// checks generated in place).
+const COST: []int = [0, 0, 0, 0, 0, 0, 0, 3, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0]
+
+// The size of the tree x, by COST.
+fn (o: &Opt) cost(x: int): int {
+    var budget = 1 << 40
+    o.small(x, mut &budget)
+    return (1 << 40) - budget
+}
+
+fn (o: &Opt) bad(x: int) { ir.failAt("IR node", o.u.nodes[x].line, "opt: node kind " + intToStr(o.u.nodes[x].k)) }
+
+fn (o: mut &Opt) walk(x: int, op: int, l: int): int {
+    if x < 0 { return 0 }
+    let k = o.u.nodes[x].k
+    let kc = KIDS[k]
+    if kc < 0 { o.bad(x) }
+    let a = o.u.nodes[x].a
+    var hit = 0
+    if kc == K_NONE {
+        if k == ir.E_FUNC && op == W_CALLEES { o.refs[a] += 1 }
+        if k == ir.E_LOCAL && op == W_NAMES && a == l { hit += 1 }
+        return hit
+    }
+    if k == ir.E_ADDR || k == ir.E_DECAY {
+        if op == W_CALLEES || op == W_WRITES {
+            let r = o.root(a)
+            if r >= 0 {
+                if op == W_CALLEES { o.aTaken[r] = true }
+                if r == l { hit += 1 }
+            }
+        }
+    } else if k == ir.E_ASSIGN || k == ir.E_POSTINC {
+        if op == W_WRITES && o.root(a) == l { hit += 1 }
+        if op == W_EFFECTS { hit += 1 }
+    } else if k == ir.E_CALL {
+        if op == W_EFFECTS { hit += 1 }
+        if op == W_CALLEES {
+            let f = o.callee(x)
+            if f >= 0 && o.u.funcs[f].body >= 0 { o.visit(f) }
+        }
+    } else if k == ir.S_RETURN {
+        if op == W_RETURNS { hit += 1 }
+    }
+    if kc == K_A { return hit + o.walk(a, op, l) }
+    let b = o.u.nodes[x].b
+    if kc == K_AB { return hit + o.walk(a, op, l) + o.walk(b, op, l) }
+    if kc == K_CALL { return hit + o.walk(a, op, l) + o.walkList(b, op, l) }
+    if kc == K_BLOCK { return hit + o.walkList(a, op, l) }
+    let c = o.u.nodes[x].c
+    if kc == K_ABC { return hit + o.walk(a, op, l) + o.walk(b, op, l) + o.walk(c, op, l) }
+    if kc == K_DECL { return hit + o.walk(b, op, l) + o.walkList(c, op, l) }
+    if kc == K_CLIT { return hit + o.walkList(b, op, l) }
+    return hit + o.walk(a, op, l) + o.walk(b, op, l) + o.walk(c, op, l) + o.walk(o.u.nodes[x].d, op, l)
+}
+
+fn (o: mut &Opt) walkList(l: int, op: int, loc: int): int {
+    if l < 0 { return 0 }
+    var hit = 0
+    let n = o.u.items[l]
+    for j in 0..n { hit += o.walk(o.u.items[l + 1 + j], op, loc) }
+    return hit
+}
+
+// Whether the tree x has at most budget nodes (which it uses up).
+fn (o: &Opt) small(x: int, budget: mut &int): bool {
+    if x < 0 { return true }
+    let k = o.u.nodes[x].k
+    budget -= COST[k]
+    if k == ir.E_CALL {
+        let f = o.callee(x)
+        if f >= 0 && f < o.u.nRtFuncs { budget += 2 }
+    }
+    if budget < 0 { return false }
+    let kc = KIDS[k]
+    if kc == K_NONE { return true }
+    let a = o.u.nodes[x].a
+    if kc == K_A { return o.small(a, budget) }
+    let b = o.u.nodes[x].b
+    if kc == K_AB { return o.small(a, budget) && o.small(b, budget) }
+    if kc == K_CALL { return o.small(a, budget) && o.smallList(b, budget) }
+    if kc == K_BLOCK { return o.smallList(a, budget) }
+    let c = o.u.nodes[x].c
+    if kc == K_ABC { return o.small(a, budget) && o.small(b, budget) && o.small(c, budget) }
+    if kc == K_DECL { return o.small(b, budget) && o.smallList(c, budget) }
+    if kc == K_CLIT { return o.smallList(b, budget) }
+    return o.small(a, budget) && o.small(b, budget) && o.small(c, budget) && o.small(o.u.nodes[x].d, budget)
+}
+
+fn (o: &Opt) smallList(l: int, budget: mut &int): bool {
+    if l < 0 { return true }
+    for j in 0..o.u.items[l] {
+        if !o.small(o.u.items[l + 1 + j], budget) { return false }
+    }
+    return true
+}
+
+// Functions that nothing names any more (every call of them inlined) lose their bodies: they
+// are not generated. refs is kept exact while calls are inlined (unref, cl); a function of the
+// program with none (not main) is dropped, and the names in its body taken off, in turn.
+fn (o: mut &Opt) dropDead() {
+    var work: []int = []
+    for f in o.u.nRtFuncs..len(o.u.funcs) { o.dead(f, mut &work) }
+    while len(work) > 0 {
+        let f = pop(mut &work)
+        let body = o.u.funcs[f].body
+        o.u.funcs[f].body = -1
+        o.unref(body, mut &work)
+    }
+}
+
+// Adds f to work when nothing names it and its body can go.
+fn (o: &Opt) dead(f: int, work: mut &[]int) {
+    if f >= o.u.nRtFuncs && o.refs[f] == 0 && o.u.funcs[f].body >= 0 && o.u.funcs[f].name != "main" {
+        append(work, f)
+    }
+}
+
+// Takes the functions the tree x names off their counts (x is dropped); those left unnamed go to
+// work when it is dropDead's.
+fn (o: mut &Opt) unref(x: int, work: mut &[]int) {
+    if x < 0 { return }
+    let kc = KIDS[o.u.nodes[x].k]
+    let a = o.u.nodes[x].a
+    if kc == K_NONE {
+        if o.u.nodes[x].k == ir.E_FUNC {
+            o.refs[a] -= 1
+            o.dead(a, work)
+        }
+        return
+    }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc != K_BLOCK && kc != K_CLIT && kc != K_DECL { o.unref(a, work) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.unref(b, work) }
+    if kc == K_ABC || kc == K_FOR { o.unref(c, work) }
+    if kc == K_FOR { o.unref(o.u.nodes[x].d, work) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_BLOCK { a } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.unref(o.u.items[l + 1 + j], work) }
+    }
+}
+
+// unref of a tree dropped while inlining (no function is dropped yet).
+fn (o: mut &Opt) unrefAll(x: int) {
+    var none: []int = []
+    o.unref(x, mut &none)
+}
+
+// The local a place is in (x a local or a member of one), or -1.
+fn (o: &Opt) root(x: int): int {
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+    return if o.u.nk(r) == ir.E_LOCAL { o.u.nodes[r].a } else { -1 }
+}
+
+// Whether x and y are the same place: a local, or the same members of one.
+fn (o: &Opt) samePlace(x: int, y: int): bool {
+    let k = o.u.nk(x)
+    if k != o.u.nk(y) || o.u.nodes[x].ty != o.u.nodes[y].ty { return false }
+    if k == ir.E_LOCAL { return o.u.nodes[x].a == o.u.nodes[y].a }
+    if k == ir.E_MEMBER { return o.u.nodes[x].v == o.u.nodes[y].v && o.samePlace(o.u.nodes[x].a, o.u.nodes[y].a) }
+    return false
+}
+
+// Whether the statement s does nothing: empty, or `x = x;` (the copies of dup glue).
+fn (o: &Opt) nop(s: int): bool {
+    let k = o.u.nk(s)
+    if k == ir.S_EMPTY { return true }
+    if k != ir.S_EXPR { return false }
+    let e = o.u.nodes[s].a
+    return o.u.nk(e) == ir.E_ASSIGN && o.samePlace(o.u.nodes[e].a, o.u.nodes[e].b)
+}
+
+// ---------------------------------------------------------------- functions
+
+// Optimizes f after the functions it calls (those not being optimized: recursion stays a call).
+fn (o: mut &Opt) visit(f: int) {
+    if o.state[f] != 0 { return }
+    o.state[f] = 1
+    o.walk(o.u.funcs[f].body, W_CALLEES, -1)
+    o.cur = f
+    o.grown = 0
+    o.stmtIn(o.u.funcs[f].body)
+    o.scalars(f)
+    o.form[f] = o.shape(f)
+    let form = o.form[f]
+    if form >= 0 {
+        o.size[f] = o.cost(form)
+        o.rets[f] = o.walk(form, W_RETURNS, -1)
+        for j in 0..min(len(o.u.funcs[f].params), 62) {
+            if o.walk(form, W_WRITES, o.u.funcs[f].params[j]) == 0 { o.ro[f] = o.ro[f] | (1 << j) }
+        }
+    }
+    o.state[f] = 2
+}
+
+// The body of f in the form it is inlined in, or -1 when it is not inlined: a function of the
+// program (not main) whose returns can all be made the last statement of their paths (none in
+// a loop or switch). Its statements are f's (shared, not copied: the form is only read).
+fn (o: mut &Opt) shape(f: int): int {
+    if o.u.funcs[f].isExtern || o.u.funcs[f].name == "main" || o.u.isVarFn(o.u.funcs[f].ty) { return -1 }
+    var budget = 4 * o.limit
+    if !o.small(o.u.funcs[f].body, mut &budget) { return -1 }
+    let xs = o.items(o.u.funcs[f].body)
+    var out: []int = []
+    o.budget = 4 * o.limit
+    if !o.tail(&xs, 0, mut &out) { return -1 }
+    return o.block(&out)
+}
+
+// The statements xs[i..] with every return made the last statement of its path, into out: an
+// if with a return in one branch takes the statements after it into its other branch (both,
+// when neither branch always returns). False when a return is in a loop or a switch, or the
+// statements grow beyond the budget.
+fn (o: mut &Opt) tail(xs: &[]int, i: int, out: mut &[]int): bool {
+    for j in i..len(xs) {
+        let s = xs[j]
+        if o.nop(s) { continue }
+        o.budget -= 1
+        if o.budget < 0 { return false }
+        if o.walk(s, W_RETURNS, -1) == 0 {
+            append(out, s)
+            continue
+        }
+        let k = o.u.nk(s)
+        if k == ir.S_RETURN {
+            append(out, s)
+            return true
+        }
+        var rest: []int = []
+        for m in j + 1..len(xs) { append(mut &rest, xs[m]) }
+        if k == ir.S_BLOCK {
+            var ys = o.items(s)
+            for x in rest { append(mut &ys, x) }
+            return o.tail(&ys, 0, out)
+        }
+        if k != ir.S_IF { return false }
+        let b = o.u.nodes[s].b
+        let c = o.u.nodes[s].c
+        var tb = o.items(b)
+        if !o.always(b) {
+            for x in rest { append(mut &tb, x) }
+        }
+        var ts: []int = []
+        if !o.tail(&tb, 0, mut &ts) { return false }
+        var eb: []int = []
+        if c >= 0 { eb = o.items(c) }
+        if c < 0 || !o.always(c) {
+            for x in rest { append(mut &eb, x) }
+        }
+        var es: []int = []
+        if !o.tail(&eb, 0, mut &es) { return false }
+        let e = if len(es) > 0 { o.block(&es) } else { -1 }
+        append(out, o.mk1(ir.S_IF, ir.TY_VOID, o.u.nodes[s].a, o.block(&ts), e))
+        return true
+    }
+    return true
+}
+
+// Whether every path through the statement s ends in a return.
+fn (o: &Opt) always(s: int): bool {
+    let k = o.u.nk(s)
+    if k == ir.S_RETURN { return true }
+    if k == ir.S_BLOCK {
+        let l = o.u.nodes[s].a
+        for j in 0..o.u.listLen(l) {
+            if o.always(o.u.listAt(l, j)) { return true }
+        }
+        return false
+    }
+    if k == ir.S_IF { return o.u.nodes[s].c >= 0 && o.always(o.u.nodes[s].b) && o.always(o.u.nodes[s].c) }
+    return false
+}
+
+// ---------------------------------------------------------------- value records in fields
+
+// A local of a record type declared as a copy of a place (`T n = p.nodes[i];`), and only
+// read field by field afterwards (`n.k`, `n.s`), becomes one local per field it reads, each
+// declared with that field of the place, where n was: the copy of the whole record is gone.
+// Copying the fields there is copying the record there, since nothing writes n. A field the
+// body never reads whose reference count the copy took (`n.s = rt_str_dup(n.s);` right after
+// the declaration) and whose drops are only n's own (`rt_str_drop(n.s);`) is not copied at
+// all: the count went up and came down with nothing between that reads the field, so neither
+// is needed. `T m = n;` where m is n moved (n never named again but in m's field reads) is the
+// same record: both go together. Only a move: a dup of m's fields (the dup glue after `T m =
+// n;`) makes m a copy with counts of its own, and both stay records.
+
+type Fld = value record {
+    off: int                // its offset in the record
+    ty: int
+    tmpl: int               // a member chain naming it (rooted at the record's local)
+    read: bool
+    dups: int               // `n.f = rt_str_dup(n.f);`
+    drops: int              // `rt_str_drop(n.f);`
+    away: bool              // some dup is not right after a declaration of the record
+    loc: int                // the local that stands for it, or -1: none
+}
+
+type Cand = record {
+    l: int                  // the record's local
+    decl: int
+    bad: bool               // named some other way: stays a record
+    flds: []Fld
+}
+
+// The candidate (an index of cands) local l stands for in the function being optimized, or -1.
+fn (o: &Opt) candOf(l: int): int {
+    if l < 0 || o.sStamp[l] != o.stamp { return -1 }
+    return o.sCand[l]
+}
+
+fn (o: mut &Opt) setCand(l: int, c: int) {
+    o.sStamp[l] = o.stamp
+    o.sCand[l] = c
+}
+
+// The field the member chain x (rooted at a candidate's local) names, in candidate c: its
+// index in c's fields, added when new.
+fn (o: mut &Opt) field(c: int, x: int): int {
+    var off = 0
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER {
+        off += o.u.nodes[r].v
+        r = o.u.nodes[r].a
+    }
+    let t = o.u.nodes[x].ty
+    for i in 0..len(o.cands[c].flds) {
+        if o.cands[c].flds[i].off == off && o.cands[c].flds[i].ty == t { return i }
+    }
+    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1})
+    return len(o.cands[c].flds) - 1
+}
+
+// Replaces the value records of f's body by their fields where it can.
+fn (o: mut &Opt) scalars(f: int) {
+    if o.dupF < 0 || o.dropF < 0 { return }
+    o.stamp += 1
+    o.cands = []
+    o.adj = -1
+    o.sa(o.u.funcs[f].body)
+    var any = false
+    for c in 0..len(o.cands) {
+        if o.settle(c) { any = true }
+    }
+    if any { o.sr(o.u.funcs[f].body) }
+}
+
+// The statement `x.f = rt_str_dup(x.f);` (e is its expression): x.f, or -1.
+fn (o: &Opt) dupOf(e: int): int {
+    if o.u.nk(e) != ir.E_ASSIGN { return -1 }
+    let a = o.u.nodes[e].a
+    let b = o.u.nodes[e].b
+    if o.u.nk(a) != ir.E_MEMBER || o.callee(b) != o.dupF || o.u.listLen(o.u.nodes[b].b) != 1 { return -1 }
+    return if o.samePlace(a, o.u.listAt(o.u.nodes[b].b, 0)) { a } else { -1 }
+}
+
+// The statement `rt_str_drop(x.f);`: x.f, or -1.
+fn (o: &Opt) dropOf(e: int): int {
+    if o.callee(e) != o.dropF || o.u.listLen(o.u.nodes[e].b) != 1 { return -1 }
+    let a = o.u.listAt(o.u.nodes[e].b, 0)
+    return if o.u.nk(a) == ir.E_MEMBER { a } else { -1 }
+}
+
+// Whether e (an S_EXPR's) is `x = x` for a place x.
+fn (o: &Opt) nopAssign(e: int): bool {
+    return o.u.nk(e) == ir.E_ASSIGN && o.samePlace(o.u.nodes[e].a, o.u.nodes[e].b)
+}
+
+// The analysis: the candidates, the fields they read, their dups and drops; bad when a
+// candidate is named whole, written, or its address (or a field's) taken. adj: the local
+// whose dups may come next (a candidate just declared).
+fn (o: mut &Opt) sa(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_BLOCK {
+        o.adj = -1
+        for j in 0..o.u.items[a] { o.saItem(o.u.items[a + 1 + j]) }
+        o.adj = -1
+        return
+    }
+    if k == ir.E_LOCAL {
+        let c = o.candOf(a)
+        if c >= 0 { o.cands[c].bad = true }
+        return
+    }
+    if k == ir.E_MEMBER {
+        let c = o.candOf(o.root(x))
+        if c >= 0 {
+            let i = o.field(c, x)
+            o.cands[c].flds[i].read = true
+            return
+        }
+    } else if k == ir.E_ASSIGN || k == ir.E_POSTINC || k == ir.E_ADDR || k == ir.E_DECAY {
+        let c = o.candOf(o.root(a))
+        if c >= 0 { o.cands[c].bad = true }
+    }
+    let kc = KIDS[k]
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sa(a) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sa(b) }
+    if kc == K_ABC || kc == K_FOR { o.sa(c) }
+    if kc == K_FOR { o.sa(o.u.nodes[x].d) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.sa(o.u.items[l + 1 + j]) }
+    }
+    if k >= ir.S_DECL { o.adj = -1 }
+}
+
+// sa of a statement of a list: where candidates are declared, and their dups follow.
+fn (o: mut &Opt) saItem(x: int) {
+    let k = o.u.nodes[x].k
+    if k == ir.S_DECL {
+        let l = o.u.nodes[x].a
+        let b = o.u.nodes[x].b
+        let t = o.u.locals[l].ty
+        if b >= 0 && o.u.nodes[x].c < 0 && o.u.tk(t) == ir.TY_STRUCT && o.u.nodes[b].ty == t && !o.aTaken[l] {
+            let src = if o.u.nk(b) == ir.E_LOCAL { o.candOf(o.u.nodes[b].a) } else { -1 }
+            if src >= 0 {
+                if !o.cands[src].bad {
+                    // m = n: the same record
+                    o.setCand(l, src)
+                    o.adj = l
+                    return
+                }
+            } else if o.lvalue(b) && !o.u.structs[o.u.tys[t].sid].isUnion {
+                o.sa(b)
+                o.setCand(l, len(o.cands))
+                append(mut &o.cands, Cand{l: l, decl: x, bad: false, flds: []})
+                o.adj = l
+                return
+            }
+        }
+    } else if k == ir.S_EXPR {
+        let e = o.u.nodes[x].a
+        if o.nopAssign(e) && o.candOf(o.root(o.u.nodes[e].a)) >= 0 { return }
+        let d = o.dupOf(e)
+        let dc = if d >= 0 { o.candOf(o.root(d)) } else { -1 }
+        if dc >= 0 && o.root(d) != o.cands[dc].l {
+            // a dup of m after `T m = n;`: m is a copy of n, with counts of its own, not n moved
+            o.cands[dc].bad = true
+            o.adj = -1
+            return
+        }
+        if dc >= 0 {
+            let i = o.field(dc, d)
+            o.cands[dc].flds[i].dups += 1
+            if o.root(d) != o.adj { o.cands[dc].flds[i].away = true }
+            return
+        }
+        let p = o.dropOf(e)
+        let pc = if p >= 0 { o.candOf(o.root(p)) } else { -1 }
+        if pc >= 0 {
+            let i = o.field(pc, p)
+            o.cands[pc].flds[i].drops += 1
+            o.adj = -1
+            return
+        }
+    }
+    o.sa(x)
+    o.adj = -1
+}
+
+// Whether candidate c becomes its fields; their locals made.
+fn (o: mut &Opt) settle(c: int): bool {
+    if o.cands[c].bad { return false }
+    let n = len(o.cands[c].flds)
+    for i in 0..n {
+        let fi = o.cands[c].flds[i]
+        for j in i + 1..n {
+            let fj = o.cands[c].flds[j]
+            if fi.off < fj.off + o.u.sizeOf(fj.ty) && fj.off < fi.off + o.u.sizeOf(fi.ty) {
+                o.cands[c].bad = true
+                return false
+            }
+        }
+    }
+    // a copy of a local is no copy from memory: worth it only for a count it saves
+    var saves = false
+    for f in o.cands[c].flds {
+        if !f.read && f.dups == 1 && !f.away { saves = true }
+    }
+    if !saves && o.root(o.u.nodes[o.cands[c].decl].b) >= 0 {
+        o.cands[c].bad = true
+        return false
+    }
+    let name = o.u.locals[o.cands[c].l].name
+    for i in 0..n {
+        let f = o.cands[c].flds[i]
+        if f.read || f.dups != 1 || f.away {
+            o.cands[c].flds[i].loc = o.local(name, f.ty, false)
+        }
+    }
+    return true
+}
+
+// The candidate x's root stands for when it becomes its fields, or -1.
+fn (o: &Opt) done(x: int): int {
+    let c = o.candOf(o.root(x))
+    return if c >= 0 && !o.cands[c].bad { c } else { -1 }
+}
+
+// The local that stands for the member chain x of a candidate that became its fields.
+fn (o: mut &Opt) fieldLoc(c: int, x: int): int {
+    let i = o.field(c, x)
+    return o.cands[c].flds[i].loc
+}
+
+// Whether the place x is read again at no cost and to the same value, right after itself: a
+// local or global, a member of one, or what a local points to.
+fn (o: &Opt) cheap(x: int): bool {
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+    let k = o.u.nk(r)
+    if k == ir.E_LOCAL || k == ir.E_GLOBAL { return true }
+    return k == ir.E_DEREF && o.u.nk(o.u.nodes[r].a) == ir.E_LOCAL
+}
+
+// A copy of the member chain x with its root (a local) replaced by base.
+fn (o: mut &Opt) rebase(x: int, base: int): int {
+    if o.u.nk(x) != ir.E_MEMBER { return base }
+    let inner = o.rebase(o.u.nodes[x].a, base)
+    append(mut &o.u.nodes, o.u.nodes[x])
+    let y = len(o.u.nodes) - 1
+    o.u.nodes[y].a = inner
+    return y
+}
+
+// A copy of the tree x (a cheap place).
+fn (o: mut &Opt) copyTree(x: int): int {
+    append(mut &o.u.nodes, o.u.nodes[x])
+    let y = len(o.u.nodes) - 1
+    let k = o.u.nodes[x].k
+    if k == ir.E_MEMBER || k == ir.E_DEREF { o.u.nodes[y].a = o.copyTree(o.u.nodes[x].a) }
+    return y
+}
+
+// The rewrite: the candidates' declarations become their fields' (in the lists), their dups
+// and drops of fields without a local go, their field reads name the locals.
+fn (o: mut &Opt) sr(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.S_BLOCK {
+        var out: []int = []
+        var changed = false
+        for j in 0..o.u.items[a] {
+            let s = o.u.items[a + 1 + j]
+            if o.srItem(s, mut &out) { changed = true }
+        }
+        if changed { o.u.nodes[x].a = o.u.list(&out) }
+        return
+    }
+    if k == ir.E_MEMBER {
+        let c = o.done(x)
+        if c >= 0 {
+            let l = o.fieldLoc(c, x)
+            o.u.nodes[x].k = ir.E_LOCAL
+            o.u.nodes[x].a = l
+            o.u.nodes[x].v = 0
+            return
+        }
+    }
+    let kc = KIDS[k]
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sr(a) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sr(b) }
+    if kc == K_ABC || kc == K_FOR { o.sr(c) }
+    if kc == K_FOR { o.sr(o.u.nodes[x].d) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.sr(o.u.items[l + 1 + j]) }
+    }
+}
+
+// sr of the statement x of a list, into out: whether it is not just x.
+fn (o: mut &Opt) srItem(x: int, out: mut &[]int): bool {
+    let k = o.u.nodes[x].k
+    if k == ir.S_DECL {
+        let l = o.u.nodes[x].a
+        let c = o.candOf(l)
+        if c >= 0 && !o.cands[c].bad {
+            if o.cands[c].decl == x { o.split(c, x, out) }
+            return true
+        }
+    } else if k == ir.S_EXPR {
+        let e = o.u.nodes[x].a
+        if o.nopAssign(e) && o.done(o.u.nodes[e].a) >= 0 { return true }
+        let d = o.dupOf(e)
+        if d >= 0 {
+            let c = o.done(d)
+            if c >= 0 && o.fieldLoc(c, d) < 0 { return true }
+        }
+        let p = o.dropOf(e)
+        if p >= 0 {
+            let c = o.done(p)
+            if c >= 0 && o.fieldLoc(c, p) < 0 { return true }
+        }
+    }
+    o.sr(x)
+    append(out, x)
+    return false
+}
+
+// The declaration x of candidate c as its fields' declarations, into out.
+fn (o: mut &Opt) split(c: int, x: int, out: mut &[]int) {
+    let e = o.u.nodes[x].b
+    o.sr(e)
+    var base = -1
+    var q = -1
+    if !o.cheap(e) {
+        let pt = o.u.ptrTo(o.u.nodes[e].ty)
+        q = o.local(o.u.locals[o.cands[c].l].name, pt, false)
+        let addr = if o.u.nk(e) == ir.E_DEREF { o.u.nodes[e].a } else { o.mk1(ir.E_ADDR, pt, e, -1, -1) }
+        append(out, o.mk1(ir.S_DECL, ir.TY_VOID, q, addr, -1))
+    }
+    for i in 0..len(o.cands[c].flds) {
+        let f = o.cands[c].flds[i]
+        if f.loc >= 0 {
+            var b = -1
+            if q >= 0 {
+                let ql = o.mk1(ir.E_LOCAL, o.u.locals[q].ty, q, -1, -1)
+                b = o.mk1(ir.E_DEREF, o.u.nodes[e].ty, ql, -1, -1)
+            } else {
+                b = o.copyTree(e)
+            }
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, f.loc, o.rebase(f.tmpl, b), -1))
+        }
+    }
+}
+
+// ---------------------------------------------------------------- call sites
+
+// Inlines the calls in the statements inside s (not s itself).
+fn (o: mut &Opt) stmtIn(s: int) {
+    if s < 0 { return }
+    let k = o.u.nk(s)
+    if k == ir.S_BLOCK {
+        o.blockIn(s)
+    } else if k == ir.S_IF {
+        o.u.nodes[s].b = o.bodyIn(o.u.nodes[s].b)
+        if o.u.nodes[s].c >= 0 { o.u.nodes[s].c = o.bodyIn(o.u.nodes[s].c) }
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        o.u.nodes[s].b = o.bodyIn(o.u.nodes[s].b)
+    } else if k == ir.S_FOR {
+        o.u.nodes[s].d = o.bodyIn(o.u.nodes[s].d)
+    }
+}
+
+// A statement that is the body of another, with its calls inlined (a block when it was one,
+// or when its call was inlined).
+fn (o: mut &Opt) bodyIn(s: int): int {
+    if o.u.nk(s) == ir.S_BLOCK {
+        o.blockIn(s)
+        return s
+    }
+    o.stmtIn(s)
+    var out: []int = []
+    o.site(s, mut &out)
+    if len(out) == 1 && out[0] == s { return s }
+    return o.block(&out)
+}
+
+fn (o: mut &Opt) blockIn(b: int) {
+    let l = o.u.nodes[b].a
+    var out: []int = []
+    var changed = false
+    for j in 0..o.u.listLen(l) {
+        let x = o.u.listAt(l, j)
+        o.stmtIn(x)
+        let n = len(out)
+        o.site(x, mut &out)
+        if len(out) != n + 1 || out[n] != x { changed = true }
+    }
+    if changed { o.u.nodes[b].a = o.u.list(&out) }
+}
+
+// The statement x into out, with its call inlined when it is a call site of a function that
+// is inlined (and the calls in its arguments that can be moved out first).
+fn (o: mut &Opt) site(x: int, out: mut &[]int) {
+    let k = o.u.nk(x)
+    var c = -1
+    var dest = D_NONE
+    if k == ir.S_EXPR {
+        let e = o.u.nodes[x].a
+        if o.u.nk(e) == ir.E_CALL {
+            c = e
+        } else if o.u.nk(e) == ir.E_ASSIGN && o.u.nk(o.u.nodes[e].b) == ir.E_CALL && o.root(o.u.nodes[e].a) >= 0 &&
+            o.u.nodes[o.u.nodes[e].b].ty == o.u.nodes[e].ty {
+            c = o.u.nodes[e].b
+            dest = D_ASSIGN
+        }
+    } else if k == ir.S_DECL && o.u.nodes[x].c < 0 && o.u.nodes[x].b >= 0 && o.u.nk(o.u.nodes[x].b) == ir.E_CALL &&
+        o.u.nodes[o.u.nodes[x].b].ty == o.u.locals[o.u.nodes[x].a].ty {
+        c = o.u.nodes[x].b
+        dest = D_DECL
+    } else if k == ir.S_RETURN && o.u.nodes[x].a >= 0 && o.u.nk(o.u.nodes[x].a) == ir.E_CALL &&
+        o.u.nodes[o.u.nodes[x].a].ty == o.u.tys[o.u.funcs[o.cur].ty].base {
+        c = o.u.nodes[x].a
+        dest = D_RETURN
+    }
+    if c < 0 {
+        append(out, x)
+        return
+    }
+    o.hoist(c, out)
+    let g = o.target(c)
+    if g < 0 {
+        append(out, x)
+        return
+    }
+    o.dest = dest
+    o.dl = if dest == D_DECL { o.u.nodes[x].a } else { -1 }
+    o.lv = if dest == D_ASSIGN { o.u.nodes[o.u.nodes[x].a].a } else { -1 }
+    o.aty = if dest == D_ASSIGN { o.u.nodes[o.u.nodes[x].a].ty } else { -1 }
+    o.refs[g] -= 1
+    o.expand(c, g, out)
+}
+
+// The function the call c calls if it is inlined there, else -1.
+fn (o: &Opt) target(c: int): int {
+    let g = o.callee(c)
+    if g < 0 || g == o.cur || o.state[g] != 2 || o.form[g] < 0 || o.size[g] > o.limit { return -1 }
+    if o.grown + o.size[g] > GROWTH { return -1 }
+    return g
+}
+
+// Moves the arguments of the call c that are calls of functions inlined there into
+// declarations before it (inlined in turn), while everything evaluated before them in the
+// statement is a value they cannot change: the callee, the earlier arguments.
+fn (o: mut &Opt) hoist(c: int, out: mut &[]int) {
+    if !o.stable(o.u.nodes[c].a) { return }
+    let l = o.u.nodes[c].b
+    for j in 0..o.u.listLen(l) {
+        let x = o.u.listAt(l, j)
+        if o.target(x) >= 0 {
+            let t = o.local("h", o.u.nodes[x].ty, false)
+            let d = o.mk1(ir.S_DECL, ir.TY_VOID, t, x, -1)
+            o.u.items[l + 1 + j] = o.mk1(ir.E_LOCAL, o.u.nodes[x].ty, t, -1, -1)
+            o.site(d, out)
+        } else if !o.stable(x) {
+            return
+        }
+    }
+}
+
+// Whether evaluating x has no effect and gives the same value until the statement ends,
+// whatever a call does: a constant, an address of a function, string, global or local (or a
+// member of one), or the value of a local (or a member) whose address is never taken.
+fn (o: &Opt) stable(x: int): bool {
+    let k = o.u.nk(x)
+    if k == ir.E_INT || k == ir.E_FLT { return true }
+    if k == ir.E_CAST { return o.stable(o.u.nodes[x].a) }
+    if k == ir.E_ADDR || k == ir.E_DECAY {
+        let a = o.u.nodes[x].a
+        let ak = o.u.nk(a)
+        return ak == ir.E_FUNC || ak == ir.E_STR || ak == ir.E_GLOBAL || o.root(a) >= 0
+    }
+    let r = o.root(x)
+    return r >= 0 && !o.aTaken[r]
+}
+
+// Whether x is an lvalue (a local, a global, a dereference, or a member of one).
+fn (o: &Opt) lvalue(x: int): bool {
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+    let k = o.u.nk(r)
+    return k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_DEREF
+}
+
+// Whether f is drop glue: a function the emitter wrote that drops its argument (gl<n>_drop).
+fn (o: &Opt) dropGlue(f: int): bool {
+    let n = o.u.funcs[f].name
+    return startsWith(n, "gl") && endsWith(n, "_drop")
+}
+
+// The call c of g inlined into out (with o.dest and its place set).
+fn (o: mut &Opt) expand(c: int, g: int, out: mut &[]int) {
+    let form = o.form[g]
+    let fl = o.u.nodes[form].a
+    let n = o.u.listLen(fl)
+    let rets = o.rets[g]
+    o.single = rets == 1 && n > 0 && o.u.nk(o.u.listAt(fl, n - 1)) == ir.S_RETURN
+    // the result: the body's local that it returns, made the new local itself
+    o.nrvo = -1
+    if o.dest == D_DECL && o.single {
+        let r = o.u.nodes[o.u.listAt(fl, n - 1)].a
+        if r >= 0 && o.u.nk(r) == ir.E_LOCAL {
+            let q = o.u.nodes[r].a
+            var top = false
+            for i in 0..len(o.u.funcs[g].params) {
+                if o.u.funcs[g].params[i] == q { top = true }
+            }
+            for j in 0..n {
+                let s = o.u.listAt(fl, j)
+                if o.u.nk(s) == ir.S_DECL && o.u.nodes[s].a == q { top = true }
+            }
+            if top && !o.aTaken[q] && o.u.locals[q].ty == o.u.locals[o.dl].ty { o.nrvo = q }
+        }
+    }
+    // `x = g(x)` where g returns its parameter: the parameter is x itself, changed in place
+    if o.dest == D_ASSIGN && o.single {
+        let r = o.u.nodes[o.u.listAt(fl, n - 1)].a
+        let root = o.root(o.lv)
+        if r >= 0 && o.u.nk(r) == ir.E_LOCAL && root >= 0 && !o.aTaken[root] {
+            let q = o.u.nodes[r].a
+            let args = o.u.nodes[c].b
+            let ps = len(o.u.funcs[g].params)
+            for i in 0..ps {
+                if o.u.funcs[g].params[i] == q && !o.aTaken[q] && o.u.locals[q].ty == o.aty &&
+                    o.samePlace(o.lv, o.u.listAt(args, i)) {
+                    var alone = true
+                    for m in 0..ps {
+                        if m != i && o.walk(o.u.listAt(args, m), W_NAMES, root) > 0 { alone = false }
+                    }
+                    if alone { o.nrvo = q }
+                }
+            }
+        }
+    }
+    if o.dest == D_DECL && !o.single {
+        append(out, o.mk1(ir.S_DECL, ir.TY_VOID, o.dl, -1, -1))
+    }
+    // the parameters
+    let args = o.u.nodes[c].b
+    let np = len(o.u.funcs[g].params)
+    for j in 0..np {
+        let p = o.u.funcs[g].params[j]
+        let t = o.u.locals[p].ty
+        let x = o.u.listAt(args, j)
+        append(mut &o.bound, p)
+        let ro = j < 62 && (o.ro[g] >> j) & 1 == 1
+        if p == o.nrvo && o.dest == D_ASSIGN {
+            o.mk[p] = M_EXPR
+            o.mv[p] = o.lv
+        } else if p == o.nrvo {
+            o.mk[p] = M_LOCAL
+            o.mv[p] = o.dl
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, o.dl, x, -1))
+        } else if ro && o.u.nodes[x].ty == t && o.invariant(x, args, j) {
+            o.mk[p] = M_EXPR
+            o.mv[p] = x
+            o.unrefAll(x)
+        } else if ro && o.u.isAggr(t) && o.dropGlue(g) && o.u.nodes[x].ty == t && o.lvalue(x) {
+            let pt = o.u.ptrTo(t)
+            let q = o.local(o.u.locals[p].name, pt, false)
+            o.mk[p] = M_DEREF
+            o.mv[p] = q
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, q, o.mk1(ir.E_ADDR, pt, x, -1, -1), -1))
+        } else {
+            let q = o.local(o.u.locals[p].name, t, o.aTaken[p])
+            o.mk[p] = M_LOCAL
+            o.mv[p] = q
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, q, x, -1))
+        }
+    }
+    // the body's own locals
+    o.declare(form)
+    for j in 0..n {
+        let s = o.cl(o.u.listAt(fl, j))
+        if s >= 0 { append(out, s) }
+    }
+    let bs = replace(mut &o.bound, [])
+    for l in bs {
+        o.mk[l] = M_NONE
+        o.mv[l] = -1
+    }
+}
+
+// Whether argument j of a call (in the list args) can stand for its parameter wherever the
+// body names it (which never assigns it): its value cannot change until the body is done, and
+// reading it again has no effect. A local's value: no later argument assigns it.
+fn (o: mut &Opt) invariant(x: int, args: int, j: int): bool {
+    if !o.stable(x) { return false }
+    let r = o.root(x)
+    if r < 0 || o.u.nk(x) == ir.E_ADDR || o.u.nk(x) == ir.E_DECAY { return true }
+    for m in j + 1..o.u.listLen(args) {
+        if o.walk(o.u.listAt(args, m), W_WRITES, r) > 0 { return false }
+    }
+    return true
+}
+
+// New locals for the locals the statement x declares (the body being inlined).
+fn (o: mut &Opt) declare(x: int) {
+    if x < 0 { return }
+    let k = o.u.nk(x)
+    if k == ir.S_DECL {
+        let l = o.u.nodes[x].a
+        if o.mk[l] == M_NONE {
+            append(mut &o.bound, l)
+            o.mk[l] = M_LOCAL
+            o.mv[l] = if l == o.nrvo { o.dl } else { o.local(o.u.locals[l].name, o.u.locals[l].ty, o.aTaken[l]) }
+        }
+    } else if k == ir.S_BLOCK {
+        let l = o.u.nodes[x].a
+        for j in 0..o.u.listLen(l) { o.declare(o.u.listAt(l, j)) }
+    } else if k == ir.S_IF {
+        o.declare(o.u.nodes[x].b)
+        o.declare(o.u.nodes[x].c)
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        o.declare(o.u.nodes[x].b)
+    } else if k == ir.S_FOR {
+        o.declare(o.u.nodes[x].a)
+        o.declare(o.u.nodes[x].d)
+    }
+}
+
+// What a return of the value r (or -1) of the body being inlined becomes: a statement, or -1.
+fn (o: mut &Opt) ret(r: int): int {
+    if o.dest == D_RETURN { return o.mk1(ir.S_RETURN, ir.TY_VOID, o.cl(r), -1, -1) }
+    if r < 0 { return -1 }
+    if o.dest == D_NONE {
+        let e = o.cl(r)
+        if o.walk(e, W_EFFECTS, -1) == 0 {
+            o.unrefAll(e)
+            return -1
+        }
+        return o.mk1(ir.S_EXPR, ir.TY_VOID, e, -1, -1)
+    }
+    if o.dest == D_DECL {
+        if o.nrvo >= 0 { return -1 }
+        if o.single { return o.mk1(ir.S_DECL, ir.TY_VOID, o.dl, o.cl(r), -1) }
+        let t = o.u.locals[o.dl].ty
+        let as1 = o.mk1(ir.E_ASSIGN, t, o.mk1(ir.E_LOCAL, t, o.dl, -1, -1), o.cl(r), -1)
+        return o.mk1(ir.S_EXPR, ir.TY_VOID, as1, -1, -1)
+    }
+    if o.nrvo >= 0 { return -1 }
+    let as2 = o.mk1(ir.E_ASSIGN, o.aty, o.cl(o.lv), o.cl(r), -1)
+    return o.mk1(ir.S_EXPR, ir.TY_VOID, as2, -1, -1)
+}
+
+// A copy of the tree x of the body being inlined, its locals bound (mk), its returns made ret's
+// statements; -1 for a statement that becomes nothing.
+fn (o: mut &Opt) cl(x: int): int {
+    if x < 0 { return -1 }
+    let k = o.u.nodes[x].k
+    if k == ir.E_LOCAL {
+        let l = o.u.nodes[x].a
+        let m = o.mk[l]
+        if m == M_EXPR { return o.cl(o.mv[l]) }
+        if m == M_DEREF {
+            let p = o.mk1(ir.E_LOCAL, o.u.locals[o.mv[l]].ty, o.mv[l], -1, -1)
+            return o.mk1(ir.E_DEREF, o.u.nodes[x].ty, p, -1, -1)
+        }
+        if m == M_LOCAL { return o.mk1(ir.E_LOCAL, o.u.nodes[x].ty, o.mv[l], -1, -1) }
+    }
+    if k == ir.S_RETURN { return o.ret(o.u.nodes[x].a) }
+    if o.nop(x) { return -1 }
+    append(mut &o.u.nodes, o.u.nodes[x])
+    o.grown += 1
+    let y = len(o.u.nodes) - 1
+    let a = o.u.nodes[x].a
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if k == ir.E_FUNC { o.refs[a] += 1 }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC ||
+        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
+        return y
+    }
+    if k == ir.E_CALL {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.clList(b)
+    } else if k == ir.E_CLIT {
+        o.u.nodes[y].b = o.clList(b)
+    } else if k == ir.S_BLOCK {
+        o.u.nodes[y].a = o.clList(a)
+    } else if k == ir.S_DECL {
+        if o.mk[a] == M_LOCAL { o.u.nodes[y].a = o.mv[a] }
+        o.u.nodes[y].b = o.cl(b)
+        o.u.nodes[y].c = o.clList(c)
+    } else if k == ir.S_FOR {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.cl(b)
+        o.u.nodes[y].c = o.cl(c)
+        o.u.nodes[y].d = o.clBody(o.u.nodes[x].d)
+    } else if k == ir.E_DEREF {
+        // *&v is v
+        let p = o.cl(a)
+        if o.u.nk(p) == ir.E_ADDR && o.u.nodes[o.u.nodes[p].a].ty == o.u.nodes[x].ty { return o.u.nodes[p].a }
+        o.u.nodes[y].a = p
+    } else if k == ir.E_MEMBER || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT ||
+        k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.E_ADDR || k == ir.E_DECAY {
+        o.u.nodes[y].a = o.cl(a)
+    } else if k == ir.S_SWITCH || k == ir.S_WHILE {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.clBody(b)
+    } else if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.cl(b)
+    } else if k == ir.S_IF {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.clBody(b)
+        o.u.nodes[y].c = o.cl(c)
+    } else if k == ir.E_COND {
+        o.u.nodes[y].a = o.cl(a)
+        o.u.nodes[y].b = o.cl(b)
+        o.u.nodes[y].c = o.cl(c)
+    } else {
+        ir.failAt("IR node", o.u.nodes[x].line, "opt: node kind " + intToStr(k))
+    }
+    return y
+}
+
+// cl of a statement that must be one (a body): an empty block for nothing.
+fn (o: mut &Opt) clBody(x: int): int {
+    let y = o.cl(x)
+    if y >= 0 || x < 0 { return y }
+    let none: []int = []
+    return o.block(&none)
+}
+
+fn (o: mut &Opt) clList(l: int): int {
+    if l < 0 { return -1 }
+    var xs: []int = []
+    for j in 0..o.u.listLen(l) {
+        let y = o.cl(o.u.listAt(l, j))
+        if y >= 0 { append(mut &xs, y) }
+    }
+    return o.u.list(&xs)
+}

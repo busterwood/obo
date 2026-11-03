@@ -37,7 +37,8 @@ needs `compiler/reseed.sh` before the gate passes.
 Full gate, at the end of a fix round and before a merge (`obx/tools/gate.sh full`):
 the quick gate plus the red-team harnesses, rounds 1 to 5 (`obx/redteam/rt.py`,
 `round2/rt.py`, `round3/rt.py`, `round4/rt.py`, `round5/rt.py`) under ASan+UBSan, and the native
-backend on the red-team corpora. The script prints a summary with the time of each
+backend on the red-team corpora and on 200 generated programs (`obx/tests/vrgen.py`). The
+script prints a summary with the time of each
 step and the total, and exits 1 on any failure.
 
 `python3 obx/cmd/eza_gate.py -j 8` (or `python3 obx/tests/eza.py`) is the eza golden
@@ -50,6 +51,12 @@ build every run and error test, plus the library tests, the red-team rounds 1 to
 fresh round-5 programs and eza. The two builds must fail alike, or the two programs must
 print and exit alike under OBX_CHECK=1. Use it when a compiler change is meant to keep
 every program's behaviour.
+
+`python3 obx/tests/vrgen.py [-n N] [--seed S] [--keep DIR]` generates programs that pass
+value records with heap fields through small functions (by value, by borrow, receivers,
+results, copies, array elements, match arms, loops, `x = f(x)`), builds each through C and
+natively, and requires the same output and exit code under OBX_CHECK=1: a check of the
+native backend's inlining and record rewrites (compiler/opt.obx), where a leak shows.
 
 `python3 obx/compiler/fuzz.py [-n N] [--seed S] [--cc]` is a mutation fuzzer for the
 compiler, outside the gates: every mutant of a test program must compile or be rejected

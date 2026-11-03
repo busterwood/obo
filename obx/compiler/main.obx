@@ -29,6 +29,7 @@ import "./cgen"
 import "./rt"
 import "strings"
 import "./x64gen"
+import "./opt"
 import "./elf"
 
 extern "c" fn system(cmd: str): i32
@@ -296,7 +297,7 @@ fn buildNative(p: ir.Ir, libs: &[]str, src: str, out: str, isRun: bool, rest: &[
         }
     }
     var symMap = ""
-    let img = x64gen.buildMap(p, dl, mut &symMap)
+    let img = x64gen.buildMap(opt.optimize(p), dl, mut &symMap)
     let mapFile = os.envOr("OBX_NATIVE_MAP", "")
     if mapFile != "" {
         match io.write(mapFile, symMap) {

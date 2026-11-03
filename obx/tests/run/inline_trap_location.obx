@@ -1,0 +1,20 @@
+// The native backend inlines small functions (compiler/opt.obx): a trap in an
+// inlined body still names the body's own line, as the call would.
+// expect: 3
+// expect: 7
+// stderr: obx: index out of range at inline_trap_location.obx:12
+// exit: 3
+
+fn add(a: int, b: int): int { return a + b }
+
+fn at(xs: &[]int, i: int): int {
+    let j = add(i, 1)
+    return xs[j]
+}
+
+fn main() {
+    let xs = [1, 3, 5, 7]
+    println(at(&xs, 0).toStr())
+    println(at(&xs, 2).toStr())
+    println(at(&xs, 3).toStr())
+}
