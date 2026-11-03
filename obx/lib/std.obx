@@ -453,7 +453,7 @@ pub fn (a: bool) toStr(): str {
 pub fn (a: str) eq(b: &str): bool { return a == b }
 pub fn (a: str) cmp(b: &str): int { return cmpOf(a < b, a > b) }
 pub fn (a: str) toStr(): str { return a }
-pub fn (s: str) hash(): u64 { return sipStr(&s, 0, len(s)) }
+pub fn (s: str) hash(): u64 { return sipStr(&s) }
 
 // ---- keyed hashing
 //
@@ -520,26 +520,60 @@ fn (s: mut &Sip) finish(): u64 {
     return s.v0 ^ s.v1 ^ s.v2 ^ s.v3
 }
 
-// SipHash-1-3 of the bytes s[a..b] under the key (k0, k1).
-fn sipKeyedStr(k0: u64, k1: u64, s: &str, a: int, b: int): u64 {
-    var st = sipOf(k0, k1)
-    let end = b - (b - a) % 8
-    var i = a
-    while i < end {
-        st.block(u64(strByte(s, i)) | u64(strByte(s, i + 1)) << 8 | u64(strByte(s, i + 2)) << 16 |
-            u64(strByte(s, i + 3)) << 24 | u64(strByte(s, i + 4)) << 32 | u64(strByte(s, i + 5)) << 40 |
-            u64(strByte(s, i + 6)) << 48 | u64(strByte(s, i + 7)) << 56)
+// SipHash-1-3 of the bytes of s under the key (k0, k1). The rounds are written out on locals
+// (not Sip's methods): the hottest code of every Map with str keys.
+fn sipKeyedStr(k0: u64, k1: u64, s: &str): u64 {
+    var v0 = k0 ^ 0x736f6d6570736575
+    var v1 = k1 ^ 0x646f72616e646f6d
+    var v2 = k0 ^ 0x6c7967656e657261
+    var v3 = k1 ^ 0x7465646279746573
+    let n = len(s)
+    let end = n - (n & 7)
+    var i = 0
+    while true {
+        // the 8-byte blocks (little-endian), then the last: the rest of the bytes, the length
+        var m: u64 = 0
+        if i < end {
+            m = u64(strByte(s, i)) | u64(strByte(s, i + 1)) << 8 | u64(strByte(s, i + 2)) << 16 |
+                u64(strByte(s, i + 3)) << 24 | u64(strByte(s, i + 4)) << 32 | u64(strByte(s, i + 5)) << 40 |
+                u64(strByte(s, i + 6)) << 48 | u64(strByte(s, i + 7)) << 56
+        } else {
+            var j = n
+            while j > end {
+                j -= 1
+                m = m << 8 | u64(strByte(s, j))
+            }
+            m |= u64(n & 255) << 56
+        }
+        v3 ^= m
+        v0 = v0 +% v1
+        v1 = (v1 << 13 | v1 >> 51) ^ v0
+        v0 = v0 << 32 | v0 >> 32
+        v2 = v2 +% v3
+        v3 = (v3 << 16 | v3 >> 48) ^ v2
+        v0 = v0 +% v3
+        v3 = (v3 << 21 | v3 >> 43) ^ v0
+        v2 = v2 +% v1
+        v1 = (v1 << 17 | v1 >> 47) ^ v2
+        v2 = v2 << 32 | v2 >> 32
+        v0 ^= m
+        if i >= end { break }
         i += 8
     }
-    var m = u64((b - a) & 255) << 56
-    var sh = 0
-    while i < b {
-        m |= u64(strByte(s, i)) << sh
-        sh += 8
-        i += 1
+    v2 ^= 0xff
+    for r in 0..3 {
+        v0 = v0 +% v1
+        v1 = (v1 << 13 | v1 >> 51) ^ v0
+        v0 = v0 << 32 | v0 >> 32
+        v2 = v2 +% v3
+        v3 = (v3 << 16 | v3 >> 48) ^ v2
+        v0 = v0 +% v3
+        v3 = (v3 << 21 | v3 >> 43) ^ v0
+        v2 = v2 +% v1
+        v1 = (v1 << 17 | v1 >> 47) ^ v2
+        v2 = v2 << 32 | v2 >> 32
     }
-    st.block(m)
-    return st.finish()
+    return v0 ^ v1 ^ v2 ^ v3
 }
 
 fn sipKey() {
@@ -559,10 +593,10 @@ fn sipKey() {
     sipKeyed = true
 }
 
-// SipHash-1-3 of s[a..b] under the process's key.
-fn sipStr(s: &str, a: int, b: int): u64 {
+// SipHash-1-3 of s under the process's key.
+fn sipStr(s: &str): u64 {
     if !sipKeyed { sipKey() }
-    return sipKeyedStr(sipK0, sipK1, s, a, b)
+    return sipKeyedStr(sipK0, sipK1, s)
 }
 
 // SipHash-1-3 of three words (24 bytes) under the process's key.
@@ -584,7 +618,7 @@ fn hashSeed(): u64 {
 
 // SipHash-1-3 of the bytes of s under the key (k0, k1): the test vectors'
 // way in (std_hash.obx); programs use s.hash().
-pub fn sipHash13(k0: u64, k1: u64, s: &str): u64 { return sipKeyedStr(k0, k1, s, 0, len(s)) }
+pub fn sipHash13(k0: u64, k1: u64, s: &str): u64 { return sipKeyedStr(k0, k1, s) }
 
 pub fn min[T: Ord + copy](a: T, b: T): T {
     if b < a { return b }

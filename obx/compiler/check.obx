@@ -2188,6 +2188,19 @@ pub fn cint(x: mut &tm.Arena, v: num.Big, t: int): int {
     return x.pcast(x.ct(CTYPES[t]), x.num(num.bigStr(v)))
 }
 
+// The value of n when it is an int constant from 0 to 127 ("13LL", as cint writes it), else -1.
+fn (c: &Checker) shiftCount(n: int): int {
+    let x = c.x.nodes[n]
+    if x.k != tm.X_NUM || len(x.s) < 3 || len(x.s) > 5 || !endsWith(x.s, "LL") { return -1 }
+    var v = 0
+    for i in 0..len(x.s) - 2 {
+        let d = strByte(x.s, i)
+        if d < '0' || d > '9' { return -1 }
+        v = v * 10 + int(d - '0')
+    }
+    return v
+}
+
 // The C of the least int64 (one constant of tmpl.X_NUM).
 pub const INT_MIN_C = "(-9223372036854775807LL-1)"
 
@@ -2944,6 +2957,14 @@ fn (c: mut &Checker) binop(op: str, lv0: Val, r: Arg, line: int, exp: int, hasHe
         if op == "<<" || op == ">>" {
             if lt >= sema.NINTS || rt != sema.T_INT {
                 c.err(line, op + " needs an integer and an int shift count, not " + c.tstr(lt) + " and " + c.tstr(rt))
+            }
+            // an unsigned value of at most 64 bits shifted by a constant count in range cannot
+            // stop the program: C's operator (no call, so no temporary for the order of
+            // evaluation; x << k | x >> (64 - k) is then one rol natively)
+            let k = c.shiftCount(rv1.c)
+            let bits = if lt == sema.T_U64 { 64 } else if lt == sema.T_U32 { 32 } else if lt == sema.T_BYTE { 8 } else { 0 }
+            if k >= 0 && k < bits {
+                return rv(c.x.pcast(c.ct(CTYPES[lt]), c.x.par(c.x.bin(op, lv.c, rv1.c))), lt)
             }
             return rv(c.x.call("rt_" + (if op == "<<" { "shl" } else { "shr" }) + "_" + nm, [lv.c, rv1.c, W]), lt)
         }

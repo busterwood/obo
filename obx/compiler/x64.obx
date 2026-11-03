@@ -44,7 +44,8 @@ pub const IMUL1 = 5
 pub const DIV = 6
 pub const IDIV = 7
 
-// Shifts (0xD3 /digit, 0xC1 /digit).
+// Shifts and rotates (0xD3 /digit, 0xC1 /digit).
+pub const ROL = 0
 pub const SHL = 4
 pub const SHR = 5
 pub const SAR = 7
