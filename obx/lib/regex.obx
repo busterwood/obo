@@ -21,6 +21,7 @@
 // its own matching state.
 
 import "regex_syntax" as syn
+import "regex_dfa" as lazy
 
 pub type Error = syn.Error
 pub type ErrorCode = syn.ErrorCode
@@ -56,7 +57,33 @@ pub type Regex = record {
     cond: int               // empty-width conditions required at the start (-1: impossible)
     minInputLen: int
     longest: bool
+    // R2: the lazy DFA (regex_dfa) and the literal searches
+    mode: int               // MODE_*: how the matcher is chosen
+    fdfa: lazy.Dfa          // the program's DFA (ok false: none)
+    rprog: syn.Prog         // the reversed program (finds the start of a match)
+    rdfa: lazy.Dfa
+    pf: lazy.Prefilter      // the literals matches start with
+    suffix: str             // a literal every match ends with ("": none)
+    inner: bool             // the reverse-inner search: a literal inside
+    iprog: syn.Prog         // the reversed part before the inner literal
+    idfa: lazy.Dfa
+    ipf: lazy.Prefilter     // the inner literals
 }
+
+// How a search picks its matcher.
+const MODE_AUTO = 0         // as compile does
+const MODE_NODFA = 1        // Go's choice only (the Pike VM or the backtracker forced)
+const MODE_DFA = 2          // the DFA always, without literal searches
+const MODE_PREFILTER = 3    // the DFA always, with every literal search there is
+const MODE_TINY = 4         // the DFA always, in a tiny cache that never gives up
+
+// The shortest text the DFA is used for when the pattern is not a literal
+// (shorter ones go to Go's matchers, which start faster).
+const DFA_MIN_TEXT = 128
+
+// Literal searches that find more candidates than this (per million
+// positions, estimated) are not used.
+const MAX_PF_RATE = 10000
 
 const MAX_BACKTRACK_PROG = 500
 const MAX_BACKTRACK_VECTOR = 262144  // bits
@@ -83,11 +110,16 @@ pub fn mustCompile(pattern: str): Regex {
 }
 
 // For tests: compiles with the matcher forced to "pike" or "backtrack" (the
-// backtracker then runs whatever the size of the text), or "onepass" (as
-// compile: the one-pass matcher when the pattern allows it).
+// backtracker then runs whatever the size of the text; no DFA), "dfa" (the
+// lazy DFA for every text, without literal searches), "prefilter" (the DFA
+// with every literal search the pattern has, however poor), "dfatiny" (the
+// DFA in a cache of a few states, cleared all the time and never giving
+// up), or "onepass" (as compile). Every forced mode but "onepass" turns the
+// one-pass matcher off. If the pattern has no DFA (too big), "dfa" and the
+// like fall back to Go's choice.
 pub fn compileForcing(pattern: str, longest: bool, matcher: str): Result[Regex, Error] {
     var re = try compileWith(pattern, syn.PERL, longest)
-    if matcher == "pike" || matcher == "backtrack" {
+    if matcher == "pike" || matcher == "backtrack" || matcher == "dfa" || matcher == "prefilter" || matcher == "dfatiny" {
         re.hasOnePass = false
         re.onepass = emptyOnePass()
         let pre = re.prog.prefix()
@@ -96,7 +128,20 @@ pub fn compileForcing(pattern: str, longest: bool, matcher: str): Result[Regex, 
         re.prefixEnd = 0
         re.prefixRune = 0
         if len(re.prefix) > 0 { re.prefixRune = syn.decodeRune(re.prefix, 0).r }
+        re.maxBitStateLen = 0
+        if len(re.prog.inst) <= MAX_BACKTRACK_PROG { re.maxBitStateLen = MAX_BACKTRACK_VECTOR / len(re.prog.inst) }
+    }
+    if matcher == "pike" || matcher == "backtrack" {
         re.maxBitStateLen = if matcher == "pike" { 0 } else { 9223372036854775807 }
+        re.mode = MODE_NODFA
+    } else if matcher == "dfa" || matcher == "dfatiny" {
+        re.mode = if matcher == "dfa" { MODE_DFA } else { MODE_TINY }
+        re.pf = lazy.noPrefilter()
+        re.inner = false
+        re.suffix = ""
+    } else if matcher == "prefilter" {
+        re.mode = MODE_PREFILTER
+        re.planLiterals(true)
     }
     return Ok(re)
 }
@@ -114,7 +159,9 @@ fn compileWith(expr: str, mode: int, longest: bool): Result[Regex, Error] {
     let cond = prog.startCond()
     var re = Regex{expr: expr, prog: prog, tree: tree, hasOnePass: false, onepass: emptyOnePass(), numSubexp: maxCap,
         maxBitStateLen: 0, names: names, prefix: "", prefixRune: 0, prefixEnd: 0, prefixComplete: false,
-        cond: cond, minInputLen: minLen, longest: longest}
+        cond: cond, minInputLen: minLen, longest: longest, mode: MODE_AUTO, fdfa: lazy.noDfa(), rprog: emptyProg(),
+        rdfa: lazy.noDfa(), pf: lazy.noPrefilter(), suffix: "", inner: false, iprog: emptyProg(), idfa: lazy.noDfa(),
+        ipf: lazy.noPrefilter()}
     re.hasOnePass = compileOnePass(&re.prog, mut &re.onepass)
     if !re.hasOnePass {
         let pre = re.prog.prefix()
@@ -128,7 +175,91 @@ fn compileWith(expr: str, mode: int, longest: bool): Result[Regex, Error] {
         re.prefixEnd = pre.pc
     }
     if len(re.prefix) > 0 { re.prefixRune = syn.decodeRune(re.prefix, 0).r }
+    if re.cond != -1 {
+        re.fdfa = lazy.newDfa(&re.prog, longest)
+        if re.fdfa.ok {
+            match syn.compileReverse(&re.tree, root, MAX_PROG_INST) {
+                Ok(rp) {
+                    re.rprog = rp
+                    re.rdfa = lazy.newDfa(&re.rprog, true)
+                }
+                Err(e) {}
+            }
+            if !re.rdfa.ok { re.fdfa = lazy.noDfa() }
+        }
+        re.planLiterals(false)
+    }
     return Ok(re)
+}
+
+fn emptyProg(): syn.Prog { return syn.Prog{inst: [], runes: [], start: 0, numCap: 0} }
+
+// Chooses the literal searches (all there are, however poor, if force):
+// the literals every match starts with (a prefilter for the DFA), or else
+// literals inside, after a part of the top concatenation that cannot
+// contain their first bytes (the reverse-inner search: find a literal, run
+// the part backward to the match's start, then the whole pattern forward
+// from there); and a literal every match ends with (if the text has none,
+// there is no match).
+fn (re: mut &Regex) planLiterals(force: bool) {
+    re.pf = lazy.noPrefilter()
+    re.inner = false
+    re.suffix = ""
+    if !re.fdfa.ok { return }
+    let suf = lazy.suffixLiterals(&re.tree, re.tree.root)
+    if len(suf) == 1 { re.suffix = suf[0] }
+    if re.cond & syn.EMPTY_BEGIN_TEXT != 0 { return }
+    var pf = lazy.noPrefilter()
+    let pre = lazy.prefixLiterals(&re.tree, re.tree.root)
+    if len(pre) > 0 { pf = lazy.choosePrefilter(&pre) }
+    var best = lazy.noPrefilter()
+    var bestK = -1
+    let root = re.tree.root
+    if re.tree.nodes[root].op == syn.OP_CONCAT {
+        let subs = &re.tree.nodes[root].sub
+        var kmax = len(subs)
+        if kmax > 16 { kmax = 16 }
+        for k in 1..kmax {
+            let lits = lazy.concatLiterals(&re.tree, subs, k)
+            if len(lits) == 0 { continue }
+            let f = lazy.choosePrefilter(&lits)
+            if f.kind == lazy.PF_NONE { continue }
+            var set = array(256, false)
+            for i in 0..k { lazy.byteClass(&re.tree, subs[i], mut &set) }
+            var ok = true
+            for x in 0..len(f.first) {
+                if set[int(f.first[x])] { ok = false }
+            }
+            if ok && (bestK < 0 || f.rate < best.rate) {
+                best = f
+                bestK = k
+            }
+        }
+    }
+    let usePf = pf.kind != lazy.PF_NONE && (force || pf.rate <= MAX_PF_RATE) && (bestK < 0 || pf.rate <= 4 * best.rate)
+    if usePf {
+        re.pf = pf
+        re.pf.force = force
+        return
+    }
+    if bestK < 0 || (!force && best.rate > MAX_PF_RATE) { return }
+    // The part before the literal, as a node of its own, reversed.
+    var part: []int = []
+    for i in 0..bestK { append(mut &part, re.tree.nodes[root].sub[i]) }
+    append(mut &re.tree.nodes, syn.Node{op: syn.OP_CONCAT, flags: 0, sub: part, runes: [], min: 0, max: 0, cap: 0, name: ""})
+    let at = len(re.tree.nodes) - 1
+    match syn.compileReverse(&re.tree, at, MAX_PROG_INST) {
+        Ok(ip) {
+            re.iprog = ip
+            re.idfa = lazy.newDfa(&re.iprog, true)
+            if re.idfa.ok {
+                re.inner = true
+                re.ipf = best
+                re.ipf.force = true
+            }
+        }
+        Err(e) {}
+    }
 }
 
 // ---------------------------------------------------------------- accessors
@@ -162,12 +293,42 @@ pub fn (re: &Regex) literalPrefix(): Prefix { return Prefix{text: re.prefix, com
 // Whether the leftmost-longest form is used.
 pub fn (re: &Regex) isLongest(): bool { return re.longest }
 
-// Which matcher a search over a text of n bytes uses: "onepass",
-// "backtrack" or "pike" (for tests and profiling).
+// Which matcher a search over a text of n bytes uses: "onepass", "dfa"
+// (the lazy DFA, maybe with a literal search), "literal" (the pattern is a
+// literal: a memory search), "backtrack" or "pike" (for tests and
+// profiling).
 pub fn (re: &Regex) matcherFor(n: int): str {
     if re.hasOnePass { return "onepass" }
+    if re.useDfa(n) {
+        if re.literalOnly() { return "literal" }
+        return "dfa"
+    }
     if n < re.maxBitStateLen { return "backtrack" }
     return "pike"
+}
+
+// The literal search the DFA uses, for tests and profiling: "prefix" (a
+// prefilter), "inner" (the reverse-inner search), "suffix" (only the check
+// that the text has the literal every match ends with) or "none".
+pub fn (re: &Regex) literalSearch(): str {
+    if re.pf.kind != lazy.PF_NONE { return "prefix" }
+    if re.inner { return "inner" }
+    if len(re.suffix) > 0 { return "suffix" }
+    return "none"
+}
+
+// Whether the pattern is a literal (found by a memory search).
+fn (re: &Regex) literalOnly(): bool {
+    return (re.mode == MODE_AUTO || re.mode == MODE_PREFILTER) && re.prefixComplete && len(re.prefix) > 0 && re.cond == 0
+}
+
+// Whether a search over a text of n bytes runs the DFA.
+fn (re: &Regex) useDfa(n: int): bool {
+    if re.mode == MODE_NODFA || re.cond == -1 { return false }
+    if re.literalOnly() { return true }
+    if !re.fdfa.ok { return false }
+    if re.mode != MODE_AUTO { return true }
+    return n >= DFA_MIN_TEXT
 }
 
 // The compiled program, as text (for tests).
@@ -183,10 +344,17 @@ type Exec = record {
     bt: BitState
     btReady: bool
     opcap: []int
+    fc: lazy.Cache        // the DFA's states: forward,
+    rc: lazy.Cache        // backward (the reversed program),
+    ic: lazy.Cache        // and the reversed part before an inner literal
+    dfaFailed: bool       // the DFA gave up: Go's matchers from now on
+    sufFrom: int          // the suffix literal: the last search, from where
+    sufAt: int            // and where it was found (-1: nowhere)
 }
 
 fn newExec(): Exec {
-    return Exec{pike: emptyPike(), pikeReady: false, bt: emptyBitState(), btReady: false, opcap: []}
+    return Exec{pike: emptyPike(), pikeReady: false, bt: emptyBitState(), btReady: false, opcap: [], fc: lazy.newCache(),
+        rc: lazy.newCache(), ic: lazy.newCache(), dfaFailed: false, sufFrom: -1, sufAt: -1}
 }
 
 // Runs a search of text from pos, with ncap capture slots; fills out with
@@ -195,12 +363,134 @@ fn (re: &Regex) execute(x: mut &Exec, text: str, pos: int, ncap: int, out: mut &
     while len(out) > 0 { pop(out) }
     if len(text) < re.minInputLen { return false }
     if re.hasOnePass { return re.doOnePass(x, text, pos, ncap, out) }
+    if !x.dfaFailed && re.useDfa(len(text)) {
+        let r = re.dfaExecute(x, text, pos, ncap, out)
+        if r >= 0 { return r == 1 }
+        // The DFA gave up (its cache filled too often): Go's matchers
+        // finish the search, and the following ones of this call.
+        x.dfaFailed = true
+        while len(out) > 0 { pop(out) }
+    }
     if len(text) < re.maxBitStateLen { return re.backtrack(x, text, pos, ncap, out) }
     if !x.pikeReady {
         x.pike = newPike(len(re.prog.inst))
         x.pikeReady = true
     }
-    return x.pike.run(re, text, pos, ncap, out)
+    return x.pike.run(re, text, pos, ncap, out, false, len(text))
+}
+
+// ---------------------------------------------------------------- the DFA search
+
+// The result of a search for a match's span: status 1 found, 0 none, -1
+// the DFA gave up.
+type Found = value record { status: int; start: int; end: int }
+
+fn (re: &Regex) setupCaches(x: mut &Exec) {
+    if x.fc.ready() { return }
+    let tiny = re.mode == MODE_TINY
+    x.fc.setup(&re.fdfa, if tiny { budgetTiny(&re.fdfa) } else { lazy.DEFAULT_BUDGET }, !tiny)
+    x.rc.setup(&re.rdfa, if tiny { budgetTiny(&re.rdfa) } else { lazy.DEFAULT_BUDGET }, !tiny)
+    if re.inner { x.ic.setup(&re.idfa, if tiny { budgetTiny(&re.idfa) } else { lazy.DEFAULT_BUDGET }, !tiny) }
+}
+
+// A cache that holds about three states.
+fn budgetTiny(d: &lazy.Dfa): int { return 3 * (d.classes() + 16) }
+
+// The search with the DFA and the literal searches: 1 a match (its slots
+// in out), 0 none, -1 the DFA gave up.
+fn (re: &Regex) dfaExecute(x: mut &Exec, text: str, pos: int, ncap: int, out: mut &[]int): int {
+    if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos != 0 { return 0 }
+    if len(re.suffix) > 0 && !x.hasLiteral(text, pos, re.suffix) { return 0 }
+    var s = -1
+    var e = -1
+    if re.literalOnly() {
+        s = strFind(text, pos, re.prefix)
+        if s < 0 { return 0 }
+        e = s + len(re.prefix)
+    } else {
+        re.setupCaches(x)
+        let f = if re.inner { re.innerSearch(x, text, pos, ncap == 0) } else { re.dfaSearch(x, text, pos, ncap == 0) }
+        if f.status != 1 { return f.status }
+        s = f.start
+        e = f.end
+    }
+    if ncap == 0 { return 1 }
+    if ncap == 2 {
+        append(out, s)
+        append(out, e)
+        return 1
+    }
+    if !re.capturesSpan(x, text, s, e, ncap, out) { panic("regex: no match in the span the DFA found") }
+    return 1
+}
+
+// The leftmost match from pos: the forward DFA finds its end, the DFA of
+// the reversed program its start. earliest: only whether there is a match
+// (the span is then not computed).
+fn (re: &Regex) dfaSearch(x: mut &Exec, text: str, pos: int, earliest: bool): Found {
+    let anchored = re.cond & syn.EMPTY_BEGIN_TEXT != 0
+    let e = re.fdfa.forward(mut &x.fc, &re.prog, text, pos, anchored, earliest, &re.pf)
+    if e == -2 { return Found{status: -1, start: 0, end: 0} }
+    if e < 0 { return Found{status: 0, start: 0, end: 0} }
+    if earliest || anchored { return Found{status: 1, start: pos, end: e} }
+    let s = re.rdfa.backward(mut &x.rc, &re.rprog, text, pos, e)
+    if s == -2 { return Found{status: -1, start: 0, end: 0} }
+    if s < 0 { panic("regex: the reversed DFA found no start") }
+    return Found{status: 1, start: s, end: e}
+}
+
+// The reverse-inner search: for each candidate for the inner literal, the
+// part before it backward to its leftmost start, then the whole pattern
+// forward from there. As the part cannot contain a literal's first byte,
+// the first candidate that works gives the leftmost match. If a forward run
+// would read again text an earlier failed one read (it could get
+// quadratic), the plain DFA search takes over.
+fn (re: &Regex) innerSearch(x: mut &Exec, text: str, pos: int, earliest: bool): Found {
+    var from = pos
+    var reach = -1
+    let none = lazy.noPrefilter()
+    while true {
+        let h = re.ipf.find(text, from)
+        if h < 0 { return Found{status: 0, start: 0, end: 0} }
+        from = h + 1
+        if !lazy.hasByte(re.ipf.first, int(text[h])) { continue }
+        let s = re.idfa.backward(mut &x.ic, &re.iprog, text, pos, h)
+        if s == -2 { return Found{status: -1, start: 0, end: 0} }
+        if s < 0 { continue }
+        if s < reach { return re.dfaSearch(x, text, pos, earliest) }
+        let e = re.fdfa.forward(mut &x.fc, &re.prog, text, s, true, earliest, &none)
+        if e == -2 { return Found{status: -1, start: 0, end: 0} }
+        if e >= 0 { return Found{status: 1, start: s, end: e} }
+        reach = x.fc.reach
+    }
+    return Found{status: 0, start: 0, end: 0}
+}
+
+// Whether lit occurs in text at or after pos (remembered, so the searches
+// of findAll stay linear).
+fn (x: mut &Exec) hasLiteral(text: str, pos: int, lit: str): bool {
+    if x.sufFrom >= 0 && x.sufFrom <= pos && (x.sufAt < 0 || pos <= x.sufAt) { return x.sufAt >= 0 }
+    x.sufFrom = pos
+    x.sufAt = strFind(text, pos, lit)
+    return x.sufAt >= 0
+}
+
+// The groups of the match [s, e] the DFA found: the backtracker or the
+// Pike VM anchored at s, reading no rune past e (the empty-width tests
+// still see the whole text).
+fn (re: &Regex) capturesSpan(x: mut &Exec, text: str, s: int, e: int, ncap: int, out: mut &[]int): bool {
+    if e - s < re.maxBitStateLen {
+        x.bt.reset(len(re.prog.inst), s, e, ncap)
+        if ncap > 0 { x.bt.cap[0] = s }
+        if !re.tryBacktrack(mut &x.bt, text, re.prog.start, s) { return false }
+        for k in 0..ncap { append(out, x.bt.matchcap[k]) }
+        return true
+    }
+    if !x.pikeReady {
+        x.pike = newPike(len(re.prog.inst))
+        x.pikeReady = true
+    }
+    return x.pike.run(re, text, s, ncap, out, true, e)
 }
 
 // The empty-width context at pos: the rune before (-1 at the start) and the
@@ -337,7 +627,10 @@ fn (m: mut &Pike) clearQueue(q: int) {
     m.setQlen(q, 0)
 }
 
-fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]int): bool {
+// The search from pos0 (anchored: of matches that start there), reading
+// no rune at or after limit (the empty-width tests still see the whole
+// text).
+fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]int, anchored: bool, limit: int): bool {
     if re.cond == -1 { return false }
     let p = &re.prog
     if ncap != m.ncap {
@@ -377,10 +670,15 @@ fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]i
         fr1 = c.r1
         fr2 = c.r2
     }
-    let hasPrefix = len(re.prefix) > 0
+    let hasPrefix = len(re.prefix) > 0 && !anchored
     while true {
+        if pos >= limit && limit < end {
+            r = -1
+            width = 0
+        }
         if m.qlen(runq) == 0 {
             if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos != 0 { break }
+            if anchored && pos != pos0 { break }
             if m.matched { break }
             if hasPrefix && r != re.prefixRune {
                 let at = indexFrom(text, re.prefix, pos)
@@ -406,7 +704,7 @@ fn (m: mut &Pike) run(re: &Regex, text: str, pos0: int, ncap: int, out: mut &[]i
                 // then has no prefix).
             }
         }
-        if !m.matched {
+        if !m.matched && (!anchored || pos == pos0) {
             if ncap > 0 {
                 m.matchcap[0] = pos
                 for k in 0..ncap { m.work[k] = m.matchcap[k] }
@@ -580,6 +878,7 @@ fn (m: mut &Pike) add(p: &syn.Prog, q: int, pc0: int, pos: int, r1: int, r2: int
 // each (instruction, position) visited, so it does at most
 // len(prog) * (len(text) + 1) steps. Used for small programs and short texts.
 type BitState = record {
+    lo: int               // the positions are lo..end
     end: int
     cap: []int
     matchcap: []int
@@ -587,12 +886,13 @@ type BitState = record {
     visited: []int        // 32 bits per entry
 }
 
-fn emptyBitState(): BitState { return BitState{end: 0, cap: [], matchcap: [], jobs: [], visited: []} }
+fn emptyBitState(): BitState { return BitState{lo: 0, end: 0, cap: [], matchcap: [], jobs: [], visited: []} }
 
-fn (b: mut &BitState) reset(ninst: int, end: int, ncap: int) {
+fn (b: mut &BitState) reset(ninst: int, lo: int, end: int, ncap: int) {
+    b.lo = lo
     b.end = end
     while len(b.jobs) > 0 { pop(mut &b.jobs) }
-    let size = (ninst * (end + 1) + 31) / 32
+    let size = (ninst * (end - lo + 1) + 31) / 32
     if len(b.visited) < size {
         b.visited = array(size, 0)
     } else {
@@ -610,7 +910,7 @@ fn (b: mut &BitState) reset(ninst: int, end: int, ncap: int) {
 }
 
 fn (b: mut &BitState) shouldVisit(pc: int, pos: int): bool {
-    let n = pc * (b.end + 1) + pos
+    let n = pc * (b.end - b.lo + 1) + pos - b.lo
     let w = n >> 5
     let bit = 1 << (n & 31)
     if b.visited[w] & bit != 0 { return false }
@@ -719,7 +1019,7 @@ fn (re: &Regex) backtrack(x: mut &Exec, text: str, pos0: int, ncap: int, out: mu
     if re.cond == -1 { return false }
     if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && pos0 != 0 { return false }
     let end = len(text)
-    x.bt.reset(len(re.prog.inst), end, ncap)
+    x.bt.reset(len(re.prog.inst), 0, end, ncap)
     if re.cond & syn.EMPTY_BEGIN_TEXT != 0 {
         if ncap > 0 { x.bt.cap[0] = pos0 }
         if !re.tryBacktrack(mut &x.bt, text, re.prog.start, pos0) { return false }
