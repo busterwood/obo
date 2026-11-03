@@ -1541,7 +1541,9 @@ static int64_t rt_nheap, rt_cheap;
 static uint64_t rt_tseq;
 static unsigned rt_ticks;
 
-static int64_t rt_mono(void) {
+/* out of line, and rt_expired in line: a call there only when a deadline is set, so that the
+   paths without one (yield, wait) stay as they were with the inline system call */
+__attribute__((noinline)) static int64_t rt_mono(void) {
     rt_ts t;
     rt_clock(1, &t);
     return (int64_t)t.s * 1000000000 + t.ns;
@@ -1551,7 +1553,7 @@ static int64_t rt_after(int64_t ms) {
     if (ms <= 0) return now;
     return ms >= (RT_NEVER - 1 - now) / 1000000 ? RT_NEVER - 1 : now + ms * 1000000;
 }
-static bool rt_expired(void) { return rt_cur->deadline != RT_NEVER && rt_mono() >= rt_cur->deadline; }
+__attribute__((always_inline)) static inline bool rt_expired(void) { return rt_cur->deadline != RT_NEVER && rt_mono() >= rt_cur->deadline; }
 static bool rt_tless(rt_task* a, rt_task* b) {
     return a->wake_at < b->wake_at || (a->wake_at == b->wake_at && a->tseq < b->tseq);
 }
