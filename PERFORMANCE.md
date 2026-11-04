@@ -19,9 +19,8 @@ concurrency stage C1c (branch `c1c`), the sieve row and the seventh
 pass's row from the seventh (branch `sieve`), and the worker-process
 tables from concurrency stage C2 (branch `c2`), measured the same day. The
 eighth pass's row is from that pass (branch `perf8`), the regex table from
-regex phase R2 (branch `r2`) and the binary sizes from linking the runtime
-by sections (branch `rtgc`), all on 3 November; the compiler table was
-measured again on 4 November at `4cf3de5`. The numbers are
+regex phase R2 (branch `r2`), both on 3 November; the compiler table and
+the binary sizes were measured again on 4 November. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -275,17 +274,16 @@ reference counts, copies of large value records), not register use.
 
 ## Binary sizes
 
-| program | via C | native | native before |
-|---|---:|---:|---:|
-| empty program | 53,680 bytes (dynamic, glibc) | 12,288 bytes (static) | 73,728 |
-| hello | 53,832 bytes | 16,400 bytes (static) | 73,744 |
-| `import "regex"`, one call (`regex.quote`) | 54,016 bytes | 20,512 bytes | 73,744 |
-| eza | 233,256 bytes (dynamic, glibc) | 270,824 bytes (static) | 315,880 |
-| HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) | 467,832 |
-| compiler | 1,898,920 bytes (dynamic, glibc) | 2,696,009 bytes (static) | 2,694,337 |
+| program | via C | native |
+|---|---:|---:|
+| empty program | 53,680 bytes (dynamic, glibc) | 12,288 bytes (static) |
+| hello | 53,896 bytes | 16,416 bytes (static) |
+| `import "regex"`, one call (`regex.quote`) | 54,080 bytes | 20,512 bytes |
+| eza | 233,256 bytes (dynamic, glibc) | 270,824 bytes (static) |
+| HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) |
+| compiler | 1,963,360 bytes (dynamic, glibc) | 2,711,761 bytes (static) |
 
-(3 November 2026; "before" is the native build that linked the whole
-runtime.) The native backend generates only the functions and globals
+(4 November 2026, at `da520fe`.) The native backend generates only the functions and globals
 reachable from `main` (design/native.md section 5, "Reachability"), as gcc
 drops a C program's unused static functions: an imported module costs only
 what the program uses of it. The runtime is linked the same way, by
