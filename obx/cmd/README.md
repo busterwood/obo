@@ -87,6 +87,7 @@ runtime report on the large-input cases (four for the coreutils, four for `grep`
 | `head` | 50,304 | 74,488 |
 | `tail` | 71,016 | 92,768 |
 | `grep` | 544,672 | 476,488 |
+| `zoxide` | 589,536 | 352,496 |
 
 (obo's static binaries were 90 to 119 KB. `grep` is large because it carries
 the regex library.)
@@ -150,6 +151,76 @@ first match). One measured case is still behind GNU: `-c -E '^[0-9]+7[0-9]'`
         l = "%07d " % i + " ".join(r.choice(w) for _ in range(r.randint(4, 14))) + (" needle%d" % i if i % 1000 == 7 else "")
         out.append(l); n += len(l) + 1; i += 1
     print("\n".join(out))' > big.txt
+
+## zoxide
+
+`zoxide.obx` is a port of zoxide 0.9.9, the "smarter cd". It reads and writes
+the real zoxide's database (`db.zo`, bincode version 3), so you can switch
+between the two at any time. Frecency scores, aging, the keyword rules, the
+`_ZO_*` variables, the messages and the exit codes are zoxide's.
+
+    compiler/out/obxc cmd/zoxide.obx --native -o zoxide
+    compiler/out/obxc cmd/zoxide.obx -o zoxide
+
+Supported:
+
+- `add [-s SCORE] PATH...`, `remove PATH...`.
+- `query [KEYWORD...]` with `-a/--all`, `-l/--list`, `-s/--score`,
+  `--exclude PATH`, `--base-dir PATH` and `-i/--interactive`. Keywords match
+  in order, the last one in the last path component, ignoring case. Query
+  sorts by score and saves the file, removes entries that
+  `_ZO_EXCLUDE_DIRS` matches, and removes missing directories unused for
+  three months, as zoxide does.
+- `init SHELL [--cmd NAME] [--no-cmd] [--hook none|prompt|pwd]` for bash,
+  elvish, fish, nushell, posix (and `ksh`), powershell, tcsh, xonsh and zsh.
+  The output is byte for byte zoxide's. `zoxide_init.obx` is generated from
+  zoxide's askama templates by `zoxide_gen.py`; do not edit it by hand.
+- `import --from autojump|z|fasd [--merge] FILE`.
+- `_ZO_DATA_DIR` (else `$XDG_DATA_HOME/zoxide`, else `~/.local/share/zoxide`),
+  `_ZO_ECHO`, `_ZO_EXCLUDE_DIRS` (zoxide's glob syntax), `_ZO_MAXAGE`
+  (aging when the sum of the ranks passes it), `_ZO_RESOLVE_SYMLINKS`,
+  `_ZO_FZF_OPTS`. The database is written to a temporary file and renamed.
+- Command-line errors, `--help` and `--version` copy clap's text and exit
+  status 2, for the cases tested; other errors print `zoxide: message` and the
+  causes as anyhow does, with exit status 1. A corrupt database gives zoxide's
+  messages.
+- The current time is `time.unixSeconds()`; no library function was added.
+
+Not supported or different:
+
+- `edit` (it exits with an error).
+- clap's "a similar argument exists" tips.
+- Case folding is ASCII only (zoxide lowercases all of Unicode).
+- Entries with equal scores keep their file order; zoxide's sort is unstable,
+  and agrees only up to 20 entries.
+- `query -i` collects every candidate before it starts fzf, which zoxide
+  streams. With the native backend fzf does not see the environment variables
+  of the program, so `_ZO_FZF_OPTS` and `FZF_DEFAULT_OPTS` do not reach it
+  (a backend limit of `proc`; the C build is fine).
+- The home directory comes from `$HOME`, else `/etc/passwd`.
+
+### Tests
+
+[../tests/zoxide.py](../tests/zoxide.py) is a differential test against the
+real zoxide 0.9.9 (outside the gates). Each of its 362 cases is a list of steps
+on real temporary directories. Every step runs in two worlds with separate
+`_ZO_DATA_DIR`s, ours and the reference, and stdout, stderr, the exit status
+and then the whole database (paths, order, ranks bit for bit, times within five
+seconds) must be equal. The cases cover add and query ranking, the keyword
+rules, excluding the current directory, missing directories, score output and
+rounding, remove, aging, every `init` shell with every hook and `--cmd` form, the
+environment variables, import, corrupt databases, command-line errors, and
+cross-compatibility (a step with `slot=1` runs the reference where the
+others run ours, so one database is written by both). The clock cannot be
+set, so scores come from databases written with fixed ages.
+
+    python3 tests/zoxide.py --ref /path/to/zoxide -j 8        # native build
+    python3 tests/zoxide.py --c --ref /path/to/zoxide -j 8    # C build
+
+Install the reference into a scratch directory, not `~/.cargo/bin`:
+`CARGO_INSTALL_ROOT=/tmp/zoxide-ref cargo install zoxide --locked --version
+0.9.9` (0.10 needs a newer rustc). Our binary runs with `OBX_CHECK=1`.
+Sizes in bytes: `zoxide` is 589,536 native (static) and 352,496 through C.
 
 ## httpd and httpload
 
