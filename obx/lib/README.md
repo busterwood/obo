@@ -197,7 +197,8 @@ failed write to stdout since the last call (so a program can see `ENOSPC` on a
 full disk). `Reader` (`stdin()`, `open(path): Result`): `read(dst: mut
 &[byte]): Result[int, IoError]` fills the front of `dst` (0 at the end),
 `readLine(): Result[Option[str], IoError]` (no `"\n"`, no `"\r"` before it,
-as `splitLines`), `close(): Result`; the end is not sticky (a later read tries
+as `splitLines`), `seek(offset, whence: Whence): Result[int, IoError]` (`Whence`:
+`Start Current End`; the new offset; `ESPIPE` for a pipe), `close(): Result`; the end is not sticky (a later read tries
 again: a growing file, a terminal), `EINTR` is retried, a file reader is
 closed when dropped. `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
 - **fs**: `stat`/`lstat(path): Result[Stat, IoError]` (`size mode mtime
@@ -1093,6 +1094,7 @@ errno, a static buffer):
 | `obx_dirent_name(d)`, `obx_dirent_type(d)` | fields of a `struct dirent*` |
 | `obx_stat(path, follow)`, `obx_stat_field(i)` | stat/lstat into a static buffer, then its fields |
 | `obx_open(path, how)` | open for read, write (truncate), append, or create-new; fd or -errno |
+| `obx_read(fd, b, n)`, `obx_seek(fd, off, whence)` | `read` and `lseek`: a count or offset, or -errno (in the native runtime, system calls: no libc) |
 | `obx_clock_ns(which)` | `clock_gettime` realtime or monotonic, in ns |
 | `obxlib_hash_key(i)` | word `i` (0 or 1) of the 16 `AT_RANDOM` bytes (`getauxval`; the native runtime reads the auxiliary vector); std derives its hash key from them |
 | `obx_getcwd()` | `getcwd` into a static buffer |

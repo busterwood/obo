@@ -1,6 +1,6 @@
 // io.Reader: lines from standard input ("\r\n" and a last line without "\n"),
 // raw reads after buffered lines, a line longer than the buffer, a file
-// reader, errors, and reads after close.
+// reader, seeking, errors, and reads after close.
 // stdin: one
 // stdin: two
 // stdin: 
@@ -12,8 +12,10 @@
 // expect: long 200001 true 3 [tail]
 // expect: file 7 abc|def
 // expect: open /no/such/file: No such file or directory
+// expect: seek 7 4 [def] 0 [abc] 5 [ef] 1 [bc]
 // expect: closed read /no-path: Bad file descriptor
 // expect: closed again ok
+// expect: seek stdin ESPIPE true
 import "fs"
 import "io"
 import "os"
@@ -57,6 +59,20 @@ fn main() {
         Ok(_) { println("opened?") }
         Err(e) { println(e.toStr()) }
     }
+    var sk = io.open(path).unwrap()
+    let size = sk.seek(0, io.Whence.End).unwrap()
+    let p1 = sk.seek(-3, io.Whence.End).unwrap()
+    let a1 = line(mut &sk)
+    let p2 = sk.seek(0, io.Whence.Start).unwrap()
+    let a2 = line(mut &sk)
+    // Current counts from the next byte a read gives, past what readLine buffered
+    let p3 = sk.seek(1, io.Whence.Current).unwrap()
+    let a3 = line(mut &sk)
+    let p4 = sk.seek(1, io.Whence.Start).unwrap()
+    var two: []byte = array(2, 0)
+    sk.read(mut &two).unwrap()
+    println("seek " + size.toStr() + " " + p1.toStr() + " " + a1 + " " + p2.toStr() + " " + a2 + " " +
+        p3.toStr() + " " + a3 + " " + p4.toStr() + " [" + strFromBytes(&two) + "]")
     fs.remove(path).unwrap()
     var h = io.open("/dev/null").unwrap()
     h.close().unwrap()
@@ -65,4 +81,8 @@ fn main() {
         Err(e) { println("closed " + io.ioError(e.errno, e.op, "/no-path").toStr()) }
     }
     match h.close() { Ok(_) { println("closed again ok") } Err(e) { println(e.toStr()) } }
+    match r.seek(0, io.Whence.Start) {
+        Ok(_) { println("seek stdin ok?") }
+        Err(e) { println("seek stdin ESPIPE " + (e.errno == 29).toStr()) }
+    }
 }

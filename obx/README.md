@@ -26,8 +26,8 @@ Source files use the `.obx` extension.
 | [PLAN.md](PLAN.md) | the stages, their gates and state; the language backlog |
 | [compiler/](compiler/README.md) | the compiler, written in obx: obx to C, or `--native` to x86-64 ELF; its C seed |
 | [lib/](lib/README.md) | the library (std, collections, strings, fs, io, os, time, math, money, sqldialect, sqlite, postgres, mssql, ffi, task, net, url, http, httpserver, regex) |
-| [cmd/](cmd/README.md) | programs: eza, an HTTP/1.1 server on the server library (httpd, with an optional Postgres pool) and its load client |
-| [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite and their runners |
+| [cmd/](cmd/README.md) | programs: eza; cat, wc, sort, head and tail; an HTTP/1.1 server on the server library (httpd, with an optional Postgres pool) and its load client |
+| [tests/](tests/README.md) | the conformance suite, the compiler tests, the native tests, the eza golden suite, the tools' GNU-differential suite and their runners |
 | `redteam/` | the red-team corpora and harnesses (rounds 1 to 5; ASan, UBSan, and TSan for the task tests) |
 | `tools/` | the gate (`gate.sh`), the build cache (`cbuild.py`), the seed check |
 | `design/` | design notes: the generic-core decision, the native backend, concurrency (stages C1, tasks in one process, and C2, worker processes, are built) |

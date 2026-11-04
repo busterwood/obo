@@ -1497,7 +1497,8 @@ fn (pg: &Program) cScalar(t: int): bool { return pg.isInt(t) || t == T_FLOAT || 
 
 fn cHelper(s: str): bool {
     return s == "obx_errno" || s == "obx_dirent_name" || s == "obx_dirent_type" || s == "obx_stat" ||
-        s == "obx_stat_field" || s == "obx_open" || s == "obx_clock_ns" || s == "obx_getcwd"
+        s == "obx_stat_field" || s == "obx_open" || s == "obx_read" || s == "obx_seek" || s == "obx_clock_ns" ||
+        s == "obx_getcwd"
 }
 
 fn (pg: mut &Program) resolveGlobal(g: int) {

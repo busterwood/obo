@@ -685,6 +685,16 @@ int64_t obx_open(const char* path, int64_t how) {
     int fd = open(path, flags[how] | O_CLOEXEC, 0666);
     return fd < 0 ? -(int64_t)errno : fd;
 }
+/* read up to n bytes into b: how many (0 at the end), or -errno */
+int64_t obx_read(int64_t fd, void* b, int64_t n) {
+    ssize_t k = read((int)fd, b, (size_t)n);
+    return k < 0 ? -(int64_t)errno : (int64_t)k;
+}
+/* lseek: whence 0 the start, 1 the current offset, 2 the end; the new offset, or -errno */
+int64_t obx_seek(int64_t fd, int64_t off, int64_t whence) {
+    off_t k = lseek((int)fd, (off_t)off, (int)whence);
+    return k < 0 ? -(int64_t)errno : (int64_t)k;
+}
 /* flush the stdout buffer; the errno of the first write to stdout that failed since the last
    call, or 0 */
 int64_t obxlib_flush_out(void) {

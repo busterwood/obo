@@ -109,6 +109,11 @@ class Spec:
 
 BIG = b''.join(('%07d alpha beta gamma delta epsilon zeta eta theta\n' % i).encode()
                for i in range(20000))
+# lines of 0 to 90,000 bytes, so that tail's backward reads (64 KiB chunks
+# from the end of a regular file) meet lines across chunk boundaries; no final
+# newline
+CHUNKY = b''.join(b'%d:' % i + bytes([97 + i % 26]) * ((i * 7919) % 90001) + b'\n'
+                  for i in range(60)) + b'partial'
 MANY = b''.join(('%06d line %d\n' % (i % 1000, i)).encode() for i in range(50000))
 
 FILES = {
@@ -133,6 +138,8 @@ FILES = {
     'ctl': b'a\x01b\x7fc\x80d\xff\xff\n',
     'many': MANY,
     'big': BIG,
+    'chunky': CHUNKY,
+    'nlonly': b'\n' * 150000,
     'dups': b'b\na\nb\nA\na\n',
     'uniq': b'01 y\n1 x\n',
     'rnu2': b'1 y\n01 x\n',
@@ -848,6 +855,18 @@ def tail_cases():
     add('c1_longline', T, ['-c', '1', 'longline'], fixtures=['longline'])
     add('c100000_longline', T, ['-c', '100000', 'longline'],
         fixtures=['longline'])
+    # a regular file is read backwards from its end (GNU's seek): lines and
+    # counts across the 64 KiB chunks, newlines only, more than the file
+    for n in ('1', '2', '9', '59', '60', '61', '1000'):
+        add('n%s_chunky' % n, T, ['-n', n, 'chunky'], fixtures=['chunky'])
+    add('c70000_chunky', T, ['-c', '70000', 'chunky'], fixtures=['chunky'])
+    add('n3_big', T, ['-n', '3', 'big'], fixtures=['big'])
+    add('n20000_big', T, ['-n', '20000', 'big'], fixtures=['big'])
+    add('n19999_big', T, ['-n', '19999', 'big'], fixtures=['big'])
+    add('c200000_big', T, ['-c', '200000', 'big'], fixtures=['big'])
+    add('n70000_nlonly', T, ['-n', '70000', 'nlonly'], fixtures=['nlonly'])
+    add('n2_chunky_big', T, ['-n', '2', 'chunky', 'big'],
+        fixtures=['chunky', 'big'])
     # multiple operands: headers, empty files, and an error between files
     add('n1_multi_a_multi_b', T, ['-n', '1', 'multi_a', 'multi_b'],
         fixtures=['multi_a', 'multi_b'])

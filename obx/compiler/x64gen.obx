@@ -3495,6 +3495,12 @@ fn (g: mut &Gen) paddMem(e: int): x64.Mem {
         return x64.memx(RAX, ri, sc, 0)
     }
     g.gen(n.b)
+    if !scaleOk(sc) && g.regOf(n.a) < 0 && !g.simple(n.a) {
+        // the offset straight into rcx, the base (loads only) into rax after it
+        g.a.imulI(8, RCX, RAX, sc)
+        g.gen(n.a)
+        return x64.memx(RAX, RCX, 1, 0)
+    }
     if !scaleOk(sc) {
         g.a.imulI(8, RAX, RAX, sc)
         sc = 1
@@ -4867,7 +4873,27 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     }
     if name == "rt_idx" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
         // the index into rax (the result) and compared unsigned: a negative one is above any length
-        g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(g.u.listAt(n.b, 0), g.u.listAt(n.b, 1)))
+        let ix = g.u.listAt(n.b, 0)
+        let ln = g.u.listAt(n.b, 1)
+        let ri = g.regOf(ix)
+        if ri >= 0 && !g.srcOnly(ln) && !g.writesReg(ln, ri) {
+            // the length first, compared with the index's register as it is after
+            g.gen(ln)
+            g.a.alu(x64.CMP, 8, ri, RAX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+            g.a.movRR(8, RAX, ri)
+            return true
+        }
+        if ri < 0 && g.memOperand(ix) && !g.srcOnly(ln) && !g.simple(ln) && g.pure(ln) {
+            // the index in memory the length cannot change, read by the compare after it
+            g.gen(ln)
+            let m = g.staticMem(ix)
+            g.a.aluMR(x64.CMP, 8, m, RAX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+            g.a.load(8, RAX, m)
+            return true
+        }
+        g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(ix, ln))
         g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
         return true
     }

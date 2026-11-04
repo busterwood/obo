@@ -16,7 +16,8 @@ extern "c" fn strerror(e: i32): str
 extern "c" fn errno(): int as "obx_errno"
 extern "c" fn openFd(path: str, how: int): int as "obx_open"
 extern "c" fn close(fd: i32): i32
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
+extern "c" fn sysRead(fd: int, buf: mut &[byte], n: int): int as "obx_read"
+extern "c" fn sysSeek(fd: int, off: int, whence: int): int as "obx_seek"
 extern "c" fn flushOut(): int as "obxlib_flush_out"
 extern "c" fn cIsatty(fd: int): int as "obxlib_isatty"
 extern "c" fn termCols(fd: int): int as "obxlib_term_cols"
@@ -322,12 +323,29 @@ fn dropCr(s: str): str {
 fn readFd(fd: int, dst: mut &[byte], n: int): int {
     if fd < 0 { return -9 }
     while true {
-        let k = sysRead(i32(fd), dst, n)
-        if k >= 0 { return k }
-        let e = errno()
-        if e != 4 { return -e }
+        let k = sysRead(fd, dst, n)
+        if k != -4 { return k }
     }
     return 0
+}
+
+// Where a seek counts from: the start of the file, the next byte a read
+// gives, or the end.
+pub type Whence = value closed { Start; Current; End }   // == and != built in
+
+// Moves the next read to offset bytes from whence (a negative offset from
+// Current or End goes back): the new offset from the start. What readLine had
+// buffered is dropped. A pipe or a terminal cannot seek (ESPIPE).
+pub fn (r: mut &Reader) seek(offset: int, whence: Whence): Result[int, IoError] {
+    var off = offset
+    let w = match whence { Whence.Start { 0 } Whence.Current { 1 } Whence.End { 2 } }
+    // the file's offset is past what is buffered and not yet read
+    if w == 1 { off -= r.end - r.pos }
+    let k = if r.fd < 0 { -9 } else { sysSeek(r.fd, off, w) }
+    if k < 0 { return Err(ioError(-k, "seek", r.path)) }
+    r.pos = 0
+    r.end = 0
+    return Ok(k)
 }
 
 // Closes a file reader; later reads fail with EBADF.
