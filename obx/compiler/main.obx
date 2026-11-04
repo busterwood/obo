@@ -31,6 +31,7 @@ import "strings"
 import "./x64gen"
 import "./opt"
 import "./loops"
+import "./cse"
 import "./elf"
 
 extern "c" fn system(cmd: str): i32
@@ -300,7 +301,7 @@ fn buildNative(p: ir.Ir, libs: &[]str, src: str, out: str, isRun: bool, rest: &[
         }
     }
     var symMap = ""
-    let q = loops.optimize(opt.optimize(p))
+    let q = cse.optimize(loops.optimize(opt.optimize(p)))
     let irFile = os.envOr("OBX_NATIVE_IR", "")
     if irFile != "" {
         // the IR the native backend would compile, printed as C (for reading; nothing is built)

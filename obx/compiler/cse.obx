@@ -1,0 +1,546 @@
+// cse: loads and checked element addresses repeated in straight-line code, in the IR after
+// loops and before the native backend (design/native.md, section 4).
+//
+// A run is a stretch of statements that write no memory and call nothing but the runtime's
+// reading functions (bounds and arithmetic checks, conversions, a string's bytes or
+// comparison): declarations, assignments of locals, conditions, returns. Along a run, a
+// place's value read through memory (`(*p_e)->f_c->f_x`, two loads or more) or an element's
+// address with its bounds check (`(T*)a.data + rt_idx(i, a.len, w)`) that an earlier
+// statement surely evaluated is read again from a local: the first evaluation becomes `(t =
+// X)` where it stands, so nothing moves and every check happens where it did, and the later
+// ones `t`. The value is the same because nothing in between writes memory, and no local it
+// names was assigned in between (copies of locals, `ix = n`, stand for what they copy).
+// Element addresses compare without their checks' locations: a later check of the same
+// index against the same length cannot fail where the first passed.
+//
+// What a run surely evaluated: not what is in the right of `&&` or `||` or the arms of `?:`,
+// nor in a branch of an if (available in the branch, and after the if only from a branch
+// that cannot fall through, whose returns end it); a loop, a case label, a statement that
+// writes memory or calls the program end the run (what is inside starts runs of its own).
+// Within one statement nothing is reused (the native backend's order of evaluation is its
+// own). OBX_CSE=0 turns the pass off; OBX_CSE=v prints the count.
+
+import "./ir"
+import "os"
+
+const MAX_AVAIL = 48
+
+// A node's kind and operands (a copy without its string).
+type Kids = value record {
+    k: int
+    a: int
+    b: int
+    c: int
+    d: int
+}
+
+type Avail = value record {
+    x: int          // the first evaluation (a node, rewritten in place when reused)
+    h: int          // its hash
+    t: int          // the local holding it once reused, else -1
+    blk: int        // the block (an index of blks) and statement before which t is declared
+    at: int
+    sid: int        // the statement it is in
+    dead: bool      // something it reads may have changed
+    mask: int       // a bit per local it names (by canon, mod 62)
+}
+
+type Cse = record {
+    u: ir.Ir
+    pureFn: []bool          // per runtime function: reads only (no memory written)
+    idxFn: int              // rt_idx
+    taken: []bool           // per local: its address is taken (in the function being done)
+    canon: []int            // per local: the local whose value it copies (-1: its own)
+    copies: []int           // the locals with a canon
+    avail: []Avail
+    blks: [][]int           // per open block: pairs (statement index, declaration) to insert
+    cb: int                 // the block and statement being done, its id
+    cp: int
+    sid: int
+    n: int                  // reuses
+    dry: bool
+}
+
+// The program p with repeated loads in straight-line code read once.
+pub fn optimize(p: ir.Ir): ir.Ir {
+    let ev = os.envOr("OBX_CSE", "")
+    if ev == "0" { return p }
+    var o = Cse{u: p, pureFn: [], idxFn: -1, taken: [], canon: [], copies: [], avail: [], blks: [], cb: -1, cp: 0, sid: 0, n: 0, dry: ev == "dry"}
+    for f in 0..o.u.nRtFuncs {
+        let name = o.u.funcs[f].name
+        append(mut &o.pureFn, pureName(name))
+        if name == "rt_idx" { o.idxFn = f }
+    }
+    o.marks()
+    for f in o.u.nRtFuncs..len(o.u.funcs) {
+        let b = o.u.funcs[f].body
+        if b >= 0 { o.function(b) }
+    }
+    if ev == "v" { eprintln("cse: " + intToStr(o.n) + " reuses") }
+    return replace(mut &o.u, ir.newIr())
+}
+
+fn (o: &Cse) kids(x: int): Kids {
+    let n = &o.u.nodes[x]
+    return Kids{k: n.k, a: n.a, b: n.b, c: n.c, d: n.d}
+}
+
+fn pureName(name: str): bool {
+    if name == "rt_idx" || name == "rt_str_byte" || name == "rt_str_eq" || name == "rt_str_cmp" { return true }
+    if len(name) < 8 { return false }
+    if startsWith(name, "rt_cvs_") || startsWith(name, "rt_cvu_") { return true }
+    let o4 = name[3..7]
+    let o5 = name[3..8]
+    return o4 == "add_" || o4 == "sub_" || o4 == "mul_" || o4 == "div_" || o4 == "rem_" || o4 == "neg_" ||
+        o4 == "shl_" || o4 == "shr_" || o5 == "wadd_" || o5 == "wsub_" || o5 == "wmul_"
+}
+
+fn (o: mut &Cse) function(body: int) {
+    o.avail = []
+    o.resetCanon()
+    o.u.nodes[body].a = o.seq(o.u.nodes[body].a)
+}
+
+// The locals whose addresses are taken anywhere (a local belongs to one function): every
+// E_ADDR and E_DECAY node of the program, whichever function it is in (nodes no function
+// reaches any more mark too much, which is safe).
+fn (o: mut &Cse) marks() {
+    for l in 0..len(o.u.locals) {
+        append(mut &o.taken, false)
+        append(mut &o.canon, -1)
+    }
+    for x in 0..len(o.u.nodes) {
+        let k = o.u.nodes[x].k
+        if k == ir.E_ADDR || k == ir.E_DECAY {
+            var r = o.u.nodes[x].a
+            while o.u.nodes[r].k == ir.E_MEMBER { r = o.u.nodes[r].a }
+            if o.u.nodes[r].k == ir.E_LOCAL { o.taken[o.u.nodes[r].a] = true }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- runs
+
+// The statements of the list l done in order; the list with the declarations of new locals
+// inserted (or l).
+fn (o: mut &Cse) seq(l: int): int {
+    if l < 0 { return l }
+    append(mut &o.blks, [])
+    let bi = len(o.blks) - 1
+    let n0 = len(o.avail)
+    let cnt = o.u.listLen(l)
+    for i in 0..cnt {
+        o.stmt(o.u.listAt(l, i), bi, i)
+    }
+    o.cut(n0)
+    let ins = pop(mut &o.blks)
+    if len(ins) == 0 { return l }
+    var xs: []int = []
+    for i in 0..cnt {
+        var j = 0
+        while j < len(ins) {
+            if ins[j] == i { append(mut &xs, ins[j + 1]) }
+            j += 2
+        }
+        append(mut &xs, o.u.listAt(l, i))
+    }
+    return o.u.list(&xs)
+}
+
+// A body (a block, or one statement): done as a list of its own; the statement to put there.
+fn (o: mut &Cse) body(x: int): int {
+    if x < 0 { return x }
+    if o.u.nk(x) == ir.S_BLOCK {
+        o.u.nodes[x].a = o.seq(o.u.nodes[x].a)
+        return x
+    }
+    let one: []int = [x]
+    let l = o.u.list(&one)
+    let l2 = o.seq(l)
+    if l2 == l { return x }
+    append(mut &o.u.nodes, ir.Node{k: ir.S_BLOCK, ty: ir.TY_VOID, line: o.u.nodes[x].line, a: l2, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    return len(o.u.nodes) - 1
+}
+
+fn (o: mut &Cse) cut(n: int) {
+    while len(o.avail) > n { pop(mut &o.avail) }
+}
+
+fn (o: mut &Cse) killAll() {
+    for i in 0..len(o.avail) { o.avail[i].dead = true }
+}
+
+fn (o: mut &Cse) resetCanon() {
+    let cs = replace(mut &o.copies, [])
+    for l in cs { o.canon[l] = -1 }
+}
+
+fn (o: &Cse) canonOf(l: int): int { return if o.canon[l] >= 0 { o.canon[l] } else { l } }
+
+// Local l written: what names it (or a copy of it) is no longer known, and copies of it no
+// longer are.
+fn (o: mut &Cse) killLocal(l: int) {
+    let bit = 1 << (l % 62)
+    for i in 0..len(o.avail) {
+        if !o.avail[i].dead && o.avail[i].mask & bit != 0 && o.names(o.avail[i].x, l) { o.avail[i].dead = true }
+    }
+    if o.canon[l] >= 0 { o.canon[l] = -1 }
+    for j in 0..len(o.copies) {
+        let m = o.copies[j]
+        if o.canon[m] == l { o.canon[m] = -1 }
+    }
+}
+
+fn (o: &Cse) maskOf(x: int): int {
+    if x < 0 { return 0 }
+    let n = &o.u.nodes[x]
+    if n.k == ir.E_LOCAL { return (1 << (n.a % 62)) | (1 << (o.canonOf(n.a) % 62)) }
+    if n.k == ir.E_CALL {
+        var m = 0
+        for j in 0..o.u.listLen(n.b) { m = m | o.maskOf(o.u.listAt(n.b, j)) }
+        return m
+    }
+    if n.k == ir.E_INT || n.k == ir.E_STR || n.k == ir.E_GLOBAL || n.k == ir.E_FUNC || n.k == ir.E_FLT { return 0 }
+    return o.maskOf(n.a) | o.maskOf(n.b)
+}
+
+fn (o: &Cse) names(x: int, l: int): bool {
+    if x < 0 { return false }
+    let n = &o.u.nodes[x]
+    if n.k == ir.E_LOCAL { return n.a == l || o.canonOf(n.a) == l }
+    if n.k == ir.E_CALL {
+        for j in 0..o.u.listLen(n.b) {
+            if o.names(o.u.listAt(n.b, j), l) { return true }
+        }
+        return false
+    }
+    if n.k == ir.E_INT || n.k == ir.E_STR || n.k == ir.E_GLOBAL || n.k == ir.E_FUNC || n.k == ir.E_FLT { return false }
+    return o.names(n.a, l) || o.names(n.b, l)
+}
+
+fn (o: mut &Cse) stmt(s: int, bi: int, i: int) {
+    o.sid += 1
+    o.cb = bi
+    o.cp = i
+    let n = o.kids(s)
+    let k = n.k
+    if k == ir.S_DECL {
+        if n.c >= 0 || (n.b >= 0 && !o.calm(n.b)) {
+            o.killAll()
+            o.killAssigned(n.b)
+            o.killAssignedList(n.c)
+            o.killLocal(n.a)
+            return
+        }
+        o.visit(n.b, false, false)
+        o.killLocal(n.a)
+        if n.b >= 0 && o.u.nk(n.b) == ir.E_LOCAL && !o.taken[n.a] && !o.taken[o.u.nodes[n.b].a] &&
+            o.u.nodes[n.b].ty == o.u.locals[n.a].ty {
+            o.canon[n.a] = o.canonOf(o.u.nodes[n.b].a)
+            append(mut &o.copies, n.a)
+        }
+    } else if k == ir.S_EXPR {
+        let e = n.a
+        if o.u.nk(e) == ir.E_ASSIGN && o.u.nk(o.u.nodes[e].a) == ir.E_LOCAL && !o.taken[o.u.nodes[o.u.nodes[e].a].a] &&
+            o.calm(o.u.nodes[e].b) {
+            o.visit(o.u.nodes[e].b, false, false)
+            o.killLocal(o.u.nodes[o.u.nodes[e].a].a)
+        } else if o.calm(e) {
+            o.visit(e, false, false)
+        } else {
+            o.killAll()
+            o.killAssigned(e)
+        }
+    } else if k == ir.S_RETURN {
+        if n.a >= 0 && o.calm(n.a) { o.visit(n.a, false, false) }
+        o.killAll()
+    } else if k == ir.S_IF {
+        if !o.calm(n.a) {
+            o.killAll()
+            o.killAssigned(n.a)
+            o.u.nodes[s].b = o.body(n.b)
+            o.killAll()
+            o.u.nodes[s].c = o.body(n.c)
+            o.killAll()
+            return
+        }
+        o.visit(n.a, false, false)
+        let na = len(o.avail)
+        let before = o.deads()
+        let b = o.body(n.b)
+        o.u.nodes[s].b = b
+        var after = o.deads()
+        if !o.falls(b) {
+            for j in 0..len(after) { after[j] = before[j] }
+        }
+        o.setDeads(&before)
+        let c = o.body(n.c)
+        o.u.nodes[s].c = c
+        if c < 0 || o.falls(c) {
+            let dc = o.deads()
+            for j in 0..len(after) { after[j] = after[j] || dc[j] }
+        }
+        o.cut(na)
+        o.setDeads(&after)
+    } else if k == ir.S_BLOCK {
+        let n0 = len(o.avail)
+        o.u.nodes[s].a = o.seq(n.a)
+        o.cut(n0)
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        o.killAll()
+        o.resetCanon()
+        o.u.nodes[s].b = o.body(n.b)
+        o.killAll()
+        o.resetCanon()
+    } else if k == ir.S_FOR {
+        o.killAll()
+        o.resetCanon()
+        o.u.nodes[s].d = o.body(n.d)
+        o.killAll()
+        o.resetCanon()
+    } else if k == ir.S_EMPTY {
+    } else {
+        // break, continue, case labels
+        o.killAll()
+        o.resetCanon()
+    }
+}
+
+// The locals the expression x assigns (or increments) forgotten.
+fn (o: mut &Cse) killAssigned(x: int) {
+    if x < 0 { return }
+    let n = o.kids(x)
+    let k = n.k
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC {
+        var r = n.a
+        while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+        if o.u.nk(r) == ir.E_LOCAL { o.killLocal(o.u.nodes[r].a) }
+    }
+    if k == ir.E_CALL || k == ir.E_CLIT {
+        o.killAssigned(n.a)
+        o.killAssignedList(n.b)
+    } else if k != ir.E_INT && k != ir.E_FLT && k != ir.E_STR && k != ir.E_LOCAL && k != ir.E_GLOBAL && k != ir.E_FUNC {
+        o.killAssigned(n.a)
+        o.killAssigned(n.b)
+        o.killAssigned(n.c)
+    }
+}
+
+fn (o: mut &Cse) killAssignedList(l: int) {
+    if l < 0 { return }
+    for j in 0..o.u.listLen(l) { o.killAssigned(o.u.listAt(l, j)) }
+}
+
+fn (o: &Cse) deads(): []bool {
+    var ds: []bool = []
+    for a in o.avail { append(mut &ds, a.dead) }
+    return ds
+}
+
+fn (o: mut &Cse) setDeads(ds: &[]bool) {
+    for j in 0..len(o.avail) {
+        if j < len(ds) { o.avail[j].dead = ds[j] }
+    }
+}
+
+fn (o: &Cse) falls(s: int): bool {
+    if s < 0 { return true }
+    let k = o.u.nk(s)
+    if k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_RETURN { return false }
+    if k == ir.S_BLOCK {
+        let l = o.u.nodes[s].a
+        let c = o.u.listLen(l)
+        return c == 0 || o.falls(o.u.listAt(l, c - 1))
+    }
+    if k == ir.S_IF {
+        let e = o.u.nodes[s].c
+        return e < 0 || o.falls(o.u.nodes[s].b) || o.falls(e)
+    }
+    return true
+}
+
+// Whether evaluating the expression x writes no memory and no local.
+fn (o: &Cse) calm(x: int): bool {
+    if x < 0 { return true }
+    let n = &o.u.nodes[x]
+    let k = n.k
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC { return false }
+    if k == ir.E_CALL {
+        let f = o.rtFn(x)
+        if f < 0 || !o.pureFn[f] { return false }
+        for j in 0..o.u.listLen(n.b) {
+            if !o.calm(o.u.listAt(n.b, j)) { return false }
+        }
+        return true
+    }
+    if k == ir.E_CLIT {
+        for j in 0..o.u.listLen(n.b) {
+            if !o.calm(o.u.listAt(n.b, j)) { return false }
+        }
+        return true
+    }
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC { return true }
+    return o.calm(n.a) && o.calm(n.b) && o.calm(n.c)
+}
+
+fn (o: &Cse) rtFn(x: int): int {
+    let c = o.u.nodes[x].a
+    if o.u.nk(c) != ir.E_DECAY || o.u.nk(o.u.nodes[c].a) != ir.E_FUNC { return -1 }
+    let f = o.u.nodes[o.u.nodes[c].a].a
+    return if f < o.u.nRtFuncs { f } else { -1 }
+}
+
+// ---------------------------------------------------------------- expressions
+
+// The calm expression x, in the order it is evaluated: cond, in a part that may not be
+// evaluated; lv, x is a place (not read as a value).
+fn (o: mut &Cse) visit(x: int, cond: bool, lv: bool) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    if !lv && o.cand(x) {
+        let h = o.hash(x)
+        for i in 0..len(o.avail) {
+            let a = o.avail[i]
+            if !a.dead && a.h == h && a.sid != o.sid && o.same(a.x, x) {
+                o.reuse(i, x)
+                return
+            }
+        }
+        if !cond && len(o.avail) < MAX_AVAIL {
+            append(mut &o.avail, Avail{x: x, h: h, t: -1, blk: o.cb, at: o.cp, sid: o.sid, dead: false, mask: o.maskOf(x)})
+        }
+    }
+    let a = o.u.nodes[x].a
+    let b = o.u.nodes[x].b
+    if k == ir.E_MEMBER || k == ir.E_ADDR || k == ir.E_DECAY {
+        o.visit(a, cond, true)
+    } else if k == ir.E_LAND || k == ir.E_LOR {
+        o.visit(a, cond, false)
+        o.visit(b, true, false)
+    } else if k == ir.E_COND {
+        o.visit(a, cond, false)
+        o.visit(b, true, false)
+        o.visit(o.u.nodes[x].c, true, false)
+    } else if k == ir.E_CALL || k == ir.E_CLIT {
+        for j in 0..o.u.listLen(b) { o.visit(o.u.listAt(b, j), cond, false) }
+    } else if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_LOCAL || k == ir.E_GLOBAL || k == ir.E_FUNC {
+    } else {
+        o.visit(a, cond, false)
+        o.visit(b, cond, false)
+    }
+}
+
+// Whether x is worth a local: a scalar or pointer (no float, no 128-bit integer) read through
+// two loads or more, or an address with a bounds check, with no call but checks.
+fn (o: &Cse) cand(x: int): bool {
+    let k = o.u.nk(x)
+    if k != ir.E_MEMBER && k != ir.E_DEREF && k != ir.E_PADD { return false }
+    let tk = o.u.tk(o.u.nodes[x].ty)
+    if !(tk >= ir.TY_BOOL && tk <= ir.TY_U64 || tk == ir.TY_PTR) { return false }
+    var loads = 0
+    var idx = false
+    if !o.plain(x, mut &loads, mut &idx) { return false }
+    return loads >= 2 || idx
+}
+
+// Whether x is made of locals, globals, constants, members, loads, casts, arithmetic and the
+// runtime's pure functions; counts its loads and bounds checks.
+fn (o: &Cse) plain(x: int, loads: mut &int, idx: mut &bool): bool {
+    if x < 0 { return true }
+    let n = &o.u.nodes[x]
+    let k = n.k
+    if k == ir.E_LOCAL || k == ir.E_INT || k == ir.E_GLOBAL || k == ir.E_STR { return true }
+    if k == ir.E_DEREF {
+        loads += 1
+        return o.plain(n.a, loads, idx)
+    }
+    if k == ir.E_CALL {
+        let f = o.rtFn(x)
+        if f < 0 || !o.pureFn[f] { return false }
+        if f == o.idxFn { idx = true }
+        for j in 0..o.u.listLen(n.b) {
+            if !o.plain(o.u.listAt(n.b, j), loads, idx) { return false }
+        }
+        return true
+    }
+    if k == ir.E_MEMBER || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_DECAY || k == ir.E_ADDR {
+        return o.plain(n.a, loads, idx)
+    }
+    if k == ir.E_BIN || k == ir.E_PADD { return o.plain(n.a, loads, idx) && o.plain(n.b, loads, idx) }
+    return false
+}
+
+// A check's location (the last argument of a runtime call, a string) is not part of its value.
+fn (o: &Cse) where(l: int, j: int): bool {
+    let w = o.u.listAt(l, j)
+    return j == o.u.listLen(l) - 1 && j > 0 && o.u.nk(w) == ir.E_DECAY && o.u.nk(o.u.nodes[w].a) == ir.E_STR
+}
+
+fn (o: &Cse) hash(x: int): int {
+    let n = &o.u.nodes[x]
+    var h = (n.k *% 1000003) +% (n.ty *% 8191) +% n.v
+    if n.k == ir.E_LOCAL { return ((h *% 31) +% o.canonOf(n.a)) & 0x3fffffffffffffff }
+    if n.k == ir.E_GLOBAL || n.k == ir.E_FUNC { return ((h *% 31) +% n.a) & 0x3fffffffffffffff }
+    if n.k == ir.E_INT || n.k == ir.E_STR { return h & 0x3fffffffffffffff }
+    if n.k == ir.E_CALL {
+        h = (h *% 31) +% o.hash(n.a)
+        for j in 0..o.u.listLen(n.b) {
+            if !o.where(n.b, j) { h = (h *% 31) +% o.hash(o.u.listAt(n.b, j)) }
+        }
+        return h & 0x3fffffffffffffff
+    }
+    h = (h *% 31) +% (if n.a >= 0 { o.hash(n.a) } else { 0 })
+    h = (h *% 31) +% (if n.b >= 0 { o.hash(n.b) } else { 0 })
+    return h & 0x3fffffffffffffff
+}
+
+fn (o: &Cse) same(x: int, y: int): bool {
+    if x < 0 || y < 0 { return x == y }
+    let a = &o.u.nodes[x]
+    let b = &o.u.nodes[y]
+    if a.k != b.k || a.ty != b.ty || a.v != b.v { return false }
+    let k = a.k
+    if k == ir.E_LOCAL { return o.canonOf(a.a) == o.canonOf(b.a) }
+    if k == ir.E_GLOBAL || k == ir.E_FUNC { return a.a == b.a }
+    if k == ir.E_INT { return true }
+    if k == ir.E_STR { return a.s == b.s }
+    if k == ir.E_CALL {
+        if !o.same(a.a, b.a) || o.u.listLen(a.b) != o.u.listLen(b.b) { return false }
+        for j in 0..o.u.listLen(a.b) {
+            if !o.where(a.b, j) && !o.same(o.u.listAt(a.b, j), o.u.listAt(b.b, j)) { return false }
+        }
+        return true
+    }
+    return o.same(a.a, b.a) && o.same(a.b, b.b)
+}
+
+// The value avail[i] evaluated again at y: y reads the local holding it (made now if this is
+// the first reuse: the first evaluation assigns it where it stands).
+fn (o: mut &Cse) reuse(i: int, y: int) {
+    if o.dry { return }
+    let x = o.avail[i].x
+    let ty = o.u.nodes[x].ty
+    var t = o.avail[i].t
+    if t < 0 {
+        append(mut &o.u.locals, ir.Local{name: "cs", ty: ty})
+        t = len(o.u.locals) - 1
+        append(mut &o.taken, false)
+        append(mut &o.canon, -1)
+        o.avail[i].t = t
+        o.u.fresh.put(t, true)
+        let line = o.u.nodes[x].line
+        append(mut &o.u.nodes, o.u.nodes[x])
+        let c = len(o.u.nodes) - 1
+        append(mut &o.u.nodes, ir.Node{k: ir.E_LOCAL, ty: ty, line: line, a: t, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+        let lt = len(o.u.nodes) - 1
+        o.u.nodes[x] = ir.Node{k: ir.E_ASSIGN, ty: ty, line: line, a: lt, b: c, c: -1, d: -1, v: 0, f: 0.0, s: ""}
+        append(mut &o.u.nodes, ir.Node{k: ir.S_DECL, ty: ir.TY_VOID, line: line, a: t, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+        let d = len(o.u.nodes) - 1
+        append(mut &o.blks[o.avail[i].blk], o.avail[i].at)
+        append(mut &o.blks[o.avail[i].blk], d)
+        // the entry now names the copy (x is the assignment)
+        o.avail[i].x = c
+    }
+    o.u.nodes[y] = ir.Node{k: ir.E_LOCAL, ty: ty, line: o.u.nodes[y].line, a: t, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""}
+    o.n += 1
+}
