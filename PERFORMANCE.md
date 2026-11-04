@@ -283,6 +283,27 @@ The earlier steps and the per-commit figures are in
 is mostly work the code itself asks for (allocation, string concatenation,
 reference counts, copies of large value records), not register use.
 
+### Tried and shelved
+
+Optimizations that worked but did not pay for themselves on the self-build.
+Each is a local branch with its numbers in the commit message; none is merged.
+The self-build compiles these passes too, so an analysis's own cost counts
+against what its code saves.
+
+| branch | what | code saved | analysis cost | net |
+|---|---|---:|---:|---:|
+| `cse-experiment` (`05023cf`) | reuse loads and checked element addresses along straight-line runs (1,063 reuses) | 1.1% | 2.8% | +2% instructions |
+| `perf11` (`d79469c`) | move the field loads of a split value record (`let n = g.u.nodes[x]`) to their first use, or into the `if` branch that uses them | none (+0.1%) | 0.7% | +0.8% |
+| `perf12` (`187dcef`) | read such fields again after calls that type-based write sets prove cannot change them, instead of saving them on the stack | 0.7% | 4% | +3.7% |
+
+What they taught:
+
+- **Fusion:** a statement placed between `bool c = ...` and its `if (c)` stops x64gen fusing the compare with the branch. That alone cost perf11's first version 0.9%.
+- **Few fields move:** most fields of a split record are read on more than one path, so few loads can be sunk.
+- **The hottest loads change:** x64gen writes `Node.k` and `Node.a` itself while it generates code, so the hottest field loads really can change across its calls.
+- **Precise effects are expensive:** per-component call summaries make `loops.obx`'s existing hoisting do several times more work. That was two-thirds of perf12's cost.
+- **The bar for a retry:** an analysis like these needs to cost under about 10M instructions (0.2%) to win. That means effect sets with constant-time deduplication, and summaries computed once.
+
 ## Binary sizes
 
 | program | via C | native |
