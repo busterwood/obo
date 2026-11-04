@@ -409,9 +409,10 @@ Branch `borrow-types`, self-hosted compiler, C and native backends.
   loop), a temporary root, returning borrows of a local, a result without a
   source, two roots in one var, a lending method, a type argument without
   `borrow`, mutating a map while iterating, a task argument, a closure result.
-  Four existing tests were updated: what they rejected is now allowed, so they
+  Five existing tests were updated: what they rejected is now allowed, so they
   test what still is (`Option[&int]` became a `Box[&int]` without `borrow`,
-  `var xs: []&int` a global, and two messages).
+  `var xs: []&int` a global, redteam round 2's `es_arrlit_of_slice_typed`
+  now assigns the frozen root, and two messages).
 
 Measured (bench in the prototype session: a 20-field line split 200 000
 times, every piece's length summed; `perf stat`, user instructions and best of
