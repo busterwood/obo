@@ -72,14 +72,26 @@ type Opt = record {
     sCand: []int            // ... the candidate it stands for
     cands: []Cand
     adj: int
+    // sinking the fields' declarations
+    zLoc: []int             // per local: stamp when split declared it (a field's local)
+    zUse: []int             // ... the times the function names it
+    zDone: []int            // ... stamp when its declaration was placed
+    zPure: []bool           // per runtime function: it writes no memory (checks, conversions)
+    zDeps: []int            // the locals the declaration being placed reads
+    zHit: bool              // zScan: the tree names the local
+    zDirty: bool            // ... or may change what the declaration reads
+    zAny: bool              // split declared a field
+    zOn: bool
 }
 
 // The program p with small functions inlined at their calls.
 pub fn optimize(p: ir.Ir): ir.Ir {
     var o = Opt{u: p, state: [], form: [], size: [], rets: [], ro: [], refs: [], aTaken: [], mk: [], mv: [], bound: [], budget: 0, cur: -1,
         grown: 0, limit: 0, dest: D_NONE, dl: -1, lv: -1, aty: -1, single: false, nrvo: -1,
-        dupF: -1, dropF: -1, stamp: 0, sStamp: [], sCand: [], cands: [], adj: -1}
+        dupF: -1, dropF: -1, stamp: 0, sStamp: [], sCand: [], cands: [], adj: -1,
+        zLoc: [], zUse: [], zDone: [], zPure: [], zDeps: [], zHit: false, zDirty: false, zAny: false, zOn: true}
     o.limit = INLINE_LIMIT
+    o.zOn = os.envOr("OBX_SINK", "1") != "0"
     let ev = os.envOr("OBX_INLINE", "")
     if ev != "" { o.limit = parseInt(ev).unwrapOr(INLINE_LIMIT) }
     for f in 0..len(o.u.funcs) {
@@ -93,6 +105,7 @@ pub fn optimize(p: ir.Ir): ir.Ir {
     for f in 0..o.u.nRtFuncs {
         if o.u.funcs[f].name == "rt_str_dup" { o.dupF = f }
         if o.u.funcs[f].name == "rt_str_drop" { o.dropF = f }
+        append(mut &o.zPure, pureRt(o.u.funcs[f].name))
     }
     for l in 0..len(o.u.locals) {
         append(mut &o.sStamp, 0)
@@ -100,6 +113,9 @@ pub fn optimize(p: ir.Ir): ir.Ir {
         append(mut &o.aTaken, false)
         append(mut &o.mk, M_NONE)
         append(mut &o.mv, -1)
+        append(mut &o.zLoc, 0)
+        append(mut &o.zUse, 0)
+        append(mut &o.zDone, 0)
     }
     for v in 0..len(o.u.globals) { o.walkList(o.u.globals[v].init, W_CALLEES, -1) }
     for f in 0..len(o.u.funcs) {
@@ -124,6 +140,9 @@ fn (o: mut &Opt) local(name: str, ty: int, taken: bool): int {
     append(mut &o.sCand, -1)
     append(mut &o.mk, M_NONE)
     append(mut &o.mv, -1)
+    append(mut &o.zLoc, 0)
+    append(mut &o.zUse, 0)
+    append(mut &o.zDone, 0)
     return len(o.u.locals) - 1
 }
 
@@ -527,7 +546,11 @@ fn (o: mut &Opt) scalars(f: int) {
     for c in 0..len(o.cands) {
         if o.settle(c) { any = true }
     }
-    if any { o.sr(o.u.funcs[f].body) }
+    if any {
+        o.zAny = false
+        o.sr(o.u.funcs[f].body)
+        if o.zAny && o.zOn { o.sink(o.u.funcs[f].body) }
+    }
 }
 
 // The statement `x.f = rt_str_dup(x.f);` (e is its expression): x.f, or -1.
@@ -870,8 +893,298 @@ fn (o: mut &Opt) split(c: int, x: int, out: mut &[]int) {
                 b = o.copyTree(e)
             }
             append(out, o.mk1(ir.S_DECL, ir.TY_VOID, f.loc, o.rebase(f.tmpl, b), -1))
+            o.zLoc[f.loc] = o.stamp
+            o.zUse[f.loc] = 0
+            o.zAny = true
         }
     }
+}
+
+// ---------------------------------------------------------------- sinking the fields' loads
+
+// A field's declaration that split made (`int64_t n_k = p->k;`) moves down its block to just
+// before the first statement that names the field, past statements that write no memory and
+// none of the locals it reads (assignments of other locals, the runtime's checks); and into a
+// branch of the `if` there when only that branch names the field. The field is then loaded
+// only on the paths that read it, and its live range (a register) starts at its first read.
+
+// Whether the runtime function name writes no memory: the bounds and arithmetic checks, the
+// conversions, a string's bytes (rtClass in loops.obx).
+fn pureRt(name: str): bool {
+    if name == "rt_idx" || name == "rt_str_byte" || name == "rt_str_find_byte" || name == "rt_str_find_any" ||
+        name == "rt_str_find" || name == "rt_str_find_pair" {
+        return true
+    }
+    if len(name) < 8 || !startsWith(name, "rt_") { return false }
+    if startsWith(name, "rt_cvs_") || startsWith(name, "rt_cvu_") { return true }
+    let o4 = name[3..7]
+    let o5 = name[3..8]
+    return o4 == "add_" || o4 == "sub_" || o4 == "mul_" || o4 == "div_" || o4 == "rem_" || o4 == "neg_" ||
+        o4 == "shl_" || o4 == "shr_" || o5 == "wadd_" || o5 == "wsub_" || o5 == "wmul_"
+}
+
+// Places the fields' declarations in the body x of the function being rewritten.
+fn (o: mut &Opt) sink(x: int) {
+    o.zCount(x)
+    o.zStmt(x)
+}
+
+// Counts the times x names the fields' locals (zUse).
+fn (o: mut &Opt) zCount(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_LOCAL {
+        if o.zLoc[a] == o.stamp { o.zUse[a] += 1 }
+        return
+    }
+    let kc = KIDS[k]
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_BLOCK {
+        for j in 0..o.u.items[a] { o.zCount(o.u.items[a + 1 + j]) }
+        return
+    }
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.zCount(a) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.zCount(b) }
+    if kc == K_ABC || kc == K_FOR { o.zCount(c) }
+    if kc == K_FOR { o.zCount(o.u.nodes[x].d) }
+    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if l >= 0 {
+        for j in 0..o.u.items[l] { o.zCount(o.u.items[l + 1 + j]) }
+    }
+}
+
+// The blocks of the statement s.
+fn (o: mut &Opt) zStmt(s: int) {
+    if s < 0 { return }
+    let k = o.u.nk(s)
+    if k == ir.S_BLOCK {
+        o.zList(s)
+    } else if k == ir.S_IF {
+        o.zStmt(o.u.nodes[s].b)
+        o.zStmt(o.u.nodes[s].c)
+    } else if k == ir.S_WHILE || k == ir.S_SWITCH {
+        o.zStmt(o.u.nodes[s].b)
+    } else if k == ir.S_FOR {
+        o.zStmt(o.u.nodes[s].d)
+    }
+}
+
+// The field's local the statement s declares (split's declaration), or -1.
+fn (o: &Opt) zDecl(s: int): int {
+    if o.u.nk(s) != ir.S_DECL || o.u.nodes[s].b < 0 { return -1 }
+    let l = o.u.nodes[s].a
+    return if o.zLoc[l] == o.stamp { l } else { -1 }
+}
+
+// The block x with its fields' declarations moved down, then the blocks inside it.
+fn (o: mut &Opt) zList(x: int) {
+    let a = o.u.nodes[x].a
+    var out: []int = []
+    for j in 0..o.u.items[a] { append(mut &out, o.u.items[a + 1 + j]) }
+    var changed = false
+    var i = 0
+    while i < len(out) {
+        let s = out[i]
+        let l = o.zDecl(s)
+        if l >= 0 && o.zDone[l] != o.stamp {
+            o.zDone[l] = o.stamp
+            o.zDeps = []
+            o.zDepsOf(o.u.nodes[s].b)
+            var j = i + 1
+            while j < len(out) && o.zScan(out[j], l) { j += 1 }
+            if j < len(out) && o.zInto(out[j], l, s) {
+                o.zDone[l] = 0          // placed again in the branch
+                var rest: []int = []
+                for t in 0..len(out) {
+                    if t != i { append(mut &rest, out[t]) }
+                }
+                out = rest
+                changed = true
+                continue
+            }
+            // not between the statement there and the declarations it reads first (an if's
+            // condition: the compare and the branch go together); and only past an `if` or a loop
+            // (where the field would hold a register for nothing)
+            var p = j
+            if p < len(out) {
+                while p > i + 1 && o.zFeeds(out[p - 1], out[p]) { p -= 1 }
+            }
+            var crosses = false
+            for t in i + 1..p {
+                let tk = o.u.nk(out[t])
+                if tk == ir.S_IF || tk == ir.S_WHILE || tk == ir.S_FOR || tk == ir.S_BLOCK || tk == ir.S_SWITCH { crosses = true }
+            }
+            if crosses {
+                for t in i..p - 1 { out[t] = out[t + 1] }
+                out[p - 1] = s
+                changed = true
+                continue
+            }
+        }
+        i += 1
+    }
+    if changed { o.u.nodes[x].a = o.u.list(&out) }
+    for s in out { o.zStmt(s) }
+}
+
+// The locals the expression x reads (zDeps).
+fn (o: mut &Opt) zDepsOf(x: int) {
+    if x < 0 { return }
+    let k = o.u.nodes[x].k
+    if k == ir.E_LOCAL {
+        append(mut &o.zDeps, o.u.nodes[x].a)
+        return
+    }
+    let kc = KIDS[k]
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_CALL { o.zDepsOf(o.u.nodes[x].a) }
+    if kc == K_AB || kc == K_ABC { o.zDepsOf(o.u.nodes[x].b) }
+    if kc == K_ABC { o.zDepsOf(o.u.nodes[x].c) }
+    if kc == K_CALL {
+        let b = o.u.nodes[x].b
+        for j in 0..o.u.items[b] { o.zDepsOf(o.u.items[b + 1 + j]) }
+    }
+}
+
+// Whether the declaration of local l (reading zDeps) may move past the statement s: s does not
+// name l, and changes nothing the declaration reads.
+fn (o: mut &Opt) zScan(s: int, l: int): bool {
+    o.zHit = false
+    o.zDirty = false
+    o.zWalk(s, l)
+    return !o.zHit && !o.zDirty
+}
+
+// Whether the declaration s of local l moves into a branch of the statement t (an `if` whose
+// condition neither names l nor changes what s reads, and one of whose branches names l every
+// time the function does); moved when so.
+fn (o: mut &Opt) zInto(t: int, l: int, s: int): bool {
+    if o.u.nk(t) != ir.S_IF { return false }
+    o.zHit = false
+    o.zDirty = false
+    o.zWalk(o.u.nodes[t].a, l)
+    if o.zHit || o.zDirty { return false }
+    let nu = o.zUse[l]
+    if o.zNamed(o.u.nodes[t].b, l) == nu {
+        o.u.nodes[t].b = o.zPrepend(o.u.nodes[t].b, s)
+        return true
+    }
+    if o.u.nodes[t].c >= 0 && o.zNamed(o.u.nodes[t].c, l) == nu {
+        o.u.nodes[t].c = o.zPrepend(o.u.nodes[t].c, s)
+        return true
+    }
+    return false
+}
+
+// The statement t (a branch) with s first: a block.
+fn (o: mut &Opt) zPrepend(t: int, s: int): int {
+    var xs: []int = [s]
+    if o.u.nk(t) == ir.S_BLOCK {
+        let a = o.u.nodes[t].a
+        for j in 0..o.u.items[a] { append(mut &xs, o.u.items[a + 1 + j]) }
+        o.u.nodes[t].a = o.u.list(&xs)
+        return t
+    }
+    append(mut &xs, t)
+    return o.block(&xs)
+}
+
+// Whether the statement d declares a local that the statement t reads (in its condition, when
+// t is an `if` or a loop).
+fn (o: &Opt) zFeeds(d: int, t: int): bool {
+    if o.u.nk(d) != ir.S_DECL { return false }
+    let tk = o.u.nk(t)
+    let w = if tk == ir.S_IF || tk == ir.S_WHILE { o.u.nodes[t].a } else { t }
+    return o.zNamed(w, o.u.nodes[d].a) > 0
+}
+
+// The times the tree x names local l.
+fn (o: &Opt) zNamed(x: int, l: int): int {
+    if x < 0 { return 0 }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_LOCAL { return if a == l { 1 } else { 0 } }
+    let kc = KIDS[k]
+    if kc == K_NONE { return 0 }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    var n = 0
+    if kc == K_BLOCK {
+        for j in 0..o.u.items[a] { n += o.zNamed(o.u.items[a + 1 + j], l) }
+        return n
+    }
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { n += o.zNamed(a, l) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { n += o.zNamed(b, l) }
+    if kc == K_ABC || kc == K_FOR { n += o.zNamed(c, l) }
+    if kc == K_FOR { n += o.zNamed(o.u.nodes[x].d, l) }
+    let li = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if li >= 0 {
+        for j in 0..o.u.items[li] { n += o.zNamed(o.u.items[li + 1 + j], l) }
+    }
+    return n
+}
+
+// zScan's walk of the tree x: zHit when it names l, zDirty when it may write memory or a local
+// of zDeps (or one whose address is taken), or is a case label.
+fn (o: mut &Opt) zWalk(x: int, l: int) {
+    if x < 0 || o.zHit || o.zDirty { return }
+    let k = o.u.nodes[x].k
+    let a = o.u.nodes[x].a
+    if k == ir.E_LOCAL {
+        if a == l { o.zHit = true }
+        return
+    }
+    if k == ir.S_CASE || k == ir.S_DEFAULT {
+        o.zDirty = true
+        return
+    }
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC {
+        var r = a
+        while o.u.nk(r) == ir.E_MEMBER { r = o.u.nodes[r].a }
+        if o.u.nk(r) != ir.E_LOCAL || o.zDep(o.u.nodes[r].a) {
+            o.zDirty = true
+            return
+        }
+    } else if k == ir.E_CALL {
+        let f = o.callee(x)
+        if f < 0 || f >= o.u.nRtFuncs || !o.zPure[f] {
+            o.zDirty = true
+            return
+        }
+    } else if k == ir.S_DECL {
+        if o.zDep(a) {
+            o.zDirty = true
+            return
+        }
+    }
+    let kc = KIDS[k]
+    if kc == K_NONE { return }
+    let b = o.u.nodes[x].b
+    let c = o.u.nodes[x].c
+    if kc == K_BLOCK {
+        for j in 0..o.u.items[a] { o.zWalk(o.u.items[a + 1 + j], l) }
+        return
+    }
+    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.zWalk(a, l) }
+    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.zWalk(b, l) }
+    if kc == K_ABC || kc == K_FOR { o.zWalk(c, l) }
+    if kc == K_FOR { o.zWalk(o.u.nodes[x].d, l) }
+    let li = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if li >= 0 {
+        for j in 0..o.u.items[li] { o.zWalk(o.u.items[li + 1 + j], l) }
+    }
+}
+
+// Whether a write of local v may change what the declaration being placed reads: v is one of
+// zDeps, or its address is taken (a pointer may read it).
+fn (o: &Opt) zDep(v: int): bool {
+    if v < len(o.aTaken) && o.aTaken[v] { return true }
+    for d in o.zDeps {
+        if d == v { return true }
+    }
+    return false
 }
 
 // ---------------------------------------------------------------- call sites
