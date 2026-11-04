@@ -787,12 +787,21 @@ type G = record {
     lnPos: int
     lnNo: int
     base: int
+    // the searchers of re, full and wre, and the end of the line nextMatchLine found
+    sre: regex.Searcher
+    sfull: regex.Searcher
+    sw: regex.Searcher
+    mle: int
 }
 
 type Compiled = record {
     re: regex.Regex
     full: regex.Regex
     none: bool
+    wre: regex.Regex         // -w: the lines with a match between non-word characters
+    useW: bool               // lines are selected by wre, not re
+    lineLocal: bool          // no match can contain a newline: lines are searched by processLines
+    must: str                // a literal every match contains, searched first ("": none)
 }
 
 fn compileAll(o: &Opts): Compiled {
@@ -832,11 +841,46 @@ fn compileAll(o: &Opts): Compiled {
     let full = fullFlags + "^(?:" + body + ")$"
     let re = compileOne(main, o.perl)
     let fre = compileOne(full, o.perl)
-    return Compiled{re: re, full: fre, none: len(parts) == 0}
+    // -w selects a line when a match has no word character on either side:
+    // in one search, the characters around it are part of the match.
+    let useW = o.word && !o.lineX
+    var wre = regex.mustCompile("")
+    if useW {
+        let nw = "[^0-9A-Za-z_\\n]"
+        let inner = if o.ignoreCase { "(?i:" + body + ")" } else { "(?:" + body + ")" }
+        wre = compileOne("(?m)(?:^|" + nw + ")" + inner + "(?:" + nw + "|$)", o.perl)
+    }
+    let lineLocal = if useW { !wre.canMatchNewline() } else { !re.canMatchNewline() }
+    let must = if !lineLocal { "" } else if useW { mustOf(&wre) } else { mustOf(&re) }
+    return Compiled{re: re, full: fre, none: len(parts) == 0, wre: wre, useW: useW, lineLocal: lineLocal, must: must}
+}
+
+// A literal to search first ("": none), when the regex has no literal search
+// of its own and the literal is rare enough to skip most lines.
+fn mustOf(re: &regex.Regex): str {
+    if re.matcherFor(CHUNK) == "literal" { return "" }
+    let ls = re.literalSearch()
+    if ls == "prefix" || ls == "inner" { return "" }
+    let m = re.requiredLiteral()
+    if len(m) >= 3 || (len(m) > 0 && rareByte(m)) { return m }
+    return ""
+}
+
+// Whether some byte of a short literal is rare in text (not a lower-case
+// vowel, a common consonant, a digit, a space or punctuation).
+fn rareByte(m: str): bool {
+    for i in 0..len(m) {
+        let c = m[i]
+        if c >= 0x80 || c == 'z' || c == 'q' || c == 'x' || c == 'j' || c == 'k' || c == 'v' || (c >= 'A' && c <= 'Z') { return true }
+    }
+    return false
 }
 
 fn newG(o: Opts, c: Compiled): G {
-    return G{o: o, c: c, w: io.stdout(), nul: nulString(),
+    let sre = c.re.searcher()
+    let sfull = c.full.searcher()
+    let sw = c.wre.searcher()
+    return G{o: o, c: c, sre: sre, sfull: sfull, sw: sw, mle: 0, w: io.stdout(), nul: nulString(),
         unflushed: 0, withName: false, ctxOn: false, after: 0, before: 0, failed: false, fatal: false,
         selectedAny: false, quitNow: false, anyOutput: false, name: "", nsel: 0, done: false,
         draining: false, binary: false, pending: 0, lastNo: -1, ringNo: [], ringOff: [], ringText: [],
@@ -930,10 +974,10 @@ fn isWordAt(line: str, i: int): bool {
 // The leftmost match in line at or after from that GNU's -w accepts: not
 // preceded or followed by a word character. A match that fails is tried
 // shorter at the same start, then from the next character.
-fn findWord(g: &G, line: str, from: int): Option[regex.Span] {
+fn findWord(g: mut &G, line: str, from: int): Option[regex.Span] {
     var p = from
     while p <= len(line) {
-        match g.c.re.findFrom(line, p) {
+        match g.c.re.findWith(mut &g.sre, line, p) {
             None { return None }
             Some(m) {
                 let s = m.start
@@ -941,7 +985,7 @@ fn findWord(g: &G, line: str, from: int): Option[regex.Span] {
                     var k = m.end
                     while k >= s {
                         if !isWordAt(line, k) {
-                            if k == m.end || g.c.full.isMatch(substr(line, s, k)) {
+                            if k == m.end || g.c.full.matchEndWith(mut &g.sfull, substr(line, s, k), 0) >= 0 {
                                 return Some(regex.Span{start: s, end: k})
                             }
                         }
@@ -955,9 +999,45 @@ fn findWord(g: &G, line: str, from: int): Option[regex.Span] {
     return None
 }
 
-fn lineMatches(g: &G, line: str): bool {
+fn lineMatches(g: mut &G, line: str): bool {
     if g.o.word { return findWord(g, line, 0).isSome() }
-    return g.c.re.isMatch(line)
+    return g.c.re.matchEndWith(mut &g.sre, line, 0) >= 0
+}
+
+// The end of a match of the selecting regex in text at or after from (-1:
+// none), as regex.matchEndWith.
+fn selMatchEnd(g: mut &G, text: str, from: int): int {
+    if g.c.useW { return g.c.wre.matchEndWith(mut &g.sw, text, from) }
+    return g.c.re.matchEndWith(mut &g.sre, text, from)
+}
+
+// The first line at or after pos (a line start) before lim with a match:
+// its start, and its end (its newline) in g.mle; lim if there is none.
+fn nextMatchLine(g: mut &G, text: str, pos: int, lim: int): int {
+    if g.c.none { return lim }
+    var p = pos
+    if g.c.must != "" {
+        // the lines with the literal, each searched by itself
+        while p < lim {
+            let h = strFind(text, p, g.c.must)
+            if h < 0 || h >= lim { return lim }
+            var ls = h
+            while ls > p && text[ls - 1] != '\n' { ls -= 1 }
+            let le = strFindByte(text, h, '\n')
+            if selMatchEnd(g, substr(text, ls, le), 0) >= 0 {
+                g.mle = le
+                return ls
+            }
+            p = le + 1
+        }
+        return lim
+    }
+    let e = selMatchEnd(g, text, p)
+    if e < 0 || e >= lim { return lim }
+    var ls = e
+    while ls > p && text[ls - 1] != '\n' { ls -= 1 }
+    g.mle = strFindByte(text, e, '\n')
+    return ls
 }
 
 // ------------------------------------------------------------- selection
@@ -986,7 +1066,7 @@ fn emitMatches(g: mut &G, line: str, no: int, off: int) {
                 Some(m) { s = m.start; e = m.end }
             }
         } else {
-            match g.c.re.findFrom(line, p) {
+            match g.c.re.findWith(mut &g.sre, line, p) {
                 None { return }
                 Some(m) { s = m.start; e = m.end }
             }
@@ -1086,7 +1166,7 @@ fn selectRange(g: mut &G, text: str, a: int, b: int) {
     var p = a
     var n = 0
     while p < b {
-        let le = strFind(text, p, "\n")
+        let le = strFindByte(text, p, '\n')
         n += 1
         p = le + 1
     }
@@ -1160,6 +1240,41 @@ fn tail1s(a: &[str]): []str {
 // One chunk of whole lines: text[0..lim] ends in '\n'. text may go on after
 // lim with the start of a line that is not complete yet.
 fn processChunk(g: mut &G, text: str, lim: int) {
+    if g.c.lineLocal { processLines(g, text, lim) } else { processSpans(g, text, lim) }
+}
+
+// processChunk when no match contains a newline: from each match, its line
+// is taken, and the search goes on after it.
+fn processLines(g: mut &G, text: str, lim: int) {
+    g.lnPos = 0
+    var pos = 0
+    let invert = g.o.invert
+    while pos < lim && !g.done {
+        if g.draining {
+            // after -m: trailing context, selected or not
+            let le = strFindByte(text, pos, '\n')
+            skipRange(g, text, pos, le + 1)
+            pos = le + 1
+            continue
+        }
+        let ls = nextMatchLine(g, text, pos, lim)
+        // the lines in [pos, ls) have no match
+        if invert { selectRange(g, text, pos, ls) } else { skipRange(g, text, pos, ls) }
+        if g.done || ls >= lim { break }
+        let le = g.mle
+        if invert { skipRange(g, text, ls, le + 1) } else { selectLine(g, text, ls, le) }
+        pos = le + 1
+    }
+    if !g.done || g.draining {
+        // keep the line numbers right for the next chunk
+        if g.ctxOn || g.o.lineNumber { g.lnNo = lineNoAt(g, text, lim) }
+    }
+    g.base += lim
+}
+
+// processChunk when a match may contain a newline: the regex runs over the
+// whole chunk, and a match that spans lines has its lines checked one by one.
+fn processSpans(g: mut &G, text: str, lim: int) {
     g.lnPos = 0
     var pos = 0
     var spans: []regex.Span = []
@@ -1236,26 +1351,49 @@ fn processChunk(g: mut &G, text: str, lim: int) {
 
 // ------------------------------------------------------------- reading
 
+// The input and its buffer: the start of a line not complete yet (carry
+// bytes) stays at the front of buf, and the next read goes after it.
 type Reader = record {
     src: io.Reader
     buf: []byte
+    carry: int
 }
 
 fn newReader(src: io.Reader): Reader {
-    return Reader{src: src, buf: array(CHUNK, 0)}
+    return Reader{src: src, buf: array(CHUNK, 0), carry: 0}
 }
 
+// Reads after the carried bytes (growing buf if they fill it): how many
+// bytes, 0 at the end, -errno on an error.
 fn (r: mut &Reader) fill(): int {
-    match r.src.read(mut &r.buf) {
+    if r.carry == len(r.buf) {
+        var k = len(r.buf)
+        while k > 0 {
+            append(mut &r.buf, 0)
+            k -= 1
+        }
+    }
+    match r.src.read(mut &r.buf[r.carry..len(r.buf)]) {
         Ok(k) { return k }
         Err(e) { return -e.errno }
     }
 }
 
-fn lastNewline(text: str): int {
+// Keeps buf[from..to] as the carried bytes.
+fn (r: mut &Reader) keep(from: int, to: int) {
+    var i = 0
+    while from + i < to {
+        r.buf[i] = r.buf[from + i]
+        i += 1
+    }
+    r.carry = to - from
+}
+
+// The index of the last newline of text at or after from, or -1.
+fn lastNewline(text: str, from: int): int {
     var i = len(text) - 1
-    while i >= 0 && text[i] != '\n' { i -= 1 }
-    return i
+    while i >= from && text[i] != '\n' { i -= 1 }
+    return if i >= from { i } else { -1 }
 }
 
 // Searches one input. Returns false after a fatal write error.
@@ -1273,9 +1411,10 @@ fn grepReader(g: mut &G, r: mut &Reader, name: str) {
     g.lnPos = 0
     g.lnNo = 1
     g.base = 0
-    var carry = ""
+    r.carry = 0
     var failed = false
     while !g.done || g.draining {
+        let have = r.carry
         let n = r.fill()
         if n < 0 {
             fileError(g, name, -n)
@@ -1283,9 +1422,10 @@ fn grepReader(g: mut &G, r: mut &Reader, name: str) {
             break
         }
         if n == 0 { break }
-        var data = strFromBytes(&r.buf[0..n])
+        let total = have + n
+        var text = strFromBytes(&r.buf[0..total])
         if g.o.binMode != 1 {
-            if g.binary || strFind(data, 0, g.nul) >= 0 {
+            if g.binary || strFindByte(text, have, 0) >= 0 {
                 if !g.binary {
                     g.binary = true
                     if g.o.binMode == 2 {
@@ -1293,22 +1433,23 @@ fn grepReader(g: mut &G, r: mut &Reader, name: str) {
                         break
                     }
                 }
-                data = zapNuls(data, g.nul)
+                text = zapNuls(text)
             }
         }
-        let text = if carry == "" { data } else { carry + data }
-        let lim = lastNewline(text) + 1
+        let lim = lastNewline(text, have) + 1
         if lim == 0 {
-            carry = text
+            r.carry = total
             continue
         }
         processChunk(g, text, lim)
-        carry = if lim < len(text) { substr(text, lim, len(text)) } else { "" }
+        r.keep(lim, total)
     }
-    if !failed && (!g.done || g.draining) && carry != "" {
-        let text = carry + "\n"
+    if !failed && (!g.done || g.draining) && r.carry > 0 {
+        var text = strFromBytes(&r.buf[0..r.carry]) + "\n"
+        if g.binary && g.o.binMode != 1 { text = zapNuls(text) }
         processChunk(g, text, len(text))
     }
+    r.carry = 0
     if g.o.count && g.o.list == 0 && !g.o.quiet && !g.fatal {
         var s = ""
         if g.withName {
@@ -1325,7 +1466,7 @@ fn grepReader(g: mut &G, r: mut &Reader, name: str) {
     }
 }
 
-fn zapNuls(data: str, nul: str): str {
+fn zapNuls(data: str): str {
     var b = strToBytes(data)
     var i = 0
     while i < len(b) {
