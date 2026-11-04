@@ -19,9 +19,9 @@ obx/tools/gate.sh quick                        # the suites; `full` adds the red
 
 ## Status
 
-As of 2026-11-03:
+As of 2026-11-04:
 
-- **The compiler** is written in obx (about 21,400 lines) and compiles itself
+- **The compiler** is written in obx (about 23,400 lines) and compiles itself
   to a fixed point. One IR feeds two backends: a native x86-64 backend that
   writes ELF executables with no gcc (static, or dynamically linked when a
   program calls C libraries), and C for gcc. The natively built compiler
@@ -34,20 +34,24 @@ As of 2026-11-03:
   (Go 1.22 routing, middleware, strict parsing against request smuggling,
   the limits and timeouts against slow and flooding clients, cancellation
   of a handler and its database query when the client hangs up, graceful
-  drain, worker processes), regular expressions (RE2 syntax, linear time, a port of
-  Go's `regexp`), exact decimals and money, and [SQLite, Postgres and SQL
+  drain, worker processes), regular expressions (RE2 syntax, linear time: Go's `regexp`
+  ported, with RE2's lazy DFA and literal prefilters added; 2 to 650 times
+  faster than Go's and, through C, 1.3 to 2.6 times Rust's `regex`), exact decimals and money, and [SQLite, Postgres and SQL
   Server](obx/lib/README.md) adapters that call the C libraries (SQL Server
   through ODBC) directly with no shims.
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
   lister in 1,600 lines, byte-identical to the real eza on 482 golden cases.
 - **Performance:** the native backend is level with gcc -O2 or ahead of it
-  on every benchmark (fib, loops over arrays, allocation, strings); a
-  natively built compiler is about 1.2x slower than gcc's build of it. eza
-  lists 3.7 MB of long tree in about 200 ms. The
-  figures are in [PERFORMANCE.md](PERFORMANCE.md).
+  on nine of ten benchmarks (fib, loops over arrays, the sieve, allocation,
+  strings); maps, with keyed hashing, take 1.37 times gcc's time, the regex
+  engine's inner loops 1.4 to 1.8 times, and a natively built compiler
+  about 1.2 times. A native executable carries only the code and runtime
+  parts it reaches, with no libc: hello is 16 KB, eza 271 KB. eza lists
+  3.7 MB of long tree in about 200 ms. The figures are in
+  [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library and eza tests, a
-  native-against-C comparison over 1,540 programs, and five red-team rounds
-  under ASan and UBSan (`obx/tools/gate.sh full`, about a minute).
+  native-against-C comparison over 1,616 programs, and five red-team rounds
+  under ASan and UBSan (`obx/tools/gate.sh full`, about 2.5 minutes).
 - **Concurrency:** decided in
   [obx/design/concurrency.md](obx/design/concurrency.md): coroutines with
   futures inside a process, several processes for several cores, no
@@ -73,7 +77,7 @@ As of 2026-11-03:
 | Path | Contents |
 |---|---|
 | [obx/](obx/README.md) | the language, its compiler, library, programs and tests |
-| [PERFORMANCE.md](PERFORMANCE.md) | native and C builds measured: benchmarks, eza, the compiler |
+| [PERFORMANCE.md](PERFORMANCE.md) | native and C builds measured: benchmarks, regex, eza, the compiler, binary sizes, tasks, the HTTP server |
 | [HISTORY.md](HISTORY.md) | how the project got here |
 | `archive/` | retired predecessors, kept for the record (below) |
 

@@ -8,7 +8,7 @@ obx builds a program in two ways:
 - **via C**: `obxc`, which writes C and runs `gcc -O2`.
 
 Both are built from the same IR and must behave identically; the gate checks
-that on 1,540 programs. This page measures what each costs. Measured on 3
+that on 1,616 programs. This page measures what each costs. Measured on 3
 November 2026 at `2ce4860`, after the fifth native performance pass
 (inlining in the IR) and concurrency stage C1b (sockets and timers), on a
 quiet machine; the HTTP server table is from C1b's own run. The loop and
@@ -17,7 +17,11 @@ the sixth native performance pass (loops; branch `perf6`), measured the same
 day; the blocking-call rows and the server-with-Postgres table are from
 concurrency stage C1c (branch `c1c`), the sieve row and the seventh
 pass's row from the seventh (branch `sieve`), and the worker-process
-tables from concurrency stage C2 (branch `c2`), measured the same day. The numbers are
+tables from concurrency stage C2 (branch `c2`), measured the same day. The
+eighth pass's row is from that pass (branch `perf8`), the regex table from
+regex phase R2 (branch `r2`) and the binary sizes from linking the runtime
+by sections (branch `rtgc`), all on 3 November; the compiler table was
+measured again on 4 November at `4cf3de5`. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -115,8 +119,7 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
 
 `python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),
 the benchmark set of [design/regex.md](obx/design/regex.md) section 4, at
-the end of phase R2 (branch `r2`, 3 November 2026), with R1's times (Go's
-engine alone, branch `r1`) for comparison. The corpus is 3.2 MB written by
+the end of phase R2 (branch `r2`, 3 November 2026). The corpus is 3.2 MB written by
 `gen_corpus.py` from a fixed seed (prose with the names the patterns look
 for, a log, C-like source; ASCII). Each driver times its own searches after
 reading the file: the best of 5 searches, best of 7 runs, in ms. "Matches"
@@ -126,19 +129,19 @@ is the same for every driver (the script checks); `(a*)*b` runs over
 matches as a whole process, start-up and file reading included: a
 reference point, not a like-for-like figure.
 
-| pattern | matches | obx native | obx via C | R1 native | R1 via C | Go | Rust | rg |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `Sherlock Holmes` | 926 | 0.16 | 0.21 | 2.99 | 1.49 | 0.47 | 0.08 | 1.6 |
-| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 1.34 | 0.94 | 285.34 | 131.49 | 134.48 | 0.42 | 2.8 |
-| `\w+` (all matches) | 669,532 | 68.89 | 38.14 | 253.97 | 131.56 | 136.78 | 17.23 | 41.0 |
-| `(?i)sherlock` | 4,280 | 1.13 | 0.81 | 182.65 | 88.48 | 70.88 | 0.46 | 3.2 |
-| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 0.22 | 0.12 | 182.45 | 92.30 | 78.55 | 0.09 | 1.8 |
-| `(?m)^ERROR .*timeout$` | 197 | 0.28 | 0.33 | 67.33 | 33.97 | 31.83 | 0.59 | 2.0 |
-| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 4.67 | 3.33 | 213.87 | 101.65 | 72.66 | 1.28 | 7.8 |
-| `(a*)*b` over 100,000 `a`s | 0 | 0.00 | 0.00 | 6.87 | 3.38 | 3.33 | 0.00 | 1.6 |
+| pattern | matches | obx native | obx via C | Go | Rust | rg |
+|---|---:|---:|---:|---:|---:|---:|
+| `Sherlock Holmes` | 926 | 0.16 | 0.21 | 0.47 | 0.08 | 1.6 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 1.34 | 0.94 | 134.48 | 0.42 | 2.8 |
+| `\w+` (all matches) | 669,532 | 68.89 | 38.14 | 136.78 | 17.23 | 41.0 |
+| `(?i)sherlock` | 4,280 | 1.13 | 0.81 | 70.88 | 0.46 | 3.2 |
+| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 0.22 | 0.12 | 78.55 | 0.09 | 1.8 |
+| `(?m)^ERROR .*timeout$` | 197 | 0.28 | 0.33 | 31.83 | 0.59 | 2.0 |
+| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 4.67 | 3.33 | 72.66 | 1.28 | 7.8 |
+| `(a*)*b` over 100,000 `a`s | 0 | 0.00 | 0.00 | 3.33 | 0.00 | 1.6 |
 
-- **obx and Rust.** R2 adds RE2's lazy DFA and Rust's literal searches
-  (design/regex.md, "R2 as built"). Through C, obx takes 1.3 times Rust's
+- **obx and Rust.** The engine has RE2's lazy DFA and Rust's literal
+  searches (design/regex.md, "R2 as built"). Through C, obx takes 1.3 times Rust's
   time on the email pattern, 1.8 on `(?i)`, 2.2 on the alternation and
   `\w+`, 2.6 on the literal and the captures, and about half Rust's time on
   the `ERROR` lines (a prefilter on `ERROR ` and the suffix check on
@@ -153,24 +156,21 @@ reference point, not a like-for-like figure.
   The native build loses most on these DFA loops (1.8 times its C build on
   `\w+`): the native backend's bounds and overflow checks in the inner loop
   (see below), not the library.
-- **`(a*)*b`** now takes no time: the text has no `b`, and every match ends
+- **`(a*)*b`** takes no time: the text has no `b`, and every match ends
   with one (the suffix check), so the search stops before any matcher runs.
   The DFA on such patterns is covered by the tests (`regex_linear`,
   `regex_dfa`), not by this row.
-- **obx and Go.** With R1 the engine was Go's and the times were Go's
-  through C (2 to 3 times natively). R2 is 2 to 650 times faster than Go's
-  `regexp`, which has no DFA.
-- **R1's notes still hold for Go's matchers**, which R2 uses for short
-  texts (under 128 bytes), for one-pass patterns, and when the DFA's cache
-  fills too often: the same library code ran about twice as fast through
-  gcc before the eighth native performance step, and 1.4 to 1.8 times as
-  fast since (perf8; the merged build's R2 times above are within noise of
-  the branch's). The profile was the Pike VM's `add` and `step` (85% of the native
-  time on the alternation): short loops over the fields of a `mut &`
-  record's arrays, each access with its bounds check and each index sum
-  with its overflow check. gcc keeps the arrays' addresses in registers and
-  drops most of the checks; the native backend reloads them. This is a
-  native-backend matter (the code generator, not the language).
+- **obx and Go.** obx is 2 to 650 times faster than Go's `regexp`, which
+  has no DFA.
+- **Go's matchers** (the Pike VM, the backtracker and one-pass), which the
+  engine uses for short texts (under 128 bytes), for one-pass patterns, and
+  when the DFA's cache fills too often, run 1.4 to 1.8 times as fast
+  through gcc as natively. The profile is the Pike VM's `add` and `step`:
+  short loops over the fields of a `mut &` record's arrays, each access
+  with its bounds check and each index sum with its overflow check. gcc
+  keeps the arrays' addresses in registers and drops most of the checks;
+  the native backend keeps fewer. This is a native-backend matter (the
+  code generator, not the language).
 - **Linear time.** The library test `regex_linear` checks that 100,000
   bytes take about ten times as long as 10,000 for six such patterns under
   the Pike VM, the backtracker and the DFA (also in a tiny cache), among
@@ -199,19 +199,24 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 407 ms | 490 ms |
-| self-build to C (`--emit-c`) | 242 ms | 267 ms |
+| self-build to an executable (`--native`) | 493 ms | 589 ms |
+| self-build to C (`--emit-c`) | 274 ms | 310 ms |
 | full build through gcc | 15 s, nearly all of it gcc | — |
-| compiler binary | 1,673,896 bytes (dynamic, glibc) | 2,549,321 bytes (static, no libc) |
+| compiler binary | 1,938,784 bytes (dynamic, glibc) | 2,711,761 bytes (static, no libc) |
 
-Measured after the sixth pass merged (`perf6`). The source is 21,405 lines of obx and 3,085 lines of C runtime (the C
-backend's `rt.h` and the native backend's freestanding `rt.c`, each with
-task stacks and switching, the event loop, timers and sockets).
+Measured on 4 November at `4cf3de5` (after the eighth pass, reachability,
+the runtime linked by sections and regex phase R2; after the sixth pass the
+times were 407, 490, 242 and 267 ms on 2,500 fewer lines of compiler). The
+source is 23,437 lines of obx and 4,756 lines of C runtime (the C backend's
+`rt.h` and the native backend's freestanding `rt.c`, each with task stacks
+and switching, the event loop, timers, sockets and the SSE2 string
+searches), not counting `rt.obx` and `rtx.obx`, which are generated from
+them.
 
 - The native-built compiler is 1.1-1.2x slower than the gcc-built one
-  (1.55x before the fifth pass). It runs 1.51x the instructions (4,644M
-  against 3,069M for `--native`; 1.89x before the fifth pass) at a higher
-  rate per cycle.
+  (1.55x before the fifth pass). It runs 1.48x the instructions (5,763M
+  against 3,905M for `--native`; 1.51x after the sixth pass, 1.89x before
+  the fifth) at a higher rate per cycle.
   A compiler is call-heavy and branchy, which is gcc's strength; inlining
   in the IR closed much of the gap.
 - `--native` itself does more work since the fifth pass (inlining, and
