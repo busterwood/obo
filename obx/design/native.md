@@ -849,6 +849,44 @@ a record literal passed as an argument is still built in a temporary and
 loaded from it; a record of 3 or 4 eightbytes returned through the hidden
 pointer is still built then copied.
 
+2026-11-04, the sixteenth performance step (branch `perf16`: the
+assembler reuses loads along straight-line code; shelved, not merged: it
+does not pay). The rule is in section 4 (the assembler's load reuse).
+Native-built compilers of main (`7d519d1`) and of this branch compiling the
+same sources (instructions: least of 5; cycles best of 5), then the
+benchmarks (instructions least, cycles best of 5, interleaved; the cycle
+columns are layout noise, the instruction columns are exact):
+
+| | base instr | new instr | base cyc | new cyc |
+|---|---:|---:|---:|---:|
+| self-build | 4,398.7M | 4,439.0M (+0.9%) | 1,983M | 2,023M |
+| self-build, the old code generator running the new sources | | 4,446M | | |
+| code size of the compiler | 2,462,297 | 2,450,009 (-0.5%) | | |
+| maps | 2,707M | 2,651M (-2.1%) | 1,142M | 1,161M |
+| lists | 456M | 453M (-0.7%) | 134M | 130M |
+| fib, strings, tokens, sieve, trees, alloc, sort, wc | same | same | | |
+| eza, grep (4 runs) | | -0.05% to -0.11% | | |
+
+The old code generator running the new sources is the analysis's own cost,
+the new one the cost less what the code saves: 47M instructions to find 7M.
+Why so little: the generator evaluates into `rax`, so a chain
+`mov rax,[rbx]; mov rax,[rax]; mov rax,[rax+0x38]` destroys its
+intermediate values and the next statement's `g.u.nodes.len` starts from
+`rbx` again; a parameter spilled to the frame is reloaded into the
+register that the statement before overwrote. A model of the compiler's
+binary (basic blocks, the invalidations above) finds a holder for 3.5% of
+its 8-byte loads: 733 are the target itself (a load that vanishes), 3,040
+another register (a move for a load: no instruction fewer). Letting stores
+through pointers spare the frame slots (unsound: a pointer to an
+address-taken local, an aggregate copy into a reused slot) would add only
+170 more. What would pay is a value that stays in a register (g.u as a
+local: the shelved `cse-experiment`, or hoisting at the IR) or a lookahead
+that evaluates a chain once; neither is a peephole. Not done: merging the
+entries at forward labels (an `if`'s join), keeping narrow loads, copying
+entries through `mov r, r`; none can reach the 47M the bookkeeping costs.
+The `regex_dfa.Dfa.forward` slowdown of perf15 was not investigated (the
+change moves no instruction in that loop).
+
 2026-11-04, the fifteenth performance step (branch `perf15`: `str` headers
 out of loops). Native-built binaries of main (`5590fb6`) and of
 this branch, compiling the same sources (instructions: least of 15; cycles

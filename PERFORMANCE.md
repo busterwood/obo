@@ -354,6 +354,7 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (aggregate copies of 32 bytes and more through `xmm15`; small record literals returned straight into registers) | 4,359M | 594M | 5,630M |
 | before the fifteenth, on later sources (`5590fb6`) | 4,479M | 596M | 5,630M |
 | after it (`str` headers out of loops) | 4,469M | 580M | 5,630M |
+| the sixteenth, on `perf16` only (assembler load reuse; shelved, not merged), main's 4,399M on the same sources | 4,439M | 577M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -430,7 +431,24 @@ against what its code saves.
 | `cse-experiment` (`05023cf`) | reuse loads and checked element addresses along straight-line runs (1,063 reuses) | 1.1% | 2.8% | +2% instructions |
 | `perf11` (`d79469c`) | move the field loads of a split value record (`let n = g.u.nodes[x]`) to their first use, or into the `if` branch that uses them | none (+0.1%) | 0.7% | +0.8% |
 | `perf12` (`187dcef`) | read such fields again after calls that type-based write sets prove cannot change them, instead of saving them on the stack | 0.7% | 4% | +3.7% |
+| `perf16` (`b88f4d3`) | the assembler remembers which register holds `[base+disp]` (4 entries, invalidated by writes, labels, calls, stores) and drops or turns into a move the loads of held places | 0.16% (7M of 4,399M; 12 KB of 2.46 MB of code) | 1.07% (47M) | +0.9% instructions, +2% cycles |
 | `perf15` (not built) | `str` locals and parameters as register pairs, the first item of the pass | not attempted: see design/native.md section 8 | | |
+
+`perf16` is the sound version of the idea behind `cse-experiment`, at the
+assembler (nothing walks the IR): a reload is skipped only when the register
+that loaded it, or one that stored it, still holds it. It finds little
+because the generator evaluates everything into `rax`: the chain
+`mov rax,[rbx]; mov rax,[rax]; mov rax,[rax+0x38]` destroys its own
+intermediate values, and the next statement's `g.u.nodes.len` starts from
+`rbx` again. Statically 3.5% of the 8-byte loads have a holder (a model of
+the binary's basic blocks: 733 would vanish, 3,040 become register moves, and
+the moves save no instruction); dynamically the self-build runs 7M fewer
+instructions and the benchmarks 0 to 2% (maps -2.1%, lists -0.7%, the rest
+within 0.1%). The bookkeeping is 4 to 5 instructions a write of a register
+and a scan of 4 entries per load, store and move: 47M instructions in the
+self-build (the budget was 10M). A cheaper table would not change the sign:
+all of the saving is 0.16%. The cycle changes in the table of design/native.md
+section 8 (fib -23%, wc +13%) are layout, as the instruction counts are equal.
 
 `perf15`'s second part, the hoisting of `str` headers out of loops, was
 kept: the self-build is level (0.2% fewer instructions in the native
