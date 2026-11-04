@@ -419,6 +419,44 @@ The earlier steps and the per-commit figures are in
 is mostly work the code itself asks for (allocation, string concatenation,
 reference counts, copies of large value records), not register use.
 
+### Judging a pass
+
+From 2026-11-04 a backend pass is judged by `obx/tools/perfsuite.py`, not
+by the self-build alone. The self-build was a moving target: each pass
+adds to the compiler's own sources, so part of every reported cost was just
+more code to compile. And the compiler is one program; every other program
+only gains.
+
+    python3 obx/tools/perfsuite.py main perfNN     # or two compiler paths
+
+It builds both revisions' native compilers from their seeds, then measures
+them on inputs frozen at one revision (`7d519d1`; moved only on purpose,
+with a note here):
+
+- **Compile suite:** the frozen compiler (`--native` and `--emit-c`) and
+  the frozen eza, grep and zoxide, compiled by each compiler. This is the
+  compile speed a user sees: the new analysis's cost minus what the
+  compiler gains from being compiled better itself.
+- **Run suite:** the frozen bench programs and grep, sort, wc and eza,
+  built by each compiler and run on fixed inputs (a generated 100 MB text).
+  Both builds must print the same output.
+
+Each suite is summarised as the geometric mean of new/base. On two builds
+of the same code, instructions are identical and cycles vary by up to ±3%
+on one program and ±0.5% on the means, so instructions decide and cycles
+must agree in sign. A pass is kept when:
+
+- the run suite gains at least 1% (geometric mean), or 5% on at least two
+  programs with none worse than 1%, and the compile suite costs at most
+  1%; or
+- the compile suite gains and the run suite is not worse.
+
+The compile suite's total cost over `7d519d1` stays under 5%
+(`perfsuite.py 7d519d1 main`). The shelved passes below were judged on the
+self-build alone; `cse-experiment` and `perf12` deserve a second look under
+these rules. Optimisation levels (an `-O` for the expensive passes) come
+only if a pass worth having breaks the budget.
+
 ### Tried and shelved
 
 Optimizations that worked but did not pay for themselves on the self-build.
