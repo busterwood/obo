@@ -17,6 +17,7 @@
 import "os"
 import "io"
 import "fs"
+import "proc"
 import "./syntax" as sx
 import "./sema"
 import "./dump"
@@ -33,7 +34,6 @@ import "./opt"
 import "./loops"
 import "./elf"
 
-extern "c" fn system(cmd: str): i32
 extern "c" fn mkdtemp(template: str): str
 
 const USAGE = "usage: obxc file.obx [-o out] [--run] [--emit-c] [--native] [-L libroot]\n"
@@ -120,28 +120,21 @@ fn libFlags(libs: &[]str): []str {
     return out
 }
 
-// A word for /bin/sh.
-fn quote(s: str): str {
-    var b = newStrBuf()
-    b.addByte(39)
-    for i in 0..len(s) {
-        let x = strByte(s, i)
-        if x == 39 { b.add("'\\''") } else { b.addByte(x) }
+// Runs a command (found in PATH, its output as ours); with errFile its standard output is
+// dropped and its standard error written to that file. The exit status, or -signal as Python
+// reports it; 127 when it cannot be started.
+fn run(words: &[]str, errFile: str): int {
+    var args: []str = []
+    for i in 1..len(words) { append(mut &args, words[i]) }
+    var c = proc.command(words[0], args)
+    if len(errFile) > 0 {
+        c.stdout = proc.Stdio.Null
+        c.stderr = proc.Stdio.File(errFile)
     }
-    b.addByte(39)
-    return b.toStr()
-}
-
-// Runs a command (words quoted); the exit status, or -signal as Python reports it.
-fn run(words: &[]str, redirect: str): int {
-    var b = newStrBuf()
-    b.add("exec")
-    for w in words { b.add(" " + quote(w)) }
-    b.add(redirect)
-    let st = int(system(b.toStr()))
-    if st < 0 { return 127 }
-    if st & 0x7f != 0 { return -(st & 0x7f) }
-    return (st >> 8) & 0xff
+    match proc.run(&c) {
+        Ok(e) { return if e.signal() != 0 { -e.signal() } else { e.code() } }
+        Err(e) { return 127 }
+    }
 }
 
 // The gcc command of a normal build.
@@ -213,7 +206,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
         if endsWith(src, ".obx") { src[0..len(src) - 4] } else { src } }
     let cmd = gccCmd(exe, cfile, &libs)
     let errf = tmp + "/gcc.err"
-    if run(&cmd, " >/dev/null 2>" + quote(errf)) != 0 {
+    if run(&cmd, errf) != 0 {
         var msg = ""
         readFile(errf, mut &msg)
         let m = if len(msg) > 4000 { msg[0..4000] } else { msg }
