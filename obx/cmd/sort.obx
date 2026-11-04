@@ -71,13 +71,7 @@
 // CUTOFF elements finish with an insertion sort.
 
 import "io"
-
-extern "c" fn openFd(path: str, how: int): int as "obx_open"
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
-extern "c" fn sysClose(fd: i32): i32 as "close"
-extern "c" fn errnoNow(): int as "obx_errno"
-extern "c" fn rawStat(path: str, follow: int): int as "obx_stat"
-extern "c" fn statField(i: int): int as "obx_stat_field"
+import "fs"
 
 // Cuts an array back to k elements (there is no truncate).
 fn trunc(a: mut &[]int, k: int) {
@@ -1554,47 +1548,26 @@ fn numericLines(buf: &[byte], starts: &[int], opts: &SortOpts): []int {
 
 // ------------------------------------------------------------------- input
 
-// A file descriptor read in chunks.
-type Reader = record {
-    fd: int
-    buf: []byte
-    n: int
-}
+const CHUNK = 65536
 
-fn newReader(fd: int): Reader {
-    return Reader{fd: fd, buf: array(65536, 0), n: 0}
-}
-
-// Reads the next chunk (retrying an interrupted read): its length, 0 at the
-// end of the input, or minus the errno.
-fn (r: mut &Reader) fill(): int {
-    while true {
-        let k = sysRead(i32(r.fd), mut &r.buf, 65536)
-        if k >= 0 {
-            r.n = k
-            return k
-        }
-        let e = errnoNow()
-        if e != 4 { return -e }
-    }
-    return 0
-}
-
-// Reads one descriptor to EOF and appends it to buf. A partial last line of the
+// Reads a reader to EOF and appends it to buf. A partial last line of the
 // earlier operands is finalized first, but only once this operand has a byte,
 // so an empty operand adds nothing. 0, or the errno of a failed read.
-fn readInto(fd: int, buf: mut &[]byte): int {
-    var r = newReader(fd)
+fn readInto(src: mut &io.Reader, buf: mut &[]byte): int {
+    var chunk: []byte = array(CHUNK, 0)
     var started = false
     while true {
-        let n = r.fill()
-        if n < 0 { return -n }
-        if n == 0 { return 0 }
-        if !started {
-            started = true
-            if len(buf) > 0 && buf[len(buf) - 1] != '\n' { append(mut &buf, '\n') }
+        match src.read(mut &chunk) {
+            Err(e) { return e.errno }
+            Ok(n) {
+                if n == 0 { return 0 }
+                if !started {
+                    started = true
+                    if len(buf) > 0 && buf[len(buf) - 1] != '\n' { append(mut &buf, '\n') }
+                }
+                for k in 0..n { append(mut &buf, chunk[k]) }
+            }
         }
-        for k in 0..n { append(mut &buf, r.buf[k]) }
     }
     return 0
 }
@@ -1602,25 +1575,29 @@ fn readInto(fd: int, buf: mut &[]byte): int {
 // Reads one operand ("-" is stdin) onto buf; false means an error was printed.
 fn readOperand(path: str, buf: mut &[]byte): bool {
     if path == "-" {
-        let e = readInto(0, buf)
+        var src = io.stdin()
+        let e = readInto(mut &src, buf)
         if e != 0 {
             eprintln("sort: read failed: -: " + io.errorText(e))
             return false
         }
         return true
     }
-    let fd = openFd(path, 0)
-    if fd < 0 {
-        eprintln("sort: cannot read: " + path + ": " + io.errorText(-fd))
-        return false
+    match io.open(path) {
+        Ok(opened) {
+            var src = opened
+            let e = readInto(mut &src, buf)
+            if e != 0 {
+                eprintln("sort: read failed: " + path + ": " + io.errorText(e))
+                return false
+            }
+            return true
+        }
+        Err(e) {
+            eprintln("sort: cannot read: " + path + ": " + io.errorText(e.errno))
+            return false
+        }
     }
-    let e = readInto(fd, buf)
-    sysClose(i32(fd))
-    if e != 0 {
-        eprintln("sort: read failed: " + path + ": " + io.errorText(e))
-        return false
-    }
-    return true
 }
 
 // Collects every operand (or stdin when there are none) into one buffer. Operand
@@ -1651,27 +1628,31 @@ fn collect(operands: &[]str): Option[[]byte] {
 // stat/read length disagreement all return None here.
 fn slurpRegular(path: str): Option[[]byte] {
     if path == "-" { return None }
-    if rawStat(path, 1) != 0 { return None }
-    if (statField(1) & 0xF000) != 0x8000 { return None }
-    let size = statField(0)
+    var size = 0
+    match fs.stat(path) {
+        Ok(s) {
+            if !s.isFile() { return None }
+            size = s.size
+        }
+        Err(_) { return None }
+    }
     if size <= 0 { return None }
-    let fd = openFd(path, 0)
-    if fd < 0 { return None }
+    var src = match io.open(path) {
+        Ok(s) { s }
+        Err(_) { return None }
+    }
     var buf: []byte = array(size + 1, 0)
     var got = 0
-    var failed = false
-    while got < size && !failed {
-        let k = sysRead(i32(fd), mut &buf[got..size], size - got)
-        if k < 0 {
-            if errnoNow() != 4 { failed = true }
-        } else if k == 0 {
-            break
-        } else {
-            got += k
+    while got < size {
+        match src.read(mut &buf[got..size]) {
+            Err(_) { return None }
+            Ok(k) {
+                if k == 0 { break }
+                got += k
+            }
         }
     }
-    sysClose(i32(fd))
-    if failed || got != size { return None }
+    if got != size { return None }
     if buf[size - 1] != '\n' {
         buf[size] = '\n'
     } else {
@@ -1739,12 +1720,13 @@ fn emit(w: mut &io.Writer, buf: &[byte], kept: &[int]): bool {
 fn preflight(operands: &[]str): bool {
     for p in operands {
         if p != "-" {
-            let fd = openFd(p, 0)
-            if fd < 0 {
-                eprintln("sort: cannot read: " + p + ": " + io.errorText(-fd))
-                return false
+            match io.open(p) {
+                Ok(_) {}
+                Err(e) {
+                    eprintln("sort: cannot read: " + p + ": " + io.errorText(e.errno))
+                    return false
+                }
             }
-            sysClose(i32(fd))
         }
     }
     return true

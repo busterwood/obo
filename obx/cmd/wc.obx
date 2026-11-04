@@ -34,11 +34,6 @@
 
 import "io"
 
-extern "c" fn openFd(path: str, how: int): int as "obx_open"
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
-extern "c" fn sysClose(fd: i32): i32 as "close"
-extern "c" fn errnoNow(): int as "obx_errno"
-
 const CHUNK = 65536
 
 type Counts = record {
@@ -61,30 +56,27 @@ type Opts = record {
     bytes: bool
 }
 
-// A file descriptor read in chunks.
+// An io.Reader read in chunks.
 type Reader = record {
-    fd: int
+    src: io.Reader
     buf: []byte
     n: int
 }
 
-fn newReader(fd: int): Reader {
-    return Reader{fd: fd, buf: array(CHUNK, 0), n: 0}
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0), n: 0}
 }
 
-// Reads the next chunk (retrying an interrupted read): its length, 0 at the
-// end of the input, or minus the errno.
+// Reads the next chunk: its length, 0 at the end of the input, or minus the
+// errno.
 fn (r: mut &Reader) fill(): int {
-    while true {
-        let k = sysRead(i32(r.fd), mut &r.buf, CHUNK)
-        if k >= 0 {
+    match r.src.read(mut &r.buf) {
+        Ok(k) {
             r.n = k
             return k
         }
-        let e = errnoNow()
-        if e != 4 { return -e }
+        Err(e) { return -e.errno }
     }
-    return 0
 }
 
 // Newline-only scan, used when lines are requested and words are not; the
@@ -212,20 +204,26 @@ fn newCounts(): Counts { return Counts{lines: 0, words: 0, bytes: 0, inWord: 0} 
 fn wcOperand(path: str, label: str, o: &Opts, stats: mut &[]WcStat): bool {
     var c = newCounts()
     if path == "-" {
-        var r = newReader(0)
+        var r = newReader(io.stdin())
         let e = countReader(mut &r, mut &c, o)
         if e < 0 { eprintln("wc: -: " + io.errorText(-e)) }
         append(mut &stats, WcStat{label: label, counts: c, unknown: true, isStdin: true})
         return e == 0
     }
-    let fd = openFd(path, 0)
-    if fd < 0 {
-        eprintln("wc: " + path + ": " + io.errorText(-fd))
-        return false
+    match io.open(path) {
+        Ok(src) { return wcFile(src, path, o, stats) }
+        Err(e) {
+            eprintln("wc: " + path + ": " + io.errorText(e.errno))
+            return false
+        }
     }
-    var r = newReader(fd)
+}
+
+// Counts an opened file operand and appends its stat; false when it failed.
+fn wcFile(src: io.Reader, path: str, o: &Opts, stats: mut &[]WcStat): bool {
+    var c = newCounts()
+    var r = newReader(src)
     let e = countReader(mut &r, mut &c, o)
-    sysClose(i32(fd))
     if e < 0 {
         eprintln("wc: " + path + ": " + io.errorText(-e))
         append(mut &stats, WcStat{label: path, counts: c, unknown: e == -21, isStdin: false})

@@ -22,11 +22,6 @@
 
 import "io"
 
-extern "c" fn openFd(path: str, how: int): int as "obx_open"
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
-extern "c" fn sysClose(fd: i32): i32 as "close"
-extern "c" fn errnoNow(): int as "obx_errno"
-
 const CHUNK = 65536
 
 type Opts = record {
@@ -46,33 +41,29 @@ type State = record {
     fatal: bool            // a write error happened
 }
 
-// A file descriptor read in chunks: buf[pos..n] is what was read and not yet
-// used.
+// An io.Reader read in chunks: buf[pos..n] is what was read and not yet used.
 type Reader = record {
-    fd: int
+    src: io.Reader
     buf: []byte
     n: int
     pos: int
 }
 
-fn newReader(fd: int): Reader {
-    return Reader{fd: fd, buf: array(CHUNK, 0), n: 0, pos: 0}
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0), n: 0, pos: 0}
 }
 
-// Reads the next chunk (retrying an interrupted read): its length, 0 at the
-// end of the input, or minus the errno.
+// Reads the next chunk: its length, 0 at the end of the input, or minus the
+// errno.
 fn (r: mut &Reader) fill(): int {
-    while true {
-        let k = sysRead(i32(r.fd), mut &r.buf, CHUNK)
-        if k >= 0 {
+    match r.src.read(mut &r.buf) {
+        Ok(k) {
             r.n = k
             r.pos = 0
             return k
         }
-        let e = errnoNow()
-        if e != 4 { return -e }
+        Err(e) { return -e.errno }
     }
-    return 0
 }
 
 fn putNumber(w: mut &io.Writer, n: int) {
@@ -183,19 +174,20 @@ fn catReader(r: mut &Reader, label: str, w: mut &io.Writer, o: &Opts, st: mut &S
 // operands) is never opened or closed.
 fn catOperand(path: str, w: mut &io.Writer, o: &Opts, st: mut &State): bool {
     if path == "-" {
-        var r = newReader(0)
+        var r = newReader(io.stdin())
         return catReader(mut &r, "-", w, o, st)
     }
-    let fd = openFd(path, 0)
-    if fd < 0 {
-        eprintln("cat: " + path + ": " + io.errorText(-fd))
-        st.failed = true
-        return true
+    match io.open(path) {
+        Ok(src) {
+            var r = newReader(src)
+            return catReader(mut &r, path, w, o, st)
+        }
+        Err(e) {
+            eprintln("cat: " + path + ": " + io.errorText(e.errno))
+            st.failed = true
+            return true
+        }
     }
-    var r = newReader(fd)
-    let cont = catReader(mut &r, path, w, o, st)
-    sysClose(i32(fd))
-    return cont
 }
 
 // Applies one short-option character; false means it is not one of ours.

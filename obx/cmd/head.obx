@@ -31,11 +31,6 @@
 
 import "io"
 
-extern "c" fn openFd(path: str, how: int): int as "obx_open"
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
-extern "c" fn sysClose(fd: i32): i32 as "close"
-extern "c" fn errnoNow(): int as "obx_errno"
-
 const CHUNK = 65536
 
 type Opts = record {
@@ -51,33 +46,29 @@ type State = record {
     unflushed: int        // bytes written since the last flush
 }
 
-// A file descriptor read in chunks: buf[pos..n] is what was read and not yet
-// used.
+// An io.Reader read in chunks: buf[pos..n] is what was read and not yet used.
 type Reader = record {
-    fd: int
+    src: io.Reader
     buf: []byte
     n: int
     pos: int
 }
 
-fn newReader(fd: int): Reader {
-    return Reader{fd: fd, buf: array(CHUNK, 0), n: 0, pos: 0}
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0), n: 0, pos: 0}
 }
 
-// Reads the next chunk (retrying an interrupted read): its length, 0 at the
-// end of the input, or minus the errno.
+// Reads the next chunk: its length, 0 at the end of the input, or minus the
+// errno.
 fn (r: mut &Reader) fill(): int {
-    while true {
-        let k = sysRead(i32(r.fd), mut &r.buf, CHUNK)
-        if k >= 0 {
+    match r.src.read(mut &r.buf) {
+        Ok(k) {
             r.n = k
             r.pos = 0
             return k
         }
-        let e = errnoNow()
-        if e != 4 { return -e }
+        Err(e) { return -e.errno }
     }
-    return 0
 }
 
 // Decimal count with an optional leading '+'. The return value is -1 for an
@@ -192,27 +183,31 @@ fn headOperand(path: str, w: mut &io.Writer, stdinReader: mut &Reader, o: &Opts,
         }
         return true
     }
-    let fd = openFd(path, 0)
-    if fd < 0 {
-        eprintln("head: cannot open '" + path + "' for reading: " + io.errorText(-fd))
-        st.failed = true
-        return true
+    match io.open(path) {
+        Ok(src) { return headFile(src, path, w, o, multi, st) }
+        Err(e) {
+            eprintln("head: cannot open '" + path + "' for reading: " + io.errorText(e.errno))
+            st.failed = true
+            return true
+        }
     }
-    var cont = true
-    if !headerFor(w, path, multi, st) {
-        cont = false
-    } else if o.count > 0 {
-        var r = newReader(fd)
+}
+
+// Prints the header and the head of an opened file operand. false only for a
+// fatal write error.
+fn headFile(src: io.Reader, path: str, w: mut &io.Writer, o: &Opts, multi: bool,
+            st: mut &State): bool {
+    if !headerFor(w, path, multi, st) { return false }
+    if o.count > 0 {
+        var r = newReader(src)
         let e = headReader(mut &r, w, o, st)
-        if st.fatal {
-            cont = false
-        } else if e != 0 {
+        if st.fatal { return false }
+        if e != 0 {
             eprintln("head: error reading '" + path + "': " + io.errorText(e))
             st.failed = true
         }
     }
-    sysClose(i32(fd))
-    return cont
+    return true
 }
 
 // Applies one count option and its value. The last -n/-c wins, as GNU's does.
@@ -276,7 +271,7 @@ fn main() {
     }
 
     var w = io.stdout()
-    var stdinReader = newReader(0)
+    var stdinReader = newReader(io.stdin())
     var st = State{remaining: o.count, printed: false, failed: false, fatal: false, unflushed: 0}
     for p in operands {
         if !headOperand(p, mut &w, mut &stdinReader, &o, multi, mut &st) { break }

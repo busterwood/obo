@@ -41,13 +41,12 @@
 // suppresses output but later operands are still diagnosed. Any failure exits 1.
 
 import "io"
+import "fs"
 import "time"
 
-extern "c" fn openFd(path: str, how: int): int as "obx_open"
-extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
-extern "c" fn sysClose(fd: i32): i32 as "close"
-extern "c" fn errnoNow(): int as "obx_errno"
-extern "c" fn rawStat(path: str, follow: int): int as "obx_stat"
+// fs.Stat has no device number, and tail -f needs it with the inode to tell
+// that a path still names the file it opened. This reads st_dev from the stat
+// that the last successful fs.stat made.
 extern "c" fn statField(i: int): int as "obx_stat_field"
 
 const CHUNK = 65536
@@ -63,30 +62,27 @@ type ReadStats = record {
     failed: bool           // a read error ended the scan
 }
 
-// A file descriptor read in chunks.
+// An io.Reader read in chunks.
 type Reader = record {
-    fd: int
+    src: io.Reader
     buf: []byte
     n: int
 }
 
-fn newReader(fd: int): Reader {
-    return Reader{fd: fd, buf: array(CHUNK, 0), n: 0}
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0), n: 0}
 }
 
-// Reads the next chunk (retrying an interrupted read): its length, 0 at the
-// end of the input, or minus the errno.
+// Reads the next chunk: its length, 0 at the end of the input, or minus the
+// errno.
 fn (r: mut &Reader) fill(): int {
-    while true {
-        let k = sysRead(i32(r.fd), mut &r.buf, CHUNK)
-        if k >= 0 {
+    match r.src.read(mut &r.buf) {
+        Ok(k) {
             r.n = k
             return k
         }
-        let e = errnoNow()
-        if e != 4 { return -e }
+        Err(e) { return -e.errno }
     }
-    return 0
 }
 
 // What stat says about a path (following links).
@@ -98,8 +94,10 @@ type PathStat = value record {
 }
 
 fn statPath(path: str): Option[PathStat] {
-    if rawStat(path, 1) != 0 { return None }
-    return Some(PathStat{mode: statField(1), size: statField(0), ino: statField(7), dev: statField(8)})
+    match fs.stat(path) {
+        Ok(s) { return Some(PathStat{mode: s.mode, size: s.size, ino: s.ino, dev: statField(8)}) }
+        Err(_) { return None }
+    }
 }
 
 // One followed operand. path and label are the operand; r holds the descriptor,
@@ -305,29 +303,34 @@ fn tailOperand(path: str, o: &Opts, multi: bool, outId: int, w: mut &io.Writer,
     st.operandOk = false
     var stats = ReadStats{bytes: 0, failed: false}
     if path == "-" {
-        var r = newReader(0)
+        var r = newReader(io.stdin())
         let cont = processReader(mut &r, "standard input", outId, o, multi, mut &stats, w, st)
         if cont && !stats.failed { st.operandOk = true }
         return cont
     }
-    let fd = openFd(path, 0)
-    if fd < 0 {
-        eprintln("tail: cannot open '" + path + "' for reading: " + io.errorText(-fd))
-        st.failed = true
-        return true
+    match io.open(path) {
+        Ok(src) {
+            var r = newReader(src)
+            let cont = processReader(mut &r, path, outId, o, multi, mut &stats, w, st)
+            if cont && !stats.failed { st.operandOk = true }
+            return cont
+        }
+        Err(e) {
+            eprintln("tail: cannot open '" + path + "' for reading: " + io.errorText(e.errno))
+            st.failed = true
+            return true
+        }
     }
-    var r = newReader(fd)
-    let cont = processReader(mut &r, path, outId, o, multi, mut &stats, w, st)
-    sysClose(i32(fd))
-    if cont && !stats.failed { st.operandOk = true }
-    return cont
 }
 
 // Closes one named follower, ignoring a close failure (the file is being
 // abandoned; a close error cannot make a later read work).
 fn closeFollower(f: mut &Follow) {
     if f.isStdin || !f.active { return }
-    sysClose(i32(f.r.fd))
+    match f.r.src.close() {
+        Ok(_) {}
+        Err(_) {}
+    }
 }
 
 fn closeFollowers(followers: mut &[]Follow) {
@@ -358,7 +361,7 @@ fn startFollow(path: str, o: &Opts, multi: bool, outId: int, followers: mut &[]F
     }
     var label = "standard input"
     var isStdin = true
-    var fd = 0
+    var src = io.stdin()
     var dev = 0
     var ino = 0
     var size = 0
@@ -373,11 +376,13 @@ fn startFollow(path: str, o: &Opts, multi: bool, outId: int, followers: mut &[]F
             }
             None {}
         }
-        fd = openFd(path, 0)
-        if fd < 0 {
-            eprintln("tail: cannot open '" + path + "' for reading: " + io.errorText(-fd))
-            st.failed = true
-            return true
+        match io.open(path) {
+            Ok(s) { src = s }
+            Err(e) {
+                eprintln("tail: cannot open '" + path + "' for reading: " + io.errorText(e.errno))
+                st.failed = true
+                return true
+            }
         }
         // A path stat cannot prove what the opened descriptor names, but it can
         // reject a pre/post mismatch; fall back to one ordinary read instead of
@@ -394,21 +399,16 @@ fn startFollow(path: str, o: &Opts, multi: bool, outId: int, followers: mut &[]F
             None {}
         }
         if !stable {
-            sysClose(i32(fd))
             let cont = tailOperand(path, o, multi, outId, w, st)
             if cont && st.operandOk { st.sawOperand = true }
             return cont
         }
     }
     var stats = ReadStats{bytes: 0, failed: false}
-    var r = newReader(fd)
+    var r = newReader(src)
     let cont = processReader(mut &r, label, outId, o, multi, mut &stats, w, st)
-    if !cont || st.writeFailed {
-        if !isStdin { sysClose(i32(fd)) }
-        return !st.writeFailed
-    }
+    if !cont || st.writeFailed { return !st.writeFailed }
     if stats.failed {
-        if !isStdin { sysClose(i32(fd)) }
         st.operandOk = false
         return true
     }
@@ -442,30 +442,29 @@ fn pollOne(f: mut &Follow, multi: bool, w: mut &io.Writer, st: mut &State): bool
                     // Keep the old descriptor open until a candidate passes the
                     // identity check. A path check cannot prove what an fd
                     // names, so a mismatch retains the old fd and its offset.
-                    let cand = openFd(f.path, 0)
-                    if cand >= 0 {
-                        var adopt = false
-                        var csize = 0
-                        match statPath(f.path) {
-                            Some(p) {
-                                if p.ino == f.ino && p.dev == f.dev {
-                                    adopt = true
-                                    csize = p.size
+                    match io.open(f.path) {
+                        Ok(cand) {
+                            var adopt = false
+                            var csize = 0
+                            match statPath(f.path) {
+                                Some(p) {
+                                    if p.ino == f.ino && p.dev == f.dev {
+                                        adopt = true
+                                        csize = p.size
+                                    }
                                 }
+                                None {}
                             }
-                            None {}
+                            if adopt {
+                                f.r.src = cand      // the old descriptor is closed by the assignment
+                                f.consumed = 0
+                                f.size = csize
+                                f.suspect = false
+                                f.active = true
+                                eprintln("tail: " + f.path + ": file truncated")
+                            }
                         }
-                        if adopt {
-                            closeFollower(f)
-                            f.r.fd = cand
-                            f.consumed = 0
-                            f.size = csize
-                            f.suspect = false
-                            f.active = true
-                            eprintln("tail: " + f.path + ": file truncated")
-                        } else {
-                            sysClose(i32(cand))
-                        }
+                        Err(_) {}        // retain the old descriptor
                     }
                 }
             }

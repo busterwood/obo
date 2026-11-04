@@ -44,11 +44,12 @@ with its output, error messages and exit codes. The header comment of each
 file lists the options, the edge cases and what is rejected (`cat -nbsET`,
 `wc -lwc`, `sort -nru`, `head -n/-c`, `tail -n/-c/-f` and `--lines`/`--bytes`;
 every other option, long ones included, is an error as in obo). Each is one
-file. The library has whole-file reads only, so each tool reads its input in
-64 KiB chunks through a small `Reader` (libc `read` as a local `extern`)
-that is repeated in the files; `tail -f` also uses `obx_stat` for the
-inode and device. `sort` keeps obo's radix sorts (the default order and the
-exact `-n` decimal order) unchanged.
+file. Input goes through `io.Reader` in 64 KiB chunks (a small `Reader`
+wrapper in each file keeps the chunk and the unused part of it). The only
+`extern` is in `tail`: `fs.Stat` has no device number, which `tail -f` needs
+with the inode, so it reads st_dev after `fs.stat` (`obx_stat_field`). `sort`
+keeps obo's radix sorts (the default order and the exact `-n` decimal order)
+unchanged.
 
 Build from `obx/`:
 
@@ -75,11 +76,11 @@ runtime report on the four large-input cases.
 
 | Tool | native | through C |
 |---|---:|---:|
-| `cat` | 38,032 | 73,504 |
-| `wc` | 42,144 | 77,792 |
-| `sort` | 107,736 | 107,080 |
-| `head` | 42,432 | 74,152 |
-| `tail` | 59,008 | 83,768 |
+| `cat` | 42,176 | 73,728 |
+| `wc` | 46,288 | 77,984 |
+| `sort` | 111,896 | 111,520 |
+| `head` | 46,576 | 74,376 |
+| `tail` | 63,184 | 88,184 |
 
 (obo's static binaries were 90 to 119 KB.)
 
