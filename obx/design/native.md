@@ -538,7 +538,15 @@ Then:
   hidden pointer: the place is new, so nothing reads it during the call);
   `t = f(...)` for an existing local stores a result in registers into t
   after the call. A returned record of whole eightbytes is loaded into
-  `rax`/`rdx` from the value itself;
+  `rax`/`rdx` from the value itself; a returned record literal of up to two
+  eightbytes, each given whole by one 8-byte entry, is not built in the frame
+  at all: `rax`/`rdx`/`xmm0`/`xmm1` are loaded from the entries' values (a
+  register, a constant or memory that needs no code, a double in memory; one
+  integer entry may be a pure expression, generated first), also through the
+  `T r = CLIT; return r` that `fusedReturn` takes (`retLitVals`);
+- a copy of an aggregate (`copyMem`) of 32 bytes or more moves 16 bytes at a
+  time through `xmm15` (`movdqu`; the backend allocates only `xmm0`-`xmm7`),
+  an 8/4/2/1-byte tail as before; smaller copies stay 8 bytes at a time;
 - `str` arguments that are `rt_str_dup(s)` of a local or member whose address
   is never taken and which the later arguments do not assign increment the
   count in order and load the registers from s, without a temporary copy;
@@ -784,6 +792,33 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-04, the fourteenth performance step (branch `perf14`: value-record
+copies and small record returns). `copyMem` of 32 bytes or more goes 16
+bytes at a time through `xmm15` (SSE2 `movdqu`, encoded in `x64.obx` and
+tested against `as`); `genReturn` of a record literal of whole eightbytes
+(and the `T r = CLIT; return r` pair, which `fusedReturn` now takes for
+these) loads the result registers from the entries' values, with no frame
+temporary (`retLitVals`/`retLiteral`). User-mode instructions, the native
+compiler building the same sources with the backend before and after:
+
+| | before | after |
+|---|---:|---:|
+| self-build | 4,434M; 1,962M cycles | 4,359M; 1,958M |
+| eza `-T /usr/share` | 596.3M; 204.8M | 593.6M; 202.1M |
+| bench maps | 2,933.7M; 1,225M | 2,922.6M; 1,201M |
+| bench fib, grep, sort, strings, lists | unchanged | unchanged |
+
+Tried and not kept: copies of 16 to 31 bytes through `xmm15` as well (the
+self-build's instructions 1.8% lower still, its cycles 5% higher than
+before: a 16-byte load that reads what two 8-byte stores just wrote cannot
+be forwarded from the store buffer; the same with heap sources or frame
+destinations alone, 2% to 5%); 32-byte `vmovdqu` through `ymm15` (needs
+AVX, `vzeroupper` after each copy; not faster than the 16-byte copy: 1,983M
+cycles against 1,961M), so the backend still needs only SSE2. Not done:
+a record literal passed as an argument is still built in a temporary and
+loaded from it; a record of 3 or 4 eightbytes returned through the hidden
+pointer is still built then copied.
 
 2026-11-04, the thirteenth performance step (branch `perf13`: the
 compiler's own data and walks, no change to the code it generates; the

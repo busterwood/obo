@@ -350,6 +350,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | at `5900ba3` (bounds checks compare in place; the library's `io.Reader` in the compiler's sources) | 4,585M | 594M | 5,629M |
 | before the thirteenth, on later sources (`1ccdc03`) | 4,668M | 596M | 5,630M |
 | after it (the compiler's own data and walks: 64-byte IR nodes, shape tables, one use count) | 4,441M | 596M | 5,630M |
+| before the fourteenth, on later sources | 4,434M | 596M | 5,630M |
+| after it (aggregate copies of 32 bytes and more through `xmm15`; small record literals returned straight into registers) | 4,359M | 594M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -379,6 +381,18 @@ self-build's instructions fall 4.9% (4,668M to 4,441M) and its cycles 11%
 misses for 1% of the instructions). The gcc-built compiler gains more: 7%
 of its instructions (3,985M to 3,706M) and 15% of its cycles (2,068M to
 1,758M). Per-commit figures are in design/native.md section 8.
+
+The fourteenth is small: copies of records of 32 bytes or more (the 64-byte
+`ir.Node` among them) go 16 bytes at a time through `xmm15`, and a returned
+record literal of whole eightbytes loads `rax`/`rdx` from its fields instead
+of through a frame temporary. The self-build's instructions fall 1.7%
+(4,434M to 4,359M; its cycles 0.2%, below the noise), maps 0.4% of the
+instructions and 2% of the cycles, eza `-T` 0.5% and 1.3%; fib, grep and
+the rest do not change. It is smaller than the ~250M extra stack stores
+suggested: a store is cheap, and `movdqu` copies of 16 to 31 bytes made the
+self-build 5% slower in cycles (loads that two 8-byte stores had just
+written cannot be forwarded), so they stay 8 bytes at a time. 32-byte AVX
+copies were no faster than 16-byte ones.
 
 **The runtime's memcpy.** On this machine, `rep movsb` copies about 15
 times slower when the destination is 1 to about 32 bytes past the source,
