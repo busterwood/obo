@@ -194,9 +194,7 @@ Not supported or different:
 - Entries with equal scores keep their file order; zoxide's sort is unstable,
   and agrees only up to 20 entries.
 - `query -i` collects every candidate before it starts fzf, which zoxide
-  streams. With the native backend fzf does not see the environment variables
-  of the program, so `_ZO_FZF_OPTS` and `FZF_DEFAULT_OPTS` do not reach it
-  (a backend limit of `proc`; the C build is fine).
+  streams.
 - The home directory comes from `$HOME`, else `/etc/passwd`.
 
 ### Tests
