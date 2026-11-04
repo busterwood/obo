@@ -2,8 +2,11 @@
 // requiredLiteral. A Searcher's searches agree with findFrom on random texts,
 // short and long, from every position and over several texts in turn; the
 // end matchEndWith gives is the end of a match that starts at or after the
-// position and no later than the leftmost match.
+// position and no later than the leftmost match. matchingLines finds the
+// lines a search of each line by itself finds, under every matcher, in
+// batches of every size.
 // expect: agree ok
+// expect: lines ok
 // expect: newline abc n
 // expect: newline a.b n
 // expect: newline (?s)a.b y
@@ -79,8 +82,82 @@ fn agree(): bool {
     return ok
 }
 
+// The lines of t[from..] (whole lines) with a match, each line searched by
+// itself: start and end pairs.
+fn linesOf(re: &regex.Regex, t: str, from: int): []int {
+    var out: []int = []
+    var p = from
+    while p < len(t) {
+        var e = p
+        while t[e] != '\n' { e += 1 }
+        if re.isMatch(substr(t, p, e)) {
+            append(mut &out, p)
+            append(mut &out, e)
+        }
+        p = e + 1
+    }
+    return out
+}
+
+fn showInts(a: &[]int): str {
+    var b = newStrBuf()
+    for x in a {
+        b.addInt(x)
+        b.addByte(' ')
+    }
+    return b.toStr()
+}
+
+fn lines(): bool {
+    var ok = true
+    let pats = ["(?m)ab", "(?m)^a", "(?m)b$", "(?m)^$", "(?m)a+b", "(?m)[^\\n]*c", "(?m)\\bab", "(?m)(a|bc)+d", "(?m)x*", "(?m)^(a|b)c+", "(?mi)AB", "(?m)ab|^c"]
+    for p in pats {
+        for m in ["onepass", "pike", "backtrack", "dfa", "prefilter", "dfatiny"] {
+            for longest in [false, true] {
+                let re = regex.compileForcing(p, longest, m).unwrap()
+                let plain = regex.compileForcing(p, longest, "pike").unwrap()
+                var s = re.searcher()
+                for n in [1, 20, 400, 3000] {
+                    for seed in 1..3 {
+                        var t = randomText(n, "abcd\n\nx", seed * 11 + n) + "\n"
+                        for from in [0, 1, 2] {
+                            // from at a line start
+                            var f = 0
+                            var k = 0
+                            while k < from && f < len(t) {
+                                while t[f] != '\n' { f += 1 }
+                                f += 1
+                                k += 1
+                            }
+                            if f >= len(t) { continue }
+                            let want = showInts(&linesOf(&plain, t, f))
+                            for max in [-1, 1, 3] {
+                                var got: []int = []
+                                var at = f
+                                while at < len(t) {
+                                    let n0 = len(got)
+                                    let stop = re.matchingLines(mut &s, t, at, len(t), max, mut &got)
+                                    if stop <= at && len(got) == n0 { break }
+                                    at = stop
+                                }
+                                if showInts(&got) != want {
+                                    println("lines /" + p + "/ " + m + " max " + max.toStr() + ": " + showInts(&got) + "want " + want)
+                                    ok = false
+                                    return ok
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return ok
+}
+
 fn main() {
     println("agree " + (if agree() { "ok" } else { "FAILED" }))
+    println("lines " + (if lines() { "ok" } else { "FAILED" }))
     for p in ["abc", "a.b", "(?s)a.b", "[^a]b", "[[:space:]]x", "a\\nb", "(?i)[^k]", "[a-z]+"] {
         let re = regex.compile(p).unwrap()
         println("newline " + p + " " + (if re.canMatchNewline() { "y" } else { "n" }))

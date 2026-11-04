@@ -262,13 +262,14 @@ pub type Cache = record {
     pfCalls: int
     pfSkip: int
     pfOff: bool
+    markStart: bool       // transitions to start states carry T_START (for a prefilter)
 }
 
 pub fn newCache(): Cache {
     return Cache{stride: 0, sflag: [], slo: [], sn: [], shash: [], sinst: [], nstates: 0, trans: [], htab: [], hmask: 0,
         starts: [], budget: 0, bail: true, paths: false, leaves: 0, clears: 0, resetAt: 0, pos: 0, reach: 0, vsparse: [], vdense: [], vn: 0, items: [],
         ni: 0, lastMark: true, cur: [], stack: [], tmp: [], tn: 0, tflag: 0, save: [], pfFrom: -1, pfCand: -1, pfCalls: 0,
-        pfSkip: 0, pfOff: false}
+        pfSkip: 0, pfOff: false, markStart: true}
 }
 
 // Prepares the cache for d (once): budget in 8-byte words; bail: give up
@@ -293,6 +294,10 @@ pub fn (c: mut &Cache) setup(d: &Dfa, budget: int, bail: bool) {
 }
 
 pub fn (c: &Cache) ready(): bool { return c.stride != 0 }
+
+// For searches with no prefilter: the transitions to start states are not
+// marked, so the search loop takes them as any other.
+pub fn (c: mut &Cache) noStartMarks() { c.markStart = false }
 
 // Forgets the prefilter's last answer (the next search may be of another
 // text).
@@ -460,7 +465,7 @@ fn (c: &Cache) value(st: int): int {
     let f = c.sflag[st]
     var t = st * c.stride
     if f & F_MATCH != 0 { t = t | T_MATCH }
-    if f & F_START != 0 { t = t | T_START }
+    if f & F_START != 0 && c.markStart { t = t | T_START }
     return t
 }
 
@@ -701,7 +706,7 @@ pub fn (d: &Dfa) forward(c: mut &Cache, p: &syn.Prog, text: str, pos: int, ancho
     if t == T_FAILED { return -2 }
     if t == T_DEAD { return -1 }
     var at = pos
-    let usePf = pf.kind != PF_NONE && !anchored
+    let usePf = pf.kind != PF_NONE && !anchored && !c.pfOff
     if usePf && t & T_START != 0 {
         let cand = c.prefilter(pf, text, at)
         if cand < 0 { return -1 }
@@ -768,6 +773,116 @@ pub fn (d: &Dfa) forward(c: mut &Cache, p: &syn.Prog, text: str, pos: int, ancho
     }
     if t2 != T_DEAD && t2 & T_MATCH != 0 { last = n }
     return last
+}
+
+// The lines of text[from..to] with a match, for a program no match of
+// which contains a newline (from is a line start, text[to - 1] a newline):
+// appends the start and the end (its newline) of each to out, at most max
+// lines (max < 0: all). One unanchored run finds the first match end; its
+// line is taken and the run starts again after it. Returns where the search
+// stopped (to, or the start of the line after the max-th), -2 if the cache
+// gave up (the lines in out so far are right).
+pub fn (d: &Dfa) forwardLines(c: mut &Cache, p: &syn.Prog, text: str, from: int, to: int, pf: &Prefilter, max: int, out: mut &[]int): int {
+    var at = from
+    var found = 0
+    // The start state after a newline, kept until the cache is cleared.
+    var lineSt = -1
+    var lineClears = -1
+    let byLine = pf.kind == PF_LINE
+    while at < to {
+        let base = at
+        var t = lineSt
+        if at == 0 || text[at - 1] != '\n' || lineSt < 0 || lineClears != c.clears {
+            t = c.start(d, p, text, at, false, false)
+            if t == T_FAILED { return -2 }
+            if t == T_DEAD { return to }
+            if at > 0 && text[at - 1] == '\n' {
+                lineSt = t
+                lineClears = c.clears
+            }
+        }
+        let usePf = pf.kind != PF_NONE && !c.pfOff
+        if usePf && !byLine && t & T_START != 0 {
+            let cand = c.prefilter(pf, text, at)
+            if cand < 0 || cand >= to { return to }
+            if cand > at {
+                at = cand
+                t = c.start(d, p, text, at, false, false)
+                if t == T_FAILED { return -2 }
+                if t == T_DEAD { return to }
+            }
+        }
+        var s = t & T_MASK
+        var e = -1
+        while at < to {
+            let b = int(text[at])
+            var k = 0
+            var w = 1
+            if b < 128 {
+                k = d.cls.ascii[b]
+            } else {
+                let r = syn.decodeRuneIn(text, at, to)
+                k = d.cls.of(r.r)
+                w = r.w
+            }
+            var t2 = c.trans[s + k]
+            if t2 < T_MATCH {
+                s = t2
+                at += w
+                continue
+            }
+            if t2 == T_UNKNOWN {
+                c.pos = at
+                t2 = c.next(d, p, s, k)
+                if t2 == T_FAILED { return -2 }
+            }
+            if t2 == T_DEAD { return to }
+            if t2 & T_MATCH != 0 {
+                e = at
+                break
+            }
+            s = t2 & T_MASK
+            at += w
+            if t2 & T_START != 0 && usePf {
+                if byLine {
+                    // no match starts before the next line
+                    if text[at - 1] != '\n' {
+                        let h = strFindByte(text, at, '\n')
+                        if h < 0 || h + 1 >= to { return to }
+                        at = h + 1
+                        if lineSt < 0 || lineClears != c.clears {
+                            let t3 = c.start(d, p, text, at, false, false)
+                            if t3 == T_FAILED { return -2 }
+                            if t3 == T_DEAD { return to }
+                            lineSt = t3
+                            lineClears = c.clears
+                        }
+                        s = lineSt & T_MASK
+                    }
+                    continue
+                }
+                let cand = c.prefilter(pf, text, at)
+                if cand < 0 || cand >= to { return to }
+                if cand > at {
+                    at = cand
+                    let t3 = c.start(d, p, text, at, false, false)
+                    if t3 == T_FAILED { return -2 }
+                    if t3 == T_DEAD { return to }
+                    s = t3 & T_MASK
+                }
+            }
+        }
+        if e < 0 { return to }
+        var ls = e
+        while ls > base && text[ls - 1] != '\n' { ls -= 1 }
+        let le = strFindByte(text, e, '\n')
+        append(out, ls)
+        append(out, le)
+        found += 1
+        at = le + 1
+        if max >= 0 && found >= max { return at }
+    }
+    return to
 }
 
 // Searches backward from e, not before lo, for the start of the longest
@@ -837,6 +952,7 @@ pub const PF_NONE = 0
 pub const PF_STR = 1      // a literal: strFind
 pub const PF_PAIR = 2     // a byte of set1 at off1 and of set2 at off2: strFindPair
 pub const PF_SET = 3      // a byte of set1 at off1: strFindAny
+pub const PF_LINE = 4     // the start of a line: the next one after a newline
 
 // A prefilter: from a position, the next candidate, before which no match
 // (or for the reverse-inner search: no literal) starts.
@@ -864,7 +980,20 @@ pub fn (f: &Prefilter) find(text: str, from: int): int {
         let h = strFindAny(text, from + f.off1, f.set1)
         return if h < 0 { -1 } else { h - f.off1 }
     }
+    if f.kind == PF_LINE {
+        if from == 0 || text[from - 1] == '\n' { return from }
+        let h = strFindByte(text, from, '\n')
+        return if h < 0 { -1 } else { h + 1 }
+    }
     return from
+}
+
+// The prefilter of patterns whose matches start at line starts.
+pub fn linePrefilter(): Prefilter {
+    var f = noPrefilter()
+    f.kind = PF_LINE
+    f.force = true      // at a line start it costs a byte's test
+    return f
 }
 
 // The prefilter's next candidate at or after at, remembered; switched off

@@ -242,7 +242,10 @@ fn (re: mut &Regex) planLiterals(force: bool) {
         re.pf.force = force
         return
     }
-    if bestK < 0 || (!force && best.rate > MAX_PF_RATE) { return }
+    if bestK < 0 || (!force && best.rate > MAX_PF_RATE) {
+        re.planLines()
+        return
+    }
     // The part before the literal, as a node of its own, reversed.
     var part: []int = []
     for i in 0..bestK { append(mut &part, re.tree.nodes[root].sub[i]) }
@@ -260,6 +263,13 @@ fn (re: mut &Regex) planLiterals(force: bool) {
         }
         Err(e) {}
     }
+    if !re.inner { re.planLines() }
+}
+
+// Without a literal search: when every match starts at the start of a
+// line, the DFA skips from where no match can start to the next line.
+fn (re: mut &Regex) planLines() {
+    if re.cond & syn.EMPTY_BEGIN_LINE != 0 { re.pf = lazy.linePrefilter() }
 }
 
 // ---------------------------------------------------------------- accessors
@@ -309,8 +319,11 @@ pub fn (re: &Regex) matcherFor(n: int): str {
 
 // The literal search the DFA uses, for tests and profiling: "prefix" (a
 // prefilter), "inner" (the reverse-inner search), "suffix" (only the check
-// that the text has the literal every match ends with) or "none".
+// that the text has the literal every match ends with), "line" (no
+// literal, but matches start at line starts: the next line is found) or
+// "none".
 pub fn (re: &Regex) literalSearch(): str {
+    if re.pf.kind == lazy.PF_LINE { return "line" }
     if re.pf.kind != lazy.PF_NONE { return "prefix" }
     if re.inner { return "inner" }
     if len(re.suffix) > 0 { return "suffix" }
@@ -390,6 +403,7 @@ fn (re: &Regex) setupCaches(x: mut &Exec) {
     if x.fc.ready() { return }
     let tiny = re.mode == MODE_TINY
     x.fc.setup(&re.fdfa, if tiny { budgetTiny(&re.fdfa) } else { lazy.DEFAULT_BUDGET }, !tiny)
+    if re.pf.kind == lazy.PF_NONE { x.fc.noStartMarks() }
     x.rc.setup(&re.rdfa, if tiny { budgetTiny(&re.rdfa) } else { lazy.DEFAULT_BUDGET }, !tiny)
     if re.inner { x.ic.setup(&re.idfa, if tiny { budgetTiny(&re.idfa) } else { lazy.DEFAULT_BUDGET }, !tiny) }
 }
@@ -1671,6 +1685,49 @@ fn (re: &Regex) dfaEnd(x: mut &Exec, text: str, from: int): int {
     if f.status == 1 { return f.end }
     if f.status == 0 { return -1 }
     return -2
+}
+
+// The lines of text[from..to] that have a match, for a pattern no match of
+// which can contain a newline (canMatchNewline is false): from is the
+// start of a line and text[to - 1] a newline. Appends the start and the end
+// (the index of its newline) of each such line to out, at most max lines
+// (max < 0: all), and returns where the search stopped: to, or the start
+// of the line after the last one appended. The DFA runs over the lines in
+// one pass and starts again after each line with a match.
+pub fn (re: &Regex) matchingLines(s: mut &Searcher, text: str, from: int, to: int, max: int, out: mut &[]int): int {
+    if from < 0 || to > len(text) || from >= to { return to }
+    re.begin(s)
+    if re.hasOnePass || s.x.dfaFailed || !re.useDfa(DFA_MIN_TEXT) || re.literalOnly() || re.inner || re.cond & syn.EMPTY_BEGIN_TEXT != 0 {
+        return re.linesBySearch(s, text, from, to, max, out)
+    }
+    if len(re.suffix) > 0 && !s.x.hasLiteral(text, from, re.suffix) { return to }
+    re.setupCaches(mut &s.x)
+    let n0 = len(out)
+    let r = re.fdfa.forwardLines(mut &s.x.fc, &re.prog, text, from, to, &re.pf, max, out)
+    if r >= 0 { return r }
+    // The DFA gave up: the other matchers go on after the lines found.
+    s.x.dfaFailed = true
+    let got = (len(out) - n0) / 2
+    let at = if got > 0 { out[len(out) - 1] + 1 } else { from }
+    return re.linesBySearch(s, text, at, to, if max < 0 { max } else { max - got }, out)
+}
+
+// matchingLines a search at a time.
+fn (re: &Regex) linesBySearch(s: mut &Searcher, text: str, from: int, to: int, max: int, out: mut &[]int): int {
+    var p = from
+    var found = 0
+    while p < to && (max < 0 || found < max) {
+        let e = re.matchEndWith(s, text, p)
+        if e < 0 || e >= to { return to }
+        var ls = e
+        while ls > p && text[ls - 1] != '\n' { ls -= 1 }
+        let le = strFindByte(text, e, '\n')
+        append(out, ls)
+        append(out, le)
+        found += 1
+        p = le + 1
+    }
+    return p
 }
 
 // Whether some match can contain a newline (a character class or `.`

@@ -895,7 +895,12 @@ let parts = re.split(text)
   Option[Span]` is `findFrom` through it, and `matchEndWith(mut &s, text,
   from): int` only says whether there is a match and gives the end of one
   (the first to end; -1 for none). Through a Searcher the DFA runs on short
-  texts too, so searching a line at a time costs little. With them,
+  texts too, so searching a line at a time costs little.
+  `matchingLines(mut &s, text, from, to, max, mut &out): int` appends the
+  start and end of each line of `text[from..to]` with a match (whole lines;
+  for patterns that cannot match a newline), at most `max`, and returns
+  where it stopped: the DFA runs over the lines once and starts again after
+  each line it reports. With them,
   `canMatchNewline()` (whether a match can contain `"\n"`) and
   `requiredLiteral()` (a literal every match contains, `""` if none is known)
   let a tool like grep search lines and literals first.
@@ -918,7 +923,8 @@ let parts = re.split(text)
   {text, complete}`; `pattern()`; `isLongest()`; `matcherFor(n)` (which
   matcher a search of n bytes uses: `onepass`, `literal`, `dfa`,
   `backtrack` or `pike`); `literalSearch()` (the DFA's literal search:
-  `prefix`, `inner`, `suffix` or `none`). For tests,
+  `prefix`, `inner`, `suffix`, `line` or `none`; `line`: matches start at
+  line starts, so the DFA skips to the next line). For tests,
   `compileForcing(pattern, longest, matcher)` forces `pike`, `backtrack`,
   `dfa` (no literal search), `prefilter` (every literal search there is) or
   `dfatiny` (a cache of three states, cleared all the time).
@@ -949,7 +955,8 @@ searching in a 2 MB cache; a forward run finds where the match ends, the
 reversed pattern run backward where it starts; for the groups the
 backtracker or the Pike VM then runs on that span only), with a literal
 search to skip ahead (the literals matches start with, a literal inside
-the pattern, or one they all end with); Go's choice otherwise, and when the
+the pattern, or one they all end with; without one, the next line when
+matches start at line starts); Go's choice otherwise, and when the
 DFA's cache fills too often: the bounded backtracker for small programs on
 short texts (a visited bitmap: each instruction at each position once), and
 the Pike VM (an NFA simulation). The DFA's states live in the call's
