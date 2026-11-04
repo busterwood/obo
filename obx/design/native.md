@@ -375,6 +375,27 @@ costs compile time):
   pointer. Stores overlap the load only through an object that holds the
   loaded one or one of the members on its way.
 
+- str headers out of loops (the fifteenth pass): a loop's reads of a str's
+  bytes (`rt_str_byte(s, i, w)`) and length (`(int64)s.len`, what `len(s)`
+  lowers to) whose root cannot change in the loop (the array headers'
+  rules: a local str, or what a borrowed `&str` parameter points to; not a
+  member of a record whose other members the loop writes: the root is the
+  whole local or pointee) read locals declared just before the loop: the
+  length as an int64 `sl` (an earlier `let n = len(s)` of the same block,
+  within 8 statements and with nothing between changing the root, stands for
+  it) and, when a byte is read, the data pointer `sd = (uint8_t*)s.b + 8 +
+  s.off`. A byte becomes `*(sd + rt_sidx(i, sl, w))`; `rt_sidx` is `rt_idx`
+  with the message "string index out of range", so the facts prove it as
+  they prove `rt_idx` (`while i < n` with `i` stepping up from 0: no check
+  left) and x64gen generates it as `rt_idx`. A second loop of the block
+  reuses `sl` and `sd`. Also in the facts: the cast of an unsigned value of
+  8, 16 or 32 bits to a wider kind gives the range 0 to the narrower kind's
+  greatest, so `n = len(s)` is in 0 to 2^32 - 1 and, after a bounds check
+  against it, the `i + k` that follow need no overflow check (sipKeyedStr's
+  eight additions per block). The facts do not prove `i + 7 < n` from
+  `i < end`, `end = n - (n & 7)`: that needs `i` to be a multiple of 8.
+  `OBX_STRS=0` turns this off.
+
 Nothing in `loops` changes which traps happen, where or in what order: a
 check goes only where it cannot fail, and every other operation stays where
 it was. `OBX_LOOPS=0` turns the pass off; `OBX_LOOPS=v` prints its counts.
@@ -455,7 +476,13 @@ Then:
   level of branches (to four levels): the weights order the locals, so a
   hot loop's locals win over those of its rare branch; whether a new
   callee-saved register pays is still decided on the weights by loop depth
-  alone (every path that names the local pays the save);
+  alone (every path that names the local pays the save). The data pointer
+  and the length that `loops.obx` hoists for a str (`ir.strHd`) weigh half,
+  and never open a callee-saved register of their own: they save two loads
+  and one a use, less than a local that is written (with full weight,
+  sipKeyedStr's byte accumulator lost its register to the data pointer and
+  went through the frame, a store-to-load forward in the loop-carried chain:
+  that function took 40% more cycles in the self-build);
 - a local that gets no register over its whole range (the calls or the
   locals already in `rsi rdi r8 r9` meet it), weighing at least four uses
   outside loops and not one of a body generated in place, may still take
@@ -561,7 +588,9 @@ Then:
   `rt_wmul_u32`, ...: the operation and `jo`/`jc`/a range test), the
   checked conversions `rt_cvs_*`/`rt_cvu_*` of 64-bit-or-narrower values,
   `rt_div`/`rem`/`shl`/`shr`/`neg_*`, `rt_idx` and
-  `rt_str_byte` (an unsigned compare; a `str` in the frame is read in place),
+  `rt_str_byte` (an unsigned compare; a `str` in the frame is read in place)
+  and `rt_sidx` (a str's bounds check from `loops.obx`, `rt_idx` with the
+  string message),
   `rt_str_dup` and `rt_str_drop` (the reference count; `rt_free` at zero),
   `rt_arr_push` (the store when there is room; the runtime grows the array),
   `rt_str_eq` (the lengths: different is false, both zero is true, else the
@@ -819,6 +848,68 @@ cycles against 1,961M), so the backend still needs only SSE2. Not done:
 a record literal passed as an argument is still built in a temporary and
 loaded from it; a record of 3 or 4 eightbytes returned through the hidden
 pointer is still built then copied.
+
+2026-11-04, the fifteenth performance step (branch `perf15`: `str` headers
+out of loops). Native-built binaries of main (`5590fb6`) and of
+this branch, compiling the same sources (instructions: least of 15; cycles
+best of 15; the spread on a loaded machine about 1%), then the benchmarks
+(instructions least, cycles best of 7, interleaved):
+
+| | base instr | new instr | base cyc | new cyc | native/C instr | native/C cyc |
+|---|---:|---:|---:|---:|---|---|
+| self-build (native-built) | 4,479M | 4,469M | 2,000M | 1,989M | | |
+| self-build (gcc-built, `--native`) | 3,736M | 3,750M | 1,762M | 1,783M | | |
+| maps | 2,934M | 2,718M | 1,243M | 1,177M | 1.35 to 1.25 | 1.24 to 1.17 |
+| tokens | 124M | 115M | 45M | 44M | 0.51 to 0.48 | 0.64 to 0.62 |
+| strings, fib, wc | same | same | same | same | | |
+| eza `-T /usr/share` | 596M | 580M | 205M | 203M | 1.05 to 1.02 | 1.15 to 1.14 |
+| grep -n omega (100 MB) | 2,008M | 1,901M | 559M | 536M | 1.09 to 1.03 | 1.08 to 1.04 |
+| grep -cE a.\*z.\*e | 1,937M | 1,861M | 463M | 499M | 1.31 to 1.26 | 1.17 to 1.26 |
+| grep -cw eta | 2,545M | 2,512M | 851M | 836M | 1.16 to 1.14 | 1.07 to 1.05 |
+| sort | 4,652M | 4,252M | 1,205M | 1,103M | 0.90 to 0.82 | 0.98 to 0.90 |
+
+(sieve, whose code does not change, moved from 571M to 525M cycles between
+two builds: the layout noise on this machine is a few percent, more on one
+loop.) The self-build is level: the 0.2% fewer instructions the native
+compiler saves in its own lexer and hashing (utf8Error's ASCII loop from
+12 to 7 instructions a byte, keyword, Parser_isSym) is about what the pass
+costs the compiler that runs it (the gcc-built compiler's `--native`
+build runs 0.4% more instructions, `--emit-c` the same). The benefit is in
+the programs that scan strings in loops: maps (sipKeyedStr is 1/3 of it),
+sort, grep, tokens.
+
+- `rt_sidx` (`native/rt.c`, `rtx.obx`), `x64gen`: the str bounds check.
+- `loops.obx`: the hoisting above, in `hoistStr` after the arrays'
+  `hoist`, sharing its walk (`placesW` also collects the str reads) and its
+  `W_ROOTS` marks; `reuseLen` for an earlier `let n = len(s)`; the range of
+  a widened unsigned value in `define`.
+- `x64gen.allocRegs`: half weight for `ir.strHd` locals.
+
+Not done, and why:
+
+- Strings in registers (the first item of the pass: a `str` local or
+  by-value parameter as a register pair). Not attempted. With the loops
+  hoisted, what remains of the lexer's `str` reads is a frame load of the
+  length or of one eightbyte per use outside loops; the pair would have to
+  carry the reference-count dup and drop glue (`rt_str_dup` takes the
+  address of the str and increments through `b`), the SysV argument and
+  return registers (`rax:rdx`) and the allocator's weights for two-word
+  locals, in a 5,600-line generator, for a gain the self-build could not
+  show (the whole pass saves 0.2% of its instructions). The registers were
+  also the limit in the loops that were hoisted: a register for the data
+  pointer cost sipKeyedStr 40% (above), and a hoisted header that gets no
+  register is a frame load, one load a use instead of three.
+- The deduction `i + 7 < n` from `i < end`, `end = n - (n & 7)` needs the
+  multiples of 8; the cheaper `end <= n` fact would prove only the first of
+  eight checks per word. The per-byte bounds checks of sipKeyedStr's block
+  stay (`cmp r, r; jae`, no memory operand).
+- grep `-E a.*z.*e` takes 8% more cycles on 4% fewer instructions, in
+  `regex_dfa.Dfa.forward` (the loop is a chain of dependent loads through
+  the transition table; its frame grew by 16 bytes with the two hoisted
+  slots and its stack slots moved). Not understood beyond that it is
+  the same loop with fewer instructions (the same branches, 6% fewer
+  loads, IPC 4.2 to 3.65); `OBX_STRS=0` gets the old time back. The other
+  grep runs and the library's other `str` loops gained or held.
 
 2026-11-04, the thirteenth performance step (branch `perf13`: the
 compiler's own data and walks, no change to the code it generates; the

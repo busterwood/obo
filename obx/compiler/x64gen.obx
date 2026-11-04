@@ -809,6 +809,14 @@ fn (g: mut &Gen) allocRegs(f: int) {
     // the count of loud positions before each position
     var loudBefore: []int = [0]
     for i in 0..len(g.loud) { append(mut &loudBefore, loudBefore[i] + (if g.loud[i] { 1 } else { 0 })) }
+    // the data pointer and the length of a str that loops hoisted (they save two loads and one a
+    // use): half the weight, and no register of their own to save
+    for l in cands {
+        if g.u.strHd.getOr(&l, -1) >= 0 {
+            g.weight[l] = g.weight[l] / 2
+            g.rawW[l] = 0
+        }
+    }
     // heaviest first (a stable insertion sort: the order of the touched list breaks ties)
     var order: []int = []
     for l in cands {
@@ -1558,7 +1566,7 @@ fn (g: &Gen) quietRt(e: int): bool {
     if g.cvInline(e) { return true }
     let dv = divOp(name)
     if dv.k >= 0 { return nargs == (if dv.op == ir.OP_SUB { 2 } else { 3 }) && g.isWhere(g.u.listAt(n.b, nargs - 1)) }
-    if name == "rt_idx" || name == "rt_str_byte" { return nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) }
+    if name == "rt_idx" || name == "rt_sidx" || name == "rt_str_byte" { return nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) }
     return name == "rt_str_dup" && nargs == 1
 }
 
@@ -2989,7 +2997,7 @@ fn (g: &Gen) pure(x: int): bool {
         let c = n.a
         if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return false }
         let name = g.u.funcs[g.u.nodes[g.u.nodes[c].a].a].name
-        if name != "rt_idx" && name != "rt_str_byte" && arOp(name).k < 0 && divOp(name).k < 0 { return false }
+        if name != "rt_idx" && name != "rt_sidx" && name != "rt_str_byte" && arOp(name).k < 0 && divOp(name).k < 0 { return false }
         for j in 0..g.u.listLen(n.b) {
             if !g.pure(g.u.listAt(n.b, j)) { return false }
         }
@@ -3532,10 +3540,13 @@ fn (g: &Gen) paddFold(e: int): bool {
 
 fn scaleOk(sc: int): bool { return sc == 1 || sc == 2 || sc == 4 || sc == 8 }
 
+// The message of the bounds check rt_idx (an array's) or rt_sidx (a str's, from loops.obx).
+fn idxMsg(name: str): str { return if name == "rt_sidx" { "string index out of range" } else { "index out of range" } }
+
 // The register of local i in rt_idx(i, len, w) (inline, len needing no code or only loads),
 // else -1.
 fn (g: &Gen) idxReg(b: int): int {
-    if g.u.nk(b) != ir.E_CALL || g.rtName(b) != "rt_idx" { return -1 }
+    if g.u.nk(b) != ir.E_CALL || (g.rtName(b) != "rt_idx" && g.rtName(b) != "rt_sidx") { return -1 }
     let l = g.u.nodes[b].b
     if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) { return -1 }
     let ln = g.u.listAt(l, 1)
@@ -3558,7 +3569,7 @@ fn (g: mut &Gen) paddMem(e: int): x64.Mem {
             g.gen(ln)                                   // loads into rax alone
             g.a.alu(x64.CMP, 8, ri, RAX)
         }
-        g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(l, 2)))
+        g.a.jcc(x64.CC_AE, g.stub(3, idxMsg(g.rtName(n.b)), g.u.listAt(l, 2)))
     }
     if ri >= 0 {
         if !scaleOk(sc) {
@@ -4947,7 +4958,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.inlineDiv(dv, e)
         return true
     }
-    if name == "rt_idx" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+    if (name == "rt_idx" || name == "rt_sidx") && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
         // the index into rax (the result) and compared unsigned: a negative one is above any length
         let ix = g.u.listAt(n.b, 0)
         let ln = g.u.listAt(n.b, 1)
@@ -4956,7 +4967,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             // the length first, compared with the index's register as it is after
             g.gen(ln)
             g.a.alu(x64.CMP, 8, ri, RAX)
-            g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+            g.a.jcc(x64.CC_AE, g.stub(3, idxMsg(name), g.u.listAt(n.b, 2)))
             g.a.movRR(8, RAX, ri)
             return true
         }
@@ -4965,12 +4976,12 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.gen(ln)
             let m = g.staticMem(ix)
             g.a.aluMR(x64.CMP, 8, m, RAX)
-            g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+            g.a.jcc(x64.CC_AE, g.stub(3, idxMsg(name), g.u.listAt(n.b, 2)))
             g.a.load(8, RAX, m)
             return true
         }
         g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(ix, ln))
-        g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(n.b, 2)))
+        g.a.jcc(x64.CC_AE, g.stub(3, idxMsg(name), g.u.listAt(n.b, 2)))
         return true
     }
     if name == "rt_str_byte" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {

@@ -1242,6 +1242,11 @@ int64_t rt_idx(int64_t i, int64_t len, const char* w) {
     if (i < 0 || i >= len) rt_trap(3, "index out of range", w);
     return i;
 }
+/* the index of a byte of a str, checked against its length (loops.obx's hoisted str headers) */
+int64_t rt_sidx(int64_t i, int64_t len, const char* w) {
+    if (i < 0 || i >= len) rt_trap(3, "string index out of range", w);
+    return i;
+}
 obx_arr rt_arr_new(int64_t n, size_t size) {
     obx_arr a = {0, n, n};
     if (n > 0) a.data = rt_alloc((size_t)n * size);

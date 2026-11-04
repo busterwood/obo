@@ -70,6 +70,7 @@ bool rt_getenv(obx_str name, obx_str* out);
 
 /* arrays */
 int64_t rt_idx(int64_t i, int64_t len, const char* w);
+int64_t rt_sidx(int64_t i, int64_t len, const char* w);
 obx_arr rt_arr_new(int64_t n, size_t size);
 obx_arr rt_arr_fill(int64_t n, size_t size, const char* w);
 void rt_arr_free(obx_arr a);

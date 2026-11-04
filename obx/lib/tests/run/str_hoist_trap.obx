@@ -1,0 +1,30 @@
+// A str read in a loop through hoisted headers (loops.obx) keeps the checks: the sum of the bytes is
+// right on a slice of a larger str (off > 0), and reading one past the length stops the program.
+// expect: 10
+// expect: 6
+// stderr: obx: string index out of range at str_hoist_trap.obx:20
+// exit: 3
+fn sum(s: &str, k: int): int {
+    let n = len(s)
+    var t = 0
+    var i = 0
+    while i < n {
+        t += int(strByte(s, i)) - 48
+        i += 1
+    }
+    return t + k
+}
+
+fn over(s: &str): int {
+    var t = 0
+    for i in 0..len(s) + 1 { t += int(strByte(s, i)) }
+    return t
+}
+
+fn main() {
+    let big = "xx1234yy"
+    let part = big[2..6]
+    println(sum(&part, 0))
+    println(sum(&"123", 0))
+    println(over(&part))
+}

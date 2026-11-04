@@ -352,6 +352,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (the compiler's own data and walks: 64-byte IR nodes, shape tables, one use count) | 4,441M | 596M | 5,630M |
 | before the fourteenth, on later sources | 4,434M | 596M | 5,630M |
 | after it (aggregate copies of 32 bytes and more through `xmm15`; small record literals returned straight into registers) | 4,359M | 594M | 5,630M |
+| before the fifteenth, on later sources (`5590fb6`) | 4,479M | 596M | 5,630M |
+| after it (`str` headers out of loops) | 4,469M | 580M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -394,6 +396,16 @@ self-build 5% slower in cycles (loads that two 8-byte stores had just
 written cannot be forwarded), so they stay 8 bytes at a time. 32-byte AVX
 copies were no faster than 16-byte ones.
 
+The fifteenth reads a `str`'s data pointer and length once before a loop
+(`loops.obx`; a byte is then `*(sd + rt_sidx(i, n, w))`, and the bounds
+check is proved away when `i` steps up from 0 under `i < n`). The
+self-build is level (4,479M to 4,469M instructions, 2,000M to 1,989M
+cycles; the gcc-built compiler's `--native` runs 0.4% more instructions
+for the analysis); maps loses 7% of its instructions and 5% of its cycles
+(1.24 to 1.17 times the C build), sort 8% of both, `grep -n` 5% and 4%,
+tokens 7% of its instructions; `grep -cE 'a.*z.*e'` takes 8% more cycles on
+4% fewer instructions (one dependent-load-bound loop; not understood).
+
 **The runtime's memcpy.** On this machine, `rep movsb` copies about 15
 times slower when the destination is 1 to about 32 bytes past the source,
 modulo 4 KiB. A string made from a byte array hit that case: 80% of a
@@ -418,6 +430,20 @@ against what its code saves.
 | `cse-experiment` (`05023cf`) | reuse loads and checked element addresses along straight-line runs (1,063 reuses) | 1.1% | 2.8% | +2% instructions |
 | `perf11` (`d79469c`) | move the field loads of a split value record (`let n = g.u.nodes[x]`) to their first use, or into the `if` branch that uses them | none (+0.1%) | 0.7% | +0.8% |
 | `perf12` (`187dcef`) | read such fields again after calls that type-based write sets prove cannot change them, instead of saving them on the stack | 0.7% | 4% | +3.7% |
+| `perf15` (not built) | `str` locals and parameters as register pairs, the first item of the pass | not attempted: see design/native.md section 8 | | |
+
+`perf15`'s second part, the hoisting of `str` headers out of loops, was
+kept: the self-build is level (0.2% fewer instructions in the native
+compiler, 0.4% more in the gcc-built one's analysis), the string-scanning
+benchmarks gain 4% to 8% of their cycles. Its first try gave the data
+pointer full weight in the register choice and cost sipKeyedStr (the hash
+behind every `Map[str, V]`) 40% of its cycles in the self-build: the
+register went from a loop-carried temporary to the pointer, and the
+temporary into a store-to-load forward. The second made hoisted headers
+that got no register put the `rt_str_byte` calls back (x64gen's `remat`
+for a place that is no plain load): it cost 1% of the self-build's
+instructions in the second register choice and the walk, and was dropped
+for a frame load, one load a use instead of three.
 
 What they taught:
 
