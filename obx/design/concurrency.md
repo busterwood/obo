@@ -970,7 +970,11 @@ exec with the child's setup in raw syscalls, pipes parked on like net's
 sockets, `wait` on a pidfd in the epoll loop, `output`/`communicate`/`run`,
 cancellation by SIGTERM then SIGKILL after 2 s, and a dropped `Child` killed
 and collected. A future of a process is `s.start(runOutput,
-cmd)`; no new runtime scheduling was needed. The "our own program's work in a
+cmd)`; no new runtime scheduling was needed. The program is looked up in the PATH the child
+gets (its own `PATH=` entry, else the default with `cleanEnv`, else the
+parent's). `newGroup` is an opt-in process group: signals, cancellation and
+drop then reach grandchildren too (off by default, since a group of its own
+cannot read the terminal under job control). The "our own program's work in a
 process" half above is still an idea.
 
 Open points: the `wire` constraint (the user's decision); a marker for C

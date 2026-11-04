@@ -37,7 +37,7 @@ for leaks.
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
-| `proc.obx` | 600 | other programs: start with pipes, a Command's environment, directory and streams; wait on a pidfd as a task; output, communicate, run; cancellation sends SIGTERM then SIGKILL |
+| `proc.obx` | 614 | other programs: start with pipes, a Command's environment, directory and streams; wait on a pidfd as a task; output, communicate, run; cancellation sends SIGTERM then SIGKILL; PATH lookup in the child's environment; optional process group |
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
 | `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
 | `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
@@ -508,14 +508,15 @@ let exit = child.wait().unwrap()                     // Exit.Code(0)
 
 - `command(program, args): Command` with the public fields `args`, `env`
   (`"NAME=value"` entries added to the parent's environment; `setEnv(name,
-  value)` replaces one of the same name), `cleanEnv` (only `env`), `cwd`,
+  value)` replaces one of the same name), `cleanEnv` (only `env`), `newGroup`, `cwd`,
   and `stdin`, `stdout`, `stderr` of type `Stdio`: `Inherit` (the default),
   `Pipe`, `Null` (/dev/null), `File(path)` (read for stdin, created and
   emptied for the others), `Append(path)` and, for stderr only, `Stdout`
   (2>&1). `arg(a)` adds an argument.
 - `start(&cmd): Result[Child, ProcError]`. A program name without "/" is
-  looked up in the parent's PATH before the fork, so a missing program is an
-  ordinary `Err` (ENOENT, `isNotFound()`). If the exec fails the child
+  looked up before the fork in the PATH the child will get (a `PATH=` entry of
+  `env`; else, with `cleanEnv`, `/usr/local/bin:/usr/bin:/bin`; else the
+  parent's), so a missing program is an ordinary `Err` (ENOENT, `isNotFound()`). If the exec fails the child
   reports its errno through a close-on-exec pipe, and `start` returns it. The
   child has only descriptors 0 to 2, the default signal mask and
   dispositions.
@@ -534,6 +535,12 @@ let exit = child.wait().unwrap()                     // Exit.Code(0)
   deadline while a child runs: SIGTERM, after 2 s SIGKILL, the child is
   collected, and the call returns ECANCELED or ETIMEDOUT
   (`isCancelled()`, `isTimeout()`). A second `wait` gives the same `Exit`.
+- `newGroup` puts the child in a process group of its own (`setpgid` in the
+  child and the parent). `signal`, `kill`, cancellation (SIGTERM, SIGKILL)
+  and drop then signal the whole group, so grandchildren die too; `pgid()`
+  is the group (the pid), 0 without `newGroup`. Waiting still collects the
+  child only. It is off by default: a process in a group of its own cannot
+  read the terminal under job control (SIGTTIN).
 - Dropping a `Child` that was not waited for sends SIGKILL and collects it
   (no zombie, no orphan) and closes its pipes.
 - `run(&cmd): Result[Exit, ProcError]` starts and waits with the streams as
