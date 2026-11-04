@@ -1,0 +1,1547 @@
+// grep: prints the lines of each operand that match a pattern. A GNU grep 3.x
+// subset with its output, error messages and exit codes:
+//
+//     obxc cmd/grep.obx --native -o grep
+//
+// Patterns: basic regular expressions (the default, with GNU's \( \) \{ \} \|
+// \+ \?), -E extended ones, -F fixed strings and -P (the library's Perl-like
+// syntax, one pattern). They are translated to lib/regex's syntax and
+// compiled leftmost-longest, so -o prints what GNU prints. Back-references
+// (\1) are an error: the engine runs in linear time and has none. \< and \>
+// are both \b. Words are ASCII (letters, digits, '_'), and a pattern and its
+// input are UTF-8 (a character is a code point); a file is binary when it has
+// a NUL byte, never because of an encoding error.
+//
+// Options: -e -f -i -y --no-ignore-case -v -w -x -c --color=never -L -l -m -o
+// -q -s -b -H -h --label -n -Z -A -B -C -NUM --group-separator
+// --no-group-separator -a -I --binary-files -r -R --include --exclude
+// --exclude-dir, with GNU's long names and unique prefixes. -T, -U, -z, -d, -D
+// and --color=always are not supported.
+//
+// Input is read in 128 KiB chunks and matched a chunk at a time: the regex
+// runs over the whole chunk with (?m), so ^ and $ are line anchors, and its
+// matches say which lines are selected; the lines between are never looked
+// at. A match that spans a newline (a class like [[:space:]]) is checked line
+// by line instead, and so is every candidate line of -w. A line longer than a
+// chunk is carried over until its newline arrives; the tool never holds a
+// whole file.
+//
+// Exit status: 0 when a line was selected, 1 when none was, 2 on an error (0
+// with -q and a selected line).
+
+import "io"
+import "fs"
+import "regex"
+
+const CHUNK = 131072
+
+// ---------------------------------------------------------------- options
+
+type Opts = record {
+    ere: bool              // -E
+    fixed: bool            // -F
+    perl: bool             // -P
+    ignoreCase: bool       // -i
+    invert: bool           // -v
+    word: bool             // -w
+    lineX: bool            // -x
+    count: bool            // -c
+    list: int              // -l 1, -L 2
+    maxCount: int          // -m, -1 for none
+    onlyMatching: bool     // -o
+    quiet: bool            // -q
+    noMsg: bool            // -s
+    byteOffset: bool       // -b
+    withName: int          // -H 1, -h 0, -1 not given
+    label: str             // --label
+    lineNumber: bool       // -n
+    nul: bool              // -Z
+    after: int             // -A, -1 not given
+    before: int            // -B, -1 not given
+    groupSep: str
+    noGroupSep: bool
+    binMode: int           // 0 binary (the default), 1 text (-a), 2 without-match (-I)
+    recurse: bool          // -r or -R
+    deref: bool            // -R
+    include: []str
+    exclude: []str
+    excludeDir: []str
+    pats: []str            // the patterns, one per line of every -e and -f
+    havePat: bool
+    operands: []str
+}
+
+fn newOpts(): Opts {
+    return Opts{ere: false, fixed: false, perl: false, ignoreCase: false, invert: false,
+        word: false, lineX: false, count: false, list: 0, maxCount: -1, onlyMatching: false,
+        quiet: false, noMsg: false, byteOffset: false, withName: -1, label: "(standard input)",
+        lineNumber: false, nul: false, after: -1, before: -1, groupSep: "--", noGroupSep: false,
+        binMode: 0, recurse: false, deref: false, include: [], exclude: [], excludeDir: [],
+        pats: [], havePat: false, operands: []}
+}
+
+fn usageExit() {
+    eprintln("Usage: grep [OPTION]... PATTERNS [FILE]...")
+    eprintln("Try 'grep --help' for more information.")
+    exit(2)
+}
+
+fn die(msg: str) {
+    eprintln("grep: " + msg)
+    exit(2)
+}
+
+// A long option: its name, whether it takes an argument (0 no, 1 yes, 2
+// optionally) and the key applyOpt knows it by (a short option's letter, or
+// the long name).
+type LongOpt = record {
+    name: str
+    arg: int
+    key: str
+}
+
+fn longOpts(): []LongOpt {
+    var t: []LongOpt = []
+    for s in ["extended-regexp:0:E", "fixed-regexp:0:F", "fixed-strings:0:F", "basic-regexp:0:G",
+              "perl-regexp:0:P", "regexp:1:e", "file:1:f", "ignore-case:0:i", "no-ignore-case:0:no-ignore-case",
+              "word-regexp:0:w", "line-regexp:0:x", "null-data:0:z", "no-messages:0:s",
+              "invert-match:0:v", "count:0:c", "color:2:color", "colour:2:color", "files-without-match:0:L",
+              "files-with-matches:0:l", "max-count:1:m", "only-matching:0:o", "quiet:0:q", "silent:0:q",
+              "byte-offset:0:b", "with-filename:0:H", "no-filename:0:h", "label:1:label",
+              "line-number:0:n", "initial-tab:0:T", "null:0:Z", "after-context:1:A", "before-context:1:B",
+              "context:1:C", "group-separator:1:group-separator", "no-group-separator:0:no-group-separator",
+              "text:0:a", "binary-files:1:binary-files", "binary:0:U", "recursive:0:r",
+              "dereference-recursive:0:R", "include:1:include", "exclude:1:exclude",
+              "exclude-dir:1:exclude-dir", "directories:1:d", "devices:1:D", "unix-byte-offsets:0:u",
+              "line-buffered:0:line-buffered", "help:0:help", "version:0:V"] {
+        let a = splitColon(s)
+        append(mut &t, LongOpt{name: a[0], arg: int(a[1][0]) - 48, key: a[2]})
+    }
+    return t
+}
+
+fn splitColon(s: str): []str {
+    var out: []str = []
+    var start = 0
+    var i = 0
+    while i < len(s) {
+        if s[i] == ':' && len(out) < 2 {
+            append(mut &out, substr(s, start, i))
+            start = i + 1
+        }
+        i += 1
+    }
+    append(mut &out, substr(s, start, len(s)))
+    return out
+}
+
+// Whether the short option takes an argument.
+fn shortTakesArg(c: byte): bool {
+    return c == 'e' || c == 'f' || c == 'm' || c == 'A' || c == 'B' || c == 'C' || c == 'd' || c == 'D'
+}
+
+fn isShort(c: byte): bool {
+    let known = "EFGPeifyvwxzsc LlmoqbHhnTZABCaIUrRduVdD"
+    var i = 0
+    while i < len(known) {
+        if known[i] == c { return true }
+        i += 1
+    }
+    return false
+}
+
+// A non-negative decimal, or -1.
+fn parseNum(s: str): int {
+    if len(s) == 0 || len(s) > 18 { return -1 }
+    var v = 0
+    var i = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return -1 }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn contextNum(value: str): int {
+    // GNU takes a huge number as "all"
+    var digits = len(value) > 0
+    var i = 0
+    while i < len(value) {
+        if value[i] < '0' || value[i] > '9' { digits = false }
+        i += 1
+    }
+    if !digits { die(value + ": invalid context length argument") }
+    if len(value) > 18 { return 999999999999999999 }
+    return parseNum(value)
+}
+
+// Reads the patterns of a -f file ("-" is standard input).
+fn readPatternFile(path: str): str {
+    var text = ""
+    if path == "-" {
+        match io.readStdin() {
+            Ok(s) { text = s }
+            Err(e) { die("-: " + io.errorText(e.errno)) }
+        }
+    } else {
+        match io.read(path) {
+            Ok(s) { text = s }
+            Err(e) { die(path + ": " + io.errorText(e.errno)) }
+        }
+    }
+    return text
+}
+
+fn addPatterns(o: mut &Opts, text: str, fromFile: bool) {
+    o.havePat = true
+    var t = text
+    if fromFile {
+        if len(t) == 0 { return }
+        if t[len(t) - 1] == '\n' { t = substr(t, 0, len(t) - 1) }
+    }
+    var start = 0
+    var i = 0
+    while i < len(t) {
+        if t[i] == '\n' {
+            append(mut &o.pats, substr(t, start, i))
+            start = i + 1
+        }
+        i += 1
+    }
+    append(mut &o.pats, substr(t, start, len(t)))
+}
+
+fn applyOpt(o: mut &Opts, key: str, value: str) {
+    if key == "E" { o.ere = true; o.fixed = false; o.perl = false }
+    else if key == "F" { o.fixed = true; o.ere = false; o.perl = false }
+    else if key == "G" { o.ere = false; o.fixed = false; o.perl = false }
+    else if key == "P" { o.perl = true; o.ere = false; o.fixed = false }
+    else if key == "e" { addPatterns(mut &o, value, false) }
+    else if key == "f" { addPatterns(mut &o, readPatternFile(value), true) }
+    else if key == "i" || key == "y" { o.ignoreCase = true }
+    else if key == "no-ignore-case" { o.ignoreCase = false }
+    else if key == "v" { o.invert = true }
+    else if key == "w" { o.word = true }
+    else if key == "x" { o.lineX = true }
+    else if key == "s" { o.noMsg = true }
+    else if key == "c" { o.count = true }
+    else if key == "L" { o.list = 2 }
+    else if key == "l" { o.list = 1 }
+    else if key == "o" { o.onlyMatching = true }
+    else if key == "q" { o.quiet = true }
+    else if key == "b" { o.byteOffset = true }
+    else if key == "H" { o.withName = 1 }
+    else if key == "h" { o.withName = 0 }
+    else if key == "label" { o.label = value }
+    else if key == "n" { o.lineNumber = true }
+    else if key == "Z" { o.nul = true }
+    else if key == "a" { o.binMode = 1 }
+    else if key == "I" { o.binMode = 2 }
+    else if key == "r" { o.recurse = true; o.deref = false }
+    else if key == "R" { o.recurse = true; o.deref = true }
+    else if key == "m" {
+        if len(value) > 0 && value[0] == '-' {
+            if parseNum(substr(value, 1, len(value))) < 0 { die("invalid max count") }
+            o.maxCount = -1
+        } else {
+            let n = parseNum(value)
+            if n < 0 { die("invalid max count") }
+            o.maxCount = n
+        }
+    }
+    else if key == "A" { o.after = contextNum(value) }
+    else if key == "B" { o.before = contextNum(value) }
+    else if key == "C" { let n = contextNum(value); o.after = n; o.before = n }
+    else if key == "group-separator" { o.groupSep = value; o.noGroupSep = false }
+    else if key == "no-group-separator" { o.noGroupSep = true }
+    else if key == "binary-files" {
+        if value == "binary" { o.binMode = 0 }
+        else if value == "text" { o.binMode = 1 }
+        else if value == "without-match" { o.binMode = 2 }
+        else { die("unknown binary-files type") }
+    }
+    else if key == "include" { append(mut &o.include, value) }
+    else if key == "exclude" { append(mut &o.exclude, value) }
+    else if key == "exclude-dir" { append(mut &o.excludeDir, value) }
+    else if key == "color" {
+        if value == "" || value == "never" || value == "no" || value == "none" || value == "auto" || value == "tty" || value == "if-tty" {
+        } else if value == "always" || value == "yes" || value == "force" {
+            die("--color=" + value + " is not supported")
+        } else {
+            die("invalid argument '" + value + "' for '--color'")
+        }
+    }
+    else if key == "U" || key == "u" || key == "line-buffered" {}
+    else if key == "d" {
+        if value != "read" && value != "recurse" && value != "skip" { die("invalid argument '" + value + "' for '--directories'") }
+        die("-d is not supported")
+    }
+    else if key == "D" { if value != "read" && value != "skip" { die("unknown devices method") } }
+    else if key == "help" {
+        println("Usage: grep [OPTION]... PATTERNS [FILE]...")
+        println("Search for PATTERNS in each FILE.")
+        exit(0)
+    }
+    else if key == "V" {
+        println("grep (obx) 3.11 subset")
+        exit(0)
+    }
+    else { die("option -" + key + " is not supported") }
+}
+
+fn parseArgs(argv: []str): Opts {
+    var o = newOpts()
+    let table = longOpts()
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 2 && a[0] == '-' && a[1] == '-' {
+            var name = substr(a, 2, len(a))
+            var value = ""
+            var hasValue = false
+            var k = 0
+            while k < len(name) {
+                if name[k] == '=' {
+                    value = substr(name, k + 1, len(name))
+                    name = substr(name, 0, k)
+                    hasValue = true
+                    break
+                }
+                k += 1
+            }
+            var found = -1
+            var ambiguous = false
+            var j = 0
+            while j < len(table) {
+                let t = &table[j]
+                if t.name == name { found = j; ambiguous = false; break }
+                if len(name) < len(t.name) && substr(t.name, 0, len(name)) == name {
+                    if found >= 0 && table[found].key != t.key { ambiguous = true }
+                    if found < 0 { found = j }
+                }
+                j += 1
+            }
+            if ambiguous {
+                eprintln("grep: option '--" + name + "' is ambiguous")
+                usageExit()
+            }
+            if found < 0 {
+                eprintln("grep: unrecognized option '--" + name + "'")
+                usageExit()
+            }
+            let t = &table[found]
+            if t.arg == 0 && hasValue {
+                eprintln("grep: option '--" + t.name + "' doesn't allow an argument")
+                usageExit()
+            }
+            if t.arg == 1 && !hasValue {
+                i += 1
+                if i >= len(argv) {
+                    eprintln("grep: option '--" + t.name + "' requires an argument")
+                    usageExit()
+                }
+                value = argv[i]
+            }
+            applyOpt(mut &o, t.key, value)
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            var j = 1
+            var digits = ""
+            while j < len(a) {
+                let c = a[j]
+                if c >= '0' && c <= '9' {
+                    digits += substr(a, j, j + 1)
+                    j += 1
+                    if j >= len(a) || a[j] < '0' || a[j] > '9' {
+                        let n = contextNum(digits)
+                        o.after = n
+                        o.before = n
+                        digits = ""
+                    }
+                } else {
+                    if !isShort(c) || c == ' ' {
+                        eprintln("grep: invalid option -- '" + substr(a, j, j + 1) + "'")
+                        usageExit()
+                    }
+                    if shortTakesArg(c) {
+                        var value = ""
+                        if j + 1 < len(a) {
+                            value = substr(a, j + 1, len(a))
+                        } else {
+                            i += 1
+                            if i >= len(argv) {
+                                eprintln("grep: option requires an argument -- '" + substr(a, j, j + 1) + "'")
+                                usageExit()
+                            }
+                            value = argv[i]
+                        }
+                        applyOpt(mut &o, substr(a, j, j + 1), value)
+                        break
+                    }
+                    applyOpt(mut &o, substr(a, j, j + 1), "")
+                    j += 1
+                }
+            }
+        } else {
+            append(mut &o.operands, a)
+        }
+        i += 1
+    }
+    if !o.havePat {
+        if len(o.operands) == 0 { usageExit() }
+        addPatterns(mut &o, o.operands[0], false)
+        var rest: []str = []
+        var k = 1
+        while k < len(o.operands) {
+            append(mut &rest, o.operands[k])
+            k += 1
+        }
+        o.operands = rest
+    }
+    return o
+}
+
+// ------------------------------------------------- pattern translation
+
+// The pattern being translated to the regex library's syntax.
+type Tr = record {
+    src: str
+    i: int
+    out: str
+    ere: bool
+    err: str               // the first error, "" for none
+    stack: []int           // where each open group begins in out
+    atomStart: int         // where the last atom begins in out, -1 for none
+    quantified: bool       // the last atom has a quantifier
+    atStart: bool          // at the start of the pattern, of a group or of an alternative
+}
+
+fn isAlnum(c: byte): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+fn isWordByte(c: byte): bool {
+    return isAlnum(c) || c == '_'
+}
+
+// The length of the UTF-8 character that begins with byte c (1 when invalid).
+fn charLen(s: str, i: int): int {
+    let c = int(s[i])
+    var n = 1
+    if c >= 0xF0 { n = 4 } else if c >= 0xE0 { n = 3 } else if c >= 0xC0 { n = 2 }
+    if i + n > len(s) { return 1 }
+    var k = 1
+    while k < n {
+        if int(s[i + k]) & 0xC0 != 0x80 { return 1 }
+        k += 1
+    }
+    return n
+}
+
+fn escapeChar(s: str, i: int, n: int): str {
+    let c = s[i]
+    if n == 1 && c < 128 && !isAlnum(c) { return "\\" + substr(s, i, i + 1) }
+    return substr(s, i, i + n)
+}
+
+fn (t: mut &Tr) fail(msg: str) {
+    if t.err == "" { t.err = msg }
+}
+
+// Adds an atom's text; the next quantifier applies to it.
+fn (t: mut &Tr) atom(text: str) {
+    t.atomStart = len(t.out)
+    t.out += text
+    t.quantified = false
+    t.atStart = false
+}
+
+// Adds a zero-width assertion (^, $, \b): a quantifier after it is ignored.
+fn (t: mut &Tr) assertion(text: str) {
+    t.out += text
+    t.atomStart = -1
+    t.quantified = false
+}
+
+fn (t: mut &Tr) quantifier(q: str) {
+    if t.atomStart < 0 {
+        // GNU applies it to nothing
+        return
+    }
+    if t.quantified {
+        t.out = substr(t.out, 0, t.atomStart) + "(?:" + substr(t.out, t.atomStart, len(t.out)) + ")"
+    }
+    t.out += q
+    t.quantified = true
+}
+
+// Parses an interval after its opening brace, at t.i. Returns false (and
+// leaves t.i) when it is not one; true with the repeat text in q.
+fn (t: mut &Tr) interval(q: mut &str): bool {
+    var j = t.i
+    let s = t.src
+    var lo = ""
+    var hi = ""
+    var comma = false
+    while j < len(s) && s[j] >= '0' && s[j] <= '9' { lo += substr(s, j, j + 1); j += 1 }
+    if j < len(s) && s[j] == ',' {
+        comma = true
+        j += 1
+        while j < len(s) && s[j] >= '0' && s[j] <= '9' { hi += substr(s, j, j + 1); j += 1 }
+    }
+    if t.ere {
+        if j >= len(s) || s[j] != '}' { return false }
+        j += 1
+    } else {
+        if j + 1 >= len(s) || s[j] != '\\' || s[j + 1] != '}' {
+            if j >= len(s) { t.fail("Unmatched \\{") } else { t.fail("Invalid content of \\{\\}") }
+            return false
+        }
+        j += 2
+    }
+    if lo == "" && !comma {
+        if t.ere { return false }
+        t.fail("Invalid content of \\{\\}")
+        return false
+    }
+    if len(lo) > 6 || len(hi) > 6 || parseNum(lo) > 32767 || parseNum(hi) > 32767 {
+        t.fail("Regular expression too big")
+        return false
+    }
+    if lo != "" && hi != "" && parseNum(lo) > parseNum(hi) {
+        t.fail("Invalid content of \\{\\}")
+        return false
+    }
+    if lo == "" { lo = "0" }
+    if !comma { q = "{" + lo + "}" } else { q = "{" + lo + "," + hi + "}" }
+    t.i = j
+    return true
+}
+
+fn classNameOk(n: str): bool {
+    return n == "alpha" || n == "digit" || n == "alnum" || n == "upper" || n == "lower" || n == "space" ||
+        n == "blank" || n == "punct" || n == "print" || n == "graph" || n == "cntrl" || n == "xdigit"
+}
+
+// A bracket expression; t.i is after the '['.
+fn (t: mut &Tr) bracket() {
+    let s = t.src
+    var i = t.i
+    var neg = false
+    if i < len(s) && s[i] == '^' { neg = true; i += 1 }
+    let begin = i
+    var items = ""
+    var first = true
+    var shut = false
+    while i < len(s) {
+        let c = s[i]
+        if c == ']' && !first { shut = true; i += 1; break }
+        first = false
+        var lo = -1                // the code point of a single character, for ranges
+        var loText = ""
+        if c == '[' && i + 1 < len(s) && s[i + 1] == ':' {
+            var j = i + 2
+            while j + 1 < len(s) && !(s[j] == ':' && s[j + 1] == ']') { j += 1 }
+            if j + 1 >= len(s) { t.fail("Unmatched [, [^, [:, [., or [="); return }
+            let name = substr(s, i + 2, j)
+            if !classNameOk(name) { t.fail("Invalid character class name"); return }
+            items += "[:" + name + ":]"
+            i = j + 2
+            continue
+        }
+        if c == '[' && i + 1 < len(s) && (s[i + 1] == '=' || s[i + 1] == '.') {
+            let d = s[i + 1]
+            var j = i + 2
+            while j + 1 < len(s) && !(s[j] == d && s[j + 1] == ']') { j += 1 }
+            if j + 1 >= len(s) { t.fail("Unmatched [, [^, [:, [., or [="); return }
+            let inner = substr(s, i + 2, j)
+            if len(inner) == 0 || charLen(inner, 0) != len(inner) {
+                t.fail("Invalid collation character")
+                return
+            }
+            loText = inner
+            i = j + 2
+        } else {
+            let n = charLen(s, i)
+            loText = substr(s, i, i + n)
+            i += n
+        }
+        lo = codePoint(loText)
+        // a range lo-hi, unless the '-' is last
+        if i + 1 < len(s) && s[i] == '-' && s[i + 1] != ']' {
+            i += 1
+            var hiText = ""
+            if s[i] == '[' && i + 1 < len(s) && (s[i + 1] == '.' || s[i + 1] == '=') {
+                let d = s[i + 1]
+                var j = i + 2
+                while j + 1 < len(s) && !(s[j] == d && s[j + 1] == ']') { j += 1 }
+                if j + 1 >= len(s) { t.fail("Unmatched [, [^, [:, [., or [="); return }
+                hiText = substr(s, i + 2, j)
+                i = j + 2
+            } else {
+                let n = charLen(s, i)
+                hiText = substr(s, i, i + n)
+                i += n
+            }
+            if codePoint(hiText) < lo { t.fail("Invalid range end"); return }
+            items += escapeChar(loText, 0, len(loText)) + "-" + escapeChar(hiText, 0, len(hiText))
+        } else {
+            items += escapeChar(loText, 0, len(loText))
+        }
+    }
+    if !shut { t.fail("Unmatched [, [^, [:, [., or [="); return }
+    let body = substr(s, begin, i - 1)
+    if len(body) >= 2 && body[0] == ':' && body[len(body) - 1] == ':' && !neg {
+        t.fail("character class syntax is [[:space:]], not [:space:]")
+        return
+    }
+    t.i = i
+    t.atom("[" + (if neg { "^" } else { "" }) + items + (if neg { "\\n" } else { "" }) + "]")
+}
+
+fn codePoint(s: str): int {
+    let n = len(s)
+    let c = int(s[0])
+    if n == 1 { return c }
+    if n == 2 { return ((c & 0x1F) << 6) | (int(s[1]) & 0x3F) }
+    if n == 3 { return ((c & 0x0F) << 12) | ((int(s[1]) & 0x3F) << 6) | (int(s[2]) & 0x3F) }
+    return ((c & 0x07) << 18) | ((int(s[1]) & 0x3F) << 12) | ((int(s[2]) & 0x3F) << 6) | (int(s[3]) & 0x3F)
+}
+
+fn (t: mut &Tr) openGroup() {
+    append(mut &t.stack, len(t.out))
+    t.out += "(?:"
+    t.atomStart = -1
+    t.quantified = false
+    t.atStart = true
+}
+
+fn (t: mut &Tr) closeGroup(): bool {
+    if len(t.stack) == 0 { return false }
+    let start = t.stack[len(t.stack) - 1]
+    var rest: []int = []
+    var k = 0
+    while k + 1 < len(t.stack) { append(mut &rest, t.stack[k]); k += 1 }
+    t.stack = rest
+    t.out += ")"
+    t.atomStart = start
+    t.quantified = false
+    t.atStart = false
+    return true
+}
+
+// Translates one GNU basic or extended pattern to the library's syntax.
+fn translate(p: str, ere: bool, warns: mut &[]str): Result[str, str] {
+    var t = Tr{src: p, i: 0, out: "", ere: ere, err: "", stack: [], atomStart: -1, quantified: false, atStart: true}
+    let s = p
+    while t.i < len(s) && t.err == "" {
+        let c = s[t.i]
+        let at = t.atStart
+        if c == '\\' {
+            if t.i + 1 >= len(s) { t.fail("Trailing backslash"); break }
+            let d = s[t.i + 1]
+            t.i += 2
+            if !ere && d == '(' { t.openGroup() }
+            else if !ere && d == ')' {
+                if !t.closeGroup() { t.fail("Unmatched ) or \\)") }
+            }
+            else if !ere && d == '|' { t.out += "|"; t.atomStart = -1; t.quantified = false; t.atStart = true }
+            else if !ere && d == '{' {
+                if at {
+                    t.fail("Invalid preceding regular expression")
+                } else {
+                    var q = ""
+                    if t.interval(mut &q) { t.quantifier(q) }
+                }
+            }
+            else if !ere && d == '}' { t.atom("\\}") }
+            else if !ere && (d == '+' || d == '?') {
+                if at { t.atom("\\" + substr(s, t.i - 1, t.i)) } else { t.quantifier(substr(s, t.i - 1, t.i)) }
+            }
+            else if d >= '1' && d <= '9' { t.fail("back-references are not supported") }
+            else if d == 'w' { t.atom("\\w") }
+            else if d == 'W' { t.atom("[^\\w\\n]") }
+            else if d == 's' { t.atom("[^\\S\\n]") }
+            else if d == 'S' { t.atom("\\S") }
+            else if d == 'b' { t.assertion("\\b") }
+            else if d == 'B' { t.assertion("\\B") }
+            else if d == '<' || d == '>' { t.assertion("\\b") }
+            else if d == '`' { t.assertion("^") }
+            else if d == '\'' { t.assertion("$") }
+            else {
+                // an escaped character is itself; so is a letter or digit (GNU 3.11 says nothing)
+                t.i -= 1
+                let n = charLen(s, t.i)
+                if isAlnum(d) {
+                    t.atom(substr(s, t.i, t.i + n))
+                } else {
+                    t.atom(escapeChar(s, t.i, n))
+                }
+                t.i += n
+            }
+        } else if c == '[' {
+            t.i += 1
+            t.bracket()
+        } else if c == '.' {
+            t.i += 1
+            t.atom(".")
+        } else if c == '*' {
+            t.i += 1
+            if at {
+                if ere { append(mut &warns, "* at start of expression") } else { t.atom("\\*") }
+            } else {
+                t.quantifier("*")
+            }
+        } else if ere && (c == '+' || c == '?') {
+            t.i += 1
+            if at { append(mut &warns, substr(s, t.i - 1, t.i) + " at start of expression") }
+            else { t.quantifier(substr(s, t.i - 1, t.i)) }
+        } else if ere && c == '{' {
+            t.i += 1
+            var q = ""
+            if at {
+                if t.interval(mut &q) { append(mut &warns, "{...} at start of expression") } else { t.atom("\\{") }
+            } else if t.interval(mut &q) {
+                t.quantifier(q)
+            } else if t.err == "" {
+                t.atom("\\{")
+            }
+        } else if ere && c == '(' {
+            t.i += 1
+            t.openGroup()
+        } else if ere && c == ')' {
+            t.i += 1
+            if len(t.stack) == 0 {
+                t.atom("\\)")
+            } else {
+                t.closeGroup()
+            }
+        } else if ere && c == '|' {
+            t.i += 1
+            t.out += "|"
+            t.atomStart = -1
+            t.quantified = false
+            t.atStart = true
+        } else if c == '^' && (ere || at) {
+            t.i += 1
+            t.assertion("^")
+            // a '*' after the anchor is literal in a basic pattern, ignored (with a warning) in an extended one
+            t.atStart = true
+        } else if c == '$' && (ere || t.i + 1 == len(s) || (t.i + 2 < len(s) + 1 && s[t.i + 1] == '\\' && t.i + 2 < len(s) && (s[t.i + 2] == ')' || s[t.i + 2] == '|'))) {
+            t.i += 1
+            t.assertion("$")
+        } else {
+            let n = charLen(s, t.i)
+            t.atom(escapeChar(s, t.i, n))
+            t.i += n
+        }
+    }
+    if t.err == "" && len(t.stack) > 0 { t.fail("Unmatched ( or \\(") }
+    if t.err != "" { return Err(t.err) }
+    return Ok(t.out)
+}
+
+fn quoteFixed(p: str): str {
+    var out = ""
+    var i = 0
+    while i < len(p) {
+        let n = charLen(p, i)
+        out += escapeChar(p, i, n)
+        i += n
+    }
+    return out
+}
+
+// ----------------------------------------------------------- the matcher
+
+type G = record {
+    o: Opts
+    c: Compiled              // re, the whole-line form full (for -w), none (no pattern: nothing matches)
+    w: io.Writer
+    nul: str
+    unflushed: int
+    withName: bool
+    ctxOn: bool
+    after: int
+    before: int
+    failed: bool             // an error was reported (exit status 2)
+    fatal: bool              // a write error
+    selectedAny: bool        // some line was selected
+    quitNow: bool            // -q selected a line
+    anyOutput: bool          // something was printed (for "--")
+    // the current file
+    name: str
+    nsel: int
+    done: bool
+    draining: bool
+    binary: bool
+    pending: int
+    lastNo: int
+    ringNo: []int
+    ringOff: []int
+    ringText: []str
+    lnPos: int
+    lnNo: int
+    base: int
+}
+
+type Compiled = record {
+    re: regex.Regex
+    full: regex.Regex
+    none: bool
+}
+
+fn compileAll(o: &Opts): Compiled {
+    var warns: []str = []
+    var parts: []str = []
+    if o.perl {
+        if len(o.pats) > 1 { die("the -P option only supports a single pattern") }
+        append(mut &parts, o.pats[0])
+    } else {
+        for p in o.pats {
+            if o.fixed {
+                append(mut &parts, quoteFixed(p))
+            } else {
+                match translate(p, o.ere, mut &warns) {
+                    Ok(s) { append(mut &parts, s) }
+                    Err(m) { die(m) }
+                }
+            }
+        }
+    }
+    for w in warns { eprintln("grep: warning: " + w) }
+    var body = ""
+    if len(parts) == 1 {
+        body = parts[0]
+    } else {
+        for p in parts {
+            if body != "" { body += "|" }
+            body += "(?:" + p + ")"
+        }
+    }
+    var flags = "(?m)"
+    if o.ignoreCase { flags = "(?mi)" }
+    var main = flags + body
+    if o.lineX { main = flags + "^(?:" + body + ")$" }
+    var fullFlags = ""
+    if o.ignoreCase { fullFlags = "(?i)" }
+    let full = fullFlags + "^(?:" + body + ")$"
+    let re = compileOne(main, o.perl)
+    let fre = compileOne(full, o.perl)
+    return Compiled{re: re, full: fre, none: len(parts) == 0}
+}
+
+fn newG(o: Opts, c: Compiled): G {
+    return G{o: o, c: c, w: io.stdout(), nul: nulString(),
+        unflushed: 0, withName: false, ctxOn: false, after: 0, before: 0, failed: false, fatal: false,
+        selectedAny: false, quitNow: false, anyOutput: false, name: "", nsel: 0, done: false,
+        draining: false, binary: false, pending: 0, lastNo: -1, ringNo: [], ringOff: [], ringText: [],
+        lnPos: 0, lnNo: 1, base: 0}
+}
+
+fn compileKind(pattern: str, perl: bool): Result[regex.Regex, regex.Error] {
+    if perl { return regex.compile(pattern) }
+    return regex.compileLongest(pattern)
+}
+
+fn compileOne(pattern: str, perl: bool): regex.Regex {
+    match compileKind(pattern, perl) {
+        Ok(re) { return re }
+        Err(e) {
+            die(e.message())
+            return regex.mustCompile("")
+        }
+    }
+}
+
+fn nulString(): str {
+    var b: []byte = array(1, 0)
+    return strFromBytes(&b)
+}
+
+// ---------------------------------------------------------------- output
+
+fn writeFailed(g: mut &G, e: io.IoError) {
+    eprintln("grep: write error: " + io.errorText(e.errno))
+    g.fatal = true
+}
+
+fn put(g: mut &G, s: str) {
+    g.w.write(s)
+    g.unflushed += len(s)
+    if g.unflushed >= CHUNK {
+        g.unflushed = 0
+        match g.w.flush() {
+            Ok(_) {}
+            Err(e) { writeFailed(mut &g, e) }
+        }
+    }
+    if g.fatal { g.done = true }
+}
+
+fn fileError(g: mut &G, name: str, errno: int) {
+    g.failed = true
+    if !g.o.noMsg { eprintln("grep: " + name + ": " + io.errorText(errno)) }
+}
+
+fn prefix(g: &G, sep: str, no: int, off: int): str {
+    var s = ""
+    if g.withName {
+        s += g.name
+        if g.o.nul { s += g.nul } else { s += sep }
+    }
+    if g.o.lineNumber { s += no.toStr() + sep }
+    if g.o.byteOffset { s += off.toStr() + sep }
+    return s
+}
+
+// The number of the line that begins at p in text; p only grows between calls
+// for one text.
+fn lineNoAt(g: mut &G, text: str, p: int): int {
+    var q = g.lnPos
+    var no = g.lnNo
+    while true {
+        let k = strFind(text, q, "\n")
+        if k < 0 || k >= p { break }
+        no += 1
+        q = k + 1
+    }
+    g.lnPos = q
+    g.lnNo = no
+    return no
+}
+
+fn lineStartOf(text: str, p: int): int {
+    var q = p
+    while q > 0 && text[q - 1] != '\n' { q -= 1 }
+    return q
+}
+
+// ------------------------------------------------------- line matching
+
+fn isWordAt(line: str, i: int): bool {
+    return i >= 0 && i < len(line) && isWordByte(line[i])
+}
+
+// The leftmost match in line at or after from that GNU's -w accepts: not
+// preceded or followed by a word character. A match that fails is tried
+// shorter at the same start, then from the next character.
+fn findWord(g: &G, line: str, from: int): Option[regex.Span] {
+    var p = from
+    while p <= len(line) {
+        match g.c.re.findFrom(line, p) {
+            None { return None }
+            Some(m) {
+                let s = m.start
+                if !isWordAt(line, s - 1) {
+                    var k = m.end
+                    while k >= s {
+                        if !isWordAt(line, k) {
+                            if k == m.end || g.c.full.isMatch(substr(line, s, k)) {
+                                return Some(regex.Span{start: s, end: k})
+                            }
+                        }
+                        k -= 1
+                    }
+                }
+                p = s + 1
+            }
+        }
+    }
+    return None
+}
+
+fn lineMatches(g: &G, line: str): bool {
+    if g.o.word { return findWord(g, line, 0).isSome() }
+    return g.c.re.isMatch(line)
+}
+
+// ------------------------------------------------------------- selection
+
+fn needLines(g: &G): bool {
+    return !(g.o.count || g.o.list != 0 || g.o.quiet)
+}
+
+fn emitLine(g: mut &G, sep: str, no: int, off: int, text: str, ls: int, le: int) {
+    put(g, prefix(g, sep, no, off) + substr(text, ls, le) + "\n")
+}
+
+fn printGroupSep(g: mut &G) {
+    if !g.o.noGroupSep { put(g, g.o.groupSep + "\n") }
+}
+
+// -o: the matches of one selected line.
+fn emitMatches(g: mut &G, line: str, no: int, off: int) {
+    var p = 0
+    while p <= len(line) {
+        var s = -1
+        var e = -1
+        if g.o.word {
+            match findWord(g, line, p) {
+                None { return }
+                Some(m) { s = m.start; e = m.end }
+            }
+        } else {
+            match g.c.re.findFrom(line, p) {
+                None { return }
+                Some(m) { s = m.start; e = m.end }
+            }
+        }
+        if e > s {
+            put(g, prefix(g, ":", no, off + s) + substr(line, s, e) + "\n")
+            p = e
+        } else {
+            if s >= len(line) { return }
+            p = s + charLen(line, s)
+        }
+        if g.done { return }
+    }
+}
+
+// A selected line text[ls..le] (without its newline).
+fn selectLine(g: mut &G, text: str, ls: int, le: int) {
+    g.nsel += 1
+    g.selectedAny = true
+    if g.o.quiet {
+        g.quitNow = true
+        g.done = true
+        return
+    }
+    if g.o.list != 0 {
+        g.done = true
+        return
+    }
+    if g.o.count {
+        if g.o.maxCount >= 0 && g.nsel >= g.o.maxCount { g.done = true }
+        return
+    }
+    if g.binary && g.o.binMode == 0 {
+        eprintln("grep: " + g.name + ": binary file matches")
+        g.done = true
+        return
+    }
+    var no = 0
+    if g.ctxOn || g.o.lineNumber { no = lineNoAt(g, text, ls) }
+    let off = g.base + ls
+    if !(g.o.onlyMatching && g.o.invert) {
+        if g.ctxOn {
+            // the lines before it that were not printed yet
+            var first = 0
+            var k = 0
+            while k < len(g.ringNo) {
+                if g.ringNo[k] > g.lastNo { first = k; break }
+                k += 1
+                first = k
+            }
+            let firstNo = if first < len(g.ringNo) { g.ringNo[first] } else { no }
+            if g.anyOutput && firstNo > g.lastNo + 1 { printGroupSep(g) }
+            if !g.o.onlyMatching {
+                var j = first
+                while j < len(g.ringNo) {
+                    put(g, prefix(g, "-", g.ringNo[j], g.ringOff[j]) + g.ringText[j] + "\n")
+                    j += 1
+                }
+            }
+        }
+        if g.o.onlyMatching {
+            emitMatches(g, substr(text, ls, le), no, off)
+        } else {
+            emitLine(g, ":", no, off, text, ls, le)
+        }
+        g.anyOutput = true
+    }
+    if g.ctxOn {
+        g.ringNo = []
+        g.ringOff = []
+        g.ringText = []
+        g.lastNo = no
+        g.pending = g.after
+    }
+    if g.o.maxCount >= 0 && g.nsel >= g.o.maxCount {
+        if g.pending > 0 { g.draining = true } else { g.done = true }
+    }
+}
+
+// Selected lines [a, b), each a whole line ending in '\n'.
+fn selectRange(g: mut &G, text: str, a: int, b: int) {
+    if a >= b { return }
+    if needLines(g) {
+        var p = a
+        while p < b && !g.done && !g.draining {
+            let le = strFind(text, p, "\n")
+            selectLine(g, text, p, le)
+            p = le + 1
+        }
+        return
+    }
+    if g.o.quiet || g.o.list != 0 {
+        selectLine(g, text, a, strFind(text, a, "\n"))
+        return
+    }
+    // -c: count the newlines
+    var p = a
+    var n = 0
+    while p < b {
+        let le = strFind(text, p, "\n")
+        n += 1
+        p = le + 1
+    }
+    g.selectedAny = true
+    g.nsel += n
+    if g.o.maxCount >= 0 && g.nsel >= g.o.maxCount {
+        g.nsel = g.o.maxCount
+        g.done = true
+    }
+}
+
+// Not selected lines [a, b): context.
+fn skipRange(g: mut &G, text: str, a: int, b: int) {
+    if !g.ctxOn || a >= b { return }
+    if g.pending == 0 && g.before == 0 { return }
+    var p = a
+    if g.pending == 0 {
+        // only the last `before` lines can matter
+        var q = b
+        var k = 0
+        while k < g.before && q > a {
+            q -= 1
+            while q > a && text[q - 1] != '\n' { q -= 1 }
+            k += 1
+        }
+        if q > a {
+            g.ringNo = []
+            g.ringOff = []
+            g.ringText = []
+        }
+        p = q
+    }
+    while p < b {
+        let le = strFind(text, p, "\n")
+        let no = lineNoAt(g, text, p)
+        if g.pending > 0 {
+            if !g.o.onlyMatching { put(g, prefix(g, "-", no, g.base + p) + substr(text, p, le) + "\n") }
+            g.pending -= 1
+            g.lastNo = no
+            g.anyOutput = true
+            if g.draining && g.pending == 0 { g.done = true; return }
+        } else if g.before > 0 {
+            if len(g.ringNo) >= g.before {
+                g.ringNo = tail1(&g.ringNo)
+                g.ringOff = tail1(&g.ringOff)
+                g.ringText = tail1s(&g.ringText)
+            }
+            append(mut &g.ringNo, no)
+            append(mut &g.ringOff, g.base + p)
+            append(mut &g.ringText, substr(text, p, le))
+        }
+        p = le + 1
+        if g.done { return }
+    }
+}
+
+fn tail1(a: &[int]): []int {
+    var out: []int = []
+    var i = 1
+    while i < len(a) { append(mut &out, a[i]); i += 1 }
+    return out
+}
+
+fn tail1s(a: &[str]): []str {
+    var out: []str = []
+    var i = 1
+    while i < len(a) { append(mut &out, a[i]); i += 1 }
+    return out
+}
+
+// One chunk of whole lines: text[0..lim] ends in '\n'. text may go on after
+// lim with the start of a line that is not complete yet.
+fn processChunk(g: mut &G, text: str, lim: int) {
+    g.lnPos = 0
+    var pos = 0
+    var spans: []regex.Span = []
+    if !g.c.none { spans = g.c.re.findAllIndex(text) }
+    var si = 0
+    let invert = g.o.invert
+    while pos < lim && !g.done {
+        if g.draining {
+            // after -m: trailing context, selected or not
+            let le = strFind(text, pos, "\n")
+            skipRange(g, text, pos, le + 1)
+            pos = le + 1
+            continue
+        }
+        // the next candidate: a match starting at or after pos
+        var cs = lim              // start of the lines still to be told apart
+        var ze = -1               // the end of a zone to check line by line, -1 for none
+        var exactEnd = -1
+        while si < len(spans) {
+            let s = spans[si].start
+            if s >= lim { si = len(spans); break }
+            if s < pos { si += 1; continue }
+            let e = spans[si].end
+            si += 1
+            let ls = lineStartOf(text, s)
+            let le = strFind(text, s, "\n")
+            if e > le {
+                cs = ls
+                // lines ls .. the line containing e
+                var last = le
+                if e >= lim { last = lim - 1 } else { last = strFind(text, e, "\n") }
+                ze = last
+            } else if g.o.word || g.o.lineX && false {
+                cs = ls
+                ze = le
+            } else {
+                cs = ls
+                exactEnd = le
+            }
+            break
+        }
+        // the lines in [pos, cs) have no match
+        if invert { selectRange(g, text, pos, cs) } else { skipRange(g, text, pos, cs) }
+        if g.done { break }
+        if cs >= lim { pos = lim; break }
+        if exactEnd >= 0 {
+            if invert { skipRange(g, text, cs, exactEnd + 1) } else { selectLine(g, text, cs, exactEnd) }
+            pos = exactEnd + 1
+        } else {
+            var p = cs
+            while p <= ze && !g.done {
+                let le = strFind(text, p, "\n")
+                let m = if g.draining { false } else { lineMatches(g, substr(text, p, le)) }
+                if m != invert {
+                    if m == invert { }
+                }
+                if m {
+                    if invert { skipRange(g, text, p, le + 1) } else { selectLine(g, text, p, le) }
+                } else {
+                    if invert { selectRange(g, text, p, le + 1) } else { skipRange(g, text, p, le + 1) }
+                }
+                p = le + 1
+                if g.draining { break }
+            }
+            pos = p
+        }
+    }
+    if !g.done || g.draining {
+        // keep the line numbers right for the next chunk
+        if g.ctxOn || g.o.lineNumber { g.lnNo = lineNoAt(g, text, lim) }
+    }
+    g.base += lim
+}
+
+// ------------------------------------------------------------- reading
+
+type Reader = record {
+    src: io.Reader
+    buf: []byte
+}
+
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0)}
+}
+
+fn (r: mut &Reader) fill(): int {
+    match r.src.read(mut &r.buf) {
+        Ok(k) { return k }
+        Err(e) { return -e.errno }
+    }
+}
+
+fn lastNewline(text: str): int {
+    var i = len(text) - 1
+    while i >= 0 && text[i] != '\n' { i -= 1 }
+    return i
+}
+
+// Searches one input. Returns false after a fatal write error.
+fn grepReader(g: mut &G, r: mut &Reader, name: str) {
+    g.name = name
+    g.nsel = 0
+    g.done = false
+    g.draining = false
+    g.binary = false
+    g.pending = 0
+    g.lastNo = -1
+    g.ringNo = []
+    g.ringOff = []
+    g.ringText = []
+    g.lnPos = 0
+    g.lnNo = 1
+    g.base = 0
+    var carry = ""
+    var failed = false
+    while !g.done || g.draining {
+        let n = r.fill()
+        if n < 0 {
+            fileError(g, name, -n)
+            failed = true
+            break
+        }
+        if n == 0 { break }
+        var data = strFromBytes(&r.buf[0..n])
+        if g.o.binMode != 1 {
+            if g.binary || strFind(data, 0, g.nul) >= 0 {
+                if !g.binary {
+                    g.binary = true
+                    if g.o.binMode == 2 {
+                        g.done = true
+                        break
+                    }
+                }
+                data = zapNuls(data, g.nul)
+            }
+        }
+        let text = if carry == "" { data } else { carry + data }
+        let lim = lastNewline(text) + 1
+        if lim == 0 {
+            carry = text
+            continue
+        }
+        processChunk(g, text, lim)
+        carry = if lim < len(text) { substr(text, lim, len(text)) } else { "" }
+    }
+    if !failed && (!g.done || g.draining) && carry != "" {
+        let text = carry + "\n"
+        processChunk(g, text, len(text))
+    }
+    if g.o.count && g.o.list == 0 && !g.o.quiet && !g.fatal {
+        var s = ""
+        if g.withName {
+            s = g.name
+            if g.o.nul { s += g.nul } else { s += ":" }
+        }
+        put(g, s + g.nsel.toStr() + "\n")
+    }
+    if g.o.list != 0 && !g.fatal {
+        let selected = g.nsel > 0
+        if (g.o.list == 1) == selected {
+            put(g, g.name + (if g.o.nul { g.nul } else { "\n" }))
+        }
+    }
+}
+
+fn zapNuls(data: str, nul: str): str {
+    var b = strToBytes(data)
+    var i = 0
+    while i < len(b) {
+        if b[i] == 0 { b[i] = '\n' }
+        i += 1
+    }
+    return strFromBytes(&b)
+}
+
+// ------------------------------------------------------- files and trees
+
+// GNU's glob matching for --include and --exclude: * ? [..] and \ escapes.
+fn globMatch(p: str, pi: int, s: str, si: int): bool {
+    var i = pi
+    var j = si
+    while i < len(p) {
+        let c = p[i]
+        if c == '*' {
+            while i < len(p) && p[i] == '*' { i += 1 }
+            if i == len(p) { return true }
+            var k = j
+            while k <= len(s) {
+                if globMatch(p, i, s, k) { return true }
+                k += 1
+            }
+            return false
+        }
+        if j >= len(s) { return false }
+        if c == '?' {
+            i += 1
+            j += 1
+        } else if c == '[' {
+            var k = i + 1
+            var neg = false
+            if k < len(p) && (p[k] == '!' || p[k] == '^') { neg = true; k += 1 }
+            var ok = false
+            var first = true
+            var shut = false
+            while k < len(p) {
+                if p[k] == ']' && !first { shut = true; break }
+                first = false
+                var lo = p[k]
+                if p[k] == '\\' && k + 1 < len(p) { k += 1; lo = p[k] }
+                var hi = lo
+                if k + 2 < len(p) && p[k + 1] == '-' && p[k + 2] != ']' {
+                    hi = p[k + 2]
+                    k += 2
+                }
+                if s[j] >= lo && s[j] <= hi { ok = true }
+                k += 1
+            }
+            if !shut {
+                if s[j] != '[' { return false }
+                i += 1
+                j += 1
+            } else {
+                if ok == neg { return false }
+                i = k + 1
+                j += 1
+            }
+        } else {
+            var lit = c
+            if c == '\\' && i + 1 < len(p) { i += 1; lit = p[i] }
+            if s[j] != lit { return false }
+            i += 1
+            j += 1
+        }
+    }
+    return j == len(s)
+}
+
+// Whether glob matches the whole name or a suffix of it that follows a '/'.
+fn nameMatches(glob: str, name: str): bool {
+    if globMatch(glob, 0, name, 0) { return true }
+    var i = 0
+    while i < len(name) {
+        if name[i] == '/' && i + 1 < len(name) && name[i + 1] != '/' {
+            if globMatch(glob, 0, name, i + 1) { return true }
+        }
+        i += 1
+    }
+    return false
+}
+
+fn fileSkipped(g: &G, path: str): bool {
+    for x in g.o.exclude { if nameMatches(x, path) { return true } }
+    if len(g.o.include) > 0 {
+        for x in g.o.include { if nameMatches(x, path) { return false } }
+        return true
+    }
+    return false
+}
+
+fn dirSkipped(g: &G, path: str): bool {
+    var p = path
+    while len(p) > 1 && p[len(p) - 1] == '/' { p = substr(p, 0, len(p) - 1) }
+    for x in g.o.excludeDir { if nameMatches(x, p) { return true } }
+    return false
+}
+
+fn grepFile(g: mut &G, path: str, display: str) {
+    match io.open(path) {
+        Ok(src) {
+            var r = newReader(src)
+            grepReader(g, mut &r, display)
+            r.src.close()
+        }
+        Err(e) { fileError(g, display, e.errno) }
+    }
+}
+
+// Recurses into a directory. display is "" for the implicit ".".
+fn grepTree(g: mut &G, dir: str, display: str) {
+    match fs.list(if dir == "" { "." } else { dir }) {
+        Err(e) { fileError(g, if display == "" { "." } else { display }, e.errno) }
+        Ok(entries) {
+            for en in entries {
+                if g.quitNow || g.fatal { return }
+                let child = if dir == "" { en.name } else { fs.join(dir, en.name) }
+                var kind = en.kind
+                if kind == fs.Kind.Link {
+                    if !g.o.deref { continue }
+                    match fs.stat(child) {
+                        Ok(st) { kind = st.kind() }
+                        Err(e) {
+                            fileError(g, child, e.errno)
+                            continue
+                        }
+                    }
+                }
+                if kind == fs.Kind.Dir {
+                    if !dirSkipped(g, child) { grepTree(g, child, child) }
+                } else if kind == fs.Kind.File {
+                    if !fileSkipped(g, child) { grepFile(g, child, child) }
+                }
+            }
+        }
+    }
+}
+
+fn grepOperand(g: mut &G, path: str, stdinReader: mut &Reader) {
+    if path == "-" {
+        grepReader(g, stdinReader, g.o.label)
+        return
+    }
+    if g.o.recurse {
+        match fs.stat(path) {
+            Ok(st) {
+                if st.isDir() {
+                    if !dirSkipped(g, path) { grepTree(g, path, path) }
+                    return
+                }
+            }
+            Err(_) {}
+        }
+    }
+    if fileSkipped(g, path) { return }
+    grepFile(g, path, path)
+}
+
+fn main() {
+    var o = parseArgs(args())
+    if o.lineX { o.word = false }
+    let c = compileAll(&o)
+    var g = newG(o, c)
+    if g.o.quiet { g.o.list = 0 }
+    if g.o.list != 0 || g.o.quiet { g.o.count = false }
+    g.ctxOn = g.o.after >= 0 || g.o.before >= 0
+    g.after = if g.o.after > 0 { g.o.after } else { 0 }
+    g.before = if g.o.before > 0 { g.o.before } else { 0 }
+    var ops: []str = []
+    for x in g.o.operands { append(mut &ops, x) }
+    var implicitDot = false
+    if len(ops) == 0 {
+        if g.o.recurse {
+            append(mut &ops, ".")
+            implicitDot = true
+        } else {
+            append(mut &ops, "-")
+        }
+    }
+    // GNU stops early when nothing can be selected (-L still lists the files)
+    let emptyKey = len(g.o.pats) == 1 && len(g.o.pats[0]) == 0
+    if g.o.list != 2 {
+        if g.o.maxCount == 0 { exit(1) }
+        if g.c.none && !g.o.invert { exit(1) }
+        if emptyKey && g.o.invert && !g.o.lineX && !g.o.word && !g.o.perl { exit(1) }
+    }
+    var names = false
+    if g.o.withName == 1 {
+        names = true
+    } else if g.o.withName == 0 {
+        names = false
+    } else if len(ops) > 1 {
+        names = true
+    } else if g.o.recurse {
+        names = implicitDot || fs.isDir(ops[0])
+    }
+    g.withName = names
+    var stdinReader = newReader(io.stdin())
+    for p in ops {
+        if implicitDot {
+            grepTree(mut &g, "", "")
+        } else {
+            grepOperand(mut &g, p, mut &stdinReader)
+        }
+        if g.quitNow || g.fatal { break }
+    }
+    if !g.fatal {
+        match g.w.flush() {
+            Ok(_) {}
+            Err(e) { writeFailed(mut &g, e) }
+        }
+    }
+    if g.quitNow { exit(0) }
+    if g.failed || g.fatal { exit(2) }
+    if g.selectedAny { exit(0) }
+    exit(1)
+}
