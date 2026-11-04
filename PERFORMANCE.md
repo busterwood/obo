@@ -209,9 +209,9 @@ searches), not counting `rt.obx` and `rtx.obx`, which are generated from
 them.
 
 - The native-built compiler is 1.05-1.12x slower than the gcc-built one
-  (1.1-1.2x before the ninth pass, 1.55x before the fifth). It runs 1.18x
-  the instructions (4,617M against 3,911M for `--native`; 1.48x before the
-  ninth, 1.89x before the fifth) at a higher rate per cycle. What is left
+  (1.1-1.2x before the ninth pass, 1.55x before the fifth). It runs 1.17x
+  the instructions (4,585M against 3,918M for `--native` at `5900ba3`; 1.18x
+  at `fd6f747`, 1.48x before the ninth, 1.89x before the fifth) at a higher rate per cycle. What is left
   is spread thin: of the 347 functions that take longer native, the 20
   worst hold 43% of the difference. It is in the mix (twice gcc's share of
   register-to-register moves, three times its stores to the stack, half again as
@@ -253,6 +253,7 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (the regex engine: loads out of loops, memory operands, sites) | 5,388M | 632M | 5,629M |
 | before the ninth, on later sources | 5,800M | 632M | 5,629M |
 | after it (the compiler: operands in place, record literals in their slots, value records' fields, borrowed str parameters) | 4,617M | 594M | 5,629M |
+| at `5900ba3` (bounds checks compare in place; the library's `io.Reader` in the compiler's sources) | 4,585M | 594M | 5,629M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
