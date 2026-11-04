@@ -201,6 +201,11 @@ pub fn (a: mut &Asm) rm(pfx: int, w: bool, opc: int, reg: int, m: Mem, breg: boo
     let x = if m.index >= 0 { m.index } else { 0 }
     let bs = if m.base >= 0 { m.base } else { 0 }
     a.head(pfx, w, opc, reg, x, bs, breg && lowByte(reg))
+    a.memTail(reg, m)
+}
+
+// The ModRM, SIB and displacement bytes of the memory operand m with register field reg.
+fn (a: mut &Asm) memTail(reg: int, m: Mem) {
     if m.base == RIP {
         a.b(0x05 | ((reg & 7) << 3))
         a.d32(m.disp)
@@ -539,6 +544,11 @@ pub fn (a: mut &Asm) movsdLoad(x: int, m: Mem) { a.rm(0xF2, false, 0x0F10, x, m,
 
 pub fn (a: mut &Asm) movsdStore(m: Mem, x: int) { a.rm(0xF2, false, 0x0F11, x, m, false) }
 
+// movdqu x, [m] and movdqu [m], x (16 bytes, any alignment: F3 0F 6F / 7F).
+pub fn (a: mut &Asm) movdquLoad(x: int, m: Mem) { a.rm(0xF3, false, 0x0F6F, x, m, false) }
+
+pub fn (a: mut &Asm) movdquStore(m: Mem, x: int) { a.rm(0xF3, false, 0x0F7F, x, m, false) }
+
 // movq x, r / movq r, x (64 bits between an integer and an xmm register).
 pub fn (a: mut &Asm) movqXR(x: int, r: int) { a.rr(0x66, true, 0x0F6E, x, r, false, false) }
 
@@ -811,7 +821,7 @@ const SSE_OPS: []int = [0x58, 0x59, 0x5C, 0x5E, 0x51, 0x10]
 //   shi OP SIZE R N | setcc CC R | cmov CC DST SRC | push R | pop R | callr R | jmpr R
 //   shld DST SRC | shrd DST SRC
 //   ret | leave | cqo | cdq | movsb | stosb | ud2 | sse OP X Y | ucomisd X Y | xorpd X Y
-//   movsdload X MEM | movsdstore MEM X | movqxr X R | movqrx R X | cvtsi2sd X R
+//   movsdload X MEM | movsdstore MEM X | movdquload X MEM | movdqustore MEM X | movqxr X R | movqrx R X | cvtsi2sd X R
 //   cvttsd2si R X
 fn (a: mut &Asm) testLine(l: str) {
     let w = words(l)
@@ -901,6 +911,10 @@ fn (a: mut &Asm) testLine(l: str) {
         a.movsdLoad(num(w[1]), memOf(w[2]))
     } else if k == "movsdstore" {
         a.movsdStore(memOf(w[1]), num(w[2]))
+    } else if k == "movdquload" {
+        a.movdquLoad(num(w[1]), memOf(w[2]))
+    } else if k == "movdqustore" {
+        a.movdquStore(memOf(w[1]), num(w[2]))
     } else if k == "movqxr" {
         a.movqXR(num(w[1]), num(w[2]))
     } else if k == "movqrx" {

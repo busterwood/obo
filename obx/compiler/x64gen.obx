@@ -1589,7 +1589,8 @@ fn (g: &Gen) fusesReturn(d: int, s: int): bool {
     if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.u.nk(s) != ir.S_RETURN { return false }
     let r = g.u.nodes[s].a
     if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != dn.a { return false }
-    return g.u.nodes[r].ty == g.u.nodes[dn.b].ty && !g.isAggr(g.u.nodes[r].ty)
+    return g.u.nodes[r].ty == g.u.nodes[dn.b].ty &&
+        (!g.isAggr(g.u.nodes[r].ty) || len(g.retLitVals(dn.b, g.u.nodes[r].ty)) > 0)
 }
 
 // Weighs the uses of locals in the tree x (at loop depth depth), with the bodies of the calls
@@ -2489,7 +2490,8 @@ fn (g: mut &Gen) fusedReturn(d: int, s: int): bool {
     if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.u.nk(s) != ir.S_RETURN { return false }
     let r = g.u.nodes[s].a
     if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != dn.a { return false }
-    if g.u.nodes[r].ty != g.u.nodes[dn.b].ty || g.isAggr(g.u.nodes[r].ty) { return false }
+    if g.u.nodes[r].ty != g.u.nodes[dn.b].ty { return false }
+    if g.isAggr(g.u.nodes[r].ty) && len(g.retLitVals(dn.b, g.u.nodes[r].ty)) == 0 { return false }
     g.genReturn(dn.b)
     g.epilogue()
     return true
@@ -2506,6 +2508,7 @@ fn (g: &Gen) jumpOnly(s: int): int {
 
 fn (g: mut &Gen) genReturn(x: int) {
     let t = g.retTy
+    if g.isAggr(t) && g.retLiteral(x, t) { return }
     g.gen(x)
     if !g.isAggr(t) { return }
     let cls = g.classify(t)
@@ -2535,6 +2538,76 @@ fn (g: mut &Gen) genReturn(x: int) {
     let s = g.tempFor(t)
     g.copyMem(rbp(s), x64.mem(RAX, 0), g.size(t))
     g.loadEightbytes(&cls, s)
+}
+
+// A returned record literal x of type t of up to two eightbytes, each given whole by one entry
+// of 8 bytes: the value of each eightbyte, then (last) the one eightbyte that needs code, or -1;
+// else empty. Every entry is a value that needs no code (a simple integer, a double in memory),
+// but for one integer that is pure, generated first.
+fn (g: &Gen) retLitVals(x: int, t: int): []int {
+    if g.u.nk(x) != ir.E_CLIT || g.size(t) > 16 || g.size(t) % 8 != 0 || g.u.nodes[x].ty != t { return [] }
+    let cls = g.classify(t)
+    if cls[0] == CL_MEM { return [] }
+    let ents = g.u.nodes[x].b
+    let cnt = len(cls)
+    if g.u.listLen(ents) != cnt { return [] }
+    var val: []int = array(cnt + 1, -1)
+    for j in 0..cnt {
+        let en = g.u.nodes[g.u.listAt(ents, j)]
+        if en.v < 0 || en.v % 8 != 0 || en.v / 8 >= cnt || val[en.v / 8] >= 0 { return [] }
+        if g.size(en.ty) != 8 || g.isAggr(en.ty) || g.is128(en.ty) || g.isF(en.ty) != (cls[en.v / 8] == CL_SSE) {
+            return []
+        }
+        if g.u.nodes[en.a].ty != en.ty { return [] }
+        val[en.v / 8] = en.a
+    }
+    var anySse = false
+    for i in 0..cnt {
+        if cls[i] == CL_SSE {
+            anySse = true
+            if g.staticMem(val[i]).base == -9 { return [] }
+        } else if !g.simple(val[i]) {
+            if val[cnt] >= 0 || !g.pure(val[i]) { return [] }
+            val[cnt] = i
+        }
+    }
+    if val[cnt] >= 0 && anySse { return [] }
+    return val
+}
+
+// Generates the return of the record literal x of type t if retLitVals allows: the registers
+// are loaded from the entries' values, with no temporary in the frame. Whether it did.
+fn (g: mut &Gen) retLiteral(x: int, t: int): bool {
+    let val = g.retLitVals(x, t)
+    if len(val) == 0 { return false }
+    let cls = g.classify(t)
+    let cnt = len(cls)
+    let gen = val[cnt]
+    var ni = 0
+    var nx = 0
+    var rr: []int = array(cnt, -1)
+    for i in 0..cnt {
+        if cls[i] == CL_SSE {
+            rr[i] = nx
+            nx += 1
+        } else {
+            rr[i] = if ni == 0 { RAX } else { RDX }
+            ni += 1
+        }
+    }
+    if gen >= 0 {
+        g.gen(val[gen])
+        if rr[gen] != RAX { g.a.movRR(8, rr[gen], RAX) }
+    }
+    for i in 0..cnt {
+        if i == gen { continue }
+        if cls[i] == CL_SSE {
+            g.a.movsdLoad(rr[i], g.staticMem(val[i]))
+        } else {
+            g.genInto(val[i], rr[i])
+        }
+    }
+    return true
 }
 
 // Loads the eightbytes of the value at rbp+s into the result registers.
@@ -2600,6 +2673,12 @@ fn (g: mut &Gen) copyMem(dst: x64.Mem, src: x64.Mem, n: int) {
         return
     }
     var o = 0
+    // 16 bytes at a time through xmm15 (the backend never allocates it; doubles live in xmm0..xmm7)
+    while n >= 32 && n - o >= 16 {
+        g.a.movdquLoad(15, at(src, o))
+        g.a.movdquStore(at(dst, o), 15)
+        o += 16
+    }
     for w in [8, 4, 2, 1] {
         while n - o >= w {
             g.a.load(w, R10, at(src, o))
