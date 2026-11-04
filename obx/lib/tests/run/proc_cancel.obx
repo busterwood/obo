@@ -1,0 +1,111 @@
+// proc: cancellation, a deadline and a drop. A wait cancelled (its future
+// dropped) or past a task.within deadline stops the child with SIGTERM and, if
+// it ignores that, SIGKILL after 2 s; the child is collected (no /proc entry)
+// and the call returns ECANCELED or ETIMEDOUT. Dropping a Child that was not
+// waited for kills and collects it.
+// expect: timeout: true
+// expect: timeout was quick: true
+// expect: timed-out child collected: true
+// expect: cancelled child collected: true
+// expect: term-ignoring child collected after the grace: true
+// expect: dropped child collected: true
+// expect: waited child unchanged: exit 0
+import "proc"
+import "task"
+import "time"
+import "io"
+
+fn shell(script: str): proc.Command { return proc.command("sh", ["-c", script]) }
+
+fn pidOf(path: str): int {
+    match io.read(path) {
+        Ok(s) {
+            var n = 0
+            for i in 0..len(s) {
+                let c = strByte(s, i)
+                if c >= '0' && c <= '9' { n = n * 10 + int(c - '0') }
+            }
+            return n
+        }
+        Err(e) { return 0 }
+    }
+}
+
+fn gone(pid: int): bool {
+    if pid <= 0 { return false }
+    match io.read("/proc/" + intToStr(pid) + "/stat") {
+        Ok(_) { return false }
+        Err(e) { return e.errno == 2 }
+    }
+}
+
+// a ProcError's flags as a number: 1 cancelled, 2 timeout, 0 other, -1 no error
+fn outcome(c: proc.Command): int {
+    match proc.output(&c) {
+        Ok(_) { return -1 }
+        Err(e) { return if e.isCancelled() { 1 } else if e.isTimeout() { 2 } else { 0 } }
+    }
+}
+
+fn waiting(tmp: str): int {
+    return outcome(shell("echo $$ > " + tmp + "/p; exec sleep 30"))
+}
+
+fn stubborn(tmp: str): int {
+    return outcome(shell("trap '' TERM; echo $$ > " + tmp + "/p; exec sleep 30"))
+}
+
+fn started(path: str) {
+    // wait for the child to write its pid
+    for i in 0..200 {
+        if pidOf(path) > 0 { return }
+        task.sleep(10).unwrap()
+    }
+}
+
+fn keep(c: proc.Child): int {
+    return c.pid()
+}
+
+fn main() {
+    let dir = proc.output(&proc.command("mktemp", ["-d"])).unwrap().stdoutStr()
+    let tmp = strSlice(dir, 0, len(dir) - 1)
+
+    // a deadline
+    let t0 = time.monotonicNs()
+    let r = task.within(300, fn(): int { return waiting(tmp) })
+    let ms = (time.monotonicNs() - t0) / 1000000
+    println("timeout: " + (r == 2).toStr())
+    println("timeout was quick: " + (ms >= 290 && ms < 1500).toStr())
+    println("timed-out child collected: " + gone(pidOf(tmp + "/p")).toStr())
+
+    // cancellation by dropping the future
+    task.scope(fn(s: mut &task.Scope) {
+        let f = s.start(waiting, tmp)
+        started(tmp + "/p")
+        task.sleep(50).unwrap()
+        let g = f                                       // dropped at the end of the scope's closure: cancelled
+    })
+    println("cancelled child collected: " + gone(pidOf(tmp + "/p")).toStr())
+
+    // a child that ignores SIGTERM is killed after the grace period
+    let t1 = time.monotonicNs()
+    let r2 = task.within(300, fn(): int { return stubborn(tmp) })
+    let ms2 = (time.monotonicNs() - t1) / 1000000
+    println("term-ignoring child collected after the grace: " + (r2 == 2 && ms2 >= 1900 && ms2 < 6000 && gone(pidOf(tmp + "/p"))).toStr())
+
+    // a dropped child
+    var pid = 0
+    task.scope(fn(s: mut &task.Scope) {
+        let child = proc.start(&proc.command("sleep", ["30"])).unwrap()
+        pid = child.pid()
+    })
+    println("dropped child collected: " + gone(pid).toStr())
+
+    // a child that was waited for is not touched again
+    var child = proc.start(&shell("exit 0")).unwrap()
+    let e = child.wait().unwrap()
+    let e2 = child.wait().unwrap()
+    println("waited child unchanged: " + e2.toStr())
+    proc.run(&proc.command("rm", ["-r", tmp])).unwrap()
+}

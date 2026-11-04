@@ -1,0 +1,101 @@
+// proc: processes as futures. Three `sleep 0.3` started as tasks overlap (well
+// under 0.9 s), task.all collects their exits, task.any returns the first and
+// the loser's child is terminated and collected; the other tasks run while
+// one waits for a child.
+// expect: all: 3 exits ok: true
+// expect: overlapped: true
+// expect: any: 7 (fast)
+// expect: loser killed and collected: true
+// expect: ticker ran while waiting: true
+import "proc"
+import "task"
+import "time"
+import "io"
+
+fn out(c: proc.Command): int {
+    let r = proc.output(&c)
+    match r {
+        Ok(o) { return if o.exit.ok() { 1 } else { 0 } }
+        Err(e) { return -1 }
+    }
+}
+
+fn shell(script: str): proc.Command { return proc.command("sh", ["-c", script]) }
+
+fn pidOf(path: str): int {
+    match io.read(path) {
+        Ok(s) {
+            var n = 0
+            for i in 0..len(s) {
+                let c = strByte(s, i)
+                if c >= '0' && c <= '9' { n = n * 10 + int(c - '0') }
+            }
+            return n
+        }
+        Err(e) { return 0 }
+    }
+}
+
+fn exists(path: str): bool {
+    match io.read(path) {
+        Ok(_) { return true }
+        Err(e) { return e.errno != 2 }
+    }
+}
+
+fn exitSeven(c: proc.Command): int {
+    match proc.run(&c) {
+        Ok(e) { return e.code() }
+        Err(e) { return -1 }
+    }
+}
+
+fn ticker(n: int): int {
+    var ticks = 0
+    for i in 0..n {
+        task.sleep(20).unwrap()
+        ticks += 1
+    }
+    return ticks
+}
+
+fn main() {
+    let t0 = time.monotonicNs()
+    var ok = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for i in 0..3 { append(mut &fs, s.start(out, proc.command("sleep", ["0.3"]))) }
+        let rs = task.all(fs).unwrap()
+        for r in rs { ok += r }
+    })
+    let ms = (time.monotonicNs() - t0) / 1000000
+    println("all: " + intToStr(ok) + " exits ok: " + (ok == 3).toStr())
+    println("overlapped: " + (ms >= 290 && ms < 800).toStr())
+
+    // any: the first to end wins, the other child is stopped
+    let dir = proc.output(&proc.command("mktemp", ["-d"])).unwrap().stdoutStr()
+    let tmp = strSlice(dir, 0, len(dir) - 1)
+    var pid = 0
+    let first = task.scoped(fn(s: mut &task.Scope): int {
+        let slow = s.start(exitSeven, shell("echo $$ > " + tmp + "/pid; exec sleep 30"))
+        task.sleep(100).unwrap()                       // the slow one is running
+        let fast = s.start(exitSeven, shell("exit 7"))
+        var fs: []task.Future[int] = []
+        append(mut &fs, slow)
+        append(mut &fs, fast)
+        return task.any(fs).unwrap()
+    })
+    println("any: " + intToStr(first) + " (fast)")
+    pid = pidOf(tmp + "/pid")
+    println("loser killed and collected: " + (pid > 0 && !exists("/proc/" + intToStr(pid) + "/stat")).toStr())
+
+    // other tasks run while one waits
+    var ticks = 0
+    task.scope(fn(s: mut &task.Scope) {
+        let t = s.start(ticker, 5)
+        let e = proc.run(&proc.command("sleep", ["0.25"])).unwrap()
+        ticks = t.wait().unwrap()
+    })
+    println("ticker ran while waiting: " + (ticks == 5).toStr())
+    proc.run(&proc.command("rm", ["-r", tmp])).unwrap()
+}

@@ -1822,6 +1822,224 @@ int64_t obxlib_proc_wait(int64_t ms, int64_t* status) {
     }
 }
 int64_t obxlib_proc_kill(int64_t pid, int64_t sig) { return kill((pid_t)pid, (int)sig) == 0 ? 0 : -errno; }
+/* ---- other programs (lib/proc.obx; native/rt.c has the same functions, with raw system calls)
+   obxlib_proc_spawn starts a program in the parent's name: the program is found in PATH, the
+   files and pipes are opened, and the argument and environment vectors are built before the
+   fork, so that nothing can fail in the child but the system calls it makes. The child (only
+   async-signal-safe calls) restores the default signal mask and dispositions, makes descriptors
+   0 to 2 what was asked, changes directory and executes; when that fails it writes the errno to
+   a close-on-exec pipe, which the parent reads (it reads end of file when the exec worked). All
+   descriptors are close-on-exec, so the program has only 0, 1 and 2. The blob is NUL-terminated
+   strings: the program, the directory ("": none), the paths for stdin, stdout and stderr (""
+   unless the mode is a file), argc arguments, envc "NAME=value" strings (they replace the parent's
+   variables of the same names, or are all there is when bit 12 of modes is set). A mode (4 bits for each of stdin, stdout, stderr) is 0 inherit, 1 pipe, 2
+   /dev/null, 3 file (stdin read; the others created and emptied), 4 file appended to, 5 (stderr
+   only) the same as stdout. out[0] is the pidfd (-1: none; OBX_NO_PIDFD=1 or an old kernel),
+   out[1..3] the parent's ends of the pipes, non-blocking and in the epoll set (-1: none).
+   Result: the pid, or -errno. */
+extern char** environ;
+int pipe2(int fds[2], int flags);                                     /* _GNU_SOURCE in <unistd.h> */
+static int rt_proc_hi(int fd) {                    /* a descriptor above 2 (the child dup2s onto 0 to 2) */
+    if (fd < 0 || fd > 2) return fd;
+    int n = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+    int e = errno;
+    close(fd);
+    errno = e;
+    return n < 0 ? -errno : n;
+}
+static void rt_proc_closeall(int* fds, int n) {
+    for (int i = 0; i < n; i++) if (fds[i] >= 0) { close(fds[i]); fds[i] = -1; }
+}
+/* PATH lookup for a name without "/": 0 and the path in *out, or -errno */
+static int rt_proc_find(const char* prog, char** out) {
+    size_t pl = strlen(prog);
+    if (pl == 0) return -ENOENT;
+    if (strchr(prog, '/')) { *out = strdup(prog); return 0; }
+    const char* path = getenv("PATH");
+    if (!path) path = "/usr/local/bin:/usr/bin:/bin";
+    char* o = malloc(strlen(path) + pl + 3);
+    int err = -ENOENT;
+    for (const char* d = path;;) {
+        const char* e = d;
+        while (*e && *e != ':') e++;
+        size_t dl = (size_t)(e - d), k = 0;
+        if (dl == 0) { o[k++] = '.'; } else { memcpy(o, d, dl); k = dl; }
+        o[k++] = '/';
+        memcpy(o + k, prog, pl + 1);
+        if (access(o, X_OK) == 0) { *out = o; return 0; }
+        if (errno == EACCES) err = -EACCES;
+        if (!*e) break;
+        d = e + 1;
+    }
+    free(o);
+    return err;
+}
+int64_t obxlib_proc_spawn(const uint8_t* blob, int64_t argc, int64_t envc, int64_t modes, int64_t* out) {
+    const char* p = (const char*)blob;
+    const char* prog = p; p += strlen(p) + 1;
+    const char* cwd = p; p += strlen(p) + 1;
+    const char* fpath[3];
+    for (int i = 0; i < 3; i++) { fpath[i] = p; p += strlen(p) + 1; }
+    char* path = 0;
+    int r = rt_proc_find(prog, &path);
+    if (r < 0) return r;
+    char** argv = malloc((size_t)(argc + 2) * sizeof *argv);
+    argv[0] = (char*)prog;
+    for (int64_t i = 0; i < argc; i++) { argv[i + 1] = (char*)p; p += strlen(p) + 1; }
+    argv[argc + 1] = 0;
+    char** envp;
+    char** envbuf;
+    {
+        const char** over = malloc((size_t)(envc + 1) * sizeof *over);   /* the given entries */
+        for (int64_t i = 0; i < envc; i++) { over[i] = p; p += strlen(p) + 1; }
+        int clean = (int)((modes >> 12) & 1);
+        size_t ne = 0;
+        if (!clean) for (char** e = environ; e && *e; e++) ne++;
+        envbuf = malloc((ne + (size_t)envc + 1) * sizeof *envbuf);
+        size_t k = 0;
+        if (!clean) for (char** e = environ; e && *e; e++) {
+            size_t nl = 0;
+            while ((*e)[nl] && (*e)[nl] != '=') nl++;
+            int hidden = 0;
+            for (int64_t i = 0; i < envc && !hidden; i++) hidden = strncmp(over[i], *e, nl) == 0 && over[i][nl] == '=';
+            if (!hidden) envbuf[k++] = *e;
+        }
+        for (int64_t i = 0; i < envc; i++) envbuf[k++] = (char*)over[i];
+        envbuf[k] = 0;
+        free(over);
+        envp = envbuf;
+    }
+    int cfd[3] = {-1, -1, -1}, pfd[3] = {-1, -1, -1}, ep[2] = {-1, -1};
+    for (int i = 0; i < 3 && r >= 0; i++) {
+        int m = (int)((modes >> (4 * i)) & 15);
+        if (m == 1) {
+            int pp[2];
+            if (pipe2(pp, O_CLOEXEC) != 0) { r = -errno; break; }
+            cfd[i] = rt_proc_hi(pp[i == 0 ? 0 : 1]);
+            pfd[i] = rt_proc_hi(pp[i == 0 ? 1 : 0]);
+            if (cfd[i] < 0 || pfd[i] < 0) { r = cfd[i] < 0 ? cfd[i] : pfd[i]; break; }
+            if (fcntl(pfd[i], F_SETFL, O_NONBLOCK) != 0) r = -errno;
+        } else if (m == 2 || m == 3 || m == 4) {
+            const char* f = m == 2 ? "/dev/null" : fpath[i];
+            int fl = i == 0 ? O_RDONLY : (m == 2 ? O_WRONLY : m == 3 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND));
+            int fd = open(f, fl | O_CLOEXEC, 0666);
+            if (fd < 0) { r = -errno; break; }
+            cfd[i] = rt_proc_hi(fd);
+            if (cfd[i] < 0) r = cfd[i];
+        }
+    }
+    if (r >= 0) {
+        int pp[2];
+        if (pipe2(pp, O_CLOEXEC) != 0) r = -errno;
+        else {
+            ep[0] = rt_proc_hi(pp[0]);
+            ep[1] = rt_proc_hi(pp[1]);
+            if (ep[0] < 0 || ep[1] < 0) r = ep[0] < 0 ? ep[0] : ep[1];
+        }
+    }
+    int dup_err = (int)((modes >> 8) & 15) == 5;
+    pid_t pid = -1;
+    if (r >= 0) {
+        rt_flush();
+        fflush(0);
+        pid = fork();
+        if (pid == 0) {
+            sigset_t none;
+            sigemptyset(&none);
+            sigprocmask(SIG_SETMASK, &none, 0);
+            struct sigaction sa;
+            memset(&sa, 0, sizeof sa);
+            sa.sa_handler = SIG_DFL;
+            for (int s = 1; s < NSIG; s++) if (s != SIGKILL && s != SIGSTOP) sigaction(s, &sa, 0);
+            int e = 0;
+            for (int i = 0; i < 3 && e == 0; i++) if (cfd[i] >= 0 && dup2(cfd[i], i) < 0) e = errno;
+            if (e == 0 && dup_err && dup2(1, 2) < 0) e = errno;
+            if (e == 0 && cwd[0] && chdir(cwd) != 0) e = errno;
+            if (e == 0) { execve(path, argv, envp); e = errno; }
+            int32_t code = e;
+            ssize_t wr = write(ep[1], &code, 4);
+            (void)wr;
+            _exit(127);
+        }
+        if (pid < 0) r = -errno;
+    }
+    free(path);
+    free(argv);
+    free(envbuf);
+    if (r < 0) {
+        rt_proc_closeall(cfd, 3);
+        rt_proc_closeall(pfd, 3);
+        rt_proc_closeall(ep, 2);
+        return r;
+    }
+    rt_proc_closeall(cfd, 3);
+    close(ep[1]);
+    int32_t code = 0;
+    ssize_t got;
+    do got = read(ep[0], &code, 4); while (got < 0 && errno == EINTR);
+    close(ep[0]);
+    if (got == 4) {                                    /* the exec (or a step before it) failed */
+        int st;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        rt_proc_closeall(pfd, 3);
+        return -(int64_t)code;
+    }
+    out[0] = -1;
+    const char* np = getenv("OBX_NO_PIDFD");
+    if (!(np && np[0] == '1')) {
+        long fd = syscall(434, pid, 0);                /* pidfd_open */
+        if (fd >= 0) out[0] = fd;
+    }
+    for (int i = 0; i < 3; i++) {
+        out[i + 1] = pfd[i];
+        if (pfd[i] >= 0) {
+            int64_t e = rt_net_new(pfd[i]);            /* closes the descriptor when it fails */
+            if (e < 0) {
+                pfd[i] = -1;
+                kill(pid, SIGKILL);
+                int st;
+                while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+                for (int j = 0; j < 3; j++) if (pfd[j] >= 0) obxlib_net_close(pfd[j]);
+                if (out[0] >= 0) close((int)out[0]);
+                return e;
+            }
+        }
+    }
+    return pid;
+}
+/* A write to a pipe: the same as a socket's, except that a closed reader raises SIGPIPE, which
+   is blocked around the call and taken back, so it is EPIPE and nothing else. */
+int64_t obxlib_proc_write(int64_t fd, const void* b, int64_t n) {
+    sigset_t sp, old;
+    sigemptyset(&sp);
+    sigaddset(&sp, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &sp, &old);
+    ssize_t r = write((int)fd, b, (size_t)n);
+    int e = errno;
+    if (r < 0 && e == EPIPE) {
+        struct timespec z = {0, 0};
+        sigtimedwait(&sp, 0, &z);
+    }
+    if (!sigismember(&old, SIGPIPE)) pthread_sigmask(SIG_UNBLOCK, &sp, 0);
+    errno = e;
+    return r < 0 ? -e : r;
+}
+/* waitpid for the child: its pid, 0 (block = 0) when it still runs, or -errno; *status */
+int64_t obxlib_proc_reap(int64_t pid, int64_t block, int64_t* status) {
+    for (;;) {
+        int st = 0;
+        pid_t r = waitpid((pid_t)pid, &st, block ? 0 : WNOHANG);
+        if (r < 0 && errno == EINTR) continue;
+        if (r < 0) return -errno;
+        if (r > 0) *status = st;
+        return r;
+    }
+}
+/* Sleeps ms milliseconds on the thread (a kernel without pidfd, after a cancellation). */
+void obxlib_proc_nap(int64_t ms) {
+    struct timespec t = {ms / 1000, (ms % 1000) * 1000000};
+    nanosleep(&t, 0);
+}
 /* The end of a worker: its output flushed, and under OBX_CHECK=1 its own objects counted. */
 void obxlib_worker_exit(int64_t code) {
     if (rt_end_fn) rt_end_fn(0);       /* the globals' drops, as at the end of main */

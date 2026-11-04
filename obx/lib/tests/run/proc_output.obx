@@ -1,0 +1,142 @@
+// proc: output captures standard output and standard error; exit codes, death
+// by a signal, a program that is not found (an ordinary Err, found in the
+// parent before the fork), a failed exec, environment, working directory,
+// files and /dev/null as streams. A program with no tasks of its own works
+// (main is a task).
+// expect: out: "hello world\n" exit 0
+// expect: err: "to stderr\n" out: "to stdout\n"
+// expect: exit 3 code=3 signal=0 ok=false
+// expect: signal 9 code=-1 signal=9 ok=false
+// expect: not found: true start definitely-not-a-program-xyz: No such file or directory
+// expect: no PATH hit for an empty name: true
+// expect: bad cwd: true start sh: No such file or directory
+// expect: env: "kept=1 set=abc over=new\n"
+// expect: clean env: "set=abc\n"
+// expect: cwd: "/\n"
+// expect: spaces: "two words|y\n"
+// expect: file: "into a file\n"
+// expect: append: "line1\nline2\n"
+// expect: not executable: errno 13
+// expect: stdin file: "from a file"
+// expect: null stdin: "" exit 0
+// expect: merged: "o\ne\n"
+// expect: invalid: errno 22
+import "proc"
+import "io"
+import "os"
+
+fn show(r: proc.Output): str {
+    return "out: " + quote(r.stdoutStr()) + " exit " + intToStr(r.exit.code())
+}
+
+fn quote(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == '\n' { b.add("\\n") } else { b.addByte(c) }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
+
+fn sh(script: str): proc.Command {
+    return proc.command("sh", ["-c", script])
+}
+
+fn main() {
+    // output
+    let r = proc.output(&proc.command("echo", ["hello", "world"])).unwrap()
+    println(show(r))
+
+    // both streams, kept apart
+    let r2 = proc.output(&sh("echo to stdout; echo to stderr >&2")).unwrap()
+    println("err: " + quote(r2.stderrStr()) + " out: " + quote(r2.stdoutStr()))
+
+    // an exit code and a signal
+    let e1 = proc.output(&sh("exit 3")).unwrap().exit
+    println(e1.toStr() + " code=" + intToStr(e1.code()) + " signal=" + intToStr(e1.signal()) + " ok=" + e1.ok().toStr())
+    let e2 = proc.output(&sh("kill -9 $$")).unwrap().exit
+    println(e2.toStr() + " code=" + intToStr(e2.code()) + " signal=" + intToStr(e2.signal()) + " ok=" + e2.ok().toStr())
+
+    // a program that does not exist, in PATH and as a path
+    match proc.output(&proc.command("definitely-not-a-program-xyz", [])) {
+        Ok(_) { println("started?") }
+        Err(e) { println("not found: " + e.isNotFound().toStr() + " " + e.toStr()) }
+    }
+    match proc.start(&proc.command("", [])) {
+        Ok(_) { println("started?") }
+        Err(e) { println("no PATH hit for an empty name: " + e.isNotFound().toStr()) }
+    }
+    match proc.start(&proc.command("/definitely/not/here", [])) {
+        Ok(_) { println("started?") }
+        Err(e) { if !e.isNotFound() { println("wrong errno " + intToStr(e.errno)) } }
+    }
+    // a working directory that is not there
+    var bad = proc.command("sh", ["-c", "true"])
+    bad.cwd = "/definitely/not/here"
+    match proc.start(&bad) {
+        Ok(_) { println("started?") }
+        Err(e) { println("bad cwd: " + e.isNotFound().toStr() + " " + e.toStr()) }
+    }
+
+    // environment: added to the parent's, replacing, and clean
+    os.setEnv("PROC_KEPT", "1").unwrap()
+    os.setEnv("PROC_OVER", "old").unwrap()
+    var ec = sh("echo kept=$PROC_KEPT set=$PROC_SET over=$PROC_OVER")
+    ec.setEnv("PROC_SET", "abc")
+    ec.setEnv("PROC_OVER", "new")
+    print("env: " + quote(proc.output(&ec).unwrap().stdoutStr()) + "\n")
+    var cl = proc.command("/bin/sh", ["-c", "echo set=$PROC_SET${PROC_KEPT}"])
+    cl.cleanEnv = true
+    cl.setEnv("PROC_SET", "abc")
+    print("clean env: " + quote(proc.output(&cl).unwrap().stdoutStr()) + "\n")
+
+    // working directory
+    var cw = proc.command("pwd", [])
+    cw.cwd = "/"
+    print("cwd: " + quote(proc.output(&cw).unwrap().stdoutStr()) + "\n")
+
+    // arguments with spaces stay whole
+    print("spaces: " + quote(proc.output(&proc.command("sh", ["-c", "echo \"$1|$2\"", "x", "two words", "y"])).unwrap().stdoutStr()) + "\n")
+
+    // files and /dev/null
+    let dir = proc.output(&proc.command("mktemp", ["-d"])).unwrap().stdoutStr()
+    let tmp = strSlice(dir, 0, len(dir) - 1)
+    var wf = sh("echo into a file")
+    wf.stdout = proc.Stdio.File(tmp + "/out.txt")
+    proc.run(&wf).unwrap()
+    print("file: " + quote(io.read(tmp + "/out.txt").unwrap()) + "\n")
+    var ap = sh("echo line2")
+    ap.stdout = proc.Stdio.Append(tmp + "/app.txt")
+    io.write(tmp + "/app.txt", "line1\n").unwrap()
+    proc.run(&ap).unwrap()
+    print("append: " + quote(io.read(tmp + "/app.txt").unwrap()) + "\n")
+    // a file that is not executable: the exec fails in the child, and its errno comes back
+    io.write(tmp + "/noexec", "text").unwrap()
+    match proc.start(&proc.command(tmp + "/noexec", [])) {
+        Ok(_) { println("started?") }
+        Err(e) { println("not executable: errno " + intToStr(e.errno)) }
+    }
+    io.write(tmp + "/in.txt", "from a file").unwrap()
+    var rf = proc.command("cat", [])
+    rf.stdin = proc.Stdio.File(tmp + "/in.txt")
+    print("stdin file: " + quote(proc.output(&rf).unwrap().stdoutStr()) + "\n")
+    var nl = proc.command("cat", [])
+    nl.stdin = proc.Stdio.Null
+    let rn = proc.output(&nl).unwrap()
+    println("null stdin: " + quote(rn.stdoutStr()) + " exit " + intToStr(rn.exit.code()))
+    var mg = sh("echo o; echo e >&2")
+    mg.stdout = proc.Stdio.File(tmp + "/merged.txt")
+    mg.stderr = proc.Stdio.Stdout
+    proc.run(&mg).unwrap()
+    print("merged: " + quote(io.read(tmp + "/merged.txt").unwrap()) + "\n")
+    // a stream that cannot be that
+    var iv = sh("true")
+    iv.stdout = proc.Stdio.Stdout
+    match proc.start(&iv) {
+        Ok(_) { println("started?") }
+        Err(e) { println("invalid: errno " + intToStr(e.errno)) }
+    }
+    proc.run(&proc.command("rm", ["-r", tmp])).unwrap()
+}

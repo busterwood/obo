@@ -1,0 +1,597 @@
+// proc: starting other programs, talking to them through pipes and waiting
+// for them as part of the task model (SPEC 16; design/concurrency.md,
+// section 9).
+//
+//     let r = proc.output(proc.command("git", ["rev-parse", "HEAD"])).expect("git")
+//     println(r.stdoutStr())                      // the output, collected
+//     println(r.exit.toStr())                     // "exit 0"
+//
+//     var c = proc.command("sort", [])
+//     c.stdin = proc.Stdio.Pipe
+//     c.stdout = proc.Stdio.Pipe
+//     var child = proc.start(&c).expect("sort")
+//     child.stdin.writeStr("b\na\n").unwrap()
+//     child.stdin.close()                         // the end of its input
+//     var out = child.takeStdout()
+//     ... out.read(mut &buf) ...
+//     let exit = child.wait().unwrap()
+//
+// A Command names a program, its arguments, optionally environment entries
+// and a directory, and what each of the child's standard streams is: the
+// parent's (Inherit, the default), a pipe, /dev/null, a file. A program name
+// without "/" is looked up in the parent's PATH before anything is forked, so
+// a program that does not exist is an ordinary Err (ENOENT), not an exit code
+// of the child. If the exec itself fails (EACCES, ENOEXEC, a bad directory) the
+// child reports its errno through a close-on-exec pipe and start returns it.
+// The child has only descriptors 0, 1 and 2 (everything the parent opens is
+// close-on-exec), the default signal mask and the default signal dispositions.
+//
+// A pipe end the parent keeps is non-blocking and waited for like a socket:
+// a read with nothing to read, or a write to a full pipe, parks the task (the
+// other tasks run) and a program with no tasks works the same. wait parks on
+// a pidfd (Linux 5.3; on an older kernel it polls every 10 ms, and OBX_NO_PIDFD=1
+// forces that). So `s.start(fn(c) { proc.output(c) }, cmd)` is a Future, and
+// task.all and task.any run processes side by side.
+//
+// Cancellation and deadlines (task.within) apply to wait, output, communicate
+// and run: a child that is still running when its task is cancelled or past its
+// deadline gets SIGTERM, then SIGKILL after 2 s, is collected, and the call
+// returns the error ECANCELED or ETIMEDOUT (isCancelled(), isTimeout()). Pipe
+// reads and writes return the same errors, as net does.
+//
+// A Child is owned. Dropping one that was not waited for kills it with SIGKILL
+// and collects it (no zombie, no orphan); its pipe ends are closed. A write to
+// a child that has closed its input is EPIPE, never SIGPIPE. A grandchild that
+// keeps a pipe open keeps output waiting for its end, as with any pipe.
+// A process with a live Child holds descriptors in the event loop, so
+// task.workers refuses to fork then (exit 15).
+
+import "io"
+import "task"
+
+extern "c" fn rtSpawn(blob: &[]byte, argc: int, envc: int, modes: int, out: mut &[]int): int as "obxlib_proc_spawn"
+extern "c" fn rtPipeWrite(fd: int, b: &[byte], n: int): int as "obxlib_proc_write"
+extern "c" fn rtReap(pid: int, block: int, status: mut &int): int as "obxlib_proc_reap"
+extern "c" fn rtKill(pid: int, sig: int): int as "obxlib_proc_kill"
+extern "c" fn rtNap(ms: int) as "obxlib_proc_nap"
+extern "c" fn rtRead(fd: int, b: mut &[byte], n: int): int as "obxlib_net_read"
+extern "c" fn rtClose(fd: int) as "obxlib_net_close"
+extern "c" fn rtWait(fd: int, dir: int, w: ptr): int as "obxlib_net_wait"
+extern "c" fn rtFdWait(fd: int, dir: int, ms: int, cancellable: bool, w: ptr): int as "obxlib_fd_wait"
+extern "c" fn rtCheck(w: ptr): int as "obxlib_task_check"
+extern "c" fn rtSleep(ms: int, w: ptr): int as "obxlib_task_sleep"
+extern "c" fn rtClockNs(which: int): int as "obx_clock_ns"
+
+const EINTR = 4
+const EBADF = 9
+const EAGAIN = 11
+const EINVAL = 22
+const ESRCH = 3
+const SIGTERM = 15
+const SIGKILL = 9
+const GRACE_MS = 2000
+const POLL_MS = 10
+
+// ---- errors
+
+// A failed call: the errno, the operation ("start", "wait", "read", "write",
+// "kill") and the program.
+pub type ProcError = value record {
+    pub errno: int
+    pub op: str
+    pub program: str
+}
+
+// "start nosuchprog: No such file or directory"
+pub fn (e: ProcError) toStr(): str {
+    return e.op + " " + e.program + ": " + io.errorText(e.errno)
+}
+
+pub fn (a: ProcError) eq(b: &ProcError): bool {
+    return a.errno == b.errno && a.op == b.op && a.program == b.program
+}
+
+// Whether the call was stopped by cancellation, or by the deadline of a
+// task.within.
+pub fn (e: ProcError) isCancelled(): bool { return e.errno == io.ECANCELED }
+pub fn (e: ProcError) isTimeout(): bool { return e.errno == io.ETIMEDOUT }
+
+// Whether the program was not found (or the directory not there): ENOENT.
+pub fn (e: ProcError) isNotFound(): bool { return e.errno == 2 }
+
+fn perr(errno: int, op: str, program: str): ProcError {
+    return ProcError{errno: errno, op: op, program: program}
+}
+
+// The error of a call that stopped while parking: 1 cancelled, 3 past the
+// deadline; -errno when the event loop could not wait.
+fn stopped(r: int, op: str, program: str): ProcError {
+    if r < 0 { return perr(-r, op, program) }
+    return perr(if r == 1 { io.ECANCELED } else { io.ETIMEDOUT }, op, program)
+}
+
+// ---- how a child ended
+
+// A normal exit with a code (0 to 255), or death by a signal.
+pub type Exit = value closed { Code(int); Signaled(int) }
+
+pub fn (e: Exit) ok(): bool {
+    match e {
+        Exit.Code(c) { return c == 0 }
+        Exit.Signaled(s) { return false }
+    }
+}
+
+// The exit code; -1 when the child was killed by a signal.
+pub fn (e: Exit) code(): int {
+    match e {
+        Exit.Code(c) { return c }
+        Exit.Signaled(s) { return -1 }
+    }
+}
+
+// The signal that killed the child; 0 when it exited.
+pub fn (e: Exit) signal(): int {
+    match e {
+        Exit.Code(c) { return 0 }
+        Exit.Signaled(s) { return s }
+    }
+}
+
+// "exit 3" or "signal 9"
+pub fn (e: Exit) toStr(): str {
+    match e {
+        Exit.Code(c) { return "exit " + intToStr(c) }
+        Exit.Signaled(s) { return "signal " + intToStr(s) }
+    }
+}
+
+// The wait status of wait4 as an Exit.
+fn decode(st: int): Exit {
+    if st % 128 == 0 { return Exit.Code((st / 256) % 256) }
+    return Exit.Signaled(st % 128)
+}
+
+// ---- commands
+
+// What a standard stream of the child is.
+//   Inherit  the parent's
+//   Pipe     a pipe to the parent (Child.stdin, stdout, stderr)
+//   Null     /dev/null
+//   File     a file: read for stdin, created and emptied for stdout and stderr
+//   Append   a file added to (stdout and stderr; creating it)
+//   Stdout   for stderr only: the same as the child's stdout (2>&1)
+pub type Stdio = value closed { Inherit; Pipe; Null; File(str); Append(str); Stdout }
+
+// A program to run. The fields may be changed before start.
+pub type Command = record {
+    pub program: str
+    pub args: []str          // after the program name (argv[0] is the program as given)
+    pub env: []str           // "NAME=value" entries added to the parent's environment
+    pub cleanEnv: bool       // the child's environment is only env
+    pub cwd: str             // the child's working directory; "" the parent's
+    pub stdin: Stdio
+    pub stdout: Stdio
+    pub stderr: Stdio
+}
+
+// A command for program with args, all streams inherited.
+pub fn command(program: str, args: []str): Command {
+    return Command{program: program, args: args, env: [], cleanEnv: false, cwd: "",
+                   stdin: Stdio.Inherit, stdout: Stdio.Inherit, stderr: Stdio.Inherit}
+}
+
+// Adds an argument.
+pub fn (c: mut &Command) arg(a: str) { append(mut &c.args, a) }
+
+// Sets an environment variable of the child (replacing an entry of the same name).
+pub fn (c: mut &Command) setEnv(name: str, value: str) {
+    let entry = name + "=" + value
+    let prefix = name + "="
+    for i in 0..len(c.env) {
+        if strStartsWith(c.env[i], prefix) {
+            c.env[i] = entry
+            return
+        }
+    }
+    append(mut &c.env, entry)
+}
+
+fn strStartsWith(s: str, prefix: str): bool {
+    if len(s) < len(prefix) { return false }
+    return strSlice(s, 0, len(prefix)) == prefix
+}
+
+fn hasNul(s: str): bool {
+    for i in 0..len(s) {
+        if strByte(s, i) == 0 { return true }
+    }
+    return false
+}
+
+// The mode number of the runtime for a stream (index 0 stdin, 1 stdout, 2
+// stderr), or -1 when the stream cannot be that.
+fn mode(s: &Stdio, which: int): int {
+    match s {
+        Stdio.Inherit { return 0 }
+        Stdio.Pipe { return 1 }
+        Stdio.Null { return 2 }
+        Stdio.File(p) { return 3 }
+        Stdio.Append(p) { return if which == 0 { -1 } else { 4 } }
+        Stdio.Stdout { return if which == 2 { 5 } else { -1 } }
+    }
+}
+
+fn path(s: &Stdio): str {
+    match s {
+        Stdio.File(p) { return p }
+        Stdio.Append(p) { return p }
+        else { return "" }
+    }
+}
+
+// ---- pipes
+
+// The writable end of a child's standard input.
+pub type PipeWriter = record {
+    fd: int
+    program: str
+}
+
+// A readable end of a child's standard output or standard error.
+pub type PipeReader = record {
+    fd: int
+    program: str
+}
+
+pub fn (p: mut &PipeWriter) drop() {
+    if p.fd >= 0 { rtClose(p.fd) }
+}
+
+pub fn (p: mut &PipeReader) drop() {
+    if p.fd >= 0 { rtClose(p.fd) }
+}
+
+// Closes the pipe: the child sees the end of its input. Later writes fail with EBADF.
+pub fn (p: mut &PipeWriter) close() {
+    if p.fd >= 0 { rtClose(p.fd) }
+    p.fd = -1
+}
+
+// Closes the pipe; the child's later writes to it fail with EPIPE.
+pub fn (p: mut &PipeReader) close() {
+    if p.fd >= 0 { rtClose(p.fd) }
+    p.fd = -1
+}
+
+// Whether the pipe is open (it is not when the stream was not a Pipe, or
+// after close or take).
+pub fn (p: &PipeWriter) isOpen(): bool { return p.fd >= 0 }
+pub fn (p: &PipeReader) isOpen(): bool { return p.fd >= 0 }
+
+// Writes all of data, parking while the pipe is full.
+pub fn (p: &PipeWriter) write(data: &[byte], w: Where): Result[Unit, ProcError] {
+    if p.fd < 0 { return Err(perr(EBADF, "write", p.program)) }
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "write", p.program)) }
+    var off = 0
+    while off < len(data) {
+        let n = rtPipeWrite(p.fd, data[off..], len(data) - off)
+        if n >= 0 {
+            off += n
+        } else if n == -EAGAIN {
+            let r = rtWait(p.fd, 1, w.cstr())
+            if r != 0 { return Err(stopped(r, "write", p.program)) }
+        } else if n != -EINTR {
+            return Err(perr(-n, "write", p.program))
+        }
+    }
+    return Ok(Unit{})
+}
+
+// write for the bytes of s.
+pub fn (p: &PipeWriter) writeStr(s: str, w: Where): Result[Unit, ProcError] {
+    let b = strToBytes(s)
+    return p.write(&b, w)
+}
+
+// Reads up to len(buf) bytes into the front of buf: how many, 0 when the
+// child has closed the pipe (and exited, or closed it). Parks while there is
+// nothing to read.
+pub fn (p: &PipeReader) read(buf: mut &[byte], w: Where): Result[int, ProcError] {
+    if p.fd < 0 { return Err(perr(EBADF, "read", p.program)) }
+    let k = rtCheck(w.cstr())
+    if k != 0 { return Err(stopped(k, "read", p.program)) }
+    while true {
+        let n = rtRead(p.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n == -EAGAIN {
+            let r = rtWait(p.fd, 0, w.cstr())
+            if r != 0 { return Err(stopped(r, "read", p.program)) }
+        } else if n != -EINTR {
+            return Err(perr(-n, "read", p.program))
+        }
+    }
+    return Err(perr(EINVAL, "read", p.program))
+}
+
+// Everything up to the end of the stream.
+pub fn (p: &PipeReader) readAll(w: Where): Result[[]byte, ProcError] {
+    var out: []byte = []
+    var buf = array(65536, byte(0))
+    while true {
+        let n = try p.read(mut &buf, w)
+        if n == 0 { break }
+        for i in 0..n { append(mut &out, buf[i]) }
+    }
+    return Ok(out)
+}
+
+// ---- children
+
+// A running (or ended) child process.
+pub type Child = record {
+    pid: int
+    pidfd: int        // -1: none, wait polls
+    program: str
+    done: bool
+    status: int       // the wait status, once done
+    pub stdin: PipeWriter
+    pub stdout: PipeReader
+    pub stderr: PipeReader
+}
+
+fn noReader(program: str): PipeReader { return PipeReader{fd: -1, program: program} }
+
+// Starts the program. The streams that are Pipe are in the Child's stdin,
+// stdout and stderr (not open when the stream is something else).
+pub fn start(cmd: &Command): Result[Child, ProcError] {
+    return spawn(cmd, cmd.stdin, cmd.stdout, cmd.stderr)
+}
+
+fn spawn(cmd: &Command, sin: Stdio, sout: Stdio, serr: Stdio): Result[Child, ProcError] {
+    let prog = cmd.program
+    let m0 = mode(&sin, 0)
+    let m1 = mode(&sout, 1)
+    let m2 = mode(&serr, 2)
+    if m0 < 0 || m1 < 0 || m2 < 0 { return Err(perr(EINVAL, "start", prog)) }
+    if hasNul(prog) || hasNul(cmd.cwd) { return Err(perr(EINVAL, "start", prog)) }
+    var b = newStrBuf()
+    b.add(prog)
+    b.addByte(0)
+    b.add(cmd.cwd)
+    b.addByte(0)
+    for p in [path(&sin), path(&sout), path(&serr)] {
+        if hasNul(p) { return Err(perr(EINVAL, "start", prog)) }
+        b.add(p)
+        b.addByte(0)
+    }
+    for a in cmd.args {
+        if hasNul(a) { return Err(perr(EINVAL, "start", prog)) }
+        b.add(a)
+        b.addByte(0)
+    }
+    for e in cmd.env {
+        if hasNul(e) { return Err(perr(EINVAL, "start", prog)) }
+        b.add(e)
+        b.addByte(0)
+    }
+    let blob = strToBytes(b.toStr())
+    var out = array(4, 0)
+    let modes = m0 + 16 * m1 + 256 * m2 + (if cmd.cleanEnv { 4096 } else { 0 })
+    let pid = rtSpawn(&blob, len(cmd.args), len(cmd.env), modes, mut &out)
+    if pid < 0 { return Err(perr(-pid, "start", prog)) }
+    return Ok(Child{pid: pid, pidfd: out[0], program: prog, done: false, status: 0,
+                    stdin: PipeWriter{fd: out[1], program: prog},
+                    stdout: PipeReader{fd: out[2], program: prog},
+                    stderr: PipeReader{fd: out[3], program: prog}})
+}
+
+// The child's process id (0 once it has been collected).
+pub fn (c: &Child) pid(): int { return if c.done { 0 } else { c.pid } }
+
+// Takes the standard input pipe out of the child, to give it to a task.
+pub fn (c: mut &Child) takeStdin(): PipeWriter {
+    return replace(mut &c.stdin, PipeWriter{fd: -1, program: c.program})
+}
+
+// Takes the standard output pipe out of the child.
+pub fn (c: mut &Child) takeStdout(): PipeReader {
+    return replace(mut &c.stdout, noReader(c.program))
+}
+
+// Takes the standard error pipe out of the child.
+pub fn (c: mut &Child) takeStderr(): PipeReader {
+    return replace(mut &c.stderr, noReader(c.program))
+}
+
+// Sends the signal sig to the child (ESRCH once it has been collected).
+pub fn (c: &Child) signal(sig: int): Result[Unit, ProcError] {
+    if c.done { return Err(perr(ESRCH, "kill", c.program)) }
+    let r = rtKill(c.pid, sig)
+    if r != 0 { return Err(perr(-r, "kill", c.program)) }
+    return Ok(Unit{})
+}
+
+// SIGKILL. The child is still to be collected with wait (or by dropping it).
+pub fn (c: &Child) kill(): Result[Unit, ProcError] { return c.signal(SIGKILL) }
+
+// Collects the child if it has ended: true when it has (c.status is set).
+fn (c: mut &Child) reapNow(): Result[bool, ProcError] {
+    if c.done { return Ok(true) }
+    var st = 0
+    let r = rtReap(c.pid, 0, mut &st)
+    if r < 0 { return Err(perr(-r, "wait", c.program)) }
+    if r == 0 { return Ok(false) }
+    c.done = true
+    c.status = st
+    return Ok(true)
+}
+
+// Parks until the child may have ended: 0, 1 cancelled, 3 past the deadline.
+fn (c: mut &Child) park(w: Where): int {
+    while c.pidfd >= 0 {
+        let r = rtFdWait(c.pidfd, 0, -1, true, w.cstr())
+        if r >= 0 { return r }
+        rtClose(c.pidfd)      // the loop cannot wait for it: poll
+        c.pidfd = -1
+    }
+    return rtSleep(POLL_MS, w.cstr())
+}
+
+// Waits for the child to end and gives how: Exit.Code or Exit.Signaled.
+// Parks the task (the others run). If the task is cancelled, or past its
+// deadline, while the child runs, the child gets SIGTERM and, after 2 s,
+// SIGKILL; it is collected and the error is ECANCELED or ETIMEDOUT. A second
+// call gives the same Exit.
+pub fn (c: mut &Child) wait(w: Where): Result[Exit, ProcError] {
+    while true {
+        let d = try c.reapNow()
+        if d { return Ok(decode(c.status)) }
+        let k = c.park(w)
+        if k != 0 {
+            c.terminate(w)
+            return Err(stopped(k, "wait", c.program))
+        }
+    }
+    return Err(perr(EINVAL, "wait", c.program))
+}
+
+// SIGTERM, 2 s of grace (not cancellable), SIGKILL, collect.
+fn (c: mut &Child) terminate(w: Where) {
+    if c.done { return }
+    let k0 = rtKill(c.pid, SIGTERM)
+    let end = rtClockNs(1) + GRACE_MS * 1000000
+    while true {
+        match c.reapNow() {
+            Ok(d) { if d { return } }
+            Err(e) { c.done = true; return }
+        }
+        let left = (end - rtClockNs(1)) / 1000000
+        if left <= 0 { break }
+        if c.pidfd >= 0 {
+            let r = rtFdWait(c.pidfd, 0, left, false, w.cstr())
+            if r < 0 {
+                rtClose(c.pidfd)
+                c.pidfd = -1
+            }
+        } else {
+            rtNap(if left < POLL_MS { left } else { POLL_MS })
+        }
+    }
+    let k1 = rtKill(c.pid, SIGKILL)
+    var st = 0
+    let r = rtReap(c.pid, 1, mut &st)
+    c.done = true
+    if r > 0 { c.status = st }
+}
+
+// Dropping a child that was not waited for kills it (SIGKILL) and collects
+// it; the pipes are closed after.
+pub fn (c: mut &Child) drop() {
+    if !c.done {
+        let k = rtKill(c.pid, SIGKILL)
+        var st = 0
+        let r = rtReap(c.pid, 1, mut &st)
+        c.done = true
+    }
+    if c.pidfd >= 0 { rtClose(c.pidfd) }
+    c.pidfd = -1
+}
+
+// ---- running to the end
+
+// What output collected.
+pub type Output = record {
+    pub exit: Exit
+    pub stdout: []byte
+    pub stderr: []byte
+}
+
+// The standard output as text.
+pub fn (o: &Output) stdoutStr(): str { return strFromBytes(&o.stdout) }
+
+// The standard error as text.
+pub fn (o: &Output) stderrStr(): str { return strFromBytes(&o.stderr) }
+
+// Starts the command with its streams as set, waits for it and gives how it
+// ended. Streams that are Pipe are closed (the child sees the end of its
+// input, and a write to them fails).
+pub fn run(cmd: &Command, w: Where): Result[Exit, ProcError] {
+    var child = try start(cmd)
+    return child.wait(w)
+}
+
+// Runs the command and collects its standard output and standard error. The
+// command's own stdout and stderr settings do not matter; its stdin is a
+// pipe that is closed at once (the child sees no input) unless it is Null or
+// a File.
+pub fn output(cmd: &Command, w: Where): Result[Output, ProcError] {
+    let none: []byte = []
+    return communicate(cmd, &none, w)
+}
+
+fn drain(r: PipeReader): Result[[]byte, ProcError] {
+    return r.readAll()
+}
+
+fn cancelError(c: task.Cancelled, program: str): ProcError {
+    return perr(if c == task.Cancelled.Timeout { io.ETIMEDOUT } else { io.ECANCELED }, "wait", program)
+}
+
+// output with input written to the child's standard input (when it is not
+// Null or a File), concurrently with the reading of its output and error, so
+// a child that fills one pipe while it waits on another cannot deadlock. A
+// child that ends without reading all of input is not an error (EPIPE is
+// ignored).
+pub fn communicate(cmd: &Command, input: &[]byte, w: Where): Result[Output, ProcError] {
+    var sin = Stdio.Pipe
+    match cmd.stdin {
+        Stdio.Null { sin = Stdio.Null }
+        Stdio.File(p) { sin = Stdio.File(p) }
+        else {}
+    }
+    var child = try spawn(cmd, sin, Stdio.Pipe, Stdio.Pipe)
+    let prog = cmd.program
+    return task.scoped(fn(s: mut &task.Scope): Result[Output, ProcError] {
+        var inp = child.takeStdin()
+        let fo = s.start(drain, child.takeStdout())
+        let fe = s.start(drain, child.takeStderr())
+        if inp.isOpen() {
+            if len(input) > 0 {
+                match inp.write(input, w) {
+                    Ok(_) {}
+                    Err(e) {
+                        if e.isCancelled() || e.isTimeout() {
+                            child.terminate(w)
+                            return Err(e)
+                        }
+                    }
+                }
+            }
+            inp.close()
+        }
+        var so: []byte = []
+        var se: []byte = []
+        match fo.wait(w) {
+            Ok(r) {
+                match move(r) {
+                    Ok(b) { so = b }
+                    Err(e) { child.terminate(w); return Err(e) }
+                }
+            }
+            Err(c) { child.terminate(w); return Err(cancelError(c, prog)) }
+        }
+        match fe.wait(w) {
+            Ok(r) {
+                match move(r) {
+                    Ok(b) { se = b }
+                    Err(e) { child.terminate(w); return Err(e) }
+                }
+            }
+            Err(c) { child.terminate(w); return Err(cancelError(c, prog)) }
+        }
+        let ex = try child.wait(w)
+        return Ok(Output{exit: ex, stdout: so, stderr: se})
+    })
+}

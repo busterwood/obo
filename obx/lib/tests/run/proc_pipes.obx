@@ -1,0 +1,76 @@
+// proc: pipes to and from a child. A child that reads its input and writes
+// it back (cat, sort) through start and the pipe ends; more than 1 MiB
+// through a pipe in each direction with no deadlock (communicate writes the
+// input while it reads); a child that fills the standard error pipe before it
+// writes to standard output; a write to a child that has closed its input is
+// EPIPE, not SIGPIPE.
+// expect: sorted: "a\nb\nc\n" exit 0
+// expect: big stdout: 3000000 bytes, exit 0
+// expect: echo: 2500000 bytes equal: true
+// expect: stderr first: out="done\n" err=1500000 bytes
+// expect: epipe: true
+// expect: survived SIGPIPE
+// expect: partial input ok: exit 0
+import "proc"
+import "task"
+
+fn main() {
+    // start, write, close, read
+    var c = proc.command("sort", [])
+    c.stdin = proc.Stdio.Pipe
+    c.stdout = proc.Stdio.Pipe
+    var child = proc.start(&c).unwrap()
+    child.stdin.writeStr("c\nb\na\n").unwrap()
+    child.stdin.close()
+    var out = child.takeStdout()
+    let got = out.readAll().unwrap()
+    let ex = child.wait().unwrap()
+    println("sorted: " + show(strFromBytes(&got)) + " exit " + intToStr(ex.code()))
+
+    // a large standard output
+    let big = proc.output(&proc.command("head", ["-c", "3000000", "/dev/zero"])).unwrap()
+    println("big stdout: " + intToStr(len(big.stdout)) + " bytes, exit " + intToStr(big.exit.code()))
+
+    // a large input echoed back by cat, written and read at once
+    var data = array(2500000, byte(0))
+    for i in 0..len(data) { data[i] = byte(i % 251) }
+    let echo = proc.communicate(&proc.command("cat", []), &data).unwrap()
+    var same = len(echo.stdout) == len(data)
+    if same {
+        for i in 0..len(data) {
+            if echo.stdout[i] != data[i] { same = false; break }
+        }
+    }
+    println("echo: " + intToStr(len(echo.stdout)) + " bytes equal: " + same.toStr())
+
+    // stderr fills its pipe (64 KiB) while stdout waits: both are read at once
+    let se = proc.output(&proc.command("sh", ["-c", "head -c 1500000 /dev/zero >&2; echo done"])).unwrap()
+    println("stderr first: out=" + show(se.stdoutStr()) + " err=" + intToStr(len(se.stderr)) + " bytes")
+
+    // the child closes its input and exits; writing more is EPIPE
+    var c2 = proc.command("true", [])
+    c2.stdin = proc.Stdio.Pipe
+    var ch2 = proc.start(&c2).unwrap()
+    ch2.wait().unwrap()
+    let big2 = array(200000, byte(1))
+    match ch2.stdin.write(&big2) {
+        Ok(_) { println("epipe: false (written)") }
+        Err(e) { println("epipe: " + (e.errno == 32).toStr()) }
+    }
+    println("survived SIGPIPE")
+
+    // a child that ends without reading its input is not an error for communicate
+    let pi = proc.communicate(&proc.command("true", []), &big2).unwrap()
+    println("partial input ok: exit " + intToStr(pi.exit.code()))
+}
+
+fn show(s: str): str {
+    var b = newStrBuf()
+    b.addByte('"')
+    for i in 0..len(s) {
+        let ch = strByte(s, i)
+        if ch == '\n' { b.add("\\n") } else { b.addByte(ch) }
+    }
+    b.addByte('"')
+    return b.toStr()
+}
