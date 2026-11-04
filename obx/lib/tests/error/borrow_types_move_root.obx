@@ -1,0 +1,10 @@
+// borrow-class types (design/borrow-types.md): a root cannot be moved while something holds borrows of it.
+// error: 'words' is borrowed by 'refs' and cannot be moved
+fn take(xs: []str) {}
+fn main() {
+    let words = ["a", "b"]
+    var refs: []&str = []
+    append(mut &refs, &words[0])
+    take(words)
+    println(refs[0])
+}

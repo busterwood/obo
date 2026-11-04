@@ -1,0 +1,20 @@
+// borrow-class types (design/borrow-types.md): the root of a value holding borrows is frozen while it is in scope.
+// error: 'line' is borrowed by 'parts' and cannot be assigned
+fn splitRef(s: &str, sep: byte): []&str {
+    var out: []&str = []
+    var start = 0
+    for i in 0..len(s) {
+        if s[i] == sep {
+            append(mut &out, &s[start..i])
+            start = i + 1
+        }
+    }
+    append(mut &out, &s[start..len(s)])
+    return out
+}
+fn main() {
+    var line = "a,b"
+    let parts = splitRef(&line, ',')
+    line = "c"
+    println(parts[0])
+}

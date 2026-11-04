@@ -1,0 +1,68 @@
+// Borrow-class types (design/borrow-types.md): records of views returned rooted at
+// their parameter, T: borrow, Option[&str], destructuring, pop and replace.
+// expect: hello 0
+// expect: hello
+// expect: hello0
+// expect: brave
+// expect: h
+// expect: world
+// expect: world@16
+// expect: hello
+// expect: brave
+// expect: new
+// expect: he
+// expect: el
+// expect: ll
+// expect: 3 0
+type Span = value record {
+    text: &str
+    at: int
+}
+
+fn id[T: borrow](x: T): T { return x }
+
+fn firstWord(s: &str): Span {
+    var i = 0
+    while i < len(s) && s[i] != ' ' { i += 1 }
+    return Span{text: s[0..i], at: 0}
+}
+
+fn textOf(sp: &Span): &str { return sp.text }
+
+fn spans(s: &str): []Span {
+    var out: []Span = []
+    var start = 0
+    for i in 0..len(s) + 1 {
+        if i == len(s) || s[i] == ' ' {
+            append(mut &out, Span{text: s[start..i], at: start})
+            start = i + 1
+        }
+    }
+    return out
+}
+
+fn main() {
+    let line = "hello brave new world"
+    let sp = firstWord(&line)
+    println(sp.text + " " + intToStr(sp.at))
+    println(textOf(&sp))
+    let Span{text: t, at: a} = sp
+    println(t + intToStr(a))
+    let w: &str = id(&line[6..11])
+    println(w)
+    let o: Option[&str] = Some(&line[0..1])
+    println(o.unwrap())
+    let none: Option[&str] = None
+    println(none.unwrapOr(&line[16..21]))
+    var all = spans(&line)
+    let last = pop(mut &all)
+    println(last.text + "@" + intToStr(last.at))
+    for s in all { println(s.text) }
+    var cur: []&str = []
+    for i in 0..3 {
+        append(mut &cur, &line[i..i + 2])
+    }
+    for c in cur { println(c) }
+    let old = replace(mut &cur, [])
+    println(intToStr(len(old)) + " " + intToStr(len(cur)))
+}

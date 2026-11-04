@@ -1,0 +1,4 @@
+// borrow-class types (design/borrow-types.md): a boxed record cannot hold a borrow.
+// error: only a value record or value closed type can hold them
+type R = record { t: &str }
+fn main() {}

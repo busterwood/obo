@@ -1,0 +1,103 @@
+// Borrow-class types (design/borrow-types.md): split into views with no counting,
+// a token stream iterated with for ... in, and Map iteration with entries borrowing the map.
+// expect: 4
+// expect: [alpha]
+// expect: [beta]
+// expect: []
+// expect: [gamma delta]
+// expect: gamma delta
+// expect: beta
+// expect: 0 let
+// expect: 0 x
+// expect: 1 1
+// expect: 2 =
+// expect: 1 42
+// expect: 2 +
+// expect: 0 y
+// expect: one=1
+// expect: two=2
+// expect: three=3
+// expect: 6
+// expect: alpha
+fn splitRef(s: &str, sep: byte): []&str {
+    var out: []&str = []
+    var start = 0
+    for i in 0..len(s) {
+        if s[i] == sep {
+            append(mut &out, &s[start..i])
+            start = i + 1
+        }
+    }
+    append(mut &out, &s[start..len(s)])
+    return out
+}
+
+type Token = value record {
+    text: &str
+    kind: int
+}
+
+type Lexer = value record {
+    src: &str
+    pos: int
+}
+
+fn (lx: mut &Lexer) next(): Option[Token] {
+    while lx.pos < len(lx.src) && lx.src[lx.pos] == ' ' { lx.pos += 1 }
+    if lx.pos >= len(lx.src) { return None }
+    let start = lx.pos
+    let c = lx.src[start]
+    var kind = 2
+    if c >= '0' && c <= '9' {
+        kind = 1
+        while lx.pos < len(lx.src) && lx.src[lx.pos] >= '0' && lx.src[lx.pos] <= '9' { lx.pos += 1 }
+    } else if c >= 'a' && c <= 'z' {
+        kind = 0
+        while lx.pos < len(lx.src) && lx.src[lx.pos] >= 'a' && lx.src[lx.pos] <= 'z' { lx.pos += 1 }
+    } else {
+        lx.pos += 1
+    }
+    return Some(Token{text: lx.src[start..lx.pos], kind: kind})
+}
+
+fn longest(parts: &[]&str): &str {
+    var best = 0
+    for i in 0..len(parts) {
+        if len(parts[i]) > len(parts[best]) { best = i }
+    }
+    return parts[best]
+}
+
+fn main() {
+    let line = "alpha,beta,,gamma delta"
+    let parts = splitRef(&line, ',')
+    println(intToStr(len(parts)))
+    for p in parts { println("[" + p + "]") }
+    println(longest(&parts))
+    let w = parts[1]
+    println(w)
+
+    let src = "let x1 = 42 + y"
+    var toks: []Token = []
+    let lx = Lexer{src: &src, pos: 0}
+    for t in lx {
+        append(mut &toks, t)
+    }
+    for t in toks { println(intToStr(t.kind) + " " + t.text) }
+
+    var m: Map[str, int] = newMap()
+    m.put("one", 1)
+    m.put("two", 2)
+    m.put("three", 3)
+    var total = 0
+    for e in m.iter() {
+        println(e.key + "=" + intToStr(e.value))
+        total += e.value
+    }
+    println(intToStr(total))
+    let o: Option[&str] = Some(&line[0..5])
+    match o {
+        Some(s) { println(s) }
+        None { println("none") }
+    }
+}

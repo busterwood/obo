@@ -1,0 +1,4 @@
+// borrow-class types (design/borrow-types.md): a result holding borrows needs a parameter for them to come from.
+// error: so it needs a borrowed parameter
+fn f(n: int): []&str { return [] }
+fn main() {}

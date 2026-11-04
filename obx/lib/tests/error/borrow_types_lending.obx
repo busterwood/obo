@@ -1,0 +1,5 @@
+// borrow-class types (design/borrow-types.md): a borrow result of a borrow-class receiver borrows what it borrows, not the receiver.
+// error: cannot return a borrow of 'it'
+type It = value record { s: &str; i: int }
+fn (it: mut &It) cur(): &int { return &it.i }
+fn main() {}
