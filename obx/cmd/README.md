@@ -36,7 +36,7 @@ takes about 2.5 minutes (`-j 8`), most of it the harness building fixtures.
 72 cases are skipped: they need a live eza or a terminal and have no
 golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
 
-## cat, wc, sort, head, tail
+## cat, wc, sort, head, tail, grep
 
 `cat.obx`, `wc.obx`, `sort.obx`, `head.obx` and `tail.obx` are ports of obo's
 small tools (`archive/obo/cmd/`): a deliberate subset of GNU coreutils 9.x
@@ -73,9 +73,11 @@ exit status, and the `usage` and `writeerror` cases are pinned by own goldens.
     python3 cmd/tools_gate.py --memory                # 16 MiB inputs, leak check
 
 Our tools run with `OBX_CHECK=1`, so a leak fails a case. 523 cases pass for
-each build against GNU 9.4 (520 with `--reference=none`). `--memory` replaces
+each build against GNU 9.4 (520 with `--reference=none`), and 346 `grep` cases
+against GNU grep 3.11 (869 in all; they have no model or golden, so
+`--reference=none` skips them). `--memory` replaces
 obo's peak-heap budget (which needed `OBO_STATS`) by a clean exit with no
-runtime report on the four large-input cases.
+runtime report on the large-input cases (four for the coreutils, four for `grep`).
 
 | Tool | native (static) | through C |
 |---|---:|---:|
@@ -84,8 +86,52 @@ runtime report on the four large-input cases.
 | `sort` | 115,624 | 111,632 |
 | `head` | 50,304 | 74,488 |
 | `tail` | 71,016 | 92,768 |
+| `grep` | 528,000 | 461,640 |
 
-(obo's static binaries were 90 to 119 KB.)
+(obo's static binaries were 90 to 119 KB. `grep` is large because it carries
+the regex library.)
+
+### grep
+
+`grep.obx` is a new tool, not an obo port: a GNU grep 3.x subset on
+[../lib/regex.obx](../lib/regex.obx), tested against GNU grep 3.11. Patterns
+are basic (the default, with GNU's `\( \) \{ \} \| \+ \?`), extended (`-E`),
+fixed (`-F`) or the library's Perl syntax (`-P`, one pattern). The program
+translates a pattern to the library's syntax and compiles it leftmost-longest,
+so `-o` prints what GNU prints. Options: `-e -f -i -v -w -x -c -l -L -m -o -q
+-s -b -H -h --label -n -Z -A -B -C -NUM -a -I --binary-files -r -R --include
+--exclude --exclude-dir --group-separator --no-group-separator`, with GNU's
+long names and unique prefixes. Messages, `--` separators, `file:` prefixes and
+exit codes (0, 1, 2) are GNU's. A file with a NUL byte is binary: the message
+`grep: x: binary file matches` goes to stderr, as in 3.11.
+
+Input is read in 128 KiB chunks and never held whole. The regex runs over a
+whole chunk with `(?m)`, so only the lines that match are looked at; a match
+that spans a newline (`[[:space:]]`) and every candidate line of `-w` are
+checked line by line. A line longer than a chunk is carried to the next one.
+
+Not supported, each with an error or a note in the header comment of the file:
+back-references (`\1`, the engine runs in linear time and has none), `--color=always`,
+`-T -U -z -d -D`, `--help` text, and a locale (the input is UTF-8; a word is
+ASCII letters, digits and `_`; `\<` and `\>` are both `\b`). A file is binary
+because of a NUL byte only, never because of an encoding error.
+
+Speed on 100 MB (1.4 million lines) against GNU grep 3.11, in seconds (GNU,
+obx native, obx through C):
+
+| Search | GNU | native | C |
+|---|---:|---:|---:|
+| `needle5007` (a literal) | 0.07 | 0.09 | 0.02 |
+| `-c omega` | 0.08 | 0.16 | 0.08 |
+| `-v -c omega` | 0.10 | 0.17 | 0.08 |
+| `-c '[0-9]*7 alpha'` | 0.07 | 0.35 | 0.24 |
+| `-c -E '(alpha\|beta) gamma'` | 0.11 | 0.15 | 0.07 |
+| `-c -i NEEDLE` | 0.06 | 0.11 | 0.04 |
+| `-c -w eta` | 0.21 | 1.12 | 0.61 |
+| `-c -v '^0'` (every line) | 0.05 | 0.47 | 0.32 |
+| `-c -E 'a.*z.*e'` | 0.22 | 0.46 | 0.35 |
+
+The slow cases are those where most lines match or need a line-by-line check.
 
 ## httpd and httpload
 

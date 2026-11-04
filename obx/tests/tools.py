@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The differential gate for obx's command-line tools (cmd/cat.obx, wc.obx,
-sort.obx, head.obx, tail.obx).
+sort.obx, head.obx, tail.obx, grep.obx).
 
     python3 obx/tests/tools.py [--c] [-k PATTERN] [-v] [-x] [-j N]
         [--reference=auto|gnu|busybox|any|none] [--require-reference]
@@ -25,6 +25,10 @@ path>`: argv[0] is the bare tool name, so GNU's diagnostics carry the same
 model-vs-GNU, --record) uses that invocation. A defensive normalizer replaces a
 leading `<ref_path>: ` on every captured stderr line with `<tool>: ` and warns;
 recorded and loaded goldens must have no `/`-leading stderr line.
+
+grep (GNU grep 3.x, also found on /usr/bin:/bin) has no model: its cases carry
+the tag `refonly`, GNU grep is their only oracle (stdout, exit status and
+stderr exact), and without a GNU grep they are skipped.
 
 Oracle tags (exactly one per case, plus the orthogonal `portable` marker):
   modeled    GNU >= 9 is the primary oracle (stdout/exit exact, file-error
@@ -67,7 +71,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OBX = os.path.dirname(HERE)                       # .../obx
 CMD = os.path.join(OBX, 'cmd')
 OBXC = os.path.join(OBX, 'compiler', 'out', 'obxc')
-TOOLS = ('cat', 'wc', 'sort', 'head', 'tail')
+TOOLS = ('cat', 'wc', 'sort', 'head', 'tail', 'grep')
 REFERENCE_PATH = '/usr/bin:/bin'
 FSIZE = 16 * 1024 * 1024                          # per-process output cap
 MEMORY_PEAK_MAX = 1048576
@@ -215,11 +219,46 @@ FILES = {
               b'1' + b'7' * 998 + b'\n-2' + b'8' * 999 + b'\n'),
 }
 
+# grep fixtures (not in FILES: the other tools' matrices must stay as they are)
+GREP_FILES = {
+    'g_text': b'foo\nbar\nfoo bar\n\nafoo\nfoo_x\nxfoo y\nFOO\nfoofoo\nbaz qux\nab12 cd\n  indented\n',
+    'g_words': b'the quick brown fox\njumps over the lazy dog\nThe THE the\nfoxes and fox-like\n'
+               b'the_end\nthe-end\n',
+    'g_ctx': b'1\n2\nm\n3\n4\n5\nm\n6\n7\n8\n9\nm\n10\nm\nm\n11\n12\n13\n14\n15\nm\n',
+    'g_overlap': b'aaaa\nabab ababab\nxyzxyz\nbanana\nb\n',
+    'g_ere': b'a+b\naab\nab\n(x)\nx|y\na{2}\naa\nab{2}\nabb\n{}\n\\d\n.\n[a]\n^x$\nx\n',
+    'g_cr': b'foo\r\nbar\r\nfoo bar\r\n\r\n',
+    'g_noeol': b'foo\nbar\nfoo',
+    'g_nul': b'foo\x00bar\nbaz foo\nqux\n',
+    'g_nul_late': b'foo\nbar\nbaz\x00\nfoo\n',
+    'g_long': b'a' * 200000 + b' needle ' + b'b' * 50000 + b'\nshort needle\n' + b'z' * 140000,
+    'g_utf8': 'café naïve\nCAFÉ\nplain\n'.encode(),
+    'g_pats': b'foo\nbar\n',
+    'g_pats_blank': b'foo\n\n',
+    'g_pats_noeol': b'qux\nab',
+    'g_dups': b'a\na\nb\na\n',
+    'g_tabs': b'a\tb\n\ta\nc \td\n',
+    # lines that straddle the 128 KiB reader chunks, each with its number
+    'g_chunks': b''.join(b'%06d ' % i + b'x' * (i % 97) + (b' hit' if i % 1999 == 0 else b'') + b'\n'
+                         for i in range(8000)),
+}
+GREP_SPECS = {name: Spec('file', data=data) for name, data in GREP_FILES.items()}
+GREP_SPECS['g_tree'] = Spec('tree', data={
+    'a.txt': b'foo\nbar\n',
+    'b.c': b'foo in c\n',
+    'sub/c.txt': b'bar\nfoo sub\n',
+    'sub/deep/d.log': b'foo deep\n',
+    'skip/e.txt': b'foo skipped\n',
+    'link': ('link', 'a.txt'),
+    'dlink': ('link', 'sub'),
+})
+
 SPECS = {name: Spec('file', data=data) for name, data in FILES.items()}
 SPECS['sparse'] = Spec('file', size=1 << 20, zero_fill=True)
 SPECS['tenm'] = Spec('file', size=10000000, zero_fill=True)
 SPECS['sparse16m'] = Spec('file', size=16 << 20, zero_fill=True)
 SPECS['dir'] = Spec('dir')
+SPECS.update(GREP_SPECS)
 SPECS['unreadable'] = Spec('unreadable', data=b'u')
 for _m in ('missing', 'nope1', 'nope2', 'nope'):
     SPECS[_m] = Spec('missing')
@@ -260,7 +299,19 @@ def materialize(name, casedir):
     if spec.kind == 'live':
         return
     path = os.path.join(casedir, name)
-    if spec.kind == 'dir':
+    if spec.kind == 'tree':
+        # data: {relative path: bytes, or ('link', target)}
+        os.mkdir(path, 0o755)
+        for rel, content in spec.data.items():
+            full = os.path.join(path, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            if isinstance(content, tuple):
+                os.symlink(content[1], full)
+            else:
+                with open(full, 'wb') as f:
+                    f.write(content)
+                os.chmod(full, 0o644)
+    elif spec.kind == 'dir':
         os.mkdir(path, 0o755)
         os.chmod(path, 0o755)
     elif spec.kind == 'missing':
@@ -317,10 +368,12 @@ def add(name, tool, args, **kw):
 def validate_cases():
     """A tag typo must not run a case that enters no comparison branch."""
     for c in CASES:
-        if c.tag not in ('modeled', 'usage', 'writeerror'):
+        if c.tag not in ('modeled', 'usage', 'writeerror', 'refonly'):
             raise SetupError(f'{c}: unknown tag {c.tag!r}')
         if c.portable and c.tag != 'modeled':
             raise SetupError(f'{c}: the portable marker is only for modeled cases')
+        if c.tag == 'refonly' and (c.golden or c.portable or c.sink):
+            raise SetupError(f'{c}: a refonly case has no golden, portable marker or sink')
         if c.golden and c.tag != 'modeled':
             raise SetupError(f'{c}: golden goldens are only for modeled cases')
         if c.tag == 'usage' and c.sink:
@@ -944,9 +997,392 @@ wc_cases()
 sort_cases()
 head_cases()
 tail_cases()
-CASES.sort(key=lambda c: (TOOLS.index(c.tool), c.name))
 
 # ------------------------------------------------------------------------ models
+
+
+def grep_cases():
+    T = 'grep'
+
+    def g(name, args, stdin=None, fx=None):
+        # the fixtures are the operands that name one
+        if fx is None:
+            fx = []
+            for a in args:
+                top = a.split('/')[0]
+                if not a.startswith('-') and top in SPECS and top not in fx:
+                    fx.append(top)
+        add(name, T, args, stdin=stdin, fixtures=fx, tag='refonly')
+
+    # -- plain matching, the basic options
+    g('plain', ['foo', 'g_text'])
+    g('n', ['-n', 'foo', 'g_text'])
+    g('c', ['-c', 'foo', 'g_text'])
+    g('v', ['-v', 'foo', 'g_text'])
+    g('vn', ['-vn', 'foo', 'g_text'])
+    g('vc', ['-vc', 'foo', 'g_text'])
+    g('i', ['-i', 'foo', 'g_text'])
+    g('io', ['-io', 'foo', 'g_text'])
+    g('l', ['-l', 'foo', 'g_text'])
+    g('l_none', ['-l', 'zzz', 'g_text'])
+    g('L', ['-L', 'foo', 'g_text'])
+    g('L_none', ['-L', 'zzz', 'g_text'])
+    g('q', ['-q', 'foo', 'g_text'])
+    g('q_none', ['-q', 'zzz', 'g_text'])
+    g('nomatch', ['zzz', 'g_text'])
+    g('b', ['-b', 'foo', 'g_text'])
+    g('bn', ['-bn', 'foo', 'g_text'])
+    g('ob', ['-ob', 'o', 'g_text'])
+    g('m1', ['-m1', 'foo', 'g_text'])
+    g('m2n', ['-nm2', 'foo', 'g_text'])
+    g('m0', ['-m0', 'foo', 'g_text'])
+    g('m_big', ['-m', '100', 'foo', 'g_text'])
+    g('mc', ['-c', '-m2', 'foo', 'g_text'])
+    g('mv', ['-v', '-m3', 'foo', 'g_text'])
+    g('e_two', ['-e', 'foo', '-e', 'bar', 'g_text'])
+    g('e_attached', ['-efoo', '-ebaz', 'g_text'])
+    g('e_newline', ['foo\nbaz', 'g_text'])
+    g('e_dash', ['-e', '-x', 'g_text'])
+    g('dashdash', ['--', '-x', 'g_text'])
+    g('long_options', ['--line-number', '--ignore-case', '--regexp=foo', 'g_text'])
+    g('long_abbrev', ['--line-n', '--count', '--max=2', 'foo', 'g_text'])
+    g('options_after', ['foo', 'g_text', '-n', '-c'])
+    g('combined', ['-inc', 'foo', 'g_text'])
+    g('stdin', ['foo'], stdin=FILES['words'] + b'foo\n')
+    g('stdin_dash', ['-n', 'the', '-'], stdin=FILES['words'])
+    g('stdin_H', ['-H', 'the'], stdin=FILES['words'])
+    g('stdin_c_H', ['-cH', 'the'], stdin=FILES['words'])
+    g('stdin_label', ['--label=in', '-H', 'the'], stdin=FILES['words'])
+    g('stdin_empty', ['x'], stdin=b'')
+    g('stdin_dash_file', ['the', '-', 'g_words'], stdin=b'the x\n')
+    g('stdin_l', ['-l', 'the'], stdin=FILES['words'])
+    g('stdin_L', ['-L', 'zzz'], stdin=FILES['words'])
+    g('stdin_noeol', ['bar'], stdin=b'foo\nbar')
+
+    # -- pattern syntaxes
+    g('bre_plus_literal', ['a+b', 'g_ere'])
+    g('bre_plus_op', ['a\\+b', 'g_ere'])
+    g('bre_q_op', ['-o', 'ab\\?', 'g_ere'])
+    g('bre_alt_literal', ['x|y', 'g_ere'])
+    g('bre_alt_op', ['x\\|y', 'g_ere'])
+    g('bre_group_literal', ['(x)', 'g_ere'])
+    g('bre_group_op', ['-o', '\\(a\\)b', 'g_ere'])
+    g('bre_interval', ['a\\{2\\}', 'g_ere'])
+    g('bre_interval_literal', ['a{2}', 'g_ere'])
+    g('bre_star_first', ['*', 'g_ere'])
+    g('bre_star_after_anchor', ['^*', 'g_ere'])
+    g('bre_caret_middle', ['a^b', 'g_ere'])
+    g('bre_dollar_middle', ['a$b', 'g_ere'])
+    g('bre_anchor_group', ['\\(^x\\)', 'g_ere'])
+    g('bre_brace_close', ['}', 'g_ere'])
+    g('ere_plus', ['-E', 'a+b', 'g_ere'])
+    g('ere_plus_o', ['-Eo', 'a+b?', 'g_ere'])
+    g('ere_alt', ['-E', 'x|y', 'g_ere'])
+    g('ere_group', ['-E', '(x)', 'g_ere'])
+    g('ere_interval', ['-E', 'a{2}', 'g_ere'])
+    g('ere_interval_lit', ['-E', 'a{', 'g_ere'])
+    g('ere_interval_bad', ['-E', 'a{1', 'g_ere'])
+    g('ere_interval_range', ['-Eo', 'b{1,2}', 'g_ere'])
+    g('ere_interval_open', ['-Eo', 'b{1,}', 'g_ere'])
+    g('ere_interval_zero_lo', ['-Eo', 'b{,1}', 'g_ere'])
+    g('ere_nested_quant', ['-Eo', 'ab*+', 'g_ere'])
+    g('ere_star_first', ['-E', '*a', 'g_ere'])
+    g('ere_caret_dollar', ['-E', '^x$', 'g_ere'])
+    g('ere_unmatched_close', ['-E', 'x)', 'g_ere'])
+    g('ere_empty_group', ['-Ec', '()', 'g_ere'])
+    g('ere_empty_alt', ['-Ec', 'a|', 'g_ere'])
+    g('ere_backslash_dot', ['-E', 'a\\.', 'g_ere'])
+    g('ere_dot', ['-xE', '.', 'g_ere'])
+    g('ere_bracket', ['-E', '[[:alpha:]]+[0-9]', 'g_text'])
+    g('bracket_first_close', ['-o', '[]a]*', 'g_ere'])
+    g('bracket_neg', ['-o', '[^a-z ]', 'g_text'])
+    g('bracket_class', ['-c', '[[:upper:]]', 'g_text'])
+    g('bracket_class_neg', ['-o', '[^[:alnum:]]', 'g_ere'])
+    g('bracket_backslash', ['-c', '[\\]', 'g_ere'])
+    g('bracket_range_rev', ['[z-a]', 'g_text'])
+    g('bracket_unclosed', ['[a', 'g_text'])
+    g('bracket_bad_class', ['[[:foo:]]', 'g_text'])
+    g('bracket_class_syntax', ['[:space:]', 'g_text'])
+    g('word_class', ['-o', '\\w\\+', 'g_text'])
+    g('nonword_class', ['-c', '\\W', 'g_text'])
+    g('space_class', ['-c', '\\s', 'g_text'])
+    g('word_boundary', ['-o', '\\bfoo\\b', 'g_text'])
+    g('word_start_end', ['-o', '\\<foo\\>', 'g_text'])
+    g('not_boundary', ['-c', '\\Bfoo', 'g_text'])
+    g('F', ['-F', 'a.b', 'g_ere'])
+    g('F_special', ['-F', '[a]', 'g_ere'])
+    g('F_multi', ['-F', '-e', 'foo', '-e', 'qux', 'g_text'])
+    g('F_newline', ['-F', 'foo\nqux', 'g_text'])
+    g('F_empty', ['-Fc', '', 'g_text'])
+    g('F_i', ['-Fi', 'FOO', 'g_text'])
+    g('F_x', ['-Fx', 'foo', 'g_text'])
+    g('F_w', ['-Fw', 'foo', 'g_text'])
+    g('F_o', ['-Fo', 'oo', 'g_text'])
+    g('P_digits', ['-P', 'ab\\d+', 'g_text'])
+    g('P_o', ['-Po', 'o+', 'g_text'])
+    g('empty_pattern', ['-c', '', 'g_text'])
+    g('empty_pattern_v', ['-vc', '', 'g_text'])
+    g('empty_pattern_o', ['-o', '', 'g_text'])
+    g('trailing_backslash', ['a\\', 'g_text'])
+    g('unmatched_paren', ['\\(', 'g_text'])
+    g('unmatched_paren_ere', ['-E', '(', 'g_text'])
+    g('unmatched_brace', ['a\\{1', 'g_text'])
+    g('bad_interval', ['-E', 'a{2,1}', 'g_text'])
+    g('bre_interval_bad', ['a\\{x\\}', 'g_text'])
+    g('stray_escape', ['-c', '\\q', 'g_text'])
+    g('f_file', ['-f', 'g_pats', 'g_text'])
+    g('f_blank', ['-c', '-f', 'g_pats_blank', 'g_text'])
+    g('f_empty', ['-f', 'empty', 'g_text'])
+    g('f_empty_v', ['-vc', '-f', 'empty', 'g_text'])
+    g('f_noeol', ['-f', 'g_pats_noeol', 'g_text'])
+    g('f_and_e', ['-f', 'g_pats', '-e', 'qux', 'g_text'])
+    g('f_missing', ['-f', 'missing', 'g_text'])
+    g('f_stdin', ['-f', '-', 'g_text'], stdin=b'baz\nqux\n')
+    g('f_o', ['-o', '-f', 'g_pats', 'g_text'])
+    g('f_F', ['-F', '-f', 'g_pats', 'g_text'])
+    g('f_w', ['-w', '-f', 'g_pats', 'g_text'])
+
+    # -- -o: overlapping, empty and longest matches
+    g('o_overlap', ['-o', 'aa', 'g_overlap'])
+    g('o_ab', ['-o', 'abab', 'g_overlap'])
+    g('o_ana', ['-o', 'ana', 'g_overlap'])
+    g('o_star_empty', ['-o', 'x*', 'g_overlap'])
+    g('o_star_n', ['-on', 'a*', 'g_overlap'])
+    g('o_longest', ['-Eo', 'a|ab|abab', 'g_overlap'])
+    g('o_longest_group', ['-Eo', '(a|ab)(c|bab)?', 'g_overlap'])
+    g('o_anchor', ['-o', '^a', 'g_overlap'])
+    g('o_anchor_end', ['-o', 'a$', 'g_overlap'])
+    g('o_v', ['-ov', 'a', 'g_overlap'])
+    g('o_c', ['-oc', 'a', 'g_overlap'])
+    g('o_i', ['-oi', 'A', 'g_overlap'])
+    g('o_multi', ['-o', '-e', 'ban', '-e', 'ana', 'g_overlap'])
+    g('o_H', ['-oH', 'z', 'g_overlap'])
+    g('o_empty_line', ['-o', '^', 'g_text'])
+    g('o_dot_star', ['-o', '.*', 'g_text'])
+
+    # -- -w and -x
+    g('w', ['-w', 'foo', 'g_text'])
+    g('w_the', ['-nw', 'the', 'g_words'])
+    g('w_o', ['-ow', 'the', 'g_words'])
+    g('w_i', ['-iw', 'the', 'g_words'])
+    g('w_v', ['-vw', 'the', 'g_words'])
+    g('w_alt_shorter', ['-wE', 'fox|foxes', 'g_words'])
+    g('w_retry_start', ['-wo', 'ab', 'g_overlap'])
+    g('w_star', ['-wo', 'fo*', 'g_text'])
+    g('w_dash', ['-wo', 'end', 'g_words'])
+    g('w_empty', ['-wc', '', 'g_text'])
+    g('w_shorter_same_start', ['-w', 'foo.*', 'g_text'])
+    g('x', ['-x', 'foo', 'g_text'])
+    g('x_n', ['-xn', 'foo bar', 'g_text'])
+    g('x_v', ['-xv', 'foo', 'g_text'])
+    g('x_alt', ['-xE', 'foo|bar', 'g_text'])
+    g('x_alt_bre', ['-x', 'foo\\|bar', 'g_text'])
+    g('x_empty', ['-xc', '', 'g_text'])
+    g('x_o', ['-xo', 'foo', 'g_text'])
+    g('xw', ['-xw', 'foo', 'g_text'])
+    g('x_i', ['-xi', 'FOO', 'g_text'])
+    g('x_multi', ['-x', '-e', 'foo', '-e', 'baz qux', 'g_text'])
+
+    # -- context
+    g('A1', ['-A1', 'm', 'g_ctx'])
+    g('B1', ['-B1', 'm', 'g_ctx'])
+    g('C1', ['-C1', 'm', 'g_ctx'])
+    g('C2n', ['-nC2', 'm', 'g_ctx'])
+    g('A0', ['-A0', 'm', 'g_ctx'])
+    g('B3', ['-B3', '^1[0-9]$', 'g_ctx'])
+    g('A_big', ['-A100', '^3$', 'g_ctx'])
+    g('NUM', ['-2', '^8$', 'g_ctx'])
+    g('NUM_n', ['-n1', '^9$', 'g_ctx'])
+    g('A_B_mixed', ['-A1', '-B2', '-n', '^1[0-5]$', 'g_ctx'])
+    g('context_adjacent', ['-nA1', '-e', '^2$', '-e', '^4$', 'g_ctx'])
+    g('context_long_form', ['--context=1', '--after-context=2', '-n', '^7$', 'g_ctx'])
+    g('context_v', ['-v', '-A1', '^[0-9]*$', 'g_ctx'])
+    g('context_v_n', ['-vn', '-B1', '[m]', 'g_ctx'])
+    g('context_m', ['-m1', '-A3', 'm', 'g_ctx'])
+    g('context_m2', ['-m2', '-A2', '-n', 'm', 'g_ctx'])
+    g('context_m_stop_at_match', ['-m1', '-A9', 'm', 'g_ctx'])
+    g('context_o', ['-o', '-A1', 'm', 'g_ctx'])
+    g('context_o_adjacent', ['-on', '-A1', '^[2-3]$', 'g_ctx'])
+    g('context_c', ['-c', '-A2', 'm', 'g_ctx'])
+    g('context_l', ['-l', '-C2', 'm', 'g_ctx'])
+    g('context_b', ['-b', '-A1', '^6$', 'g_ctx'])
+    g('context_multi', ['-A1', '^m$', 'g_ctx', 'g_dups'])
+    g('context_multi2', ['-nB1', 'a', 'g_dups', 'g_ctx', 'g_dups'])
+    g('no_group_sep', ['--no-group-separator', '-A1', 'm', 'g_ctx'])
+    g('group_sep', ['--group-separator=##', '-A1', 'm', 'g_ctx'])
+    g('group_sep_empty', ['--group-separator=', '-A0', 'm', 'g_ctx'])
+    g('context_bad', ['-A', 'x', 'm', 'g_ctx'])
+    g('context_neg', ['-A', '-1', 'm', 'g_ctx'])
+    g('context_noeol', ['-B1', 'foo', 'g_noeol'])
+    g('context_chunks', ['-n', '-C1', 'hit', 'g_chunks'])
+
+    # -- several files, -H/-h, names
+    g('two_files', ['foo', 'g_text', 'g_words'])
+    g('two_files_n', ['-n', 'the', 'g_text', 'g_words'])
+    g('two_files_c', ['-c', 'foo', 'g_text', 'g_words', 'empty'])
+    g('two_files_l', ['-l', 'foo', 'g_text', 'g_words'])
+    g('two_files_L', ['-L', 'foo', 'g_text', 'g_words'])
+    g('two_files_h', ['-h', 'foo', 'g_text', 'g_words'])
+    g('two_files_H1', ['-H', 'foo', 'g_text'])
+    g('two_files_o', ['-o', 'fox', 'g_text', 'g_words'])
+    g('two_files_q', ['-q', 'foo', 'g_text', 'g_words'])
+    g('two_files_b', ['-b', 'the', 'g_text', 'g_words'])
+    g('two_files_v_c', ['-vc', 'the', 'g_words', 'g_text'])
+    g('files_null_l', ['-Zl', 'foo', 'g_text', 'g_words'])
+    g('files_null_n', ['-Zn', 'foo', 'g_text', 'g_words'])
+    g('files_null_c', ['-Zc', 'foo', 'g_text', 'g_words'])
+    g('same_file_twice', ['-n', 'baz', 'g_text', 'g_text'])
+    g('dash_in_middle', ['the', 'g_words', '-', 'g_words'], stdin=b'the stdin\n')
+
+    # -- errors and exit status
+    g('missing', ['foo', 'missing'])
+    g('missing_first', ['foo', 'missing', 'g_text'])
+    g('missing_last', ['foo', 'g_text', 'missing'])
+    g('missing_s', ['-s', 'foo', 'missing'])
+    g('missing_s_match', ['-s', 'foo', 'missing', 'g_text'])
+    g('missing_q_after', ['-q', 'foo', 'missing', 'g_text'])
+    g('missing_q_before', ['-q', 'foo', 'g_text', 'missing'])
+    g('missing_c', ['-c', 'foo', 'missing', 'g_text'])
+    g('missing_l', ['-l', 'foo', 'missing', 'g_text'])
+    g('missing_L', ['-L', 'foo', 'missing', 'g_text'])
+    g('dir_operand', ['foo', 'g_tree'])
+    g('dir_operand_s', ['-s', 'foo', 'g_tree'])
+    g('dir_and_file', ['foo', 'g_tree', 'g_text'])
+    g('unreadable', ['x', 'unreadable'])
+    g('no_pattern', [])
+    g('no_pattern_file', ['-n'])
+    g('bad_option', ['-k', 'foo', 'g_text'])
+    g('bad_long_option', ['--nonsense', 'foo', 'g_text'])
+    g('option_needs_arg', ['foo', '-m'])
+    g('option_needs_arg_e', ['-e'])
+    g('bad_max_count', ['-m', 'x', 'foo', 'g_text'])
+    g('bad_binary_files', ['--binary-files=x', 'foo', 'g_text'])
+    g('long_no_arg', ['--count=3', 'foo', 'g_text'])
+    g('color_never', ['--color=never', 'foo', 'g_text'])
+    g('color_auto', ['--colour=auto', '-n', 'foo', 'g_text'])
+    g('exit_match_with_error', ['foo', 'missing', 'g_text'])
+    g('exit_nomatch_with_error', ['zzz', 'missing', 'g_text'])
+
+    # -- binary files
+    g('nul', ['foo', 'g_nul'])
+    g('nul_c', ['-c', 'foo', 'g_nul'])
+    g('nul_c_all', ['-c', '', 'g_nul'])
+    g('nul_l', ['-l', 'foo', 'g_nul'])
+    g('nul_q', ['-q', 'foo', 'g_nul'])
+    g('nul_n', ['-n', 'baz', 'g_nul'])
+    g('nul_o', ['-o', 'foo', 'g_nul'])
+    g('nul_v', ['-v', 'foo', 'g_nul'])
+    g('nul_nomatch', ['zzz', 'g_nul'])
+    g('nul_a', ['-a', 'foo', 'g_nul'])
+    g('nul_a_n', ['-an', '', 'g_nul'])
+    g('nul_text', ['--binary-files=text', '-c', 'bar', 'g_nul'])
+    g('nul_I', ['-I', 'foo', 'g_nul'])
+    g('nul_I_c', ['-Ic', 'foo', 'g_nul'])
+    g('nul_without_match', ['--binary-files=without-match', 'foo', 'g_nul'])
+    g('nul_across_zap', ['-c', 'o.b', 'g_nul'])
+    g('nul_late', ['foo', 'g_nul_late'])
+    g('nul_late_c', ['-c', 'foo', 'g_nul_late'])
+    g('nul_two_files', ['foo', 'g_nul', 'g_text'])
+    g('nul_stdin', ['foo'], stdin=b'foo\x00\nfoo\n')
+    g('nul_h_two', ['-h', 'foo', 'g_text', 'g_nul'])
+    g('nul_context', ['-A1', 'foo', 'g_nul'])
+    g('binary_all', ['-c', 'x', 'sparse'])
+    g('binary_match_zero', ['x', 'binary'])
+    g('binary_bytes', ['-c', 'a', 'binary'])
+    g('invalid_utf8', ['-c', 'x', 'invalid_utf8'])
+    g('utf8_literal', ['-F', 'é', 'g_utf8'])
+
+    # -- line endings, edge files
+    g('crlf', ['foo', 'g_cr'])
+    g('crlf_end', ['-c', 'foo$', 'g_cr'])
+    g('crlf_end_cr', ['-c', 'foo\r$', 'g_cr'])
+    g('crlf_o', ['-o', 'o.', 'g_cr'])
+    g('crlf_x', ['-xc', 'foo', 'g_cr'])
+    g('crlf_empty_line', ['-n', '^.$', 'g_cr'])
+    g('crlf_blank', ['-nc', '^$', 'g_cr'])
+    g('noeol', ['foo', 'g_noeol'])
+    g('noeol_c', ['-c', 'foo', 'g_noeol'])
+    g('noeol_last', ['-n', 'foo$', 'g_noeol'])
+    g('noeol_v', ['-v', 'foo', 'g_noeol'])
+    g('noeol_o', ['-o', 'o*', 'g_noeol'])
+    g('noeol_multi', ['foo', 'g_noeol', 'g_noeol'])
+    g('empty_file', ['foo', 'empty'])
+    g('empty_file_c', ['-c', 'foo', 'empty'])
+    g('empty_file_cv', ['-cv', 'foo', 'empty'])
+    g('empty_file_L', ['-L', 'foo', 'empty'])
+    g('empty_pattern_empty_file', ['-c', '', 'empty'])
+    g('newline_file', ['-c', '^$', 'newline'])
+    g('newline_file_n', ['-n', '', 'newline'])
+    g('newline_file_v', ['-vc', 'x', 'newline'])
+    g('blanks', ['-n', '^$', 'blanks'])
+    g('blanks_v', ['-vn', '^$', 'blanks'])
+    g('devnull', ['-c', 'x', '/dev/null'])
+    g('tabs', ['-n', '\t', 'g_tabs'])
+    g('tabs_class', ['-c', '[[:blank:]]', 'g_tabs'])
+    g('tabs_space', ['-c', '\\s', 'g_tabs'])
+    g('long_line', ['-c', 'needle', 'g_long'])
+    g('long_line_n', ['-n', 'needle', 'g_long'])
+    g('long_line_o', ['-bo', 'needle', 'g_long'])
+    g('long_line_end', ['-c', 'z$', 'g_long'])
+    g('long_line_start', ['-c', '^a', 'g_long'])
+    g('long_line_x', ['-xc', 'z*', 'g_long'])
+    g('long_line_v', ['-vc', 'needle', 'g_long'])
+    g('longline_fixture', ['-c', 'y', 'longline'])
+    g('longline_fixture_l', ['-l', '^x*$', 'longline'])
+    g('big', ['-c', 'alpha', 'big'])
+    g('big_n', ['-n', '0*19999 ', 'big'])
+    g('big_v', ['-vc', '7 alpha', 'big'])
+    g('big_o', ['-ob', '0001999[0-9]', 'big'])
+    g('big_m', ['-m3', '-n', '5 alpha', 'big'])
+    g('big_after', ['-A1', '-n', '^000199', 'big'])
+    g('big_w', ['-wc', 'eta', 'big'])
+    g('big_x', ['-xc', '.*zeta.*', 'big'])
+    g('big_i', ['-ic', 'ALPHA', 'big'])
+    g('chunks_hits', ['-n', 'hit', 'g_chunks'])
+    g('chunks_end', ['-c', 'x$', 'g_chunks'])
+    g('chunks_b', ['-b', '-o', ' hit', 'g_chunks'])
+    g('chunks_v_c', ['-vc', 'x', 'g_chunks'])
+    g('many', ['-c', '^000999 ', 'many'])
+    g('many_o', ['-o', 'line 1[0-9]*', 'many'])
+    g('chunks_class_newline', ['-c', '[^a]*$', 'g_chunks'])
+    g('chunks_space_newline', ['-c', 'x[[:space:]]*0', 'g_chunks'])
+    g('crossing_class', ['-c', 'a[[:space:]]*b', 'g_dups'])
+    g('crossing_class_o', ['-o', 'a[[:space:]]*', 'g_dups'])
+    g('crossing_neg', ['-c', '[^b]b', 'g_dups'])
+
+    # -- recursion and file selection
+    g('r', ['-r', 'foo', 'g_tree'])
+    g('r_n', ['-rn', 'foo', 'g_tree'])
+    g('R', ['-R', 'foo', 'g_tree'])
+    g('r_c', ['-rc', 'foo', 'g_tree'])
+    g('r_l', ['-rl', 'foo', 'g_tree'])
+    g('r_L', ['-rL', 'foo', 'g_tree'])
+    g('r_h', ['-rh', 'foo', 'g_tree'])
+    g('r_file', ['-r', 'foo', 'g_text'])
+    g('r_file_two', ['-r', 'foo', 'g_text', 'g_words'])
+    g('r_symlink_file', ['-r', 'foo', 'g_tree/link'])
+    g('r_symlink_dir', ['-r', 'foo', 'g_tree/dlink'])
+    g('r_trailing_slash', ['-r', 'foo', 'g_tree/'])
+    g('r_include', ['-r', '--include=*.txt', 'foo', 'g_tree'])
+    g('r_include_two', ['-r', '--include=*.txt', '--include=*.c', 'foo', 'g_tree'])
+    g('r_exclude', ['-r', '--exclude=*.txt', 'foo', 'g_tree'])
+    g('r_exclude_dir', ['-r', '--exclude-dir=sub', 'foo', 'g_tree'])
+    g('r_exclude_dir_glob', ['-r', '--exclude-dir=s*', 'foo', 'g_tree'])
+    g('r_exclude_dir_deep', ['-r', '--exclude-dir=deep', 'foo', 'g_tree'])
+    g('R_exclude_dir', ['-R', '--exclude-dir=sub', 'foo', 'g_tree'])
+    g('include_file_operand', ['--include=*.c', 'foo', 'g_text', 'g_tree/b.c'])
+    g('exclude_file_operand', ['--exclude=g_text', 'foo', 'g_text', 'g_words'])
+    g('exclude_class', ['--exclude=g_[tw]*', 'foo', 'g_text', 'g_words', 'g_tree/b.c'])
+    g('exclude_question', ['--exclude=g_tex?', 'foo', 'g_text', 'g_words'])
+    g('r_stdin', ['-r', 'the', '-'], stdin=FILES['words'])
+    g('r_missing', ['-r', 'foo', 'missing'])
+    g('r_null', ['-rlZ', 'foo', 'g_tree'])
+    g('r_binary', ['-rc', 'foo', 'g_tree', 'g_nul'])
+    g('r_dot', ['-r', 'foo', 'g_tree/.'])
+
+
+grep_cases()
+CASES.sort(key=lambda c: (TOOLS.index(c.tool), c.name))
 
 
 def parse_head_argv(argv):
@@ -1591,6 +2027,12 @@ def classify(tool):
         first = lines[0] if lines else ''
         if 'BusyBox' in text or os.path.basename(os.path.realpath(path)) == 'busybox':
             return RefInfo(tool, path, 'busybox', first or 'BusyBox')
+        if tool == 'grep':
+            m = re.search(r'\(GNU grep\)\s+(\d+)\.(\d+)', text)
+            if m:
+                return RefInfo(tool, path, 'gnu' if int(m.group(1)) >= 3 else 'gnu-old',
+                               first or f'GNU grep {m.group(1)}.{m.group(2)}')
+            return RefInfo(tool, path, 'unknown', first or 'unrecognized implementation')
         m = re.search(r'\(GNU coreutils\)\s+(\d+)\.(\d+)', text)
         if m:
             major = int(m.group(1))
@@ -1816,7 +2258,7 @@ class ToolCtx:
     def differential(self, case):
         if self.diff == 'portable':
             return case.portable
-        return self.diff in ('exact', 'shape', 'any') and case.tag == 'modeled'
+        return self.diff in ('exact', 'shape', 'any') and case.tag in ('modeled', 'refonly')
 
     def oracle_is_ref(self, case):
         if not self.differential(case):
@@ -1943,14 +2385,14 @@ class Harness:
             # the documented width divergence must be invisible: adding the
             # unreadable file's byte must not change the digit count of the sum
             readable = 0
-            for name in parse_argv(case.tool, case.args)[1]:
+            for name in ([] if case.tool == 'grep' else parse_argv(case.tool, case.args)[1]):
                 if name in ('unreadable', '-', ''):
                     continue
                 spec = world.get(name, Spec('missing'))
                 if spec.kind != 'file' or name == '/dev/null':
                     continue
                 readable += spec.size
-            if len(str(readable)) != len(str(readable + 1)):
+            if case.tool != 'grep' and len(str(readable)) != len(str(readable + 1)):
                 raise SetupError(
                     f'{case}: unreadable digit precondition fails for sum {readable}')
 
@@ -2003,6 +2445,9 @@ class Harness:
                     ours, (model[1], model[2], model[0]), 'model'))
                 self.golden_usage['model'] += 1
 
+        if case.tag == 'refonly' and not self.ctx[case.tool].differential(case):
+            return ('skip', f'no GNU {case.tool} to compare with')
+
         # the reference side
         ref_run = None
         if self.ctx[case.tool].differential(case) or (
@@ -2029,7 +2474,7 @@ class Harness:
                 shape = writeerror_shape(ref_run.stderr, case.tool)
                 if shape:
                     problems.append('reference writeerror shape: ' + shape)
-            elif case.tag == 'modeled':
+            elif case.tag in ('modeled', 'refonly'):
                 if case.sink:
                     if ours.stderr:
                         problems.append(f'our sink stderr: {ours.stderr!r}')
@@ -2933,6 +3378,8 @@ class Harness:
         p = os.path.join(d, 'sparse16m')
         with open(p, 'wb') as f:
             f.truncate(16 << 20)
+        with open(os.path.join(d, 'text16m'), 'wb') as f:
+            f.write((b'a line of text 0123456789\n' * ((16 << 20) // 26 + 1))[:16 << 20])
         env = {'PATH': REFERENCE_PATH, 'LC_ALL': 'C', 'LANG': 'C', 'LANGUAGE': 'C',
                'TZ': 'UTC', 'HOME': d, 'TMPDIR': d,
                'OBX_CHECK': '1'}
@@ -2947,6 +3394,13 @@ class Harness:
             # 16 MiB of input, 100 retained bytes: the byte ring is bounded
             ('tail -c 100 sparse16m',
              [self.ctx['tail'].exe, '-c', '100', 'sparse16m'], True),
+            # chunked matching: a 16 MiB input of NUL bytes (binary, so every
+            # chunk is zapped to newlines), then 16 MiB of text with the
+            # selected lines counted and printed
+            ('grep -vc x sparse16m', [self.ctx['grep'].exe, '-vc', 'x', 'sparse16m'], True),
+            ('grep -c line text16m', [self.ctx['grep'].exe, '-c', 'line', 'text16m'], True),
+            ('grep -vn zzz text16m', [self.ctx['grep'].exe, '-vn', 'zzz', 'text16m'], True),
+            ('grep -n -A1 9$ text16m', [self.ctx['grep'].exe, '-n', '-A1', '9$', 'text16m'], True),
         ]
         numbers = []
         for label, argv, devnull in cases:
@@ -3158,7 +3612,7 @@ def main(argv=None):
         ref_line = (f'reference: any (GNU coreutils {version}): stdout/exit exact, '
                     'stderr shape')
     elif kinds == {'gnu'}:
-        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort, head, tail)'
+        ref_line = f'reference: GNU coreutils {version} (cat, wc, sort, head, tail) and GNU grep'
     elif kinds == {'none'}:
         ref_line = (f'reference: none; {h.golden_usage["model"]} modeled cases via '
                     f'models, {h.golden_usage["gnu"]} gnu goldens, '
