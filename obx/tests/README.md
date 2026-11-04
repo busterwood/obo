@@ -48,8 +48,8 @@ suite for `cmd/eza.obx`, outside the gates (about 2.5 minutes; see
 
 `python3 obx/cmd/tools_gate.py -j 8` (or `python3 obx/tests/tools.py`, `--c` for the
 C build, `--memory` for the leak checks) runs `cmd/cat.obx`, `wc`, `sort`, `head` and
-`tail` against GNU coreutils and their own goldens (`tests/tools/`), also outside the
-gates.
+`tail` against GNU coreutils and their own goldens (`tests/tools/`), and `grep` against
+GNU grep (346 cases, no goldens: skipped without a GNU grep), also outside the gates.
 
 `OBX_PREV=old/obxc python3 obx/tests/run_prev.py [--native] [--lib] [--redteam] [--gen N]
 [--eza]` compares the compiler against a previous build, outside the gates. Both compilers

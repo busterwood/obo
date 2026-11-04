@@ -42,7 +42,9 @@ As of 2026-11-04:
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
   lister in 1,600 lines, byte-identical to the real eza on 482 golden cases;
   `cat`, `wc`, `sort`, `head` and `tail` (a GNU coreutils subset, ported from
-  obo), matching GNU coreutils 9.4 on 523 cases with both backends.
+  obo), matching GNU coreutils 9.4 on 523 cases with both backends; and
+  `grep`, a GNU grep subset on the regex library, matching GNU grep 3.11 on
+  346 cases.
 - **Performance:** the native backend is level with gcc -O2 or ahead of it
   on nine of ten benchmarks (fib, loops over arrays, the sieve, allocation,
   strings); maps, with keyed hashing, take 1.37 times gcc's time, the regex
