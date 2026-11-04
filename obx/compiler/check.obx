@@ -72,6 +72,13 @@ pub const H_CL = 7
 pub const H_TRAMP = 8
 pub const H_IMETH = 9
 pub const H_IASSOC = 10
+// H_ADDR, H_DEREF, H_SHARE: t (the referent type, which mentions type parameters) and the C x. A
+// shared &str is the string's header copied without its count (borrow-types prototype), so a
+// shared borrow of a str is its value, not its address: these become &x / *x / x for other types
+// and x / x / *x for str, per instance (H_SHARE: a mut &T used as a &T).
+pub const H_ADDR = 11
+pub const H_DEREF = 12
+pub const H_SHARE = 13
 
 pub type Hole = value record {
     pub k: int
@@ -423,6 +430,28 @@ fn (c: mut &Checker) T(t: int): int {
 
 // A C type of the runtime by name.
 fn (c: mut &Checker) ct(s: str): int { return c.x.ct(s) }
+
+// The C of a shared borrow of the place x (an lvalue) of type t: &x, or x itself for a str (a
+// shared &str is the header, uncounted), or a hole when t mentions type parameters.
+fn (c: mut &Checker) addrOf(t: int, x: int): int {
+    if t == sema.T_STR { return x }
+    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_ADDR, t, x)) }
+    return c.x.par(c.x.pre("&", x))
+}
+
+// The C of the place a shared borrow x of a t points to.
+fn (c: mut &Checker) derefOf(t: int, x: int): int {
+    if t == sema.T_STR { return x }
+    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_DEREF, t, x)) }
+    return c.x.par(c.x.pre("*", x))
+}
+
+// The C of a mut &t borrow x used as a shared &t.
+fn (c: mut &Checker) shareOf(t: int, x: int): int {
+    if t == sema.T_STR { return c.x.par(c.x.pre("*", x)) }
+    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_SHARE, t, x)) }
+    return x
+}
 
 // The names and numbers of C.
 fn (c: mut &Checker) nm(s: str): int { return c.x.nm(s) }
@@ -923,7 +952,8 @@ fn (c: &Checker) gname(gk: int, gi: int): str {
 
 fn (c: mut &Checker) deref(v: Val): Val {
     if c.pg.tk(v.t) != sema.TK_REF { return v }
-    var r = val(c.x.par(c.x.pre("*", v.c)), c.pg.ta(v.t), CAT_PLACE)
+    let dc = if c.pg.tm(v.t) { c.x.par(c.x.pre("*", v.c)) } else { c.derefOf(c.pg.ta(v.t), v.c) }
+    var r = val(dc, c.pg.ta(v.t), CAT_PLACE)
     r.root = v.root
     r.path = v.path
     r.mutable = c.pg.tm(v.t)
@@ -945,7 +975,8 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
             c.err(line, "cannot mutably borrow through the shared borrow '" + c.rootName(v.root, "?") + "'")
         }
         if m { c.frozen(v.root, FR_MUT, line) }
-        return rvAt(v.c, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
+        let rc = if !m && c.pg.tm(v.t) { c.shareOf(c.pg.ta(v.t), v.c) } else { v.c }
+        return rvAt(rc, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
     }
     if v.t == sema.T_VOID { c.err(line, "this expression has no value") }
     var cc = -1
@@ -963,14 +994,14 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
             if !v.mutable { c.immutable(v, line, "mutably borrow") }
             c.frozen(v.root, FR_MUT, line)
         }
-        cc = c.x.par(c.x.pre("&", v.c))
+        cc = if m { c.x.par(c.x.pre("&", v.c)) } else { c.addrOf(v.t, v.c) }
     } else if v.cat == CAT_TMP {
-        cc = c.x.par(c.x.pre("&", v.c))
+        cc = if m { c.x.par(c.x.pre("&", v.c)) } else { c.addrOf(v.t, v.c) }
     } else {
         let n = c.fresh("m")
         let ct = c.T(v.t)
         c.emit(c.x.decl(ct, n, v.c))
-        cc = c.x.par(c.x.pre("&", c.nm(n)))
+        cc = if m { c.x.par(c.x.pre("&", c.nm(n))) } else { c.addrOf(v.t, c.nm(n)) }
     }
     return rvAt(cc, c.pg.mkRef(v.t, m), v.root, v.path)
 }
@@ -1146,7 +1177,8 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
         if d.t == t { return d }
     }
     if vk == sema.TK_REF && k == sema.TK_REF && c.pg.ta(v.t) == c.pg.ta(t) && (c.pg.tm(v.t) || !c.pg.tm(t)) {
-        var r = val(v.c, t, v.cat)
+        let rc = if c.pg.tm(v.t) && !c.pg.tm(t) { c.shareOf(c.pg.ta(t), v.c) } else { v.c }
+        var r = val(rc, t, v.cat)
         r.root = v.root
         r.path = v.path
         r.vvar = v.vvar
@@ -1235,8 +1267,7 @@ fn (c: mut &Checker) sLet(s: int) {
         let vx = c.newVar(name, cn, v.t, false, VK_LOCAL, n.line)
         c.vars[vx].broot = root
         if c.pg.tk(v.t) == sema.TK_REF {
-            let ct = c.T(c.pg.ta(v.t))
-            c.emit(c.x.decl(c.x.ptr(ct), cn, v.c))
+            c.emit(c.x.decl(c.T(v.t), cn, v.c))
         } else {
             c.emit(c.x.decl(c.ct("obx_slice"), cn, v.c))
         }
@@ -1791,9 +1822,9 @@ fn (c: mut &Checker) sFor(s: int) {
         c.emit(c.x.decl(ct, xn, c.dup(elem, et)))
         c.declare(c.newVar(name, xn, et, false, VK_LOCAL, n.line))
     } else {
-        let ct = c.T(et)
-        c.emit(c.x.decl(c.x.ptr(ct), xn, c.x.pre("&", elem)))
-        let x = c.newVar(name, xn, c.pg.mkRef(et, false), false, VK_LOCAL, n.line)
+        let rt = c.pg.mkRef(et, false)
+        c.emit(c.x.decl(c.T(rt), xn, c.addrOf(et, elem)))
+        let x = c.newVar(name, xn, rt, false, VK_LOCAL, n.line)
         c.vars[x].broot = v.root
         c.declare(x)
     }
@@ -1959,9 +1990,9 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                         c.emit(c.x.decl(ct, cn, c.dup(fc, ft)))
                         c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
                     } else {
-                        let ct = c.T(ft)
-                        c.emit(c.x.decl(c.x.ptr(ct), cn, c.x.pre("&", fc)))
-                        let x = c.newVar(bn, cn, c.pg.mkRef(ft, false), false, VK_LOCAL, an.line)
+                        let rt = c.pg.mkRef(ft, false)
+                        c.emit(c.x.decl(c.T(rt), cn, c.addrOf(ft, fc)))
+                        let x = c.newVar(bn, cn, rt, false, VK_LOCAL, an.line)
                         c.vars[x].broot = if root >= 0 { root } else { -1 }
                         c.declare(x)
                         let sc = len(c.cx.scopes) - 1
@@ -4060,8 +4091,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         }
         let n = c.fresh("b")
         if c.pg.tk(ret) == sema.TK_REF {
-            let ct = c.T(c.pg.ta(ret))
-            c.emit(c.x.decl(c.x.ptr(ct), n, text))
+            c.emit(c.x.decl(c.T(ret), n, text))
         } else {
             c.emit(c.x.decl(c.ct("obx_slice"), n, text))
         }
@@ -4392,7 +4422,7 @@ fn (c: mut &Checker) onceCall(g: int, name: str, e: int): Val {
     if name == "get" {
         let m = c.x.cond(setn, c.x.str(msg + " is dropped"), c.x.str(msg + " is not set"))
         c.emit(c.x.if1(c.x.bin("!=", setn, c.lit(1)), c.x.sx(c.x.call("rt_trap", [c.lit(12), m, W]))))
-        return rvAt(c.x.par(c.x.pre("&", c.nm(cn))), c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
+        return rvAt(c.addrOf(gt, c.nm(cn)), c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
     }
     let v = c.seq(c.coerce(c.expr(c.item(n.b, 0), gt), gt, n.line, "the value of " + gname))
     let cc = c.consume(v, n.line)

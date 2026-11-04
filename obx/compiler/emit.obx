@@ -128,7 +128,10 @@ fn (e: mut &Emitter) ctype(t: int): str {
     let k = e.tk(t)
     if k == sema.TK_PRIM { return ck.CTYPES[t] }
     if k == sema.TK_ARR { return "obx_arr" }
-    if k == sema.TK_REF { return e.ctype(e.c.pg.ta(t)) + "*" }
+    if k == sema.TK_REF {
+        if e.c.pg.ta(t) == sema.T_STR && !e.c.pg.tm(t) { return "obx_str" }     // a shared &str: the header, uncounted
+        return e.ctype(e.c.pg.ta(t)) + "*"
+    }
     if k == sema.TK_SLICE { return "obx_slice" }
     if k == sema.TK_CLO { return "obx_clo" }
     if k == sema.TK_TP || k == sema.TK_SELF { sx.failText("internal error: unsubstituted type " + e.c.pg.tstr(t)) }
@@ -690,6 +693,14 @@ fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: &str, re
         return e.dupC(t, h.x)
     }
     if k == ck.H_STR || k == ck.H_GSTR { return e.strlit(h.s, k == ck.H_GSTR) }
+    if k == ck.H_ADDR || k == ck.H_DEREF || k == ck.H_SHARE {
+        let t = e.c.pg.subst(h.t, env)
+        e.fill(h.x, holes, env, name, res)
+        let isStr = t == sema.T_STR
+        if k == ck.H_ADDR { return if isStr { e.c.x.par(h.x) } else { e.c.x.par(e.c.x.pre("&", h.x)) } }
+        if k == ck.H_DEREF { return if isStr { e.c.x.par(h.x) } else { e.c.x.par(e.c.x.pre("*", h.x)) } }
+        return if isStr { e.c.x.par(e.c.x.pre("*", h.x)) } else { e.c.x.par(h.x) }
+    }
     if k == ck.H_FN {
         let f = e.instance(h.f, e.c.pg.subst(h.t, env))
         return e.nm(f)
@@ -711,7 +722,9 @@ fn (e: mut &Emitter) hole(i: int, holes: &[]ck.Hole, env: &[]int, name: &str, re
     if k == ck.H_IASSOC { return e.nm(fname) }
     e.fill(h.r, holes, env, name, res)
     var recv = h.r
-    if h.f == sema.RM_REF && e.c.pg.fns[f].recvMode == sema.RM_VAL { recv = e.dupC(t, e.c.x.par(e.c.x.pre("*", h.r))) }
+    if h.f == sema.RM_REF && e.c.pg.fns[f].recvMode == sema.RM_VAL {
+        recv = e.dupC(t, if t == sema.T_STR { e.c.x.par(h.r) } else { e.c.x.par(e.c.x.pre("*", h.r)) })
+    }
     var args: []int = [recv]
     for a in h.args {
         e.fill(a, holes, env, name, res)
