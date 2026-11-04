@@ -476,6 +476,7 @@ type Fld = value record {
     drops: int              // `rt_str_drop(n.f);`
     away: bool              // some dup is not right after a declaration of the record
     loc: int                // the local that stands for it, or -1: none
+    outer: int              // the field (a record, a str) it is inside of, whose local holds it, or -1
 }
 
 type Cand = record {
@@ -509,7 +510,7 @@ fn (o: mut &Opt) field(c: int, x: int): int {
     for i in 0..len(o.cands[c].flds) {
         if o.cands[c].flds[i].off == off && o.cands[c].flds[i].ty == t { return i }
     }
-    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1})
+    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1, outer: -1})
     return len(o.cands[c].flds) - 1
 }
 
@@ -652,12 +653,36 @@ fn (o: mut &Opt) settle(c: int): bool {
     let n = len(o.cands[c].flds)
     for i in 0..n {
         let fi = o.cands[c].flds[i]
-        for j in i + 1..n {
+        let ei = fi.off + o.u.sizeOf(fi.ty)
+        for j in 0..n {
             let fj = o.cands[c].flds[j]
-            if fi.off < fj.off + o.u.sizeOf(fj.ty) && fj.off < fi.off + o.u.sizeOf(fi.ty) {
+            let ej = fj.off + o.u.sizeOf(fj.ty)
+            if i == j || !(fi.off < ej && fj.off < ei) { continue }
+            // fi inside the record fj (a member of a member: `n.s.len`): read from fj's local
+            let inside = fj.off <= fi.off && ei <= ej && o.u.tk(fj.ty) == ir.TY_STRUCT &&
+                !o.u.structs[o.u.tys[fj.ty].sid].isUnion && (ej - fj.off > ei - fi.off || o.u.tk(fi.ty) != ir.TY_STRUCT)
+            let fk = o.u.tk(fi.ty)
+            if inside && ((fk >= ir.TY_BOOL && fk <= ir.TY_U64) || fk == ir.TY_F64) {
+                // a scalar of it (`n.s.len`): a copy of its own (the copies are only read)
+                continue
+            }
+            if inside {
+                let q = o.cands[c].flds[i].outer
+                if q < 0 || o.u.sizeOf(o.cands[c].flds[q].ty) < ej - fj.off { o.cands[c].flds[i].outer = j }
+            } else if !(fi.off <= fj.off && ej <= ei) || (fi.off == fj.off && ei == ej) {
                 o.cands[c].bad = true
                 return false
             }
+        }
+    }
+    for i in 0..n {
+        let q = o.cands[c].flds[i].outer
+        if q >= 0 {
+            if o.cands[c].flds[i].dups > 0 || o.cands[c].flds[i].drops > 0 {
+                o.cands[c].bad = true
+                return false
+            }
+            o.cands[c].flds[q].read = true
         }
     }
     // a copy of a local is no copy from memory: worth it only for a count it saves
@@ -672,7 +697,7 @@ fn (o: mut &Opt) settle(c: int): bool {
     let name = o.u.locals[o.cands[c].l].name
     for i in 0..n {
         let f = o.cands[c].flds[i]
-        if f.read || f.dups != 1 || f.away {
+        if f.outer < 0 && (f.read || f.dups != 1 || f.away) {
             o.cands[c].flds[i].loc = o.local(name, f.ty, false)
         }
     }
@@ -738,6 +763,11 @@ fn (o: mut &Opt) sr(x: int) {
     }
     if k == ir.E_MEMBER {
         let c = o.done(x)
+        let fi = if c >= 0 { o.field(c, x) } else { -1 }
+        if c >= 0 && o.cands[c].flds[fi].outer >= 0 {
+            o.inner(c, x)
+            return
+        }
         if c >= 0 {
             let l = o.fieldLoc(c, x)
             o.u.nodes[x].k = ir.E_LOCAL
@@ -758,6 +788,32 @@ fn (o: mut &Opt) sr(x: int) {
     if l >= 0 {
         for j in 0..o.u.items[l] { o.sr(o.u.items[l + 1 + j]) }
     }
+}
+
+// The member chain x of candidate c, a field inside another (outer): the member of the chain
+// that is the outer field becomes its local.
+fn (o: mut &Opt) inner(c: int, x: int) {
+    let fi = o.field(c, x)
+    let q = o.cands[c].flds[fi].outer
+    let fq = o.cands[c].flds[q]
+    var off = 0
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER {
+        off += o.u.nodes[r].v
+        r = o.u.nodes[r].a
+    }
+    var y = x
+    while o.u.nk(y) == ir.E_MEMBER {
+        if off == fq.off && o.u.nodes[y].ty == fq.ty {
+            o.u.nodes[y].k = ir.E_LOCAL
+            o.u.nodes[y].a = fq.loc
+            o.u.nodes[y].v = 0
+            return
+        }
+        off -= o.u.nodes[y].v
+        y = o.u.nodes[y].a
+    }
+    ir.failAt("IR node", o.u.nodes[x].line, "opt: no outer field")
 }
 
 // sr of the statement x of a list, into out: whether it is not just x.
