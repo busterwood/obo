@@ -470,7 +470,14 @@ against what its code saves.
 | `perf11` (`d79469c`) | move the field loads of a split value record (`let n = g.u.nodes[x]`) to their first use, or into the `if` branch that uses them | none (+0.1%) | 0.7% | +0.8% |
 | `perf12` (`187dcef`) | read such fields again after calls that type-based write sets prove cannot change them, instead of saving them on the stack | 0.7% | 4% | +3.7% |
 | `perf16` (`b88f4d3`) | the assembler remembers which register holds `[base+disp]` (4 entries, invalidated by writes, labels, calls, stores) and drops or turns into a move the loads of held places | 0.16% (7M of 4,399M; 12 KB of 2.46 MB of code) | 1.07% (47M) | +0.9% instructions, +2% cycles |
+| `perf17` (`bf50b1d`) | the range facts (checks proved by guards and ranges) in functions without a loop that have a check and an `if` (2 more of fib's checks go) | below noise on the self-build (325 overflow checks made wrapping against 231); fib -5.9% instructions, -23% cycles; the other benchmarks equal | 2.75% of the native compiler's instructions (120M) | +2.8% self-build; perfsuite: compile suite +1.05% instructions, run suite -0.38% instructions, -2.25% cycles (fib alone) |
 | `perf15` (not built) | `str` locals and parameters as register pairs, the first item of the pass | not attempted: see design/native.md section 8 | | |
+
+`perf17` fails "Judging a pass": the run suite gains in cycles but on one
+program (fib), and the compile suite costs 1.05%. It is committed on its
+branch with the tests (`lib/tests/run/range_facts_*`) that show the checks
+stay where they must. A cheaper test for which functions to analyze (the
+compiler has hundreds with a check and an `if`) would be the way to retry it.
 
 `perf16` is the sound version of the idea behind `cse-experiment`, at the
 assembler (nothing walks the IR): a reload is skipped only when the register

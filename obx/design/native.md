@@ -290,7 +290,9 @@ still runs).
 
 Then `loops.obx` (the sixth performance step), on each function that has a
 loop (the others are left alone: there is little to gain there, and the pass
-costs compile time):
+costs compile time; the branch `perf17` also ran the facts, the second item
+below, on loop-free functions that have a check and an `if`, and is shelved
+for its cost: section 8):
 
 - array headers out of loops: a loop's reads of an array's or slice's data
   pointer or length (`a.data`, `a.len`, `p->data`, `p->len`) whose root
@@ -848,6 +850,40 @@ cycles against 1,961M), so the backend still needs only SSE2. Not done:
 a record literal passed as an argument is still built in a temporary and
 loaded from it; a record of 3 or 4 eightbytes returned through the hidden
 pointer is still built then copied.
+
+2026-11-04, the seventeenth performance step (branch `perf17`: the range
+facts of `loops.obx` in functions without a loop; shelved, not merged). The
+rule on the branch: a function with no loop runs the facts walk when the
+`W_INFO` walk finds in it a bounds check (`rt_idx`) or a checked `+ - *` and
+an `if` (the source of most facts: guards); the hoisting parts (A) and (C)
+stay loop-only. Nothing else changed, so the proofs are those of the loops
+(a write, a taken address or a call that may write forgets the facts).
+Tests: `lib/tests/run/range_facts_*` (the checks stay at the boundary, one
+past the end, a negative index, the else branch, after a write of the
+variable, through a `mut &` and after a call that shortens the array; both
+backends). Native-built compilers of main (`d1c4cf9`) and of the branch;
+`tools/perfsuite.py main perf17 -n 5` (instructions / cycles, best of 5):
+
+| | base instr | new instr | base cyc | new cyc |
+|---|---:|---:|---:|---:|
+| compiler --native | 4,386.9M | 4,507.6M (+2.75%) | 2,024M | 2,079M |
+| eza, grep, zoxide --native | | +1.19%, +0.98%, +0.37% | | |
+| fib | 5,629.7M | 5,298.6M (-5.9%) | 2,022M | 1,561M (-22.8%) |
+| maps | 2,707.6M | same | 1,237M | 1,172M (-5%, layout) |
+| the other run programs | | equal to 0.00% | | |
+| geometric mean, compile suite | | +1.05% | | +1.42% |
+| geometric mean, run suite | | -0.38% | | -2.25% |
+
+Overflow checks made wrapping in the self-build: 231 before, 325 after
+(bounds checks proved: 304 in both: the loops already had the guards that
+prove them). The old compiler running the new sources and the new one give
+the same instruction count (4,482M against 4,482M in the first try), so the
+code saved in the compiler itself is below the noise and the whole +2.8% is
+the analysis: an info walk and a facts walk of every function that has a
+check and an `if`, which in the compiler is most of them. The saving is
+fib's `n - 1` and `n - 2` (2 of its 3 checked operations) and little else:
+the library and the benchmarks check mostly in loops, where the facts
+already ran. Requiring an `if` as well as a check saved nothing (+2.75%).
 
 2026-11-04, the sixteenth performance step (branch `perf16`: the
 assembler reuses loads along straight-line code; shelved, not merged: it
