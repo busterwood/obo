@@ -124,6 +124,21 @@ pub const OP_LE = 13
 pub const OP_GT = 14
 pub const OP_GE = 15
 
+// The operands of each node kind (KIDS[k]), for the walks over the tree (opt, loops, x64gen):
+// none, a, a and b, a b and c, a call (a and the list b), a compound literal (the list b), a
+// block (the list a), a declaration (b and the list c), a for (a b c d); -1: no such kind.
+pub const K_NONE = 0
+pub const K_A = 1
+pub const K_AB = 2
+pub const K_ABC = 3
+pub const K_CALL = 4
+pub const K_CLIT = 5
+pub const K_BLOCK = 6
+pub const K_DECL = 7
+pub const K_FOR = 8
+pub const KIDS: []int = [-1, 0, 0, 0, 0, 0, 0, 4, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 1, 5, 1, 2, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 1, 3, 2, 8, 0, 0, 1, 6, 2, 0, 0, 0]
+
 // A node is eight ints, 64 bytes: a whole cache line. The rare payloads that do not fit an int,
 // a float constant's value and a string literal's bytes, live in the side tables Ir.flts and
 // Ir.strs, named by v (88 bytes with them inline cost the self-build 6% of its cycles, in cache

@@ -161,21 +161,6 @@ const W_WRITES = 4
 const W_EFFECTS = 5
 const W_NAMES = 6
 
-// The operands of each node kind (KIDS[k]): none, a, a and b, a b and c, a call (a and the list
-// b), a compound literal (the list b), a block (the list a), a declaration (b and the list c),
-// a for (a b c d); -1: no such kind.
-const K_NONE = 0
-const K_A = 1
-const K_AB = 2
-const K_ABC = 3
-const K_CALL = 4
-const K_CLIT = 5
-const K_BLOCK = 6
-const K_DECL = 7
-const K_FOR = 8
-const KIDS: []int = [-1, 0, 0, 0, 0, 0, 0, 4, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 1, 5, 1, 2, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 1, 3, 2, 8, 0, 0, 1, 6, 2, 0, 0, 0]
-
 // The cost of each node kind, the measure of a body's size: the leaves (constants, locals,
 // globals, functions), the casts, the decays, the initializer entries and the blocks cost
 // nothing (they are operands of the code the others make, or no code), a call of the program 3
@@ -196,11 +181,11 @@ fn (o: &Opt) bad(x: int) { ir.failAt("IR node", o.u.nodes[x].line, "opt: node ki
 fn (o: mut &Opt) walk(x: int, op: int, l: int): int {
     if x < 0 { return 0 }
     let k = o.u.nodes[x].k
-    let kc = KIDS[k]
+    let kc = ir.KIDS[k]
     if kc < 0 { o.bad(x) }
     let a = o.u.nodes[x].a
     var hit = 0
-    if kc == K_NONE {
+    if kc == ir.K_NONE {
         if k == ir.E_FUNC && op == W_CALLEES { o.refs[a] += 1 }
         if k == ir.E_LOCAL && op == W_NAMES && a == l { hit += 1 }
         return hit
@@ -225,15 +210,15 @@ fn (o: mut &Opt) walk(x: int, op: int, l: int): int {
     } else if k == ir.S_RETURN {
         if op == W_RETURNS { hit += 1 }
     }
-    if kc == K_A { return hit + o.walk(a, op, l) }
+    if kc == ir.K_A { return hit + o.walk(a, op, l) }
     let b = o.u.nodes[x].b
-    if kc == K_AB { return hit + o.walk(a, op, l) + o.walk(b, op, l) }
-    if kc == K_CALL { return hit + o.walk(a, op, l) + o.walkList(b, op, l) }
-    if kc == K_BLOCK { return hit + o.walkList(a, op, l) }
+    if kc == ir.K_AB { return hit + o.walk(a, op, l) + o.walk(b, op, l) }
+    if kc == ir.K_CALL { return hit + o.walk(a, op, l) + o.walkList(b, op, l) }
+    if kc == ir.K_BLOCK { return hit + o.walkList(a, op, l) }
     let c = o.u.nodes[x].c
-    if kc == K_ABC { return hit + o.walk(a, op, l) + o.walk(b, op, l) + o.walk(c, op, l) }
-    if kc == K_DECL { return hit + o.walk(b, op, l) + o.walkList(c, op, l) }
-    if kc == K_CLIT { return hit + o.walkList(b, op, l) }
+    if kc == ir.K_ABC { return hit + o.walk(a, op, l) + o.walk(b, op, l) + o.walk(c, op, l) }
+    if kc == ir.K_DECL { return hit + o.walk(b, op, l) + o.walkList(c, op, l) }
+    if kc == ir.K_CLIT { return hit + o.walkList(b, op, l) }
     return hit + o.walk(a, op, l) + o.walk(b, op, l) + o.walk(c, op, l) + o.walk(o.u.nodes[x].d, op, l)
 }
 
@@ -255,18 +240,18 @@ fn (o: &Opt) small(x: int, budget: mut &int): bool {
         if f >= 0 && f < o.u.nRtFuncs { budget += 2 }
     }
     if budget < 0 { return false }
-    let kc = KIDS[k]
-    if kc == K_NONE { return true }
+    let kc = ir.KIDS[k]
+    if kc == ir.K_NONE { return true }
     let a = o.u.nodes[x].a
-    if kc == K_A { return o.small(a, budget) }
+    if kc == ir.K_A { return o.small(a, budget) }
     let b = o.u.nodes[x].b
-    if kc == K_AB { return o.small(a, budget) && o.small(b, budget) }
-    if kc == K_CALL { return o.small(a, budget) && o.smallList(b, budget) }
-    if kc == K_BLOCK { return o.smallList(a, budget) }
+    if kc == ir.K_AB { return o.small(a, budget) && o.small(b, budget) }
+    if kc == ir.K_CALL { return o.small(a, budget) && o.smallList(b, budget) }
+    if kc == ir.K_BLOCK { return o.smallList(a, budget) }
     let c = o.u.nodes[x].c
-    if kc == K_ABC { return o.small(a, budget) && o.small(b, budget) && o.small(c, budget) }
-    if kc == K_DECL { return o.small(b, budget) && o.smallList(c, budget) }
-    if kc == K_CLIT { return o.smallList(b, budget) }
+    if kc == ir.K_ABC { return o.small(a, budget) && o.small(b, budget) && o.small(c, budget) }
+    if kc == ir.K_DECL { return o.small(b, budget) && o.smallList(c, budget) }
+    if kc == ir.K_CLIT { return o.smallList(b, budget) }
     return o.small(a, budget) && o.small(b, budget) && o.small(c, budget) && o.small(o.u.nodes[x].d, budget)
 }
 
@@ -303,9 +288,9 @@ fn (o: &Opt) dead(f: int, work: mut &[]int) {
 // work when it is dropDead's.
 fn (o: mut &Opt) unref(x: int, work: mut &[]int) {
     if x < 0 { return }
-    let kc = KIDS[o.u.nodes[x].k]
+    let kc = ir.KIDS[o.u.nodes[x].k]
     let a = o.u.nodes[x].a
-    if kc == K_NONE {
+    if kc == ir.K_NONE {
         if o.u.nodes[x].k == ir.E_FUNC {
             o.refs[a] -= 1
             o.dead(a, work)
@@ -314,11 +299,11 @@ fn (o: mut &Opt) unref(x: int, work: mut &[]int) {
     }
     let b = o.u.nodes[x].b
     let c = o.u.nodes[x].c
-    if kc != K_BLOCK && kc != K_CLIT && kc != K_DECL { o.unref(a, work) }
-    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.unref(b, work) }
-    if kc == K_ABC || kc == K_FOR { o.unref(c, work) }
-    if kc == K_FOR { o.unref(o.u.nodes[x].d, work) }
-    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_BLOCK { a } else if kc == K_DECL { c } else { -1 }
+    if kc != ir.K_BLOCK && kc != ir.K_CLIT && kc != ir.K_DECL { o.unref(a, work) }
+    if kc == ir.K_AB || kc == ir.K_ABC || kc == ir.K_FOR || kc == ir.K_DECL { o.unref(b, work) }
+    if kc == ir.K_ABC || kc == ir.K_FOR { o.unref(c, work) }
+    if kc == ir.K_FOR { o.unref(o.u.nodes[x].d, work) }
+    let l = if kc == ir.K_CALL || kc == ir.K_CLIT { b } else if kc == ir.K_BLOCK { a } else if kc == ir.K_DECL { c } else { -1 }
     if l >= 0 {
         for j in 0..o.u.items[l] { o.unref(o.u.items[l + 1 + j], work) }
     }
@@ -580,15 +565,15 @@ fn (o: mut &Opt) sa(x: int) {
         let c = o.candOf(o.root(a))
         if c >= 0 { o.cands[c].bad = true }
     }
-    let kc = KIDS[k]
-    if kc == K_NONE { return }
+    let kc = ir.KIDS[k]
+    if kc == ir.K_NONE { return }
     let b = o.u.nodes[x].b
     let c = o.u.nodes[x].c
-    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sa(a) }
-    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sa(b) }
-    if kc == K_ABC || kc == K_FOR { o.sa(c) }
-    if kc == K_FOR { o.sa(o.u.nodes[x].d) }
-    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if kc == ir.K_A || kc == ir.K_AB || kc == ir.K_ABC || kc == ir.K_FOR || kc == ir.K_CALL { o.sa(a) }
+    if kc == ir.K_AB || kc == ir.K_ABC || kc == ir.K_FOR || kc == ir.K_DECL { o.sa(b) }
+    if kc == ir.K_ABC || kc == ir.K_FOR { o.sa(c) }
+    if kc == ir.K_FOR { o.sa(o.u.nodes[x].d) }
+    let l = if kc == ir.K_CALL || kc == ir.K_CLIT { b } else if kc == ir.K_DECL { c } else { -1 }
     if l >= 0 {
         for j in 0..o.u.items[l] { o.sa(o.u.items[l + 1 + j]) }
     }
@@ -778,15 +763,15 @@ fn (o: mut &Opt) sr(x: int) {
             return
         }
     }
-    let kc = KIDS[k]
-    if kc == K_NONE { return }
+    let kc = ir.KIDS[k]
+    if kc == ir.K_NONE { return }
     let b = o.u.nodes[x].b
     let c = o.u.nodes[x].c
-    if kc == K_A || kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_CALL { o.sr(a) }
-    if kc == K_AB || kc == K_ABC || kc == K_FOR || kc == K_DECL { o.sr(b) }
-    if kc == K_ABC || kc == K_FOR { o.sr(c) }
-    if kc == K_FOR { o.sr(o.u.nodes[x].d) }
-    let l = if kc == K_CALL || kc == K_CLIT { b } else if kc == K_DECL { c } else { -1 }
+    if kc == ir.K_A || kc == ir.K_AB || kc == ir.K_ABC || kc == ir.K_FOR || kc == ir.K_CALL { o.sr(a) }
+    if kc == ir.K_AB || kc == ir.K_ABC || kc == ir.K_FOR || kc == ir.K_DECL { o.sr(b) }
+    if kc == ir.K_ABC || kc == ir.K_FOR { o.sr(c) }
+    if kc == ir.K_FOR { o.sr(o.u.nodes[x].d) }
+    let l = if kc == ir.K_CALL || kc == ir.K_CLIT { b } else if kc == ir.K_DECL { c } else { -1 }
     if l >= 0 {
         for j in 0..o.u.items[l] { o.sr(o.u.items[l + 1 + j]) }
     }
@@ -1159,11 +1144,11 @@ fn named(names: &[str], n: str): bool {
 fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
     if x < 0 { return true }
     let k = o.u.nodes[x].k
-    let kc = KIDS[k]
+    let kc = ir.KIDS[k]
     if kc < 0 { return false }
     let a = o.u.nodes[x].a
     if k == ir.E_LOCAL { return a != p || ok }
-    if kc == K_NONE { return true }
+    if kc == ir.K_NONE { return true }
     if k == ir.E_ADDR || k == ir.E_DECAY {
         let ak = o.u.nk(a)
         if ak == ir.E_FUNC || ak == ir.E_STR { return true }
@@ -1190,10 +1175,10 @@ fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
     }
     if k == ir.E_MEMBER { return o.calm(a, p, true) }
     let b = o.u.nodes[x].b
-    if kc == K_A { return o.calm(a, p, false) }
-    if kc == K_AB { return o.calm(a, p, false) && o.calm(b, p, false) }
-    if kc == K_BLOCK || kc == K_CLIT {
-        let l = if kc == K_BLOCK { a } else { b }
+    if kc == ir.K_A { return o.calm(a, p, false) }
+    if kc == ir.K_AB { return o.calm(a, p, false) && o.calm(b, p, false) }
+    if kc == ir.K_BLOCK || kc == ir.K_CLIT {
+        let l = if kc == ir.K_BLOCK { a } else { b }
         if l < 0 { return true }
         for i in 0..o.u.listLen(l) {
             if !o.calm(o.u.listAt(l, i), p, false) { return false }
@@ -1201,8 +1186,8 @@ fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
         return true
     }
     let c = o.u.nodes[x].c
-    if kc == K_ABC { return o.calm(a, p, false) && o.calm(b, p, false) && o.calm(c, p, false) }
-    if kc == K_DECL {
+    if kc == ir.K_ABC { return o.calm(a, p, false) && o.calm(b, p, false) && o.calm(c, p, false) }
+    if kc == ir.K_DECL {
         if !o.calm(b, p, false) { return false }
         if c >= 0 {
             for i in 0..o.u.listLen(c) {
@@ -1211,7 +1196,7 @@ fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
         }
         return true
     }
-    if kc == K_CALL { return false }
+    if kc == ir.K_CALL { return false }
     return o.calm(a, p, false) && o.calm(b, p, false) && o.calm(c, p, false) && o.calm(o.u.nodes[x].d, p, false)
 }
 
