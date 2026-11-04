@@ -67,6 +67,10 @@ A construct the native backend does not handle is a clean error,
 - Nothing after `lower` depends on C syntax or C-specific quirks (typedef
   names, declarator forms, literal suffixes, `sizeof`, implicit conversions):
   `x64gen` reads only the IR, and `cgen` writes C from it alone.
+- A node is eight ints (64 bytes, one cache line). A string literal's bytes
+  and a float constant's value live in the side tables `Ir.strs` and
+  `Ir.flts`, named by the node's `v`. The operand shapes of the kinds
+  (`ir.KIDS`) drive the tree walks of `opt`, `loops` and `x64gen`.
 - The C idioms the IR still mirrors are plain imperative constructs
   (`while`/`for`/`switch` with `case`, compound values built from
   offset/value entries, closures as an `{fn, env}` pair).
@@ -780,6 +784,45 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-04, the thirteenth performance step (branch `perf13`: the
+compiler's own data and walks, no change to the code it generates; the
+native and C output of the compiler, `cmd/*.obx` and `lib/tests/run/*.obx`
+is byte-identical to main's). User-mode figures for the self-build at
+`1ccdc03` and after each step (the first two built on `c80b952`, whose
+self-build was the same 4668M); cycles are the best of 9-11 interleaved
+runs on a loaded machine, where the spread was 50-150M:
+
+| commit | native: instructions; cycles | gcc-built: instructions; cycles |
+|---|---|---|
+| main `1ccdc03` | 4668M; 2213M | 3985M; 2068M |
+| `55a0306` ir.Node 88 to 64 bytes | 4629M; 2079M | 3799M; 1832M |
+| `a99a841` aTaken in the counting scan | 4566M; 2088M | 3761M; 1846M |
+| `3adb540` walk and scan by `ir.KIDS` | 4525M; 2052M | 3762M; 1845M |
+| `1c42dde` one count of uses | 4441M; 1973M | 3706M; 1758M |
+
+- `55a0306`: `ir.Node` loses `f: float` and `s: str` (E_FLT's and E_STR's
+  payloads, now in `Ir.flts` and `Ir.strs` by `v`): 88 to 64 bytes. The
+  walks touch a third fewer cache lines: 6% of the native compiler's
+  cycles, 11% of the gcc-built one's. The native compiler's binary grows
+  12 KB (2,494,777 to 2,507,065 bytes); the gcc-built one shrinks 8 KB
+  (2,009,112 to 2,000,616 bytes, after all four steps).
+- `a99a841`: simplify's whole-program walk marking the address-taken
+  locals is gone; the first `countUses` marks them as it visits every
+  E_ADDR and E_DECAY.
+- `3adb540`: `K_*` and `KIDS` move from `opt` and `loops` into `ir`;
+  `x64gen.walk` goes by the table, and `scan` stops at leaves after one
+  table load and walks the plain expressions by shape.
+- `1c42dde`: `newGen` counted the uses twice, around simplify. Simplify's
+  rewrites already adjusted the counts of the locals they touch (boolFold
+  now also zeroes the dropped `c`), so the second count is gone; an
+  instrumented build found the kept counts equal to a recount on 149
+  programs.
+
+Follow-ups: pack `Node`'s fields into i32 (64 to 32 bytes; every reader
+and writer of nodes changes, and `v` must stay 64-bit for E_INT, so the
+value would move to a side table or a pair of fields); the same side
+tables for `sx.Node`'s strings in the front end.
 
 2026-11-04, the ninth performance step (branch `perf9`: the compiler
 itself, native toward gcc on the self-build). Measured as for the eighth:

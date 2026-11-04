@@ -143,7 +143,7 @@ type Gen = record {
     callFresh: bool             // ... a new local (it may be the hidden result pointer)
     destUsed: bool              // genCall put the result there
     byteDest: int               // the register the next inline rt_str_byte loads its byte into (rax)
-    aTaken: []bool              // per local: its address (or a member's) is taken
+    aTaken: []bool              // per local: its address (or a member's) is taken (marked by the counting scan)
     emptyS: int                 // an S_EMPTY node
     saved: []int                // the frame slots of the callee-saved registers the function uses
     frame: int
@@ -257,9 +257,7 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.spillSlot, 0)
     }
     g.countUses()
-    g.simplify()
-    for i in 0..len(g.u.locals) { g.uses[i] = 0 }
-    g.countUses()
+    g.simplify()                // keeps uses exact: no second count
     for i in 0..len(g.u.nodes) {
         append(mut &g.posOf, -1)
         append(mut &g.posSeen, 0)
@@ -1042,7 +1040,9 @@ fn (g: mut &Gen) resetScan() {
 }
 
 // The uses of every local in its own function (inlined copies of a function name its locals
-// as often), for the fused declarations of stmt.
+// as often), for simplify and the fused declarations of stmt; and aTaken (scan). It runs once:
+// each rewrite of simplify adjusts the counts of the locals it touches, so they stay what a
+// count of the simplified bodies would find.
 fn (g: mut &Gen) countUses() {
     g.counting = true
     for f in 0..len(g.u.funcs) {
@@ -1054,6 +1054,7 @@ fn (g: mut &Gen) countUses() {
     }
     g.counting = false
     g.curFunc = -1
+    g.noCopy = -1
 }
 
 // ---------------------------------------------------------------- simplification of the IR
@@ -1075,11 +1076,9 @@ fn (g: mut &Gen) countUses() {
 // The C code is unchanged; only the native code generator sees the result.
 
 fn (g: mut &Gen) simplify() {
-    append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0})
     g.emptyS = len(g.u.nodes) - 1
-    for f in 0..len(g.u.funcs) {
-        if g.u.funcs[f].body >= 0 { g.walk(g.u.funcs[f].body, 3, -1, -1) }
-    }
+    // aTaken is complete: the first countUses marked it (scan)
     for f in 0..len(g.u.funcs) {
         if g.u.funcs[f].body >= 0 { g.simpStmt(g.u.funcs[f].body) }
     }
@@ -1171,16 +1170,19 @@ fn (g: mut &Gen) boolFold(d: int, s: int): int {
     let lhs = g.u.nodes[as1].a
     if g.u.nk(lhs) != ir.E_LOCAL || g.u.nodes[lhs].a != b { return -1 }
     var v = g.u.nodes[as1].b
+    var c = -1
     if len(xs) == 2 {
         let dn = g.u.nodes[xs[0]]
         if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 { return -1 }
         if g.u.nk(v) != ir.E_LOCAL || g.u.nodes[v].a != dn.a || g.u.locals[dn.a].ty != g.u.locals[b].ty { return -1 }
         v = dn.b
+        c = dn.a
     }
     if g.walk(v, 0, b, -1) > 0 { return -1 }
+    if c >= 0 { g.uses[c] = 0 }             // its declaration and `b = c` go with the if
     let a = g.u.nodes[d].b
     append(mut &g.u.nodes, ir.Node{k: if isAnd { ir.E_LAND } else { ir.E_LOR }, ty: g.u.locals[b].ty,
-        line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+        line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0})
     return len(g.u.nodes) - 1
 }
 
@@ -1359,8 +1361,8 @@ fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
 }
 
 // Over the tree x: op 0 counts the names of local l; 1 counts its assignments and the taking
-// of its address; 2 renames it to local to; 3 marks the locals whose addresses (or members')
-// are taken (aTaken).
+// of its address; 2 renames it to local to. The children by the kind's shape (ir.KIDS), as
+// opt's and loops' walks go: one table load instead of a chain of kind tests at each node.
 fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
     if x < 0 { return 0 }
     let n = g.u.nodes[x]
@@ -1370,42 +1372,23 @@ fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
         if op == 2 { g.u.nodes[x].a = to }
         return if op == 1 { 0 } else { 1 }
     }
-    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_STR || k == ir.E_GLOBAL || k == ir.E_FUNC ||
-        k == ir.S_BREAK || k == ir.S_CONTINUE || k == ir.S_CASE || k == ir.S_DEFAULT || k == ir.S_EMPTY {
-        return 0
-    }
+    let kc = ir.KIDS[k]
+    if kc == ir.K_NONE { return 0 }
+    if kc < 0 { g.fail(x, "unknown node kind") }
     var hit = 0
-    if k == ir.E_ADDR || k == ir.E_DECAY {
-        var r = n.a
-        while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
-        if g.u.nk(r) == ir.E_LOCAL {
-            if op == 3 { g.aTaken[g.u.nodes[r].a] = true }
-            if op == 1 && g.u.nodes[r].a == l { hit = 1 }
-        }
-    } else if op == 1 && (k == ir.E_ASSIGN || k == ir.E_POSTINC) {
+    if op == 1 && (k == ir.E_ADDR || k == ir.E_DECAY || k == ir.E_ASSIGN || k == ir.E_POSTINC) {
         var r = n.a
         while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
         if g.u.nk(r) == ir.E_LOCAL && g.u.nodes[r].a == l { hit = 1 }
     }
-    if k == ir.E_CALL { return hit + g.walk(n.a, op, l, to) + g.walkList(n.b, op, l, to) }
-    if k == ir.E_CLIT { return hit + g.walkList(n.b, op, l, to) }
-    if k == ir.S_BLOCK { return hit + g.walkList(n.a, op, l, to) }
-    if k == ir.S_DECL { return hit + g.walk(n.b, op, l, to) + g.walkList(n.c, op, l, to) }
-    if k == ir.S_FOR {
-        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to) + g.walk(n.d, op, l, to)
-    }
-    if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT ||
-        k == ir.E_POSTINC || k == ir.E_IENT || k == ir.S_EXPR || k == ir.S_RETURN || k == ir.E_ADDR || k == ir.E_DECAY {
-        return hit + g.walk(n.a, op, l, to)
-    }
-    if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD || k == ir.S_SWITCH ||
-        k == ir.S_WHILE {
-        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to)
-    }
-    if k == ir.E_COND || k == ir.S_IF {
-        return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to)
-    }
-    g.fail(x, "unknown node kind")
+    if kc == ir.K_A { return hit + g.walk(n.a, op, l, to) }
+    if kc == ir.K_AB { return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) }
+    if kc == ir.K_CALL { return hit + g.walk(n.a, op, l, to) + g.walkList(n.b, op, l, to) }
+    if kc == ir.K_BLOCK { return hit + g.walkList(n.a, op, l, to) }
+    if kc == ir.K_ABC { return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to) }
+    if kc == ir.K_DECL { return hit + g.walk(n.b, op, l, to) + g.walkList(n.c, op, l, to) }
+    if kc == ir.K_CLIT { return hit + g.walkList(n.b, op, l, to) }
+    return hit + g.walk(n.a, op, l, to) + g.walk(n.b, op, l, to) + g.walk(n.c, op, l, to) + g.walk(n.d, op, l, to)
 }
 
 fn (g: mut &Gen) walkList(l: int, op: int, loc: int, to: int): int {
@@ -1610,8 +1593,9 @@ fn (g: &Gen) fusesReturn(d: int, s: int): bool {
 }
 
 // Weighs the uses of locals in the tree x (at loop depth depth), with the bodies of the calls
-// that are generated in place; when counting, counts the times x names each (uses); else
-// finds their positions, the loops and the loud positions (allocRegs).
+// that are generated in place; when counting, counts the times x names each (uses) and marks
+// the locals whose addresses (or members') are taken (aTaken); else finds their positions, the
+// loops and the loud positions (allocRegs).
 fn (g: mut &Gen) scan(x: int, depth: int) {
     if x < 0 { return }
     let n = g.u.nodes[x]
@@ -1627,50 +1611,27 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     if !g.counting && x != g.noCopy && g.loudNode(x) { g.loud[g.pos] = true }
     // a member of an aggregate, or its address: its place only, nothing copied
     if (k == ir.E_MEMBER || k == ir.E_ADDR || k == ir.E_DECAY) && g.placeKind(n.a) { g.noCopy = n.a }
+    let kc = ir.KIDS[k]
     if k == ir.E_LOCAL {
         g.occur(n.a)
         if g.counting { g.uses[n.a] += 1 }
         g.weigh(n.a, depth)
+    } else if kc == ir.K_NONE {
+        // another leaf (a constant, a global, a function, a jump, a case label): nothing to scan
     } else if k == ir.E_ADDR || k == ir.E_DECAY {
         if g.u.nk(n.a) == ir.E_LOCAL {
             let l = g.u.nodes[n.a].a
             g.occur(l)
             g.bad[l] = true
         }
+        if g.counting {
+            // the first count (before simplify, which reads aTaken first) visits every node of
+            // every body, as the count after it does: the marks are complete and stay so
+            var r = n.a
+            while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+            if g.u.nk(r) == ir.E_LOCAL { g.aTaken[g.u.nodes[r].a] = true }
+        }
         g.scan(n.a, depth)
-    } else if k == ir.S_EXPR || k == ir.S_RETURN {
-        g.step()
-        g.scan(n.a, depth)
-    } else if k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_CAST || k == ir.E_NEG || k == ir.E_BNOT ||
-        k == ir.E_LNOT || k == ir.E_POSTINC || k == ir.E_IENT {
-        g.scan(n.a, depth)
-    } else if k == ir.E_BIN || k == ir.E_LAND || k == ir.E_LOR || k == ir.E_ASSIGN || k == ir.E_PADD {
-        g.scan(n.a, depth)
-        g.scan(n.b, depth)
-    } else if k == ir.S_SWITCH {
-        g.step()
-        g.scan(n.a, depth)
-        g.ifDepth += 1
-        g.scan(n.b, depth)
-        g.ifDepth -= 1
-    } else if k == ir.E_COND {
-        g.scan(n.a, depth)
-        g.scan(n.b, depth)
-        g.scan(n.c, depth)
-    } else if k == ir.S_IF {
-        let from = len(g.sites)
-        g.step()
-        let p = g.pos
-        g.scan(n.a, depth)
-        g.addSite(x, SITE_COND, p, depth, from)
-        // `if (e) x = x + 1;` may be generated with no branch (incIf): its body not by stmt
-        let inc = n.c < 0 && g.u.nk(g.lone(n.b)) == ir.S_EXPR
-        if inc { g.noSites += 1 }
-        g.ifDepth += 1
-        g.scan(n.b, depth)
-        if inc { g.noSites -= 1 }
-        g.scan(n.c, depth)
-        g.ifDepth -= 1
     } else if k == ir.E_CALL {
         g.scan(n.a, depth)
         let f = if g.counting { -1 } else { g.inlineTarget(x, true, depth) }
@@ -1710,8 +1671,44 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         } else if !g.counting && !g.quietRt(x) {
             g.loud[g.pos] = true
         }
-    } else if k == ir.E_CLIT {
-        g.scanList(n.b, depth)
+    } else if k < ir.S_DECL {
+        // the other expressions (ir numbers them below the statements): their operands in order,
+        // by the kind's shape (ir.KIDS)
+        if kc == ir.K_A {
+            g.scan(n.a, depth)
+        } else if kc == ir.K_AB {
+            g.scan(n.a, depth)
+            g.scan(n.b, depth)
+        } else if kc == ir.K_ABC {
+            g.scan(n.a, depth)
+            g.scan(n.b, depth)
+            g.scan(n.c, depth)
+        } else {
+            g.scanList(n.b, depth)      // E_CLIT
+        }
+    } else if k == ir.S_EXPR || k == ir.S_RETURN {
+        g.step()
+        g.scan(n.a, depth)
+    } else if k == ir.S_SWITCH {
+        g.step()
+        g.scan(n.a, depth)
+        g.ifDepth += 1
+        g.scan(n.b, depth)
+        g.ifDepth -= 1
+    } else if k == ir.S_IF {
+        let from = len(g.sites)
+        g.step()
+        let p = g.pos
+        g.scan(n.a, depth)
+        g.addSite(x, SITE_COND, p, depth, from)
+        // `if (e) x = x + 1;` may be generated with no branch (incIf): its body not by stmt
+        let inc = n.c < 0 && g.u.nk(g.lone(n.b)) == ir.S_EXPR
+        if inc { g.noSites += 1 }
+        g.ifDepth += 1
+        g.scan(n.b, depth)
+        if inc { g.noSites -= 1 }
+        g.scan(n.c, depth)
+        g.ifDepth -= 1
     } else if k == ir.S_BLOCK {
         let cnt = g.u.listLen(n.a)
         var starts: []int = []
@@ -2767,8 +2764,8 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
         var sz = g.size(en.ty)
-        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.nodes[en.a].s) + 1 < sz {
-            sz = len(g.u.nodes[en.a].s) + 1            // the copied bytes; the rest stays zero
+        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.strs[g.u.nodes[en.a].v]) + 1 < sz {
+            sz = len(g.u.strs[g.u.nodes[en.a].v]) + 1            // the copied bytes; the rest stays zero
         }
         var b = en.v
         while b < en.v + sz && b < n {
@@ -2802,7 +2799,7 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
         let t = en.ty
         let x = en.a
         if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
-            let str = g.u.nodes[x].s
+            let str = g.u.strs[g.u.nodes[x].v]
             var cnt = len(str) + 1
             if cnt > g.size(t) { cnt = g.size(t) }
             g.a.movRSym(RAX, g.symStr(str), 0)
@@ -2848,7 +2845,7 @@ fn (g: mut &Gen) genAddr(e: int) {
         let s = g.symFunc(n.a, e)
         if g.syms[s].kind == SK_DYN { g.a.loadAt(RAX, s) } else { g.a.movRSym(RAX, s, 0) }
     } else if k == ir.E_STR {
-        g.a.movRSym(RAX, g.symStr(n.s), 0)
+        g.a.movRSym(RAX, g.symStr(g.u.strs[n.v]), 0)
     } else if k == ir.E_DEREF {
         g.gen(n.a)
     } else if k == ir.E_MEMBER {
@@ -2953,7 +2950,7 @@ fn (g: &Gen) constAddrSym(e: int): int {
     if n.k != ir.E_DECAY && n.k != ir.E_ADDR { return -1 }
     let x = g.u.nodes[n.a]
     if x.k == ir.E_GLOBAL { return g.globalSym[x.a] }
-    if x.k == ir.E_STR { return g.strSym.getOr(&x.s, -1) }
+    if x.k == ir.E_STR { return g.strSym.getOr(&g.u.strs[x.v], -1) }
     return -1
 }
 
@@ -3304,7 +3301,7 @@ fn (g: mut &Gen) gen(e: int) {
     if k == ir.E_INT {
         g.a.movRI(RAX, n.v)
     } else if k == ir.E_FLT {
-        g.a.movRI(RAX, floatBits(n.f))
+        g.a.movRI(RAX, floatBits(g.u.flts[n.v]))
         g.a.movqXR(0, RAX)
     } else if k == ir.E_LOCAL || k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_GLOBAL || k == ir.E_STR ||
         k == ir.E_FUNC {
@@ -4671,7 +4668,7 @@ fn (g: &Gen) inlineDirect(x: int, p: int): bool {
 
 // The label of a jump to rt_trap(code, msg, where) for the location string w (a node).
 fn (g: mut &Gen) stub(code: int, msg: str, w: int): int {
-    let key = intToStr(code) + " " + msg + "\n" + g.u.nodes[g.u.nodes[w].a].s
+    let key = intToStr(code) + " " + msg + "\n" + g.u.strs[g.u.nodes[g.u.nodes[w].a].v]
     let have = g.stubOf.getOr(&key, -1)
     if have >= 0 { return have }
     let l = g.a.newLabel()
@@ -4686,7 +4683,7 @@ fn (g: mut &Gen) genStubs() {
         g.a.bind(st.label)
         g.a.movRI(RDI, st.code)
         g.a.movRSym(RSI, g.symStr(st.msg), 0)
-        g.a.movRSym(RDX, g.symStr(g.u.nodes[g.u.nodes[st.where].a].s), 0)
+        g.a.movRSym(RDX, g.symStr(g.u.strs[g.u.nodes[g.u.nodes[st.where].a].v]), 0)
         g.callRt("rt_trap")
     }
     g.stubOf.clear()
@@ -5237,7 +5234,7 @@ fn (g: mut &Gen) constOf(e: int): K {
     if k == ir.E_INT {
         return K{lo: n.v, hi: if n.v < 0 && g.u.isSigned(n.ty) { -1 } else { 0 }, sym: -1}
     }
-    if k == ir.E_FLT { return K{lo: floatBits(n.f), hi: 0, sym: -1} }
+    if k == ir.E_FLT { return K{lo: floatBits(g.u.flts[n.v]), hi: 0, sym: -1} }
     if k == ir.E_NEG && g.isF(n.ty) {
         let x = g.constOf(n.a)
         return K{lo: x.lo ^ (-9223372036854775807 - 1), hi: 0, sym: -1}
@@ -5279,7 +5276,7 @@ fn (g: mut &Gen) constAddr(e: int): K {
         if g.syms[s].kind == SK_DYN { g.fail(e, "the address of a C library function in a constant") }
         return K{lo: 0, hi: 0, sym: s}
     }
-    if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(n.s)} }
+    if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(g.u.strs[n.v])} }
     if n.k == ir.E_MEMBER {
         let x = g.constAddr(n.a)
         return K{lo: x.lo + n.v, hi: 0, sym: x.sym}
@@ -5315,7 +5312,7 @@ fn (g: mut &Gen) initData(buf: mut &[]byte, ro: bool, off: int, ents: int, reloc
         let x = en.a
         let o = off + en.v
         if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
-            let s = g.u.nodes[x].s
+            let s = g.u.strs[g.u.nodes[x].v]
             for i in 0..len(s) {
                 if i < g.size(t) { buf[o + i] = strByte(s, i) }
             }

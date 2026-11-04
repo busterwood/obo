@@ -278,13 +278,18 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 509 ms | 570 ms |
-| self-build to C (`--emit-c`) | 286 ms | 300 ms |
+| self-build to an executable (`--native`) | 472 ms | 529 ms |
+| self-build to C (`--emit-c`) | 288 ms | 297 ms |
 | full build through gcc | 17 s, nearly all of it gcc | — |
-| compiler binary | 1,951,608 bytes (dynamic, glibc) | 2,445,569 bytes (static, no libc) |
+| compiler binary | 2,000,616 bytes (dynamic, glibc) | 2,507,065 bytes (static, no libc) |
 
-Measured on 4 November at `fd6f747` (after the ninth pass; after the eighth
-the times were 493, 589, 274 and 310 ms on 270 fewer lines of compiler). At
+Measured on 4 November on branch `perf13` (after the thirteenth pass, best
+of 11 on a machine other builds were loading; at `1ccdc03` just before it the
+same runs gave 542, 589, 309 and 307 ms, and the gcc-built compiler ran the
+`--native` self-build in 3,706M instructions and 1,758M cycles against
+3,985M and 2,068M). At `fd6f747` (after the ninth pass) the times were 509,
+570, 286 and 300 ms; after the eighth, 493, 589, 274 and 310 ms on 270 fewer
+lines of compiler. At
 `5900ba3` (bounds checks compared in place) the change is below the timing
 noise: the self-build's cycles went from 2,176M to about 2,164M, and on a
 later run of the same machine the `fd6f747` native compiler and the
@@ -296,9 +301,10 @@ and switching, the event loop, timers, sockets and the SSE2 string
 searches), not counting `rt.obx` and `rtx.obx`, which are generated from
 them.
 
-- The native-built compiler is 1.05-1.12x slower than the gcc-built one
-  (1.1-1.2x before the ninth pass, 1.55x before the fifth). It runs 1.17x
-  the instructions (4,585M against 3,918M for `--native` at `5900ba3`; 1.18x
+- The native-built compiler is 1.03-1.12x slower than the gcc-built one
+  (1.1-1.2x before the ninth pass, 1.55x before the fifth). It runs 1.20x
+  the instructions (4,441M against 3,706M after the thirteenth pass, which
+  sped up the gcc-built compiler more; 1.17x at `5900ba3`, 1.18x
   at `fd6f747`, 1.48x before the ninth, 1.89x before the fifth) at a higher rate per cycle. What is left
   is spread thin: of the 347 functions that take longer native, the 20
   worst hold 43% of the difference. It is in the mix (twice gcc's share of
@@ -342,6 +348,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | before the ninth, on later sources | 5,800M | 632M | 5,629M |
 | after it (the compiler: operands in place, record literals in their slots, value records' fields, borrowed str parameters) | 4,617M | 594M | 5,629M |
 | at `5900ba3` (bounds checks compare in place; the library's `io.Reader` in the compiler's sources) | 4,585M | 594M | 5,629M |
+| before the thirteenth, on later sources (`1ccdc03`) | 4,668M | 596M | 5,630M |
+| after it (the compiler's own data and walks: 64-byte IR nodes, shape tables, one use count) | 4,441M | 596M | 5,630M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -360,6 +368,17 @@ the self-build's instructions by 5% and its cycles by 6% (2,392M to
 second register choice and the sites). The ninth (the compiler itself) cut
 the self-build's instructions by 20% and its cycles by 9% (2,385M to
 2,176M), eza's instructions by 6%, and the native compiler's binary by 10%.
+The thirteenth changes no generated code (every program's output is
+byte-identical), only the compiler's own work: `ir.Node` shrinks from 88
+to 64 bytes (string and float payloads in side tables), simplify's
+address-taken walk folds into the use count, x64gen's tree walks dispatch on
+a shared table of node shapes, and the second count of uses goes. The
+self-build's instructions fall 4.9% (4,668M to 4,441M) and its cycles 11%
+(best of 11: 2,213M to 1,973M; the spread on a loaded machine was about
+50M). Most of the cycles are the node shrink alone (6%, fewer cache
+misses for 1% of the instructions). The gcc-built compiler gains more: 7%
+of its instructions (3,985M to 3,706M) and 15% of its cycles (2,068M to
+1,758M). Per-commit figures are in design/native.md section 8.
 
 **The runtime's memcpy.** On this machine, `rep movsb` copies about 15
 times slower when the destination is 1 to about 32 bytes past the source,
@@ -411,9 +430,9 @@ Also tried on `grepfast` (in the library and the runtime), not committed:
 | `import "regex"`, one call (`regex.quote`) | 54,080 bytes | 20,512 bytes |
 | eza | 233,256 bytes (dynamic, glibc) | 250,344 bytes (static) |
 | HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) |
-| compiler | 1,951,608 bytes (dynamic, glibc) | 2,445,569 bytes (static) |
+| compiler | 2,000,616 bytes (dynamic, glibc) | 2,507,065 bytes (static) |
 
-(4 November 2026, at `da520fe`; eza and the compiler at `fd6f747`.) The native backend generates only the functions and globals
+(4 November 2026, at `da520fe`; eza at `fd6f747`, the compiler on branch `perf13`.) The native backend generates only the functions and globals
 reachable from `main` (design/native.md section 5, "Reachability"), as gcc
 drops a C program's unused static functions: an imported module costs only
 what the program uses of it. The runtime is linked the same way, by

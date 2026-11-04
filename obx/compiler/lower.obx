@@ -46,7 +46,7 @@ pub fn newLower(): Lower {
 fn fail(msg: str): never { ir.failAt("template", 0, msg) }
 
 fn (u: mut &Lower) mk(k: int, ty: int, a: int, b: int, c: int, v: int): int {
-    append(mut &u.ir.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: v, f: 0.0, s: ""})
+    append(mut &u.ir.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: v})
     return len(u.ir.nodes) - 1
 }
 
@@ -432,8 +432,8 @@ fn (u: mut &Lower) initializer(ty: mut &int, off: int, n0: int, out: mut &[]int)
     if k == ir.TY_ARR && u.ir.tys[u.ir.tys[t].base].size == 1 && nd.k == tm.X_STR {
         let s = nd.s
         if u.ir.tys[t].n == 0 { ty = u.ir.arrOf(u.ir.tys[t].base, len(s) + 1) }
-        let sn = u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(s) + 1), -1, -1, -1, 0)
-        u.ir.nodes[sn].s = s
+        let si = u.ir.addStr(s)
+        let sn = u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(s) + 1), -1, -1, -1, si)
         append(out, u.mk(ir.E_IENT, ty, sn, -1, -1, off))
         return
     }
@@ -556,9 +556,8 @@ fn (u: mut &Lower) number(s: str): int {
     if contains(s, ".") || contains(s, "e") || contains(s, "E") {
         var f: float = 0.0
         if !parseFloat(s, mut &f) { fail("a float literal " + s) }
-        let n = u.mk(ir.E_FLT, ir.TY_F64, -1, -1, -1, 0)
-        u.ir.nodes[n].f = f
-        return n
+        let fi = u.ir.addFlt(f)
+        return u.mk(ir.E_FLT, ir.TY_F64, -1, -1, -1, fi)
     }
     return u.intLit(s)
 }
@@ -675,9 +674,8 @@ pub fn (u: mut &Lower) expr(n: int): int {
     if k == tm.X_NAME { return u.name(nd.s) }
     if k == tm.X_NUM { return u.number(nd.s) }
     if k == tm.X_STR {
-        let e = u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(nd.s) + 1), -1, -1, -1, 0)
-        u.ir.nodes[e].s = nd.s
-        return e
+        let si = u.ir.addStr(nd.s)
+        return u.mk(ir.E_STR, u.ir.arrOf(ir.TY_I8, len(nd.s) + 1), -1, -1, -1, si)
     }
     if k == tm.X_CALL { return u.call(u.expr(nd.a), nd.l) }
     if k == tm.X_DOT {

@@ -90,19 +90,6 @@ type Sym = value record {
     c: int
 }
 
-// The operands of each node kind, as in opt.obx.
-const K_NONE = 0
-const K_A = 1
-const K_AB = 2
-const K_ABC = 3
-const K_CALL = 4
-const K_CLIT = 5
-const K_BLOCK = 6
-const K_DECL = 7
-const K_FOR = 8
-const KIDS: []int = [-1, 0, 0, 0, 0, 0, 0, 4, 1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 1, 5, 1, 2, -1, -1, -1, -1, -1,
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 7, 1, 3, 2, 8, 0, 0, 1, 6, 2, 0, 0, 0]
-
 // walks (go's op)
 const W_INFO = 1        // per local: address taken, escapes, assignments, declarations
 const W_ROOT = 2        // the times the tree may change the root rr
@@ -366,7 +353,7 @@ fn (o: &Loops) badLabels(s: int, direct: bool): bool {
 // ---------------------------------------------------------------- nodes
 
 fn (o: mut &Loops) mk(k: int, ty: int, a: int, line: int): int {
-    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: line, a: a, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: line, a: a, b: -1, c: -1, d: -1, v: 0})
     return len(o.u.nodes) - 1
 }
 
@@ -489,19 +476,19 @@ fn (o: mut &Loops) goList(l: int, op: int, c: int): int {
 // go over the children of x (with c): the sum of what they give.
 fn (o: mut &Loops) down(x: int, op: int, c: int): int {
     let k = o.u.nodes[x].k
-    let kc = KIDS[k]
+    let kc = ir.KIDS[k]
     if kc < 0 { ir.failAt("IR node", o.u.nodes[x].line, "loops: node kind " + intToStr(k)) }
-    if kc == K_NONE { return 0 }
+    if kc == ir.K_NONE { return 0 }
     let a = o.u.nodes[x].a
-    if kc == K_A { return o.go(a, op, c) }
+    if kc == ir.K_A { return o.go(a, op, c) }
     let b = o.u.nodes[x].b
-    if kc == K_AB { return o.go(a, op, c) + o.go(b, op, c) }
-    if kc == K_CALL { return o.go(a, op, c) + o.goList(b, op, c) }
-    if kc == K_BLOCK { return o.goList(a, op, c) }
-    if kc == K_CLIT { return o.goList(b, op, c) }
+    if kc == ir.K_AB { return o.go(a, op, c) + o.go(b, op, c) }
+    if kc == ir.K_CALL { return o.go(a, op, c) + o.goList(b, op, c) }
+    if kc == ir.K_BLOCK { return o.goList(a, op, c) }
+    if kc == ir.K_CLIT { return o.goList(b, op, c) }
     let cc = o.u.nodes[x].c
-    if kc == K_ABC { return o.go(a, op, c) + o.go(b, op, c) + o.go(cc, op, c) }
-    if kc == K_DECL { return o.go(b, op, c) + o.goList(cc, op, c) }
+    if kc == ir.K_ABC { return o.go(a, op, c) + o.go(b, op, c) + o.go(cc, op, c) }
+    if kc == ir.K_DECL { return o.go(b, op, c) + o.goList(cc, op, c) }
     return o.go(a, op, c) + o.go(b, op, c) + o.go(cc, op, c) + o.go(o.u.nodes[x].d, op, c)
 }
 
@@ -2127,14 +2114,14 @@ fn (o: mut &Loops) rw(x: int, lv: bool) {
         o.call(x)
         return
     }
-    let kc = KIDS[k]
-    if kc == K_CLIT {
+    let kc = ir.KIDS[k]
+    if kc == ir.K_CLIT {
         for j in 0..o.u.listLen(b) { o.rw(o.u.listAt(b, j), false) }
         return
     }
-    if kc == K_A || kc == K_AB || kc == K_ABC { o.rw(a, false) }
-    if kc == K_AB || kc == K_ABC { o.rw(b, false) }
-    if kc == K_ABC { o.rw(o.u.nodes[x].c, false) }
+    if kc == ir.K_A || kc == ir.K_AB || kc == ir.K_ABC { o.rw(a, false) }
+    if kc == ir.K_AB || kc == ir.K_ABC { o.rw(b, false) }
+    if kc == ir.K_ABC { o.rw(o.u.nodes[x].c, false) }
 }
 
 // The bounds check x (rt_idx(i, n, w)) cannot fail: 0 <= i < n is known.
