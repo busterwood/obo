@@ -86,7 +86,7 @@ runtime report on the large-input cases (four for the coreutils, four for `grep`
 | `sort` | 115,624 | 111,632 |
 | `head` | 50,304 | 74,488 |
 | `tail` | 71,016 | 92,768 |
-| `grep` | 528,000 | 461,640 |
+| `grep` | 544,672 | 476,488 |
 
 (obo's static binaries were 90 to 119 KB. `grep` is large because it carries
 the regex library.)
@@ -105,10 +105,14 @@ long names and unique prefixes. Messages, `--` separators, `file:` prefixes and
 exit codes (0, 1, 2) are GNU's. A file with a NUL byte is binary: the message
 `grep: x: binary file matches` goes to stderr, as in 3.11.
 
-Input is read in 128 KiB chunks and never held whole. The regex runs over a
-whole chunk with `(?m)`, so only the lines that match are looked at; a match
-that spans a newline (`[[:space:]]`) and every candidate line of `-w` are
-checked line by line. A line longer than a chunk is carried to the next one.
+Input is read in 128 KiB chunks and never held whole. When no match can
+hold a newline, the regex's lazy DFA runs over a chunk and reports the lines
+with a match, a batch at a time; the other lines are never looked at. A
+pattern with a rare required literal (`needle` in `needle[0-9]+`) looks for
+that literal first. `-w` is one regex (the word with a non-word character or
+a line end on each side), so no line is checked twice. A pattern that can
+match a newline (`[[:space:]]`) is checked line by line from each match. A
+line longer than a chunk is carried to the next one.
 
 Not supported, each with an error or a note in the header comment of the file:
 back-references (`\1`, the engine runs in linear time and has none), `--color=always`,
@@ -116,22 +120,36 @@ back-references (`\1`, the engine runs in linear time and has none), `--color=al
 ASCII letters, digits and `_`; `\<` and `\>` are both `\b`). A file is binary
 because of a NUL byte only, never because of an encoding error.
 
-Speed on 100 MB (1.4 million lines) against GNU grep 3.11, in seconds (GNU,
-obx native, obx through C):
+Speed on 100 MB (1.8 million lines) against GNU grep 3.11, in seconds, best
+of 5 (GNU, obx native, obx through C; before is the build at `1c6d06c`):
 
-| Search | GNU | native | C |
-|---|---:|---:|---:|
-| `needle5007` (a literal) | 0.07 | 0.09 | 0.02 |
-| `-c omega` | 0.08 | 0.16 | 0.08 |
-| `-v -c omega` | 0.10 | 0.17 | 0.08 |
-| `-c '[0-9]*7 alpha'` | 0.07 | 0.35 | 0.24 |
-| `-c -E '(alpha\|beta) gamma'` | 0.11 | 0.15 | 0.07 |
-| `-c -i NEEDLE` | 0.06 | 0.11 | 0.04 |
-| `-c -w eta` | 0.21 | 1.12 | 0.61 |
-| `-c -v '^0'` (every line) | 0.05 | 0.47 | 0.32 |
-| `-c -E 'a.*z.*e'` | 0.22 | 0.46 | 0.35 |
+| Search | GNU | native | C | native before | C before |
+|---|---:|---:|---:|---:|---:|
+| `needle5007` (a literal) | 0.026 | 0.014 | 0.014 | 0.090 | 0.020 |
+| `-c omega` | 0.084 | 0.061 | 0.059 | 0.151 | 0.069 |
+| `-v -c omega` | 0.096 | 0.071 | 0.073 | 0.164 | 0.083 |
+| `-c '[0-9]*7 alpha'` | 0.070 | 0.015 | 0.015 | 0.352 | 0.231 |
+| `-c -E '(alpha\|beta) gamma'` | 0.106 | 0.062 | 0.059 | 0.144 | 0.070 |
+| `-c -i NEEDLE` | 0.061 | 0.018 | 0.017 | 0.096 | 0.036 |
+| `-c -w eta` | 0.204 | 0.190 | 0.180 | 1.123 | 0.618 |
+| `-c -v '^0'` (every line) | 0.047 | 0.048 | 0.042 | 0.468 | 0.326 |
+| `-c -E 'a.*z.*e'` | 0.210 | 0.106 | 0.091 | 0.455 | 0.343 |
+| `-n omega` | 0.224 | 0.194 | 0.160 | 0.376 | 0.274 |
+| `-o 'needle[0-9]*'` | 0.055 | 0.014 | 0.015 | 0.096 | 0.024 |
+| `-o -w eta` | 0.386 | 0.330 | 0.298 | 1.653 | 0.902 |
+| `-n -w eta` | 0.392 | 0.321 | 0.288 | 1.381 | 0.845 |
 
-The slow cases are those where most lines match or need a line-by-line check.
+Output goes to a pipe (with `/dev/null` as its output, GNU stops at the
+first match). One measured case is still behind GNU: `-c -E '^[0-9]+7[0-9]'`
+(0.055 native, 0.050 C, 0.040 GNU). The data:
+
+    python3 -c '
+    import random; r = random.Random(1); n = 0; i = 0; out = []
+    w = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega".split()
+    while n < 10**8:
+        l = "%07d " % i + " ".join(r.choice(w) for _ in range(r.randint(4, 14))) + (" needle%d" % i if i % 1000 == 7 else "")
+        out.append(l); n += len(l) + 1; i += 1
+    print("\n".join(out))' > big.txt
 
 ## httpd and httpload
 

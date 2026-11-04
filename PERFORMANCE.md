@@ -189,6 +189,41 @@ common subset of eza 0.23.3. `LC_ALL=C TZ=UTC`; the long listings use
 The golden suite (`python3 obx/cmd/eza_gate.py -j 12`) passes on both
 builds: 482 cases, 72 live-only cases skipped.
 
+## grep
+
+[obx/cmd/grep.obx](obx/cmd/grep.obx) against GNU grep 3.11 on 100 MB of
+generated text (1.8 million lines; the generator is in
+[obx/cmd/README.md](obx/cmd/README.md)). Best of 5, output to a pipe,
+measured on 4 November 2026 (branch `grepfast`):
+
+| search | GNU | native | via C | native at `1c6d06c` |
+|---|---:|---:|---:|---:|
+| `needle5007` (a literal) | 26 ms | 14 ms | 14 ms | 90 ms |
+| `-c omega` | 84 ms | 61 ms | 59 ms | 151 ms |
+| `-c '[0-9]*7 alpha'` | 70 ms | 15 ms | 15 ms | 352 ms |
+| `-c -w eta` | 204 ms | 190 ms | 180 ms | 1,123 ms |
+| `-c -v '^0'` (every line) | 47 ms | 48 ms | 42 ms | 468 ms |
+| `-c -E 'a.*z.*e'` | 210 ms | 106 ms | 91 ms | 455 ms |
+| `-n omega` | 224 ms | 194 ms | 160 ms | 376 ms |
+| `-o -w eta` | 386 ms | 330 ms | 298 ms | 1,653 ms |
+
+What made the difference:
+
+- **Lines, not matches.** The regex library's `matchingLines` runs the
+  lazy DFA over a chunk and reports the lines with a match. It starts again
+  after each such line, with no call per line.
+- **A required literal first.** `[0-9]*7 alpha` must contain `7 alpha`; a
+  memory search finds it and only its line is checked.
+- **`-w` as one regex.** The word with a non-word character or a line end
+  on each side. Before, each candidate line was checked again.
+- **Output in pieces.** The prefix, the line and the newline go into a
+  byte buffer; no string is built per line.
+- **The runtime's memcpy.** See "Native backend progress".
+
+User-mode instructions for the native build fell from 1,186M to 886M
+(`-c omega`), 5,045M to 155M (`[0-9]*7 alpha`), 16,466M to 2,545M (`-w`)
+and 7,451M to 672M (`-v '^0'`).
+
 ## The compiler
 
 The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
@@ -278,6 +313,13 @@ second register choice and the sites). The ninth (the compiler itself) cut
 the self-build's instructions by 20% and its cycles by 9% (2,385M to
 2,176M), eza's instructions by 6%, and the native compiler's binary by 10%.
 
+**The runtime's memcpy.** On this machine, `rep movsb` copies about 15
+times slower when the destination is 1 to about 32 bytes past the source,
+modulo 4 KiB. A string made from a byte array hit that case: 80% of a
+literal grep was that one copy. memcpy now copies 64 bytes a step with SSE2
+in that case (`grepfast`). The self-build moved from 4,660M to 4,668M
+instructions; its cycles did not change (2,305M and 2,307M).
+
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains
 is mostly work the code itself asks for (allocation, string concatenation,
@@ -303,6 +345,14 @@ What they taught:
 - **The hottest loads change:** x64gen writes `Node.k` and `Node.a` itself while it generates code, so the hottest field loads really can change across its calls.
 - **Precise effects are expensive:** per-component call summaries make `loops.obx`'s existing hoisting do several times more work. That was two-thirds of perf12's cost.
 - **The bar for a retry:** an analysis like these needs to cost under about 10M instructions (0.2%) to win. That means effect sets with constant-time deduplication, and summaries computed once.
+
+Also tried on `grepfast` (in the library and the runtime), not committed:
+
+| what | effect | why not |
+|---|---|---|
+| in the DFA's search loop, take a transition with no flag bits in a fast path before the old `< T_MATCH` test | the same instructions on `\w+`, 5% more cycles (63 ms to 67 ms) | the extra test and branch cost more than they saved; not marking start states when there is no prefilter got the same effect |
+| memcpy: align the destination to 64 bytes, then `rep movsb` | no change (about 25 ms per 100 MB either way) | the slow case depends on the distance between source and destination, not on alignment |
+| a line prefilter that switches itself off, like the literal ones | `-c -v '^0'` slower (69 ms to 326 ms) | once off, every byte took the slow path; the line prefilter now stays on |
 
 ## Binary sizes
 

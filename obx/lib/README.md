@@ -41,8 +41,8 @@ for leaks.
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
 | `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
 | `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
-| `regex.obx` | 1,940 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
-| `regex_dfa.obx` | 1,240 | the regex engine's lazy DFA (after RE2's) and literal searches (after Rust's regex) |
+| `regex.obx` | 2,130 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
+| `regex_dfa.obx` | 1,420 | the regex engine's lazy DFA (after RE2's) and literal searches (after Rust's regex) |
 | `regex_syntax.obx` | 3,060 | the regex parser, simplifier and compiler to a program, forward and reversed (Go's regexp/syntax) |
 | `regex_unicode.obx` | 2,020 | generated (`gen_regex_unicode.py`): Unicode 15.0.0 categories, scripts and simple case folding |
 

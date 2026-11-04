@@ -18,13 +18,16 @@
 // --exclude-dir, with GNU's long names and unique prefixes. -T, -U, -z, -d, -D
 // and --color=always are not supported.
 //
-// Input is read in 128 KiB chunks and matched a chunk at a time: the regex
-// runs over the whole chunk with (?m), so ^ and $ are line anchors, and its
-// matches say which lines are selected; the lines between are never looked
-// at. A match that spans a newline (a class like [[:space:]]) is checked line
-// by line instead, and so is every candidate line of -w. A line longer than a
-// chunk is carried over until its newline arrives; the tool never holds a
-// whole file.
+// Input is read in 128 KiB chunks. When no match can hold a newline, the
+// search is by line: the regex's lazy DFA runs over the chunk and reports
+// the lines with a match, a batch at a time (regex.matchingLines), and the
+// lines between are never looked at. A pattern with a rare required literal
+// looks for that literal first and checks only its line. -w is one regex,
+// the word with a non-word character or a line end on each side, so it needs
+// no check per line. A pattern that can match a newline (a class like
+// [[:space:]]) runs over the chunk with (?m) and each match's lines are
+// checked one by one. A line longer than a chunk is carried over until its
+// newline arrives; the tool never holds a whole file.
 //
 // Exit status: 0 when a line was selected, 1 when none was, 2 on an error (0
 // with -q and a selected line).
