@@ -851,7 +851,7 @@ pointer is still built then copied.
 
 2026-11-04, the sixteenth performance step (branch `perf16`: the
 assembler reuses loads along straight-line code; shelved, not merged: it
-does not pay). The rule is in section 4 (the assembler's load reuse).
+does not pay). The rule is in section 4 of the branch's native.md (the assembler's load reuse).
 Native-built compilers of main (`7d519d1`) and of this branch compiling the
 same sources (instructions: least of 5; cycles best of 5), then the
 benchmarks (instructions least, cycles best of 5, interleaved; the cycle
