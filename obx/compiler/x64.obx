@@ -391,6 +391,11 @@ pub fn (a: mut &Asm) aluRM(op: int, size: int, dst: int, m: Mem) {
     a.rm(pfxOf(size), size == 8, op * 8 + (if size == 1 { 2 } else { 3 }), dst, m, size == 1)
 }
 
+// op [m], src.
+pub fn (a: mut &Asm) aluMR(op: int, size: int, m: Mem, src: int) {
+    a.rm(pfxOf(size), size == 8, op * 8 + (if size == 1 { 0 } else { 1 }), src, m, size == 1)
+}
+
 // op dst, imm (size 4 or 8; the immediate fits 32 bits, sign-extended).
 pub fn (a: mut &Asm) aluI(op: int, size: int, dst: int, v: int) {
     if fits8(v) {
@@ -818,6 +823,8 @@ fn (a: mut &Asm) testLine(l: str) {
         a.aluI(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), num(w[4]))
     } else if k == "alum" {
         a.aluRM(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), memOf(w[4]))
+    } else if k == "alumr" {
+        a.aluMR(nameIndex(ALU_NAMES, w[1]), num(w[2]), memOf(w[3]), num(w[4]))
     } else if k == "alumi" {
         a.aluMI(nameIndex(ALU_NAMES, w[1]), num(w[2]), memOf(w[3]), num(w[4]))
     } else if k == "test" {
