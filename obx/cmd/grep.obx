@@ -761,9 +761,9 @@ fn quoteFixed(p: str): str {
 type G = record {
     o: Opts
     c: Compiled              // re, the whole-line form full (for -w), none (no pattern: nothing matches)
-    w: io.Writer
+    out: []byte              // standard output's buffer: out[0..olen]
+    olen: int
     nul: str
-    unflushed: int
     withName: bool
     ctxOn: bool
     after: int
@@ -880,8 +880,8 @@ fn newG(o: Opts, c: Compiled): G {
     let sre = c.re.searcher()
     let sfull = c.full.searcher()
     let sw = c.wre.searcher()
-    return G{o: o, c: c, sre: sre, sfull: sfull, sw: sw, lines: [], w: io.stdout(), nul: nulString(),
-        unflushed: 0, withName: false, ctxOn: false, after: 0, before: 0, failed: false, fatal: false,
+    return G{o: o, c: c, sre: sre, sfull: sfull, sw: sw, lines: [], out: array(OUTBUF, 0), olen: 0, nul: nulString(),
+        withName: false, ctxOn: false, after: 0, before: 0, failed: false, fatal: false,
         selectedAny: false, quitNow: false, anyOutput: false, name: "", nsel: 0, done: false,
         draining: false, binary: false, pending: 0, lastNo: -1, ringNo: [], ringOff: [], ringText: [],
         lnPos: 0, lnNo: 1, base: 0}
@@ -909,38 +909,104 @@ fn nulString(): str {
 
 // ---------------------------------------------------------------- output
 
-fn writeFailed(g: mut &G, e: io.IoError) {
-    eprintln("grep: write error: " + io.errorText(e.errno))
-    g.fatal = true
+// Output goes through a buffer of OUTBUF bytes, written out when full and at
+// the end; the first write that fails is reported and ends the search.
+// (Larger than the runtime's own buffer for standard output, so a full
+// buffer is written straight out.)
+const OUTBUF = 131072
+
+fn flushOut(g: mut &G) {
+    if g.fatal { g.olen = 0 }
+    if g.olen == 0 { return }
+    let s = strFromBytes(&g.out[0..g.olen])
+    g.olen = 0
+    putBig(g, s)
 }
 
-fn put(g: mut &G, s: str) {
-    g.w.write(s)
-    g.unflushed += len(s)
-    if g.unflushed >= CHUNK {
-        g.unflushed = 0
-        match g.w.flush() {
-            Ok(_) {}
-            Err(e) { writeFailed(mut &g, e) }
+// Adds s[a..b] to the output.
+fn putRange(g: mut &G, s: str, a: int, b: int) {
+    if g.olen + (b - a) > OUTBUF {
+        flushOut(g)
+        if b - a > OUTBUF {
+            putBig(g, substr(s, a, b))
+            return
         }
     }
-    if g.fatal { g.done = true }
+    var i = a
+    var j = g.olen
+    while i < b {
+        g.out[j] = s[i]
+        i += 1
+        j += 1
+    }
+    g.olen = j
 }
+
+// Writes s out (the buffer is empty).
+fn putBig(g: mut &G, s: str) {
+    if g.fatal { return }
+    var errno = 0
+    if writeFd(1, s) != len(s) {
+        errno = io.lastErrno()
+    } else {
+        // a short piece went to the runtime's buffer: write that out too
+        match io.flushStdout() {
+            Ok(_) {}
+            Err(e) { errno = e.errno }
+        }
+    }
+    if errno != 0 {
+        eprintln("grep: write error: " + io.errorText(errno))
+        g.fatal = true
+        g.done = true
+    }
+}
+
+fn putByte(g: mut &G, c: byte) {
+    if g.olen == OUTBUF { flushOut(g) }
+    g.out[g.olen] = c
+    g.olen += 1
+}
+
+fn putInt(g: mut &G, n: int) {
+    if n < 10 && n >= 0 {
+        putByte(g, byte(48 + n))
+        return
+    }
+    putStr(g, n.toStr())
+}
+
+fn putStr(g: mut &G, s: str) { putRange(g, s, 0, len(s)) }
+
+fn put(g: mut &G, s: str) { putStr(g, s) }
 
 fn fileError(g: mut &G, name: str, errno: int) {
     g.failed = true
     if !g.o.noMsg { eprintln("grep: " + name + ": " + io.errorText(errno)) }
 }
 
-fn prefix(g: &G, sep: str, no: int, off: int): str {
-    var s = ""
+// The prefix of an output line: the file name, the line number, the byte
+// offset, each with sep (':' or '-') after it.
+fn putPrefix(g: mut &G, sep: byte, no: int, off: int) {
     if g.withName {
-        s += g.name
-        if g.o.nul { s += g.nul } else { s += sep }
+        putStr(g, g.name)
+        if g.o.nul { putByte(g, 0) } else { putByte(g, sep) }
     }
-    if g.o.lineNumber { s += no.toStr() + sep }
-    if g.o.byteOffset { s += off.toStr() + sep }
-    return s
+    if g.o.lineNumber {
+        putInt(g, no)
+        putByte(g, sep)
+    }
+    if g.o.byteOffset {
+        putInt(g, off)
+        putByte(g, sep)
+    }
+}
+
+// An output line: the prefix, s[a..b] and a newline.
+fn putLine(g: mut &G, sep: byte, no: int, off: int, s: str, a: int, b: int) {
+    putPrefix(g, sep, no, off)
+    putRange(g, s, a, b)
+    putByte(g, '\n')
 }
 
 // The number of the line that begins at p in text; p only grows between calls
@@ -1046,8 +1112,8 @@ fn needLines(g: &G): bool {
     return !(g.o.count || g.o.list != 0 || g.o.quiet)
 }
 
-fn emitLine(g: mut &G, sep: str, no: int, off: int, text: str, ls: int, le: int) {
-    put(g, prefix(g, sep, no, off) + substr(text, ls, le) + "\n")
+fn emitLine(g: mut &G, sep: byte, no: int, off: int, text: str, ls: int, le: int) {
+    putLine(g, sep, no, off, text, ls, le)
 }
 
 fn printGroupSep(g: mut &G) {
@@ -1072,7 +1138,7 @@ fn emitMatches(g: mut &G, line: str, no: int, off: int) {
             }
         }
         if e > s {
-            put(g, prefix(g, ":", no, off + s) + substr(line, s, e) + "\n")
+            putLine(g, ':', no, off + s, line, s, e)
             p = e
         } else {
             if s >= len(line) { return }
@@ -1122,7 +1188,7 @@ fn selectLine(g: mut &G, text: str, ls: int, le: int) {
             if !g.o.onlyMatching {
                 var j = first
                 while j < len(g.ringNo) {
-                    put(g, prefix(g, "-", g.ringNo[j], g.ringOff[j]) + g.ringText[j] + "\n")
+                    putLine(g, '-', g.ringNo[j], g.ringOff[j], g.ringText[j], 0, len(g.ringText[j]))
                     j += 1
                 }
             }
@@ -1130,7 +1196,7 @@ fn selectLine(g: mut &G, text: str, ls: int, le: int) {
         if g.o.onlyMatching {
             emitMatches(g, substr(text, ls, le), no, off)
         } else {
-            emitLine(g, ":", no, off, text, ls, le)
+            emitLine(g, ':', no, off, text, ls, le)
         }
         g.anyOutput = true
     }
@@ -1203,7 +1269,7 @@ fn skipRange(g: mut &G, text: str, a: int, b: int) {
         let le = strFind(text, p, "\n")
         let no = lineNoAt(g, text, p)
         if g.pending > 0 {
-            if !g.o.onlyMatching { put(g, prefix(g, "-", no, g.base + p) + substr(text, p, le) + "\n") }
+            if !g.o.onlyMatching { putLine(g, '-', no, g.base + p, text, p, le) }
             g.pending -= 1
             g.lastNo = no
             g.anyOutput = true
@@ -1684,12 +1750,7 @@ fn main() {
         }
         if g.quitNow || g.fatal { break }
     }
-    if !g.fatal {
-        match g.w.flush() {
-            Ok(_) {}
-            Err(e) { writeFailed(mut &g, e) }
-        }
-    }
+    flushOut(mut &g)
     if g.quitNow { exit(0) }
     if g.failed || g.fatal { exit(2) }
     if g.selectedAny { exit(0) }
