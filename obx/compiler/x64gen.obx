@@ -2065,6 +2065,9 @@ fn (g: mut &Gen) stmt1(s: int) {
             g.destUsed = false
             g.gen(n.b)
             if !g.destUsed { g.storeT(t, rbp(s2)) }
+        } else if n.b >= 0 && g.isAggr(t) && g.u.nk(n.b) == ir.E_CLIT && g.u.nodes[n.b].ty == t {
+            // built in the slot (the local is not named in its initializer)
+            g.initEntries(s2, g.size(t), g.u.nodes[n.b].b)
         } else if n.b >= 0 {
             g.gen(n.b)
             g.storeFrom(g.u.nodes[n.b].ty, t, rbp(s2))
@@ -2757,7 +2760,42 @@ fn (g: &Gen) viaReg(x: int): x64.Mem {
 
 // Fills the n bytes at rbp+s from initializer entries (zero first).
 fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
-    g.zeroFrame(s, n)
+    // zeroed: the words no entry fills whole (padding, fields not given, parts of words)
+    var full: []bool = array((n + 7) / 8, false)
+    var cov: []bool = array(n, false)
+    for j in 0..g.u.listLen(ents) {
+        let en = g.u.nodes[g.u.listAt(ents, j)]
+        var sz = g.size(en.ty)
+        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.nodes[en.a].s) + 1 < sz {
+            sz = len(g.u.nodes[en.a].s) + 1            // the copied bytes; the rest stays zero
+        }
+        var b = en.v
+        while b < en.v + sz && b < n {
+            if b >= 0 { cov[b] = true }
+            b += 1
+        }
+    }
+    for w in 0..len(full) {
+        var all = true
+        var b = w * 8
+        while b < w * 8 + 8 && b < n {
+            if !cov[b] { all = false }
+            b += 1
+        }
+        full[w] = all
+    }
+    var w = 0
+    while w < len(full) {
+        if full[w] {
+            w += 1
+            continue
+        }
+        var e = w
+        while e < len(full) && !full[e] { e += 1 }
+        let end = if e * 8 < n { e * 8 } else { n }
+        g.zeroFrame(s + w * 8, end - w * 8)
+        w = e
+    }
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
         let t = en.ty
@@ -2768,11 +2806,31 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
             if cnt > g.size(t) { cnt = g.size(t) }
             g.a.movRSym(RAX, g.symStr(str), 0)
             g.copyMem(rbp(s + en.v), x64.mem(RAX, 0), cnt)
+        } else if g.storeDirect(x, t, rbp(s + en.v)) {
+            // a constant or a register stored as it is
         } else {
             g.gen(x)
             g.storeT(t, rbp(s + en.v))
         }
     }
+}
+
+// Stores the integer or pointer x of type t at m with no code for x: a constant that a 32-bit
+// immediate holds, or a local in a register (normalized as a t); whether it did.
+fn (g: mut &Gen) storeDirect(x: int, t: int, m: x64.Mem): bool {
+    let k = g.tk(t)
+    if k != ir.TY_PTR && (k < ir.TY_BOOL || k > ir.TY_U64) { return false }
+    let cv = g.intConst(x, t)
+    if cv.c == 0 && x64.fits32(cv.v) {
+        g.a.storeI(g.size(t), m, cv.v)
+        return true
+    }
+    let r = g.regOf(x)
+    if r >= 0 && g.normAs(g.u.nodes[x].ty, t) {
+        g.a.store(g.size(t), m, r)
+        return true
+    }
+    return false
 }
 
 // ---------------------------------------------------------------- expressions
