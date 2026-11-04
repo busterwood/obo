@@ -1,4 +1,4 @@
-// error: a borrow type cannot be a field: borrows are second class
+// error: holds borrows: only a value record or value closed type can hold them
 // line: 3
 type R = record { p: &int }
 fn main() {}

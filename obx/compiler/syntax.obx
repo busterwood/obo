@@ -1041,6 +1041,10 @@ fn (p: mut &Parser) constraint(): int {
         p.next()
         return p.node(N_COPY, 0, "", -1, -1, -1)
     }
+    if p.atId("borrow") {          // T: borrow, a type parameter that may be borrow-class
+        p.next()
+        return p.node(N_COPY, 0, "borrow", -1, -1, -1)
+    }
     return p.namedtype()
 }
 

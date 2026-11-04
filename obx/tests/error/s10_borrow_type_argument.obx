@@ -1,3 +1,5 @@
 // error: borrow|second|type argument
-fn f(o: Option[&int]) {}
+// Only a type parameter declared `T: borrow` takes a borrow (design/borrow-types.md); Option's does.
+type Box[T] = value record { v: T }
+fn f(o: Box[&int]) {}
 fn main() {}

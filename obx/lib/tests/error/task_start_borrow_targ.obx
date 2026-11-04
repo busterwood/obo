@@ -1,5 +1,5 @@
 // task: a borrow cannot be start's argument type even when written out.
-// error: borrow type cannot be a type argument
+// error: cannot be a type argument (type parameter A)
 import "task"
 
 fn total(xs: &[]int): int { return len(xs) }

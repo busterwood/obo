@@ -1,6 +1,6 @@
 // task: start takes an owned argument, never a borrow (the task may outlive
 // the borrowed value's statement and runs on another stack).
-// error: argument 2 of Scope.start
+// error: argument 2 of Scope.start|cannot be a type argument (type parameter A)
 import "task"
 
 fn total(xs: &[]int): int { return len(xs) }
