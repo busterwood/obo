@@ -28,7 +28,7 @@ static i64 sys6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f) {
 #define SYS(n, a, b, c) sys6(n, (i64)(a), (i64)(b), (i64)(c), 0, 0, 0)
 #define SYS4(n, a, b, c, d) sys6(n, (i64)(a), (i64)(b), (i64)(c), (i64)(d), 0, 0)
 
-enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_MMAP = 9, S_MUNMAP = 11, S_RT_SIGACTION = 13,
+enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_LSEEK = 8, S_MMAP = 9, S_MUNMAP = 11, S_RT_SIGACTION = 13,
        S_MREMAP = 25,
        S_NANOSLEEP = 35, S_GETPID = 39, S_FORK = 57, S_EXECVE = 59, S_WAIT4 = 61, S_KILL = 62, S_GETCWD = 79, S_READLINK = 89, S_IOCTL = 16,
        S_CHDIR = 80, S_RENAME = 82, S_MKDIR = 83, S_RMDIR = 84, S_UNLINK = 87, S_SYMLINK = 88,
@@ -1481,6 +1481,8 @@ int64_t obx_open(const char* path, int64_t how) {
     int fd = (int)sysret(SYS(S_OPEN, path, flags[how] | 0x80000, 0666));
     return fd < 0 ? -(int64_t)rt_errno : fd;
 }
+int64_t obx_read(int64_t fd, void* b, int64_t n) { return SYS(S_READ, fd, b, n); }
+int64_t obx_seek(int64_t fd, int64_t off, int64_t whence) { return SYS(S_LSEEK, fd, off, whence); }
 int64_t obxlib_flush_out(void) {
     rt_flush();
     int e = rt_oerr;

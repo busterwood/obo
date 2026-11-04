@@ -8,10 +8,13 @@
 // obsolete -N spelling, signed counts, long options other than --lines/--bytes,
 // --help and --version are unsupported (see cmd/README.md).
 //
-// This is the bounded streaming tail: a line-queue ring holds only the last
-// COUNT lines and a byte ring holds only the last COUNT bytes. Memory is
-// therefore O(the trailing data that must be printed) and O(min(input, COUNT))
-// metadata, never the whole input. A single very long final line costs that
+// Input that can seek (a regular file, also as standard input) is read from
+// where its last COUNT lines or bytes begin, found by reading backwards from the
+// end a chunk at a time, as GNU does: a large file costs only its tail. Other
+// input (a pipe, a terminal, a pseudo-file with no size) is streamed, a
+// line-queue ring holding only the last COUNT lines and a byte ring only the
+// last COUNT bytes. Memory is therefore O(the trailing data that must be
+// printed), never the whole input. A single very long final line costs that
 // line's bytes, which is the data the command is required to print.
 //
 // -n/--lines and -c/--bytes share one count and the last one wins, as in GNU.
@@ -196,6 +199,83 @@ fn collectBytes(r: mut &Reader, cap: int, ring: mut &ByteRing, stats: mut &ReadS
     return 0
 }
 
+// Whether the operand ("-": standard input) is a regular file, which tail may
+// read from the end as GNU does (a directory or a device is read as a stream).
+fn isRegular(path: str): bool {
+    let p = if path == "-" { "/dev/stdin" } else { path }
+    match fs.stat(p) {
+        Ok(s) { return s.isFile() }
+        Err(_) { return false }
+    }
+}
+
+// For input that can seek (a regular file, also as standard input), moves to
+// where its last count lines (line mode) or bytes begin, as GNU does, so that
+// only the end of a large file is read: the offset reading goes on from. -1
+// when the input cannot seek or reports no size (a pipe, a terminal, a /proc
+// file); it is then read from where it was, keeping the last count in a ring.
+// The collectors read from the offset to the end, so data appended meanwhile
+// is still taken, and line mode needs no change: what follows the offset is
+// at most count lines.
+fn seekTail(r: mut &Reader, lineMode: bool, count: int): int {
+    let start = match r.src.seek(0, io.Whence.Current) { Ok(k) { k } Err(_) { -1 } }
+    if start < 0 { return -1 }
+    let size = match r.src.seek(0, io.Whence.End) { Ok(k) { k } Err(_) { -1 } }
+    if size <= start {
+        // nothing after start, or no size (a pseudo-file): read it as a stream
+        if size == start && size > 0 { return start }
+        return backTo(r, start)
+    }
+    var at = start
+    if count == 0 {
+        at = size
+    } else if !lineMode {
+        at = size - count
+        if at < start { at = start }
+    } else {
+        at = lineStart(r, start, size, count)
+        if at < 0 { return backTo(r, start) }
+    }
+    return backTo(r, at)
+}
+
+// Seeks r to at: at, or -1 when the seek fails.
+fn backTo(r: mut &Reader, at: int): int {
+    match r.src.seek(at, io.Whence.Start) {
+        Ok(_) { return at }
+        Err(_) { return -1 }
+    }
+}
+
+// Where the last count lines of bytes start..size begin, read backwards a chunk
+// at a time; -1 if a read fails or comes up short (the file shrank). A newline
+// as the last byte ends the last line and is not counted.
+fn lineStart(r: mut &Reader, start: int, size: int, count: int): int {
+    var pos = size
+    var seen = 0
+    while pos > start {
+        var k = CHUNK
+        if pos - start < k { k = pos - start }
+        pos -= k
+        if backTo(r, pos) < 0 { return -1 }
+        var got = 0
+        while got < k {
+            let n = match r.src.read(mut &r.buf[got..k]) { Ok(n) { n } Err(_) { -1 } }
+            if n <= 0 { return -1 }
+            got += n
+        }
+        var i = k - 1
+        while i >= 0 {
+            if r.buf[i] == '\n' && pos + i != size - 1 {
+                seen += 1
+                if seen == count { return pos + i + 1 }
+            }
+            i -= 1
+        }
+    }
+    return start
+}
+
 // Records the first stdout failure and suppresses every later write. The
 // message is printed once at exit, after any later operand diagnostics (GNU
 // prints the missing/directory diagnostic before its write error).
@@ -242,12 +322,17 @@ fn writeHeader(w: mut &io.Writer, label: str, st: mut &State): bool {
 // later operands' diagnostics. A read error is printed and sets failed; byte
 // mode stops before later operands (GNU 9.4 does this, while line mode
 // continues).
-fn processReader(r: mut &Reader, label: str, outId: int, o: &Opts, multi: bool,
+fn processReader(r: mut &Reader, regular: bool, label: str, outId: int, o: &Opts, multi: bool,
                  stats: mut &ReadStats, w: mut &io.Writer, st: mut &State): bool {
     if multi && !st.writeFailed {
         if writeHeader(w, label, st) { st.lastOut = outId }
         // The header precedes any read error on the combined stream, as in GNU.
         flushOutput(w, st)
+    }
+    // follow mode's count of bytes consumed is the offset in the file
+    if regular {
+        let at = seekTail(r, o.lineMode, o.count)
+        if at > 0 { stats.bytes = at }
     }
     if o.lineMode {
         var q = LineQueue{items: [], head: 0, cap: o.count}
@@ -299,14 +384,14 @@ fn tailOperand(path: str, o: &Opts, multi: bool, outId: int, w: mut &io.Writer,
     var stats = ReadStats{bytes: 0, failed: false}
     if path == "-" {
         var r = newReader(io.stdin())
-        let cont = processReader(mut &r, "standard input", outId, o, multi, mut &stats, w, st)
+        let cont = processReader(mut &r, isRegular("-"), "standard input", outId, o, multi, mut &stats, w, st)
         if cont && !stats.failed { st.operandOk = true }
         return cont
     }
     match io.open(path) {
         Ok(src) {
             var r = newReader(src)
-            let cont = processReader(mut &r, path, outId, o, multi, mut &stats, w, st)
+            let cont = processReader(mut &r, isRegular(path), path, outId, o, multi, mut &stats, w, st)
             if cont && !stats.failed { st.operandOk = true }
             return cont
         }
@@ -401,7 +486,7 @@ fn startFollow(path: str, o: &Opts, multi: bool, outId: int, followers: mut &[]F
     }
     var stats = ReadStats{bytes: 0, failed: false}
     var r = newReader(src)
-    let cont = processReader(mut &r, label, outId, o, multi, mut &stats, w, st)
+    let cont = processReader(mut &r, isRegular(path), label, outId, o, multi, mut &stats, w, st)
     if !cont || st.writeFailed { return !st.writeFailed }
     if stats.failed {
         st.operandOk = false

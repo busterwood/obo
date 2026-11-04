@@ -47,9 +47,12 @@ every other option, long ones included, is an error as in obo). Each is one
 file. Input goes through `io.Reader` in 64 KiB chunks (a small `Reader`
 wrapper in each file keeps the chunk and the unused part of it), file
 metadata through `fs.stat` (`tail -f` tells a file by `dev` and `ino`); no
-tool declares an `extern`. `sort`
-keeps obo's radix sorts (the default order and the exact `-n` decimal order)
-unchanged.
+tool declares an `extern`, and the native builds are static with no libc.
+`tail` reads a regular file (also as standard input) backwards from its end,
+as GNU does, so `tail -n 5` of a 1 GB file takes 3 ms instead of 1.5 s; a
+pipe or a terminal is streamed through a ring of the last lines or bytes.
+`sort` keeps obo's radix sorts (the default order and the exact `-n` decimal
+order) unchanged.
 
 Build from `obx/`:
 
@@ -69,18 +72,18 @@ exit status, and the `usage` and `writeerror` cases are pinned by own goldens.
     python3 cmd/tools_gate.py -j 8 --reference=none   # models and goldens only
     python3 cmd/tools_gate.py --memory                # 16 MiB inputs, leak check
 
-Our tools run with `OBX_CHECK=1`, so a leak fails a case. 509 cases pass for
-each build against GNU 9.4 (506 with `--reference=none`). `--memory` replaces
+Our tools run with `OBX_CHECK=1`, so a leak fails a case. 523 cases pass for
+each build against GNU 9.4 (520 with `--reference=none`). `--memory` replaces
 obo's peak-heap budget (which needed `OBO_STATS`) by a clean exit with no
 runtime report on the four large-input cases.
 
-| Tool | native | through C |
+| Tool | native (static) | through C |
 |---|---:|---:|
-| `cat` | 42,176 | 73,728 |
-| `wc` | 46,288 | 77,984 |
-| `sort` | 111,896 | 111,520 |
-| `head` | 46,576 | 74,376 |
-| `tail` | 63,184 | 88,184 |
+| `cat` | 45,904 | 73,840 |
+| `wc` | 50,016 | 78,096 |
+| `sort` | 115,624 | 111,632 |
+| `head` | 50,304 | 74,488 |
+| `tail` | 71,016 | 92,768 |
 
 (obo's static binaries were 90 to 119 KB.)
 

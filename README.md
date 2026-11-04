@@ -42,13 +42,13 @@ As of 2026-11-04:
 - **Programs:** [eza](obx/cmd/README.md), the common subset of the eza file
   lister in 1,600 lines, byte-identical to the real eza on 482 golden cases;
   `cat`, `wc`, `sort`, `head` and `tail` (a GNU coreutils subset, ported from
-  obo), matching GNU coreutils 9.4 on 509 cases with both backends.
+  obo), matching GNU coreutils 9.4 on 523 cases with both backends.
 - **Performance:** the native backend is level with gcc -O2 or ahead of it
   on nine of ten benchmarks (fib, loops over arrays, the sieve, allocation,
   strings); maps, with keyed hashing, take 1.37 times gcc's time, the regex
   engine's inner loops 1.4 to 1.8 times, and a natively built compiler
   about 1.2 times. A native executable carries only the code and runtime
-  parts it reaches, with no libc: hello is 16 KB, eza 250 KB, cat 42 KB. eza lists
+  parts it reaches, with no libc: hello is 16 KB, eza 250 KB, cat 46 KB. eza lists
   3.7 MB of long tree in about 200 ms. The figures are in
   [PERFORMANCE.md](PERFORMANCE.md).
 - **Checks:** a conformance suite, the compiler, library, eza and tool tests, a
