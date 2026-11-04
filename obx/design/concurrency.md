@@ -962,9 +962,16 @@ futures and a supervisor loop that restarts any that return `Err`) and is
 the shared-nothing way to put several cores on one batch job.
 
 **Other programs** (a side benefit): `s.run("gzip", ["-9", path])` returning
-`Future[Result[Exit, IoError]]`, through `posix_spawn` and pipes. The library
-has no process spawning today (the compiler driver calls gcc with
-`system()`). No language change.
+`Future[Result[Exit, IoError]]`, through `posix_spawn` and pipes. No language
+change.
+
+*Implemented (2026-11-04) as `lib/proc.obx`* (lib/README.md, "proc"): fork and
+exec with the child's setup in raw syscalls, pipes parked on like net's
+sockets, `wait` on a pidfd in the epoll loop, `output`/`communicate`/`run`,
+cancellation by SIGTERM then SIGKILL after 2 s, and a dropped `Child` killed
+and collected. A future of a process is `s.start(runOutput,
+cmd)`; no new runtime scheduling was needed. The "our own program's work in a
+process" half above is still an idea.
 
 Open points: the `wire` constraint (the user's decision); a marker for C
 wrapper types that must not be used across a fork; a child reaching a

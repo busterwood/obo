@@ -37,6 +37,7 @@ for leaks.
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
+| `proc.obx` | 600 | other programs: start with pipes, a Command's environment, directory and streams; wait on a pidfd as a task; output, communicate, run; cancellation sends SIGTERM then SIGKILL |
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
 | `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
 | `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
@@ -484,6 +485,70 @@ A `Conn` is used by one task at a time (it is owned). `httpserver` is an
 HTTP/1.1 server built on it, `cmd/httpd.obx` an example program on that
 (with worker processes and a shared listener: `httpd ADDR POOL WORKERS`),
 `cmd/httpload.obx` a load client, and `http` an HTTP client.
+
+### proc
+
+Starting other programs, talking to them through pipes, and waiting for them
+as part of the task model.
+
+```obx
+let r = proc.output(&proc.command("git", ["rev-parse", "HEAD"])).expect("git")
+println(r.stdoutStr())
+
+var c = proc.command("sort", [])
+c.stdin = proc.Stdio.Pipe
+c.stdout = proc.Stdio.Pipe
+var child = proc.start(&c).expect("sort")
+child.stdin.writeStr("b\na\n").unwrap()
+child.stdin.close()                                  // the child's end of input
+let text = child.takeStdout().readAll().unwrap()
+let exit = child.wait().unwrap()                     // Exit.Code(0)
+```
+
+- `command(program, args): Command` with the public fields `args`, `env`
+  (`"NAME=value"` entries added to the parent's environment; `setEnv(name,
+  value)` replaces one of the same name), `cleanEnv` (only `env`), `cwd`,
+  and `stdin`, `stdout`, `stderr` of type `Stdio`: `Inherit` (the default),
+  `Pipe`, `Null` (/dev/null), `File(path)` (read for stdin, created and
+  emptied for the others), `Append(path)` and, for stderr only, `Stdout`
+  (2>&1). `arg(a)` adds an argument.
+- `start(&cmd): Result[Child, ProcError]`. A program name without "/" is
+  looked up in the parent's PATH before the fork, so a missing program is an
+  ordinary `Err` (ENOENT, `isNotFound()`). If the exec fails the child
+  reports its errno through a close-on-exec pipe, and `start` returns it. The
+  child has only descriptors 0 to 2, the default signal mask and
+  dispositions.
+- `Child`: `stdin: PipeWriter` and `stdout`, `stderr: PipeReader` (public
+  fields; closed unless the stream is a `Pipe`), `takeStdin()`,
+  `takeStdout()`, `takeStderr()` to move one into a task, `pid()`,
+  `signal(sig)`, `kill()`, `wait(w): Result[Exit, ProcError]`. A `PipeReader`
+  has `read(buf)` (0 at the end), `readAll()`, `close()`; a `PipeWriter` has
+  `write(data)`, `writeStr(s)`, `close()`. The pipe ends are non-blocking and
+  parked on like net's sockets, so a program without tasks works too. A write
+  to a child that has closed its input is EPIPE, never SIGPIPE.
+- `Exit` is `Code(n)` or `Signaled(sig)`, with `ok()`, `code()` (-1 when
+  signaled), `signal()` (0 when not) and `toStr()` ("exit 3", "signal 9").
+- `wait` parks on a pidfd in the event loop (Linux 5.3; an older kernel, or
+  `OBX_NO_PIDFD=1`, polls every 10 ms). Cancellation or a `task.within`
+  deadline while a child runs: SIGTERM, after 2 s SIGKILL, the child is
+  collected, and the call returns ECANCELED or ETIMEDOUT
+  (`isCancelled()`, `isTimeout()`). A second `wait` gives the same `Exit`.
+- Dropping a `Child` that was not waited for sends SIGKILL and collects it
+  (no zombie, no orphan) and closes its pipes.
+- `run(&cmd): Result[Exit, ProcError]` starts and waits with the streams as
+  set (inherited by default). `output(&cmd): Result[Output, ProcError]`
+  collects `stdout` and `stderr` (`[]byte`; `stdoutStr()`, `stderrStr()`) and
+  the `exit`; `communicate(&cmd, input)` also writes `input` to the child's
+  stdin. Both read standard output and standard error in tasks of their own,
+  at once, so a full pipe cannot deadlock the child; the command's stdout and
+  stderr settings are replaced by pipes, its stdin by a pipe unless it is
+  `Null` or a `File`.
+- `ProcError` is `errno`, `op` and `program`, with `toStr()`
+  ("start nosuch: No such file or directory").
+- `s.start(runOutput, cmd)` with a top-level `fn runOutput(c: proc.Command): Result[proc.Output, proc.ProcError] { return proc.output(&c) }` is a `Future`, so `task.all` and
+  `task.any` run processes side by side; the loser of `any` is cancelled and
+  its child stopped. A process with a live `Child` has descriptors in the
+  event loop, so `task.workers` refuses to fork then (exit 15).
 
 ### url
 
@@ -1050,6 +1115,8 @@ errno, a static buffer):
 | `obxlib_sig_watch(mask)`, `obxlib_sig_wait(mask, w)` | block the signals of `mask` (bit s-1 for signal s) and read them from a `signalfd` in the epoll set: 0 or -errno; park until one arrives: its number, -1 cancelled, -3 deadline |
 | `obxlib_workers_begin(w)`, `obxlib_workers_end()` | the checks before the first fork (exit 15 at `w`), then block `SIGTERM`, `SIGINT`, `SIGCHLD`; drop what is pending and restore the mask |
 | `obxlib_proc_fork()`, `obxlib_proc_wait(ms, &status)`, `obxlib_proc_kill(pid, sig)` | flush and fork (the child: a new epoll set, the old mask, `PR_SET_PDEATHSIG`); the supervisor's wait: a child's pid (`status`: its wait status), `-sig` for `SIGTERM`/`SIGINT` (`status`: the sender's pid) or 0 after `ms`; `kill` |
+| `obxlib_proc_spawn(blob, argc, envc, modes, &out)` | fork and exec a program (`proc`): PATH lookup, redirections, pipes (non-blocking, in the epoll set), environment, directory and the exec errno through a close-on-exec pipe all in the parent or by raw syscalls in the child; the pid or -errno; `out`: the pidfd (-1: none) and the parent's pipe ends |
+| `obxlib_proc_write(fd, b, n)`, `obxlib_proc_reap(pid, block, &status)`, `obxlib_proc_nap(ms)` | a pipe write with SIGPIPE blocked and taken back (EPIPE); `wait4` (`block` 0: WNOHANG) with EINTR retried; a thread sleep (no-pidfd kernels, after a cancellation) |
 | `obxlib_worker_exit(code)`, `obxlib_worker_stop()` | a worker's end (flush; under `OBX_CHECK=1` its leak check); `SIGTERM` to the supervisor, -1 when not a worker |
 | `obxlib_fd_wait(fd, dir, ms, cancellable, w)` | park until a descriptor a C library reads itself (libpq's socket) is readable (0), writable (1) or either (2): armed one-shot in the epoll set each time; ends at cancellation and the deadline when `cancellable`, after `ms` when `ms >= 0`; 0, 1 cancelled, 3 deadline or `ms`, -errno |
 | `obxlib_net_addr(fd, peer, out)`, `obxlib_net_nodelay(fd, on)`, `obxlib_net_soerror(fd)`, `obxlib_net_shutdown(fd, how)`, `obxlib_net_close(fd)` | the local or peer address (family, port, 16 address bytes); `TCP_NODELAY`; `SO_ERROR`; `shutdown`; close (and forget the fd's waiters) |
