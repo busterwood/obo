@@ -200,7 +200,7 @@ as `splitLines`), `close(): Result`; the end is not sticky (a later read tries
 again: a growing file, a terminal), `EINTR` is retried, a file reader is
 closed when dropped. `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
 - **fs**: `stat`/`lstat(path): Result[Stat, IoError]` (`size mode mtime
-  mtimeNs nlink uid gid ino blocks`, `kind() isDir() isFile() isLink()
+  mtimeNs nlink uid gid ino dev blocks`, `kind() isDir() isFile() isLink()
   perm()`), `Kind` (`File Dir Link Fifo Socket CharDev BlockDev Other`,
   `kindOfMode(mode)`), `exists`, `isDir`, `isFile`, `list(path):
   Result[[]Entry]` (`name`, `kind` from readdir, or lstat when readdir does

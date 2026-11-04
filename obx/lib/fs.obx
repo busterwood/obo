@@ -59,6 +59,7 @@ pub type Stat = value record {
     pub uid: int
     pub gid: int
     pub ino: int
+    pub dev: int       // the device holding it (with ino, names the file)
     pub blocks: int    // 512-byte blocks
 }
 
@@ -84,7 +85,7 @@ fn statHow(path: str, follow: int, op: str): Result[Stat, io.IoError] {
         size: statField(0), mode: statField(1),
         mtime: statField(2), mtimeNs: statField(3),
         nlink: statField(4), uid: statField(5), gid: statField(6),
-        ino: statField(7), blocks: statField(11)})
+        ino: statField(7), dev: statField(8), blocks: statField(11)})
 }
 
 pub fn exists(path: str): bool { return statInto(path, 1) == 0 }

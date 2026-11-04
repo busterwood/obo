@@ -44,11 +44,6 @@ import "io"
 import "fs"
 import "time"
 
-// fs.Stat has no device number, and tail -f needs it with the inode to tell
-// that a path still names the file it opened. This reads st_dev from the stat
-// that the last successful fs.stat made.
-extern "c" fn statField(i: int): int as "obx_stat_field"
-
 const CHUNK = 65536
 
 type Opts = record {
@@ -95,7 +90,7 @@ type PathStat = value record {
 
 fn statPath(path: str): Option[PathStat] {
     match fs.stat(path) {
-        Ok(s) { return Some(PathStat{mode: s.mode, size: s.size, ino: s.ino, dev: statField(8)}) }
+        Ok(s) { return Some(PathStat{mode: s.mode, size: s.size, ino: s.ino, dev: s.dev}) }
         Err(_) { return None }
     }
 }

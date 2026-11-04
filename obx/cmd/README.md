@@ -45,9 +45,9 @@ file lists the options, the edge cases and what is rejected (`cat -nbsET`,
 `wc -lwc`, `sort -nru`, `head -n/-c`, `tail -n/-c/-f` and `--lines`/`--bytes`;
 every other option, long ones included, is an error as in obo). Each is one
 file. Input goes through `io.Reader` in 64 KiB chunks (a small `Reader`
-wrapper in each file keeps the chunk and the unused part of it). The only
-`extern` is in `tail`: `fs.Stat` has no device number, which `tail -f` needs
-with the inode, so it reads st_dev after `fs.stat` (`obx_stat_field`). `sort`
+wrapper in each file keeps the chunk and the unused part of it), file
+metadata through `fs.stat` (`tail -f` tells a file by `dev` and `ino`); no
+tool declares an `extern`. `sort`
 keeps obo's radix sorts (the default order and the exact `-n` decimal order)
 unchanged.
 
