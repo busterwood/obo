@@ -1,8 +1,11 @@
 // The obx side of obx/tests/regexgen.py: reads the generated cases and
 // writes what the regex library does with them, in the format of
-// regexgen_driver.go (see there). Every text also runs under the Pike VM and
-// the backtracker forced; a line "D ..." reports a matcher that disagrees
-// with the one compile picks.
+// regexgen_driver.go (see there). Every text also runs under the Pike VM, the
+// backtracker, the lazy DFA (without literal searches, with all of them, and
+// in a tiny cache) forced; a line "D ..." reports a matcher that disagrees
+// with the one compile picks (all submatch indexes in both semantics, the
+// spans of findAllIndex, which take another path through the DFA, and
+// isMatch).
 //
 // usage: regexgen_driver CASES
 
@@ -48,6 +51,32 @@ fn ints(a: &[]int): str {
     return s.toStr()
 }
 
+fn spans(re: &regex.Regex, s: str): str {
+    let a = re.findAllIndex(s)
+    if len(a) == 0 { return "-" }
+    var b = newStrBuf()
+    for i in 0..len(a) {
+        if i > 0 { b.add(";") }
+        b.addInt(a[i].start)
+        b.add(",")
+        b.addInt(a[i].end)
+    }
+    return b.toStr()
+}
+
+// The whole-match pairs of all(m)'s matches.
+fn wholes(m: &[][]int): str {
+    if len(m) == 0 { return "-" }
+    var s = newStrBuf()
+    for i in 0..len(m) {
+        if i > 0 { s.add(";") }
+        s.addInt(m[i][0])
+        s.add(",")
+        s.addInt(m[i][1])
+    }
+    return s.toStr()
+}
+
 fn all(m: &[][]int): str {
     if len(m) == 0 { return "-" }
     var s = newStrBuf()
@@ -83,7 +112,7 @@ fn main() {
                     continue
                 }
             }
-            for m in ["", "pike", "backtrack"] {
+            for m in ["", "pike", "backtrack", "dfa", "prefilter", "dfatiny"] {
                 append(mut &res, Res {
                     re: regex.compileForcing(s, false, m).unwrap(),
                     longest: regex.compileForcing(s, true, m).unwrap(),
@@ -92,12 +121,18 @@ fn main() {
             continue
         }
         if len(res) == 0 { continue }
-        let first = all(&res[0].re.allSubmatchIndex(s, -1))
-        let longest = all(&res[0].longest.allSubmatchIndex(s, -1))
+        let firstM = res[0].re.allSubmatchIndex(s, -1)
+        let longestM = res[0].longest.allSubmatchIndex(s, -1)
+        let first = all(&firstM)
+        let longest = all(&longestM)
+        let firstW = wholes(&firstM)
+        let longestW = wholes(&longestM)
         for k in 1..len(res) {
             let f = all(&res[k].re.allSubmatchIndex(s, -1))
             let l = all(&res[k].longest.allSubmatchIndex(s, -1))
-            if f != first || l != longest {
+            let want = first != "-"
+            if f != first || l != longest || res[k].re.isMatch(s) != want || res[k].longest.isMatch(s) != want ||
+                spans(&res[k].re, s) != firstW || spans(&res[k].longest, s) != longestW {
                 out.writeln("D matcher " + k.toStr() + " " + hx(s) + " " + f + " " + l)
             }
         }

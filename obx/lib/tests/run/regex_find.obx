@@ -479,7 +479,7 @@ fn checkAll(re: &regex.Regex, text: str, wantStr: str, isMatch: bool, fails: mut
     }
 }
 
-const MATCHERS: []str = ["", "pike", "backtrack"]
+const MATCHERS: []str = ["", "pike", "backtrack", "dfa", "prefilter", "dfatiny"]
 
 fn main() {
     let PAT = expandAll(PAT_Z)

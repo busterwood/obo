@@ -12,7 +12,8 @@ tests/regex/regexgen_driver.go (`go run`) and tests/regex/regexgen_driver.obx (b
 or with --native through the native backend, run under OBX_CHECK=1). For each pattern the compile
 error must be the same, and for each text all submatch indexes (leftmost-first and
 leftmost-longest), ReplaceAllString with "<$1|${n0}|$0>" and Split. The obx driver also runs each
-text under the Pike VM and the backtracker forced and reports any matcher that disagrees.
+text under the Pike VM, the backtracker and the lazy DFA (plain, with every literal search, in a
+tiny cache) forced and reports any matcher that disagrees.
 Exit 1 on any difference; the cases and both outputs are kept (in --keep, or a temporary
 directory it names). Each --seed runs separately (default: one random seed). --fast is the
 gate's mode: 400 patterns, 8 texts, both backends. Exits 0 with a note when go is missing.

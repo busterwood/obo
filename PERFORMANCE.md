@@ -114,62 +114,69 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
 ## Regex
 
 `python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),
-the benchmark set of [design/regex.md](obx/design/regex.md) section 4. The
-obx and Go columns are from the eighth native performance step (branch
-`perf8`, 3 November 2026, load average about 2 to 5), the Rust and rg
-columns from the end of phase R1 (branch `r1`, the same day; the library
-has not changed since); through C and in Go the times are those of R1's
-run within 4%. The corpus is 3.2 MB
-written by `gen_corpus.py` from a fixed seed (prose with the names the
-patterns look for, a log, C-like source; ASCII). Each driver times its own
-searches after reading the file: the best of 5 searches, best of 7 runs, in
-ms. "Matches" is the same for every driver (the script checks); `(a*)*b`
-runs over 100,000 `a`s. Go is go1.26.4's `regexp`, Rust the `regex` crate
-1.12.3 (built offline from the cargo cache), and rg is ripgrep 14.1.1
-counting matches as a whole process, start-up and file reading included: a
+the benchmark set of [design/regex.md](obx/design/regex.md) section 4, at
+the end of phase R2 (branch `r2`, 3 November 2026), with R1's times (Go's
+engine alone, branch `r1`) for comparison. The corpus is 3.2 MB written by
+`gen_corpus.py` from a fixed seed (prose with the names the patterns look
+for, a log, C-like source; ASCII). Each driver times its own searches after
+reading the file: the best of 5 searches, best of 7 runs, in ms. "Matches"
+is the same for every driver (the script checks); `(a*)*b` runs over
+100,000 `a`s. Go is go1.26.4's `regexp`, Rust the `regex` crate 1.12.3
+(built offline from the cargo cache), and rg is ripgrep 14.1.1 counting
+matches as a whole process, start-up and file reading included: a
 reference point, not a like-for-like figure.
 
-| pattern | matches | obx native | obx via C | Go | Rust | rg |
-|---|---:|---:|---:|---:|---:|---:|
-| `Sherlock Holmes` | 926 | 2.78 | 1.50 | 0.46 | 0.10 | 2.5 |
-| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 192.30 | 131.87 | 133.34 | 0.52 | 3.8 |
-| `\w+` (all matches) | 669,532 | 202.19 | 132.42 | 139.20 | 23.05 | 66.7 |
-| `(?i)sherlock` | 4,280 | 162.47 | 88.70 | 69.93 | 0.58 | 4.8 |
-| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 138.78 | 92.44 | 76.97 | 0.13 | 3.2 |
-| `(?m)^ERROR .*timeout$` | 197 | 59.48 | 34.11 | 31.54 | 0.70 | 3.2 |
-| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 143.10 | 102.41 | 70.94 | 1.76 | 11.9 |
-| `(a*)*b` over 100,000 `a`s | 0 | 4.88 | 3.40 | 3.30 | 0.00 | 2.4 |
+| pattern | matches | obx native | obx via C | R1 native | R1 via C | Go | Rust | rg |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `Sherlock Holmes` | 926 | 0.16 | 0.21 | 2.99 | 1.49 | 0.47 | 0.08 | 1.6 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 1.34 | 0.94 | 285.34 | 131.49 | 134.48 | 0.42 | 2.8 |
+| `\w+` (all matches) | 669,532 | 68.89 | 38.14 | 253.97 | 131.56 | 136.78 | 17.23 | 41.0 |
+| `(?i)sherlock` | 4,280 | 1.13 | 0.81 | 182.65 | 88.48 | 70.88 | 0.46 | 3.2 |
+| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 0.22 | 0.12 | 182.45 | 92.30 | 78.55 | 0.09 | 1.8 |
+| `(?m)^ERROR .*timeout$` | 197 | 0.28 | 0.33 | 67.33 | 33.97 | 31.83 | 0.59 | 2.0 |
+| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 4.67 | 3.33 | 213.87 | 101.65 | 72.66 | 1.28 | 7.8 |
+| `(a*)*b` over 100,000 `a`s | 0 | 0.00 | 0.00 | 6.87 | 3.38 | 3.33 | 0.00 | 1.6 |
 
-- **obx and Go.** The engine is Go's, so the comparison is like for like.
-  Built through C, obx is level with Go on the Pike VM patterns (the
-  alternation, `\w+`) and up to 1.45 times its time on the others (the
-  captures, `(?i)`); the native build takes 1.4 to 2.3 times Go's time
-  (2.0 to 2.9 before the eighth native performance step).
-  The literal is a prefix search: Go's `strings.Index` uses SIMD, obx a
-  byte loop (3 times Go via C, 6 times natively).
-- **Native and C.** The same library code takes 1.4 to 1.8 times the
-  cycles natively that it takes through gcc (1.9 to 2.15 before the eighth
-  native performance step). The profile is the Pike VM's `add` and `step`:
-  short loops over the fields of a `mut &` record's arrays. Since that step
-  the native backend reads the record pointer and the arrays' data
-  pointers and lengths once before such loops when nothing in them may
-  write them, uses fields through a pointer in a register as operands, and
-  keeps the loops' locals in registers across rare calls (design/native.md
-  sections 4 and 8: 11 to 34% fewer cycles on the Pike VM patterns). What
-  remains is register pressure in `add` and `step` (gcc keeps the
-  instruction pointer and the thread lists in registers), the opcode
-  dispatch as compares where gcc has a jump table, and bools materialized
-  where gcc branches. In the library, allocating the Pike VM's arrays once
-  at their full size (no `append` or `pop` in the loop) and decoding ASCII
-  inline took about 20% off the native times; moving the arrays into
-  locals for the loop made both builds slower and was dropped.
-- **Rust and rg.** Rust's literal prefilters (memchr, Teddy) and lazy DFA
-  find these matches 100 to 1,000 times faster than a Pike VM; `\w+`,
-  with 670,000 matches, is where the DFA gains least. That is phase R2.
-- **Linear time.** `(a*)*b` over 100,000 bytes takes 3 to 7 ms on every
-  build. The library test `regex_linear` checks that 100,000 bytes take
-  about ten times as long as 10,000 for five such patterns under the Pike
-  VM and the backtracker.
+- **obx and Rust.** R2 adds RE2's lazy DFA and Rust's literal searches
+  (design/regex.md, "R2 as built"). Through C, obx takes 1.3 times Rust's
+  time on the email pattern, 1.8 on `(?i)`, 2.2 on the alternation and
+  `\w+`, 2.6 on the literal and the captures, and about half Rust's time on
+  the `ERROR` lines (a prefilter on `ERROR ` and the suffix check on
+  `timeout`); natively 2.0 to 4.0 times Rust's time, and again about half
+  on the `ERROR` lines. These are
+  the cases the plan aimed at; none is past three times through C.
+- **Where the gap is.** The literal: Rust's memchr uses AVX2 (32 bytes a
+  step), the runtime SSE2 (16). `\w+` and the captures are per-match
+  costs (670,000 and 10,755 matches): each match is a forward and a reverse
+  DFA run plus, for captures, the backtracker on the span; Rust's inner
+  loops are tighter (unchecked indexing, a byte DFA with no rune decode).
+  The native build loses most on these DFA loops (1.8 times its C build on
+  `\w+`): the native backend's bounds and overflow checks in the inner loop
+  (see below), not the library.
+- **`(a*)*b`** now takes no time: the text has no `b`, and every match ends
+  with one (the suffix check), so the search stops before any matcher runs.
+  The DFA on such patterns is covered by the tests (`regex_linear`,
+  `regex_dfa`), not by this row.
+- **obx and Go.** With R1 the engine was Go's and the times were Go's
+  through C (2 to 3 times natively). R2 is 2 to 650 times faster than Go's
+  `regexp`, which has no DFA.
+- **R1's notes still hold for Go's matchers**, which R2 uses for short
+  texts (under 128 bytes), for one-pass patterns, and when the DFA's cache
+  fills too often: the same library code ran about twice as fast through
+  gcc before the eighth native performance step, and 1.4 to 1.8 times as
+  fast since (perf8; the merged build's R2 times above are within noise of
+  the branch's). The profile was the Pike VM's `add` and `step` (85% of the native
+  time on the alternation): short loops over the fields of a `mut &`
+  record's arrays, each access with its bounds check and each index sum
+  with its overflow check. gcc keeps the arrays' addresses in registers and
+  drops most of the checks; the native backend reloads them. This is a
+  native-backend matter (the code generator, not the language).
+- **Linear time.** The library test `regex_linear` checks that 100,000
+  bytes take about ten times as long as 10,000 for six such patterns under
+  the Pike VM, the backtracker and the DFA (also in a tiny cache), among
+  them `(a|b)*a(a|b){20}`, whose DFA has 2^21 states; `regex_dfa` does the
+  same on random text, where the cache fills and the search falls back to
+  the Pike VM.
 
 ## eza
 

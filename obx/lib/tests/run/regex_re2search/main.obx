@@ -1,7 +1,7 @@
 // RE2's search tests (Go's regexp/testdata/re2-search.txt, in cases.obx):
 // every case in four modes and under each matcher must give RE2's indexes
 // (the cases of \C patterns, which Go refuses too, are not run).
-// expect: re2-search: 1888 cases, 21648 runs, 4 skipped (\B), 0 failures
+// expect: re2-search: 1888 cases, 43296 runs, 4 skipped (\B), 0 failures
 
 import "./re2"
 import "./cases"

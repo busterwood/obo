@@ -40,8 +40,9 @@ for leaks.
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
 | `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
 | `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
-| `regex.obx` | 1,640 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
-| `regex_syntax.obx` | 3,030 | the regex parser, simplifier and compiler to a program (Go's regexp/syntax) |
+| `regex.obx` | 1,940 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
+| `regex_dfa.obx` | 1,240 | the regex engine's lazy DFA (after RE2's) and literal searches (after Rust's regex) |
+| `regex_syntax.obx` | 3,060 | the regex parser, simplifier and compiler to a program, forward and reversed (Go's regexp/syntax) |
 | `regex_unicode.obx` | 2,020 | generated (`gen_regex_unicode.py`): Unicode 15.0.0 categories, scripts and simple case folding |
 
 ### std (prelude)
@@ -774,10 +775,12 @@ streams (`gate.sh full`).
 ### regex
 
 Regular expressions with RE2's syntax, matched in time linear in the size of
-the text whatever the pattern (design/regex.md, phase R1). A port of Go's
-`regexp` and `regexp/syntax` (BSD-3-Clause; see `NOTICE`): the same parser,
-errors and limits, the same program, the same three matchers, and the same
-results, checked against Go's own tests and against Go on random patterns.
+the text whatever the pattern (design/regex.md, phases R1 and R2). A port of
+Go's `regexp` and `regexp/syntax` (BSD-3-Clause; see `NOTICE`): the same
+parser, errors and limits, the same program, the same three matchers, and
+the same results, checked against Go's own tests and against Go on random
+patterns; plus RE2's lazy DFA and literal searches after Rust's `regex`,
+which find the same matches faster.
 
 ```obx
 import "regex"
@@ -826,7 +829,12 @@ let parts = re.split(text)
 - **Others.** `split(text)`, `splitN(text, n)` (Go's semantics, n < 0 for
   all); `quote(s)` escapes ``\.+*?()|[]{}^$``; `literalPrefix(): Prefix
   {text, complete}`; `pattern()`; `isLongest()`; `matcherFor(n)` (which
-  matcher a search of n bytes uses: `onepass`, `backtrack` or `pike`).
+  matcher a search of n bytes uses: `onepass`, `literal`, `dfa`,
+  `backtrack` or `pike`); `literalSearch()` (the DFA's literal search:
+  `prefix`, `inner`, `suffix` or `none`). For tests,
+  `compileForcing(pattern, longest, matcher)` forces `pike`, `backtrack`,
+  `dfa` (no literal search), `prefilter` (every literal search there is) or
+  `dfatiny` (a cache of three states, cleared all the time).
 
 **Syntax.** RE2's, as Go: literals and escapes (`\x41`, `\x{263a}`, `\Q...\E`,
 `\a \f \t \n \r \v`, octal); `.`; classes `[...]`, `[^...]`, `[[:alpha:]]`
@@ -847,13 +855,20 @@ engine with them cannot promise linear time. Also refused as in Go: `\C`,
 `\Z`, a repeat count above 1000, nesting deeper than 1000, and a pattern
 whose program would be too large, so a pattern cannot exhaust memory.
 
-**Matching.** Go's choice per search: the one-pass matcher when the
-pattern allows it (anchored, every step one choice), the bounded
-backtracker for small programs on short texts (a visited bitmap: each
-instruction at each position once), and the Pike VM (an NFA simulation)
-otherwise. A literal prefix is searched for first. Speed:
-`PERFORMANCE.md` (via C about Go's; natively 1.4 to 2.3 times Go's time). The
-literal prefilter and lazy DFA of R2 are not there yet.
+**Matching.** Per search: the one-pass matcher when the pattern allows it
+(anchored, every step one choice); a memory search when the pattern is a
+literal; the lazy DFA on texts of 128 bytes or more (states built while
+searching in a 2 MB cache; a forward run finds where the match ends, the
+reversed pattern run backward where it starts; for the groups the
+backtracker or the Pike VM then runs on that span only), with a literal
+search to skip ahead (the literals matches start with, a literal inside
+the pattern, or one they all end with); Go's choice otherwise, and when the
+DFA's cache fills too often: the bounded backtracker for small programs on
+short texts (a visited bitmap: each instruction at each position once), and
+the Pike VM (an NFA simulation). The DFA's states live in the call's
+matching state, so a `findAll` reuses them but separate calls rebuild them.
+Speed: `PERFORMANCE.md` (via C 1.3 to 2.6 times Rust's `regex` on the
+benchmark set, 2 to 650 times faster than Go's `regexp`).
 
 ### sqldialect, sqlite, postgres, mssql
 
@@ -987,8 +1002,11 @@ before any call; bytes travel as a blob (SQLite) or bytea hex (PostgreSQL).
 
 Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
 `i128ToStr`, `u128ToStr`, `u64ToStr`, `floatToStr`, `parseFloat`, `writeFd`,
-`readFile`, `args`, `getenv`, `strFromC`, and the built-ins `isNull`, `exit`,
-`panic`. `task` also uses the library-only intrinsics `intoPtr` and
+`readFile`, `args`, `getenv`, `strFromC`, `strFindByte`, `strFindAny`,
+`strFind` and `strFindPair` (the first index at or after `from` of a byte,
+of any byte of a set, of a string, of a position `p` with `s[p + i1]` in one
+set and `s[p + i2]` in another; 16 bytes a step with SSE2, for the regex
+prefilters), and the built-ins `isNull`, `exit`, `panic`. `task` also uses the library-only intrinsics `intoPtr` and
 `fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
 or `Frozen` value in the runtime's structures.
 

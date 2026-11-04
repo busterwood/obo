@@ -1,0 +1,174 @@
+// regex: the lazy DFA (R2). Patterns whose DFA has exponentially many states
+// stay correct and linear (the cache fills, is cleared, and the search falls
+// back to the Pike VM); the DFA in a tiny cache, cleared at almost every
+// step, agrees with the Pike VM; the literal searches compile picks; and
+// texts with invalid UTF-8, multibyte runes and searches from inside a rune
+// give the Pike VM's results under every DFA mode.
+// expect: hostile ok
+// expect: tiny ok
+// expect: strategies ok
+// expect: utf8 ok
+
+import "regex"
+import "time"
+
+// A text of n pseudo-random bytes from alphabet.
+fn randomText(n: int, alphabet: str, seed0: int): str {
+    var seed = seed0
+    var b = newStrBuf()
+    for i in 0..n {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        b.addByte(alphabet[(seed >> 16) % len(alphabet)])
+    }
+    return b.toStr()
+}
+
+fn spans(re: &regex.Regex, text: str): str {
+    var b = newStrBuf()
+    for s in re.findAllIndex(text) {
+        b.addInt(s.start)
+        b.addByte('-')
+        b.addInt(s.end)
+        b.addByte(' ')
+    }
+    return b.toStr()
+}
+
+fn subs(re: &regex.Regex, text: str): str {
+    var b = newStrBuf()
+    for m in re.allSubmatchIndex(text, -1) {
+        for v in m {
+            b.addInt(v)
+            b.addByte(',')
+        }
+        b.addByte(';')
+    }
+    return b.toStr()
+}
+
+const HOSTILE: []str = ["(a|b)*a(a|b){20}", "[ab]*a[ab]{12}b", "(?:a|b)*?b(?:a|b){16}a", "(x+x+)+y", "(a*)*b"]
+
+fn hostile(): bool {
+    var ok = true
+    for p in HOSTILE {
+        let small = randomText(10000, "ab", 7)
+        let large = randomText(100000, "ab", 7)
+        let pike = regex.compileForcing(p, false, "pike").unwrap()
+        let want = spans(&pike, small)
+        for m in ["", "dfa", "prefilter"] {
+            let re = regex.compileForcing(p, false, m).unwrap()
+            if spans(&re, small) != want {
+                println("/" + p + "/ " + m + ": not the Pike VM's matches")
+                ok = false
+            }
+            let t0 = time.monotonicNs()
+            let a = spans(&re, small)
+            let t1 = time.monotonicNs()
+            let b = spans(&re, large)
+            let t2 = time.monotonicNs()
+            if len(a) > len(b) { ok = false }
+            if t2 - t1 > 40 * (t1 - t0) + 50000000 {
+                println("/" + p + "/ " + m + ": " + ((t1 - t0) / 1000).toStr() + " us for 10k, " + ((t2 - t1) / 1000).toStr() +
+                    " us for 100k: not linear")
+                ok = false
+            }
+            if re.isMatch(large) != (len(b) > 0) { ok = false }
+        }
+    }
+    return ok
+}
+
+const TINY: []str = ["(a|b)*a(a|b){5}", "\\b\\w+\\b", "(?m)^a.*b$", "a+|b+|(ab)+", "(?i)k\\B", "[^a]*a", "x*", "(a|ab)(c|bcd)(d*)",
+    "\\Ba+\\b", "(?s).+$", "^$|a", "(\\b|a)*", "(\\b| *a)*", "(?:$|a)*b?", "(\\B|b)+?a?", "(?m)(^|a)*"]
+
+fn tiny(): bool {
+    var ok = true
+    let texts = [randomText(700, "ab\n ", 3), randomText(500, "abcd K\xe2\x84\xaa\xc3\xa9", 5), "", "\n\n", randomText(300, "ab", 9)]
+    for p in TINY {
+        for longest in [false, true] {
+            let pike = regex.compileForcing(p, longest, "pike").unwrap()
+            let re = regex.compileForcing(p, longest, "dfatiny").unwrap()
+            for t in texts {
+                if subs(&re, t) != subs(&pike, t) || spans(&re, t) != spans(&pike, t) || re.isMatch(t) != pike.isMatch(t) {
+                    println("tiny /" + p + "/ longest " + longest.toStr() + " differs")
+                    ok = false
+                }
+            }
+        }
+    }
+    return ok
+}
+
+// The literal search compile picks for each pattern of the benchmark.
+const STRAT_P: []str = ["Sherlock Holmes", "Sherlock|Holmes|Watson|Irene", "\\w+", "(?i)sherlock", "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}",
+    "(?m)^ERROR .*timeout$", "(?P<y>\\d{4})-(?P<m>\\d{2})-(?P<d>\\d{2})", "(a*)*b"]
+const STRAT_M: []str = ["literal", "dfa", "dfa", "dfa", "dfa", "dfa", "dfa", "dfa"]
+const STRAT_L: []str = ["prefix", "prefix", "none", "prefix", "inner", "prefix", "inner", "suffix"]
+
+fn strategies(): bool {
+    var ok = true
+    for i in 0..len(STRAT_P) {
+        let re = regex.mustCompile(STRAT_P[i])
+        let m = re.matcherFor(1000000)
+        let l = re.literalSearch()
+        if m != STRAT_M[i] || l != STRAT_L[i] {
+            println("/" + STRAT_P[i] + "/: " + m + " " + l + ", want " + STRAT_M[i] + " " + STRAT_L[i])
+            ok = false
+        }
+    }
+    // Short texts go to Go's matchers.
+    if regex.mustCompile("\\w+").matcherFor(10) != "backtrack" { ok = false }
+    return ok
+}
+
+const UTF_P: []str = ["\\b\\w+\\b", "\\B", "\xc3\xa9+", "[^a]", ".", "\xef\xbf\xbd", "(?i)\xe2\x84\xaa", "x\\b", "\\Bx", "(?m)$", "a.b"]
+
+fn utf8(): bool {
+    var ok = true
+    let texts = ["\xc3\xa9t\xc3\xa9 x\xc3\xa9x", "a\xffb\xe2\x82x\xf0\x9f\x98\x80b", "kK\xe2\x84\xaax\xc3", "\xe2\x82\xac\xe2\x82", "a\nb\xff\n"]
+    for p in UTF_P {
+        for longest in [false, true] {
+            let pike = regex.compileForcing(p, longest, "pike").unwrap()
+            for m in ["dfa", "prefilter", "dfatiny"] {
+                let re = regex.compileForcing(p, longest, m).unwrap()
+                for t in texts {
+                    for from in 0..len(t) + 1 {
+                        let a = re.findFrom(t, from)
+                        let b = pike.findFrom(t, from)
+                        var same = true
+                        match a {
+                            Some(x) {
+                                match b {
+                                    Some(y) { same = x.start == y.start && x.end == y.end }
+                                    None { same = false }
+                                }
+                            }
+                            None {
+                                match b {
+                                    Some(y) { same = false }
+                                    None {}
+                                }
+                            }
+                        }
+                        if !same {
+                            println("utf8 /" + p + "/ " + m + " from " + from.toStr() + " differs")
+                            ok = false
+                        }
+                    }
+                    if subs(&re, t) != subs(&pike, t) || spans(&re, t) != spans(&pike, t) {
+                        println("utf8 /" + p + "/ " + m + " all differ")
+                        ok = false
+                    }
+                }
+            }
+        }
+    }
+    return ok
+}
+
+fn main() {
+    println("hostile " + (if hostile() { "ok" } else { "FAILED" }))
+    println("tiny " + (if tiny() { "ok" } else { "FAILED" }))
+    println("strategies " + (if strategies() { "ok" } else { "FAILED" }))
+    println("utf8 " + (if utf8() { "ok" } else { "FAILED" }))
+}

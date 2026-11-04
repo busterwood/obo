@@ -1,21 +1,25 @@
 // regex: patterns that take exponential time in a backtracking engine run in
-// time linear in the text here, under the Pike VM and the bounded backtracker
-// (it never visits a state twice): 100,000 bytes take about ten times as long
-// as 10,000 (the bound allows 40 times, plus 20 ms of noise), with and without
-// a match at the end.
+// time linear in the text here, under the Pike VM, the bounded backtracker
+// (it never visits a state twice) and the lazy DFA (in its own cache and in a
+// tiny one; (a|b)*a(a|b){20} has 2^21 DFA states): 100,000 bytes take about
+// ten times as long as 10,000 (the bound allows 40 times, plus 20 ms of
+// noise), with and without a match at the end.
 // expect: (a*)*b ok
 // expect: (x+x+)+y ok
 // expect: (a|a)*b ok
 // expect: (?:a+)+$ ok
 // expect: (.*)*z ok
+// expect: (a|b)*a(a|b){20} ok
 
 import "regex"
 import "time"
 
-const PATTERNS: []str = ["(a*)*b", "(x+x+)+y", "(a|a)*b", "(?:a+)+$", "(.*)*z"]
-const FILL: []str = ["a", "x", "a", "a", "a"]
-const LAST: []str = ["b", "y", "b", "a", "z"]
-const MATCHERS: []str = ["pike", "backtrack"]
+const PATTERNS: []str = ["(a*)*b", "(x+x+)+y", "(a|a)*b", "(?:a+)+$", "(.*)*z", "(a|b)*a(a|b){20}"]
+const FILL: []str = ["a", "x", "a", "a", "a", "abbabaababbbaabbbabaa"]
+const LAST: []str = ["b", "y", "b", "a", "z", "abbbbbbbbbbbbbbbbbbbb"]
+// Whether the fill alone matches.
+const PLAIN: []bool = [false, false, false, true, false, true]
+const MATCHERS: []str = ["pike", "backtrack", "dfa", "dfatiny"]
 
 // The time of a search for re in s, in nanoseconds; the result must be want.
 fn timed(re: &regex.Regex, s: str, want: bool, ok: mut &bool): int {
@@ -32,10 +36,9 @@ fn timed(re: &regex.Regex, s: str, want: bool, ok: mut &bool): int {
 fn main() {
     for i in 0..len(PATTERNS) {
         var ok = true
-        let small = repeat(FILL[i], 10000)
-        let large = repeat(FILL[i], 100000)
-        // (?:a+)+$ matches the all-a text; the others need the last byte.
-        let wantPlain = LAST[i] == FILL[i]
+        let small = repeat(FILL[i], 10000 / len(FILL[i]))
+        let large = repeat(FILL[i], 100000 / len(FILL[i]))
+        let wantPlain = PLAIN[i]
         for m in MATCHERS {
             let re = regex.compileForcing(PATTERNS[i], false, m).unwrap()
             for withLast in [false, true] {
@@ -51,7 +54,7 @@ fn main() {
                 }
             }
         }
-        // compile's own choice (the Pike VM for this size) finds the match.
+        // compile's own choice finds the match.
         let re = regex.mustCompile(PATTERNS[i])
         let s = large + LAST[i]
         match re.find(s) {

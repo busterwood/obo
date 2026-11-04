@@ -1,0 +1,1287 @@
+// regex_dfa: the lazy DFA and the literal prefilters of the regex engine
+// (design/regex.md, R2).
+//
+// The lazy DFA follows RE2's (re2/dfa.cc, BSD-3-Clause, Copyright 2008 The
+// RE2 Authors; see NOTICE): a state is the ordered list of the program's
+// threads (rune, match and waiting empty-width instructions), with marks
+// between the threads of different start positions in leftmost-longest
+// mode, plus flags (the empty-width context, whether the last rune was a
+// word rune, and a delayed match). States are built from the program while
+// searching, into a cache of fixed size; when it fills, it is cleared, and
+// a search that clears it too often gives up (the caller then runs the
+// Pike VM). Two differences from RE2:
+// - the DFA reads runes, not bytes. The runes are split into classes (the
+//   runes in a class are matched alike by every instruction, and are alike
+//   for \b and \n); ASCII bytes find their class in a table, other runes are
+//   decoded as Go decodes them (an invalid byte is U+FFFD) and looked up.
+//   The matches are then Go's by construction: same decoding, \B tested
+//   between runes.
+// - the unanchored search has no .*? loop in the program: a state has a
+//   flag saying that new threads start after each rune (until a match is
+//   seen), at the lowest priority. A state whose only threads just started
+//   is marked, so a prefilter may skip ahead from it.
+//
+// The literal extraction follows the idea of Rust's regex-syntax
+// (hir::literal, MIT or Apache-2.0, Copyright Andrew Gallant): the finite
+// set of literals one of which every match starts with (or ends with, or
+// whose part after a split of the top concatenation starts with).
+
+import "regex_syntax" as syn
+
+// ---------------------------------------------------------------- rune classes
+
+// The rune classes of a program: runes in one class match the same rune
+// instructions, and agree on being a word rune or a newline.
+pub type Classes = record {
+    ascii: []int          // the class of each ASCII rune
+    ulo: []int            // the non-ASCII runes: interval starts (ulo[0] = 128)
+    uid: []int            // and the class of each interval
+    n: int                // the number of classes; class n is the end of the text
+    rep: []int            // a rune of each class
+    word: []bool          // whether the class's runes are word runes
+}
+
+fn emptyClasses(): Classes { return Classes{ascii: [], ulo: [], uid: [], n: 0, rep: [], word: []} }
+
+// The work allowed for building the classes (intervals times distinct rune
+// sets); a program over it gets no DFA.
+const CLASS_WORK = 2000000
+
+// The runes of the rune instruction at pc, as sorted range pairs.
+fn instRanges(p: &syn.Prog, pc: int): []int {
+    let i = &p.inst[pc]
+    let op = i.op
+    if op == syn.I_RUNE_ANY { return [0, syn.MAX_RUNE] }
+    if op == syn.I_RUNE_ANY_NOT_NL { return [0, 9, 11, syn.MAX_RUNE] }
+    var out: []int = []
+    if i.rn == 1 {
+        let r0 = p.runes[i.rlo]
+        var rs: []int = [r0]
+        if i.arg & syn.FOLD_CASE != 0 {
+            var r1 = syn.simpleFold(r0)
+            while r1 != r0 {
+                append(mut &rs, r1)
+                r1 = syn.simpleFold(r1)
+            }
+        }
+        sort(mut &rs)
+        for r in rs {
+            append(mut &out, r)
+            append(mut &out, r)
+        }
+        return out
+    }
+    for k in 0..i.rn { append(mut &out, p.runes[i.rlo + k]) }
+    return out
+}
+
+fn rangesKey(rs: &[]int): str {
+    var b = newStrBuf()
+    for r in rs {
+        b.add(r.toStr())
+        b.addByte(',')
+    }
+    return b.toStr()
+}
+
+fn isRuneOp(op: int): bool {
+    return op == syn.I_RUNE || op == syn.I_RUNE1 || op == syn.I_RUNE_ANY || op == syn.I_RUNE_ANY_NOT_NL
+}
+
+// The classes of p's runes; n == 0 when building them is too much work.
+pub fn buildClasses(p: &syn.Prog): Classes {
+    var sets: [][]int = []
+    var seen = newMap[str, bool]()
+    for pc in 0..len(p.inst) {
+        if isRuneOp(p.inst[pc].op) {
+            let rs = instRanges(p, pc)
+            let key = rangesKey(&rs)
+            if !seen.has(&key) {
+                seen.put(key, true)
+                append(mut &sets, rs)
+            }
+        }
+    }
+    append(mut &sets, [10, 10])
+    append(mut &sets, [48, 57, 65, 90, 95, 95, 97, 122])
+    var bs: []int = [0, 128]
+    for rs in sets {
+        var k = 0
+        while k < len(rs) {
+            append(mut &bs, rs[k])
+            if rs[k + 1] < syn.MAX_RUNE { append(mut &bs, rs[k + 1] + 1) }
+            k += 2
+        }
+    }
+    sort(mut &bs)
+    var b: []int = []
+    for x in bs {
+        if len(b) == 0 || b[len(b) - 1] != x { append(mut &b, x) }
+    }
+    if len(b) * len(sets) > CLASS_WORK { return emptyClasses() }
+    // Refine: each set splits every class into its runes in and out of it.
+    var sig = array(len(b), 0)
+    var ncur = 1
+    for rs in sets {
+        var remap = array(2 * ncur, -1)
+        var next = 0
+        var j = 0
+        for i in 0..len(b) {
+            let lo = b[i]
+            while j < len(rs) && rs[j + 1] < lo { j += 2 }
+            let bit = if j < len(rs) && rs[j] <= lo { 1 } else { 0 }
+            let key = sig[i] * 2 + bit
+            if remap[key] < 0 {
+                remap[key] = next
+                next += 1
+            }
+            sig[i] = remap[key]
+        }
+        ncur = next
+    }
+    var c = emptyClasses()
+    c.n = ncur
+    c.ascii = array(128, 0)
+    c.rep = array(ncur, -1)
+    for i in 0..len(b) {
+        let hi = if i + 1 < len(b) { b[i + 1] } else { syn.MAX_RUNE + 1 }
+        if b[i] < 128 {
+            var r = b[i]
+            while r < hi && r < 128 {
+                c.ascii[r] = sig[i]
+                r += 1
+            }
+        } else if len(c.uid) == 0 || c.uid[len(c.uid) - 1] != sig[i] {
+            append(mut &c.ulo, b[i])
+            append(mut &c.uid, sig[i])
+        }
+        if c.rep[sig[i]] < 0 { c.rep[sig[i]] = b[i] }
+    }
+    c.word = array(ncur, false)
+    for k in 0..ncur { c.word[k] = syn.isWordChar(c.rep[k]) }
+    return c
+}
+
+// The class of a non-ASCII rune.
+fn (c: &Classes) of(r: int): int {
+    var lo = 0
+    var hi = len(c.ulo)
+    while hi - lo > 1 {
+        let m = (lo + hi) / 2
+        if c.ulo[m] <= r { lo = m } else { hi = m }
+    }
+    return c.uid[lo]
+}
+
+// ---------------------------------------------------------------- the DFA
+
+// A lazy DFA for a program: its rune classes and its kind (leftmost-first
+// or leftmost-longest). The states live in a Cache, one per search call.
+pub type Dfa = record {
+    pub ok: bool
+    cls: Classes
+    longest: bool
+    ninst: int
+}
+
+pub fn noDfa(): Dfa { return Dfa{ok: false, cls: emptyClasses(), longest: false, ninst: 0} }
+
+// The most instructions a program may have for a DFA.
+const MAX_DFA_INST = 20000
+
+pub fn newDfa(p: &syn.Prog, longest: bool): Dfa {
+    if len(p.inst) > MAX_DFA_INST { return noDfa() }
+    let cls = buildClasses(p)
+    if cls.n == 0 { return noDfa() }
+    return Dfa{ok: true, cls: cls, longest: longest, ninst: len(p.inst)}
+}
+
+// The number of rune classes (for tests).
+pub fn (d: &Dfa) classes(): int { return d.cls.n }
+
+// State flags.
+const F_MATCH = 1         // the position before the last rune ends a match
+const F_LASTWORD = 2      // the last rune was a word rune
+const F_U = 4             // unanchored: new threads start after the next rune
+const F_START = 8         // the only threads just started (a prefilter may skip)
+const F_KEEP = 13         // the flags kept when no empty-width test waits
+const EMPTY_SHIFT = 4     // the empty-width conditions holding before the next rune
+const NEED_SHIFT = 10     // the conditions the waiting empty-width tests need
+
+// Transition values: a state's index times the stride, with tags above.
+const T_MATCH = 1099511627776      // 1 << 40: the state has F_MATCH
+const T_START = 2199023255552      // 1 << 41: the state has F_START
+const T_MASK = 1099511627775       // (1 << 40) - 1
+const T_DEAD = 1125899906842624    // 1 << 50: no match from here
+const T_UNKNOWN = 2251799813685248 // 1 << 51: not computed yet
+const T_FULL = 4503599627370496    // 1 << 52: the cache is full (internal)
+const T_FAILED = 9007199254740992  // 1 << 53: the search gave up
+
+const MARK = -1
+
+// The default cache size, in 8-byte words (2 MB).
+pub const DEFAULT_BUDGET = 262144
+
+// The states of one search call (kept across the matches of findAll).
+pub type Cache = record {
+    stride: int
+    sflag: []int
+    slo: []int
+    sn: []int
+    shash: []int
+    sinst: []int
+    nstates: int
+    trans: []int
+    htab: []int
+    hmask: int
+    starts: []int         // the start state per context, or -1
+    budget: int
+    bail: bool
+    paths: bool           // record the path entries (leftmost-first)
+    leaves: int           // the queue's entries that are not marks or paths
+    pub clears: int
+    resetAt: int
+    pos: int              // where the search is (for bailing out)
+    pub reach: int        // where the last forward search stopped reading
+    // the work queue: a sparse set of visited instructions and the list
+    vsparse: []int
+    vdense: []int
+    vn: int
+    items: []int
+    ni: int
+    lastMark: bool
+    cur: []int
+    stack: []int
+    tmp: []int
+    tn: int
+    tflag: int
+    save: []int
+    // the prefilter: its last answer, and how much it skipped
+    pfFrom: int
+    pfCand: int
+    pfCalls: int
+    pfSkip: int
+    pfOff: bool
+}
+
+pub fn newCache(): Cache {
+    return Cache{stride: 0, sflag: [], slo: [], sn: [], shash: [], sinst: [], nstates: 0, trans: [], htab: [], hmask: 0,
+        starts: [], budget: 0, bail: true, paths: false, leaves: 0, clears: 0, resetAt: 0, pos: 0, reach: 0, vsparse: [], vdense: [], vn: 0, items: [],
+        ni: 0, lastMark: true, cur: [], stack: [], tmp: [], tn: 0, tflag: 0, save: [], pfFrom: -1, pfCand: -1, pfCalls: 0,
+        pfSkip: 0, pfOff: false}
+}
+
+// Prepares the cache for d (once): budget in 8-byte words; bail: give up
+// when the cache is cleared too often.
+pub fn (c: mut &Cache) setup(d: &Dfa, budget: int, bail: bool) {
+    if c.stride != 0 { return }
+    c.stride = d.cls.n + 1
+    c.budget = budget
+    c.bail = bail
+    c.paths = !d.longest
+    let n = d.ninst
+    c.vsparse = array(n, 0)
+    c.vdense = array(n, 0)
+    c.items = array(2 * n + 2, 0)
+    c.cur = array(2 * n + 2, 0)
+    c.tmp = array(2 * n + 2, 0)
+    c.save = array(2 * n + 2, 0)
+    c.stack = array(n + 1, 0)
+    c.htab = array(64, 0)
+    c.hmask = 63
+    c.starts = array(16, -1)
+}
+
+pub fn (c: &Cache) ready(): bool { return c.stride != 0 }
+
+// Empties the work queue.
+fn (c: mut &Cache) qclear() {
+    c.vn = 0
+    c.ni = 0
+    c.leaves = 0
+    c.lastMark = true
+}
+
+fn (c: mut &Cache) mark() {
+    if !c.lastMark {
+        c.items[c.ni] = MARK
+        c.ni += 1
+        c.lastMark = true
+    }
+}
+
+// Adds id and what it leads to without reading a rune, under the
+// empty-width conditions flag, to the queue: depth first, Out before Arg
+// (the priority order). Rune and match instructions, and empty-width tests
+// that do not hold, go in the list (RE2's AddToQueue). In leftmost-first
+// mode the instructions passed through go in too, as path entries
+// (-(id + 2)): when a waiting test later holds, the closure is redone in
+// this order with them marked as visited where they were, which is the
+// order Go's Pike VM gets with the test known from the start (re-adding
+// only the test would put the threads it leads to after ones Go puts them
+// before, as in (\b|s)* on "s", which Go compiles as (x+)?).
+fn (c: mut &Cache) visit(id: int) {
+    c.vsparse[id] = c.vn
+    c.vdense[c.vn] = id
+    c.vn += 1
+}
+
+fn (c: &Cache) visited(id: int): bool {
+    let j = c.vsparse[id]
+    return j < c.vn && c.vdense[j] == id
+}
+
+fn (c: mut &Cache) path(id: int) {
+    if c.paths {
+        c.items[c.ni] = -(id + 2)
+        c.ni += 1
+    }
+}
+
+fn (c: mut &Cache) add(p: &syn.Prog, id0: int, flag: int) {
+    var sp = 1
+    c.stack[0] = id0
+    while sp > 0 {
+        sp -= 1
+        var id = c.stack[sp]
+        while id != 0 {
+            if c.visited(id) { break }
+            c.visit(id)
+            let i = &p.inst[id]
+            let op = i.op
+            if op == syn.I_ALT || op == syn.I_ALT_MATCH {
+                c.path(id)
+                c.stack[sp] = i.arg
+                sp += 1
+                id = i.out
+            } else if op == syn.I_NOP || op == syn.I_CAPTURE {
+                c.path(id)
+                id = i.out
+            } else if op == syn.I_EMPTY_WIDTH {
+                if i.arg & ~flag == 0 {
+                    c.path(id)
+                    id = i.out
+                } else {
+                    c.items[c.ni] = id
+                    c.ni += 1
+                    c.leaves += 1
+                    c.lastMark = false
+                    break
+                }
+            } else if op == syn.I_FAIL {
+                break
+            } else {
+                c.items[c.ni] = id
+                c.ni += 1
+                c.leaves += 1
+                c.lastMark = false
+                break
+            }
+        }
+    }
+}
+
+// The transition value of the state the queue makes with flag (RE2's
+// WorkqToCachedState): the list is cut after a match (first kind: right
+// after; longest kind: at the next mark), and in the longest kind each group
+// between marks is sorted. T_FULL when the cache has no room and !force.
+fn (c: mut &Cache) toState(d: &Dfa, p: &syn.Prog, flag0: int, force: bool): int {
+    var flag = flag0
+    var n = 0
+    var need = 0
+    var sawmatch = false
+    for j in 0..c.ni {
+        let id = c.items[j]
+        if sawmatch && (!d.longest || id == MARK) { break }
+        if id == MARK {
+            if n > 0 && c.tmp[n - 1] != MARK {
+                c.tmp[n] = MARK
+                n += 1
+            }
+            continue
+        }
+        c.tmp[n] = id
+        n += 1
+        if id < MARK { continue }
+        let op = p.inst[id].op
+        if op == syn.I_EMPTY_WIDTH {
+            need = need | p.inst[id].arg
+        } else if op == syn.I_MATCH {
+            sawmatch = true
+        }
+    }
+    if n > 0 && c.tmp[n - 1] == MARK { n -= 1 }
+    if need == 0 {
+        // No test waits: the path entries are not needed.
+        var m = 0
+        for j in 0..n {
+            if c.tmp[j] >= MARK {
+                c.tmp[m] = c.tmp[j]
+                m += 1
+            }
+        }
+        n = m
+    }
+    if sawmatch { flag = flag & ~(F_U | F_START) }
+    if need == 0 { flag = flag & F_KEEP }
+    if n == 0 && flag == 0 { return T_DEAD }
+    if d.longest {
+        // Sort each group (insertion sort: the groups are small).
+        var a = 0
+        while a < n {
+            var e = a
+            while e < n && c.tmp[e] != MARK { e += 1 }
+            for x in a + 1..e {
+                let v = c.tmp[x]
+                var y = x
+                while y > a && c.tmp[y - 1] > v {
+                    c.tmp[y] = c.tmp[y - 1]
+                    y -= 1
+                }
+                c.tmp[y] = v
+            }
+            a = e + 1
+        }
+    }
+    flag = flag | (need << NEED_SHIFT)
+    c.tn = n
+    c.tflag = flag
+    return c.intern(flag, force, false)
+}
+
+fn (c: &Cache) value(st: int): int {
+    let f = c.sflag[st]
+    var t = st * c.stride
+    if f & F_MATCH != 0 { t = t | T_MATCH }
+    if f & F_START != 0 { t = t | T_START }
+    return t
+}
+
+// The state with flag and the list in tmp (fromSave: in save), found or
+// added. T_FULL when it is new, the cache has no room and !force.
+fn (c: mut &Cache) intern(flag: int, force: bool, fromSave: bool): int {
+    let n = c.tn
+    var h = flag
+    for j in 0..n {
+        let v = if fromSave { c.save[j] } else { c.tmp[j] }
+        h = ((h * 31) + v + 2) & 281474976710655
+    }
+    var slot = (h ^ (h >> 19)) & c.hmask
+    while true {
+        let e = c.htab[slot]
+        if e == 0 { break }
+        let st = e - 1
+        if c.shash[st] == h && c.sflag[st] == flag && c.sn[st] == n {
+            let lo = c.slo[st]
+            var same = true
+            for j in 0..n {
+                let v = if fromSave { c.save[j] } else { c.tmp[j] }
+                if c.sinst[lo + j] != v {
+                    same = false
+                    break
+                }
+            }
+            if same { return c.value(st) }
+        }
+        slot = (slot + 1) & c.hmask
+    }
+    if !force && c.nstates > 0 && len(c.trans) + len(c.sinst) + 6 * c.nstates + c.stride + n + 6 > c.budget { return T_FULL }
+    let st = c.nstates
+    c.nstates += 1
+    append(mut &c.sflag, flag)
+    append(mut &c.slo, len(c.sinst))
+    append(mut &c.sn, n)
+    append(mut &c.shash, h)
+    for j in 0..n { append(mut &c.sinst, if fromSave { c.save[j] } else { c.tmp[j] }) }
+    for k in 0..c.stride { append(mut &c.trans, T_UNKNOWN) }
+    if 2 * c.nstates > c.hmask {
+        c.rehash()
+    } else {
+        c.htab[slot] = st + 1
+    }
+    return c.value(st)
+}
+
+fn (c: mut &Cache) rehash() {
+    let size = 2 * (c.hmask + 1)
+    c.htab = array(size, 0)
+    c.hmask = size - 1
+    for st in 0..c.nstates {
+        let h = c.shash[st]
+        var slot = (h ^ (h >> 19)) & c.hmask
+        while c.htab[slot] != 0 { slot = (slot + 1) & c.hmask }
+        c.htab[slot] = st + 1
+    }
+}
+
+// Empties the cache; false (and the search fails) when it was cleared
+// before and too little text was scanned since: fewer than 10 bytes a
+// state, as RE2 decides.
+fn (c: mut &Cache) reset(): bool {
+    var scanned = c.pos - c.resetAt
+    if scanned < 0 { scanned = -scanned }
+    if c.bail && c.clears > 0 && scanned < 10 * c.nstates { return false }
+    c.clears += 1
+    c.resetAt = c.pos
+    c.sflag = []
+    c.slo = []
+    c.sn = []
+    c.shash = []
+    c.sinst = []
+    c.trans = []
+    c.nstates = 0
+    c.htab = array(64, 0)
+    c.hmask = 63
+    for k in 0..16 { c.starts[k] = -1 }
+    return true
+}
+
+// The transition from state s (a transition value) on class k, computed
+// and cached (RE2's RunStateOnByte). After a clear of the cache, s's index
+// is no longer valid: the caller continues from the returned value.
+fn (c: mut &Cache) next(d: &Dfa, p: &syn.Prog, s: int, k: int): int {
+    let st = (s & T_MASK) / c.stride
+    let flag = c.sflag[st]
+    let lo = c.slo[st]
+    var ncur = c.sn[st]
+    for j in 0..ncur { c.cur[j] = c.sinst[lo + j] }
+    let need = flag >> NEED_SHIFT
+    var before = (flag >> EMPTY_SHIFT) & 63
+    let oldBefore = before
+    var after = 0
+    let eot = k == d.cls.n
+    let r = if eot { -1 } else { d.cls.rep[k] }
+    let isword = !eot && d.cls.word[k]
+    if r == 10 {
+        before = before | syn.EMPTY_END_LINE
+        after = after | syn.EMPTY_BEGIN_LINE
+    }
+    if eot { before = before | syn.EMPTY_END_LINE | syn.EMPTY_END_TEXT }
+    if isword == (flag & F_LASTWORD != 0) {
+        before = before | syn.EMPTY_NO_WORD_BOUNDARY
+    } else {
+        before = before | syn.EMPTY_WORD_BOUNDARY
+    }
+    if before & ~oldBefore & need != 0 {
+        // New conditions hold: let the waiting tests through.
+        c.qclear()
+        for j in 0..ncur {
+            let id = c.cur[j]
+            if id == MARK {
+                c.mark()
+            } else if id < MARK {
+                let x = -id - 2
+                if !c.visited(x) { c.visit(x) }
+            } else {
+                c.add(p, id, before)
+            }
+        }
+        ncur = c.ni
+        for j in 0..ncur { c.cur[j] = c.items[j] }
+    }
+    c.qclear()
+    var ismatch = false
+    for j in 0..ncur {
+        let id = c.cur[j]
+        if id == MARK {
+            if ismatch { break }
+            c.mark()
+            continue
+        }
+        if id < MARK { continue }
+        let i = &p.inst[id]
+        let op = i.op
+        if op == syn.I_MATCH {
+            ismatch = true
+            if !d.longest { break }
+            continue
+        }
+        if eot { continue }
+        var ok = false
+        if op == syn.I_RUNE1 {
+            ok = r == p.runes[i.rlo]
+        } else if op == syn.I_RUNE {
+            ok = syn.matchRunesAt(&p.runes, i.rlo, i.rn, i.arg, r) >= 0
+        } else if op == syn.I_RUNE_ANY {
+            ok = true
+        } else if op == syn.I_RUNE_ANY_NOT_NL {
+            ok = r != 10
+        }
+        if ok { c.add(p, i.out, after) }
+    }
+    var nflag = after << EMPTY_SHIFT
+    if ismatch { nflag = nflag | F_MATCH }
+    if isword { nflag = nflag | F_LASTWORD }
+    if flag & F_U != 0 && !ismatch && !eot {
+        // New threads start here, after the others.
+        if c.leaves == 0 { nflag = nflag | F_START }
+        if d.longest { c.mark() }
+        c.add(p, p.start, after)
+        nflag = nflag | F_U
+    }
+    var t = c.toState(d, p, nflag, false)
+    if t == T_FULL {
+        // Keep s (its list from the cache) and the new state (in tmp),
+        // empty the cache, and put both back.
+        let tn = c.tn
+        let tflag = c.tflag
+        let sn = c.sn[st]
+        for j in 0..sn { c.save[j] = c.sinst[lo + j] }
+        if !c.reset() { return T_FAILED }
+        c.tn = sn
+        let s2 = c.intern(flag, true, true)
+        c.tn = tn
+        t = c.intern(tflag, true, false)
+        c.trans[(s2 & T_MASK) + k] = t
+        return t
+    }
+    c.trans[(s & T_MASK) + k] = t
+    return t
+}
+
+// The start state for a search at pos (rev: a scan backward from pos):
+// its transition value, T_DEAD or T_FAILED.
+fn (c: mut &Cache) start(d: &Dfa, p: &syn.Prog, text: str, pos: int, anchored: bool, rev: bool): int {
+    var empty = 0
+    var lw = false
+    if rev {
+        if pos >= len(text) {
+            empty = syn.EMPTY_BEGIN_TEXT | syn.EMPTY_BEGIN_LINE
+        } else {
+            let b = int(text[pos])
+            if b == 10 { empty = syn.EMPTY_BEGIN_LINE }
+            lw = syn.isWordChar(b)
+        }
+    } else {
+        if pos == 0 {
+            empty = syn.EMPTY_BEGIN_TEXT | syn.EMPTY_BEGIN_LINE
+        } else {
+            let b = int(text[pos - 1])
+            if b == 10 { empty = syn.EMPTY_BEGIN_LINE }
+            lw = syn.isWordChar(b)
+        }
+    }
+    var idx = 0
+    if empty & syn.EMPTY_BEGIN_TEXT != 0 { idx = idx | 1 }
+    if empty & syn.EMPTY_BEGIN_LINE != 0 { idx = idx | 2 }
+    if lw { idx = idx | 4 }
+    if !anchored { idx = idx | 8 }
+    if c.starts[idx] >= 0 { return c.starts[idx] }
+    var flag = empty << EMPTY_SHIFT
+    if lw { flag = flag | F_LASTWORD }
+    if !anchored { flag = flag | F_U | F_START }
+    c.qclear()
+    c.add(p, p.start, empty)
+    var t = c.toState(d, p, flag, false)
+    if t == T_FULL {
+        if !c.reset() { return T_FAILED }
+        t = c.intern(c.tflag, true, false)
+    }
+    c.starts[idx] = t
+    return t
+}
+
+// ---------------------------------------------------------------- searching
+
+// Searches forward from pos for the end of the leftmost match (of the
+// DFA's kind): the end, -1 if there is none, -2 if the cache gave up.
+// anchored: the match must start at pos. earliest: stop at the first match
+// end seen (only whether there is a match counts). The prefilter pf, if
+// any, skips text where no match starts.
+pub fn (d: &Dfa) forward(c: mut &Cache, p: &syn.Prog, text: str, pos: int, anchored: bool, earliest: bool, pf: &Prefilter): int {
+    let n = len(text)
+    var t = c.start(d, p, text, pos, anchored, false)
+    if t == T_FAILED { return -2 }
+    if t == T_DEAD { return -1 }
+    var at = pos
+    let usePf = pf.kind != PF_NONE && !anchored
+    if usePf && t & T_START != 0 {
+        let cand = c.prefilter(pf, text, at)
+        if cand < 0 { return -1 }
+        if cand > at {
+            at = cand
+            t = c.start(d, p, text, at, false, false)
+            if t == T_FAILED { return -2 }
+            if t == T_DEAD { return -1 }
+        }
+    }
+    var s = t & T_MASK
+    var last = -1
+    let eot = d.cls.n
+    while at < n {
+        let b = int(text[at])
+        var k = 0
+        var w = 1
+        if b < 128 {
+            k = d.cls.ascii[b]
+        } else {
+            let r = syn.decodeRuneIn(text, at, n)
+            k = d.cls.of(r.r)
+            w = r.w
+        }
+        var t2 = c.trans[s + k]
+        if t2 < T_MATCH {
+            s = t2
+            at += w
+            continue
+        }
+        if t2 == T_UNKNOWN {
+            c.pos = at
+            t2 = c.next(d, p, s, k)
+            if t2 == T_FAILED { return -2 }
+        }
+        if t2 == T_DEAD {
+            c.reach = at + w
+            return last
+        }
+        s = t2 & T_MASK
+        if t2 & T_MATCH != 0 {
+            last = at
+            if earliest { return at }
+        }
+        at += w
+        if t2 & T_START != 0 && usePf {
+            let cand = c.prefilter(pf, text, at)
+            if cand < 0 { return last }
+            if cand > at {
+                at = cand
+                let t3 = c.start(d, p, text, at, false, false)
+                if t3 == T_FAILED { return -2 }
+                if t3 == T_DEAD { return last }
+                s = t3 & T_MASK
+            }
+        }
+    }
+    c.reach = n
+    var t2 = c.trans[s + eot]
+    if t2 == T_UNKNOWN {
+        c.pos = at
+        t2 = c.next(d, p, s, eot)
+        if t2 == T_FAILED { return -2 }
+    }
+    if t2 != T_DEAD && t2 & T_MATCH != 0 { last = n }
+    return last
+}
+
+// Searches backward from e, not before lo, for the start of the longest
+// match that ends at e, with the DFA of the reversed program (longest
+// kind): the start, -1 if there is none, -2 if the cache gave up.
+pub fn (d: &Dfa) backward(c: mut &Cache, p: &syn.Prog, text: str, lo: int, e: int): int {
+    var t = c.start(d, p, text, e, true, true)
+    if t == T_FAILED { return -2 }
+    if t == T_DEAD { return -1 }
+    var s = t & T_MASK
+    var at = e
+    var last = -1
+    while at > lo {
+        let b = int(text[at - 1])
+        var k = 0
+        var w = 1
+        if b < 128 {
+            k = d.cls.ascii[b]
+        } else {
+            let r = syn.decodeLastRuneIn(text, lo, at)
+            k = d.cls.of(r.r)
+            w = r.w
+        }
+        var t2 = c.trans[s + k]
+        if t2 < T_MATCH {
+            s = t2
+            at -= w
+            continue
+        }
+        if t2 == T_UNKNOWN {
+            c.pos = at
+            t2 = c.next(d, p, s, k)
+            if t2 == T_FAILED { return -2 }
+        }
+        if t2 == T_DEAD { return last }
+        if t2 & T_MATCH != 0 { last = at }
+        s = t2 & T_MASK
+        at -= w
+    }
+    // The rune before lo decides the empty-width tests there.
+    var k = d.cls.n
+    if lo > 0 {
+        let b = int(text[lo - 1])
+        if b < 128 { k = d.cls.ascii[b] } else { k = d.cls.of(syn.decodeLastRune(text, lo).r) }
+    }
+    var t2 = c.trans[s + k]
+    if t2 == T_UNKNOWN {
+        c.pos = at
+        t2 = c.next(d, p, s, k)
+        if t2 == T_FAILED { return -2 }
+    }
+    if t2 != T_DEAD && t2 & T_MATCH != 0 { last = lo }
+    return last
+}
+
+// ---------------------------------------------------------------- prefilters
+
+// Whether the byte b is in set.
+pub fn hasByte(set: str, b: int): bool {
+    for i in 0..len(set) {
+        if int(set[i]) == b { return true }
+    }
+    return false
+}
+
+pub const PF_NONE = 0
+pub const PF_STR = 1      // a literal: strFind
+pub const PF_PAIR = 2     // a byte of set1 at off1 and of set2 at off2: strFindPair
+pub const PF_SET = 3      // a byte of set1 at off1: strFindAny
+
+// A prefilter: from a position, the next candidate, before which no match
+// (or for the reverse-inner search: no literal) starts.
+pub type Prefilter = record {
+    pub kind: int
+    pub lit: str
+    pub set1: str
+    pub off1: int
+    pub set2: str
+    pub off2: int
+    pub rate: int         // estimated candidates per million positions
+    pub first: str        // the first bytes of the literals
+    pub force: bool       // never switched off for being ineffective
+}
+
+pub fn noPrefilter(): Prefilter {
+    return Prefilter{kind: PF_NONE, lit: "", set1: "", off1: 0, set2: "", off2: 0, rate: 1000000, first: "", force: false}
+}
+
+// The first candidate at or after from, or -1.
+pub fn (f: &Prefilter) find(text: str, from: int): int {
+    if f.kind == PF_STR { return strFind(text, from, f.lit) }
+    if f.kind == PF_PAIR { return strFindPair(text, from, f.off1, f.set1, f.off2, f.set2) }
+    if f.kind == PF_SET {
+        let h = strFindAny(text, from + f.off1, f.set1)
+        return if h < 0 { -1 } else { h - f.off1 }
+    }
+    return from
+}
+
+// The prefilter's next candidate at or after at, remembered; switched off
+// (at is returned) once it skips too little to pay for itself.
+fn (c: mut &Cache) prefilter(f: &Prefilter, text: str, at: int): int {
+    if c.pfOff { return at }
+    if c.pfFrom >= 0 && c.pfFrom <= at && (c.pfCand < 0 || at <= c.pfCand) { return c.pfCand }
+    let cand = f.find(text, at)
+    c.pfFrom = at
+    c.pfCand = cand
+    c.pfCalls += 1
+    c.pfSkip += if cand < 0 { len(text) - at } else { cand - at }
+    if !f.force && c.pfCalls >= 64 && c.pfSkip < 16 * c.pfCalls { c.pfOff = true }
+    return cand
+}
+
+// Byte frequencies, per million bytes of obx's own sources (text, code,
+// Markdown); non-ASCII bytes count 100, as text in other languages has
+// more of them.
+const BYTE_FREQ: []int = [
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 102, 26370, 1, 1, 5, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    214014, 594, 10832, 520, 127, 587, 3045, 5288, 18866, 18866, 1061, 3336, 17548, 9866, 15352, 7363,
+    22058, 14466, 9157, 6289, 6672, 6203, 5399, 7138, 5197, 7231, 11696, 3086, 795, 9632, 1077, 246,
+    32, 3557, 1919, 2803, 2784, 4508, 2358, 572, 613, 1197, 27, 417, 1512, 804, 1603, 1746,
+    1411, 159, 2146, 2981, 2734, 600, 507, 448, 374, 324, 170, 4540, 6508, 4063, 71, 5490,
+    5124, 29589, 10138, 16670, 16343, 48686, 14262, 6302, 9705, 27983, 662, 5922, 17903, 11695, 36357, 23943,
+    14457, 2514, 34741, 26758, 43891, 12554, 5960, 4179, 17424, 4935, 2341, 8958, 1782, 8948, 72, 1,
+]
+
+fn byteFreq(b: int): int { return if b < 128 { BYTE_FREQ[b] } else { 100 } }
+
+fn setFreq(set: str): int {
+    var q = 0
+    for x in 0..len(set) { q += byteFreq(int(set[x])) }
+    return if q > 1000000 { 1000000 } else { q }
+}
+
+// The distinct bytes at offset j of the literals.
+fn byteSet(lits: &[]str, j: int): str {
+    var seen = array(256, false)
+    var b = newStrBuf()
+    for l in lits {
+        let x = int(l[j])
+        if !seen[x] {
+            seen[x] = true
+            b.addByte(byte(x))
+        }
+    }
+    return b.toStr()
+}
+
+// The prefilter for a set of literals (each at least one byte): one
+// literal by itself, else two offsets with small rare byte sets; its rate
+// says how good it is.
+pub fn choosePrefilter(lits0: &[]str): Prefilter {
+    var f = noPrefilter()
+    var lits: []str = []
+    for l in lits0 {
+        if len(l) == 0 { return f }
+        var dup = false
+        for m in lits {
+            if m == l { dup = true }
+        }
+        if !dup { append(mut &lits, l) }
+    }
+    if len(lits) == 0 { return f }
+    f.first = byteSet(&lits, 0)
+    if len(lits) == 1 {
+        let l = lits[0]
+        f.kind = PF_STR
+        f.lit = l
+        // The two rarest bytes decide (the runtime's packed pair).
+        var a = 1000000
+        var b = 1000000
+        for j in 0..len(l) {
+            let q = byteFreq(int(l[j]))
+            if q < a {
+                b = a
+                a = q
+            } else if q < b {
+                b = q
+            }
+        }
+        f.rate = if len(l) == 1 { a } else { a * b / 1000000 + 1 }
+        return f
+    }
+    var minLen = len(lits[0])
+    for l in lits {
+        if len(l) < minLen { minLen = len(l) }
+    }
+    let lim = if minLen < 16 { minLen } else { 16 }
+    var best1 = -1
+    var best2 = -1
+    var q1 = 0
+    var q2 = 0
+    for j in 0..lim {
+        let set = byteSet(&lits, j)
+        if len(set) > 4 { continue }
+        let q = setFreq(set)
+        if best1 < 0 || q < q1 {
+            best2 = best1
+            q2 = q1
+            best1 = j
+            q1 = q
+        } else if best2 < 0 || q < q2 {
+            best2 = j
+            q2 = q
+        }
+    }
+    if best1 < 0 {
+        // Only big sets: the first bytes.
+        f.kind = PF_SET
+        f.set1 = f.first
+        f.off1 = 0
+        f.rate = setFreq(f.first)
+        return f
+    }
+    if best2 < 0 {
+        f.kind = PF_SET
+        f.set1 = byteSet(&lits, best1)
+        f.off1 = best1
+        f.rate = q1
+        return f
+    }
+    f.kind = PF_PAIR
+    f.set1 = byteSet(&lits, best1)
+    f.off1 = best1
+    f.set2 = byteSet(&lits, best2)
+    f.off2 = best2
+    f.rate = q1 * q2 / 1000000 + 1
+    return f
+}
+
+// ---------------------------------------------------------------- literals
+
+// A literal of a set: its runes, and whether it is the whole of what it
+// stands for (so it can be extended by what follows).
+type Lit = value record {
+    runes: []int
+    exact: bool
+}
+
+// A finite set of literals, or an infinite one (inf).
+type Seq = record {
+    inf: bool
+    lits: []Lit
+}
+
+const SEQ_LIMIT = 250     // literals in a set
+const LIT_LIMIT = 32      // runes in a literal
+const CLASS_LIMIT = 10    // runes in a class that is expanded
+const RUNE_ERROR = 0xFFFD
+
+fn seqInf(): Seq { return Seq{inf: true, lits: []} }
+fn seqNone(): Seq { return Seq{inf: false, lits: []} }
+fn seqEmpty(): Seq { return Seq{inf: false, lits: [Lit{runes: [], exact: true}]} }
+
+fn sameRunes(a: &[]int, b: &[]int): bool {
+    if len(a) != len(b) { return false }
+    for i in 0..len(a) {
+        if a[i] != b[i] { return false }
+    }
+    return true
+}
+
+// Adds l to s, merged with an equal literal (inexact if either is).
+fn addLit(s: mut &Seq, l: Lit) {
+    for i in 0..len(s.lits) {
+        if sameRunes(&s.lits[i].runes, &l.runes) {
+            if !l.exact { s.lits[i].exact = false }
+            return
+        }
+    }
+    append(mut &s.lits, l)
+}
+
+fn dup(l: &Lit): Lit {
+    var rs: []int = []
+    for r in l.runes { append(mut &rs, r) }
+    return Lit{runes: rs, exact: l.exact}
+}
+
+fn inexact(s0: Seq): Seq {
+    var s = s0
+    for i in 0..len(s.lits) { s.lits[i].exact = false }
+    return s
+}
+
+// a or b; with too many literals they are cut shorter (and so inexact)
+// until they fit.
+fn union(a: Seq, b: Seq): Seq {
+    if a.inf || b.inf { return seqInf() }
+    var s = a
+    for l in b.lits { addLit(mut &s, dup(l)) }
+    var cut = LIT_LIMIT
+    while len(s.lits) > SEQ_LIMIT {
+        cut = cut / 2
+        if cut == 0 { return seqInf() }
+        var t = seqNone()
+        for l in s.lits {
+            if len(l.runes) > cut {
+                var rs: []int = []
+                for k in 0..cut { append(mut &rs, l.runes[k]) }
+                addLit(mut &t, Lit{runes: rs, exact: false})
+            } else {
+                addLit(mut &t, dup(l))
+            }
+        }
+        s = t
+    }
+    return s
+}
+
+// a then b: each exact literal of a extended by each of b.
+fn cross(a: Seq, b: Seq): Seq {
+    if a.inf { return a }
+    var nexact = 0
+    for l in a.lits {
+        if l.exact { nexact += 1 }
+    }
+    if nexact == 0 { return a }
+    if b.inf { return inexact(a) }
+    if len(a.lits) - nexact + nexact * len(b.lits) > SEQ_LIMIT { return inexact(a) }
+    var s = seqNone()
+    for l in a.lits {
+        if !l.exact {
+            addLit(mut &s, dup(l))
+            continue
+        }
+        for m in b.lits {
+            var rs: []int = []
+            for r in l.runes { append(mut &rs, r) }
+            var ex = m.exact
+            for r in m.runes {
+                if len(rs) >= LIT_LIMIT {
+                    ex = false
+                    break
+                }
+                append(mut &rs, r)
+            }
+            addLit(mut &s, Lit{runes: rs, exact: ex})
+        }
+    }
+    return s
+}
+
+// The runes r0 matches as a literal: r0, and with FOLD_CASE its fold orbit.
+fn orbit(r0: int, fold: bool): []int {
+    var rs: []int = [r0]
+    if fold {
+        var r1 = syn.simpleFold(r0)
+        while r1 != r0 {
+            append(mut &rs, r1)
+            r1 = syn.simpleFold(r1)
+        }
+    }
+    return rs
+}
+
+fn oneOf(rs: &[]int): Seq {
+    var s = seqNone()
+    for r in rs { addLit(mut &s, Lit{runes: [r], exact: true}) }
+    return s
+}
+
+// The literals every match of the subtree at re starts with (rev: ends
+// with; the runes are then in reverse order).
+fn extract(t: &syn.Tree, re: int, rev: bool): Seq {
+    let n = &t.nodes[re]
+    let op = n.op
+    if op == syn.OP_NO_MATCH { return seqNone() }
+    if op == syn.OP_EMPTY_MATCH || (op >= syn.OP_BEGIN_LINE && op <= syn.OP_NO_WORD_BOUNDARY) { return seqEmpty() }
+    if op == syn.OP_LITERAL {
+        var s = seqEmpty()
+        let fold = n.flags & syn.FOLD_CASE != 0
+        for j0 in 0..len(n.runes) {
+            let j = if rev { len(n.runes) - 1 - j0 } else { j0 }
+            // U+FFFD also matches each invalid byte: no literal for it.
+            if n.runes[j] == RUNE_ERROR { return cross(s, seqInf()) }
+            let rs = orbit(n.runes[j], fold)
+            s = cross(s, oneOf(&rs))
+        }
+        return s
+    }
+    if op == syn.OP_CHAR_CLASS {
+        var count = 0
+        var k = 0
+        while k < len(n.runes) {
+            count += n.runes[k + 1] - n.runes[k] + 1
+            if count > CLASS_LIMIT { return seqInf() }
+            if n.runes[k] <= RUNE_ERROR && RUNE_ERROR <= n.runes[k + 1] { return seqInf() }
+            k += 2
+        }
+        var s = seqNone()
+        k = 0
+        while k < len(n.runes) {
+            for r in n.runes[k]..n.runes[k + 1] + 1 { addLit(mut &s, Lit{runes: [r], exact: true}) }
+            k += 2
+        }
+        return s
+    }
+    if op == syn.OP_ANY_CHAR || op == syn.OP_ANY_CHAR_NOT_NL { return seqInf() }
+    if op == syn.OP_CAPTURE { return extract(t, n.sub[0], rev) }
+    if op == syn.OP_STAR { return union(seqEmpty(), inexact(extract(t, n.sub[0], rev))) }
+    if op == syn.OP_QUEST { return union(seqEmpty(), extract(t, n.sub[0], rev)) }
+    if op == syn.OP_PLUS { return inexact(extract(t, n.sub[0], rev)) }
+    if op == syn.OP_REPEAT {
+        if n.min == 0 { return union(seqEmpty(), inexact(extract(t, n.sub[0], rev))) }
+        return inexact(extract(t, n.sub[0], rev))
+    }
+    if op == syn.OP_CONCAT { return extractConcat(t, &n.sub, 0, len(n.sub), rev) }
+    if op == syn.OP_ALTERNATE {
+        var s = seqNone()
+        for x in n.sub {
+            s = union(s, extract(t, x, rev))
+            if s.inf { return s }
+        }
+        return s
+    }
+    return seqInf()
+}
+
+// The literals of the concatenation of subs[a..b].
+fn extractConcat(t: &syn.Tree, subs: &[]int, a: int, b: int, rev: bool): Seq {
+    var s = seqEmpty()
+    for i0 in a..b {
+        let i = if rev { b - 1 - (i0 - a) } else { i0 }
+        s = cross(s, extract(t, subs[i], rev))
+        if s.inf { return s }
+        var anyExact = false
+        for l in s.lits {
+            if l.exact { anyExact = true }
+        }
+        if !anyExact { return s }
+    }
+    return s
+}
+
+// Whether a's runes begin b's.
+fn runesPrefix(a: &[]int, b: &[]int): bool {
+    if len(a) > len(b) { return false }
+    for i in 0..len(a) {
+        if a[i] != b[i] { return false }
+    }
+    return true
+}
+
+// The literals as strings; none when the set is infinite or empty, or has
+// the empty literal (which every position matches). A literal that another
+// one begins is left out (a match starting with it starts with the other;
+// in reverse: ends).
+fn toStrings(s: &Seq, rev: bool): []str {
+    var out: []str = []
+    if s.inf { return out }
+    for i in 0..len(s.lits) {
+        let l = &s.lits[i]
+        if len(l.runes) == 0 { return [] }
+        var covered = false
+        for j in 0..len(s.lits) {
+            if j == i { continue }
+            let m = &s.lits[j]
+            if runesPrefix(&m.runes, &l.runes) && (len(m.runes) < len(l.runes) || j < i) { covered = true }
+        }
+        if covered { continue }
+        var b = newStrBuf()
+        for k0 in 0..len(l.runes) {
+            let k = if rev { len(l.runes) - 1 - k0 } else { k0 }
+            syn.addRune(mut &b, l.runes[k])
+        }
+        append(mut &out, b.toStr())
+    }
+    return out
+}
+
+// The literals every match of re starts with, as strings (none: no such
+// finite set).
+pub fn prefixLiterals(t: &syn.Tree, re: int): []str {
+    let s = extract(t, re, false)
+    return toStrings(&s, false)
+}
+
+// The literals every match of re ends with.
+pub fn suffixLiterals(t: &syn.Tree, re: int): []str {
+    let s = extract(t, re, true)
+    return toStrings(&s, true)
+}
+
+// The literals every match of the concatenation of subs[a..] starts with.
+pub fn concatLiterals(t: &syn.Tree, subs: &[]int, a: int): []str {
+    let s = extractConcat(t, subs, a, len(subs), false)
+    return toStrings(&s, false)
+}
+
+// Marks in set (256 entries) the bytes the subtree at re can match; a
+// non-ASCII rune marks every byte from 0x80.
+pub fn byteClass(t: &syn.Tree, re: int, set: mut &[]bool) {
+    let n = &t.nodes[re]
+    let op = n.op
+    if op == syn.OP_LITERAL {
+        let fold = n.flags & syn.FOLD_CASE != 0
+        for r0 in n.runes {
+            for r in orbit(r0, fold) { addRuneBytes(set, r, r) }
+        }
+    } else if op == syn.OP_CHAR_CLASS {
+        var k = 0
+        while k < len(n.runes) {
+            addRuneBytes(set, n.runes[k], n.runes[k + 1])
+            k += 2
+        }
+    } else if op == syn.OP_ANY_CHAR || op == syn.OP_ANY_CHAR_NOT_NL {
+        addRuneBytes(set, 0, syn.MAX_RUNE)
+    } else {
+        for x in n.sub { byteClass(t, x, set) }
+    }
+}
+
+fn addRuneBytes(set: mut &[]bool, lo: int, hi: int) {
+    var r = lo
+    while r <= hi && r < 128 {
+        set[r] = true
+        r += 1
+    }
+    if hi >= 128 {
+        for b in 128..256 { set[b] = true }
+    }
+}
