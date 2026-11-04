@@ -43,8 +43,9 @@ enum { S_READ = 0, S_WRITE = 1, S_OPEN = 2, S_CLOSE = 3, S_LSEEK = 8, S_MMAP = 9
    always dynamically linked). The fifth and sixth are libc's fork and fflush, for task.workers
    (stage C2): with libc loaded the fork must be libc's, which runs the atfork handlers and gives
    the child's thread its own id in libc's thread structure (raise, abort and libc's locks use
-   it); a raw fork leaves the parent's there. */
-void* rt_n_libc[6];
+   it); a raw fork leaves the parent's there. The seventh is the address of libc's environ: there
+   the environment is libc's (the program's setenv is libc's too), and rt_environ is never set. */
+void* rt_n_libc[7];
 static int rt_errno_v;
 __attribute__((noinline)) static int* rt_errno_at(void) { return rt_n_libc[2] ? ((int* (*)(void))rt_n_libc[2])() : &rt_errno_v; }
 #define rt_errno (*rt_errno_at())
@@ -371,6 +372,9 @@ char* getenv(const char* name) {
         if (str_eqn(*e, name, n) && (*e)[n] == '=') return *e + n + 1;
     return 0;
 }
+
+/* The environment a child inherits: libc's in a dynamically linked program, else the runtime's. */
+static char** rt_env_now(void) { return rt_n_libc[6] ? *(char***)rt_n_libc[6] : rt_environ; }
 
 static int env_owned;           /* rt_environ is a malloc'd copy */
 static void env_own(void) {
@@ -2736,10 +2740,11 @@ int64_t obxlib_proc_spawn(const uint8_t* blob, int64_t argc, int64_t envc, int64
         for (int64_t i = 0; i < envc; i++) { over[i] = p; p += strlen(p) + 1; }
         int clean = (int)((modes >> 12) & 1);
         size_t ne = 0;
-        if (!clean) for (char** e = rt_environ; e && *e; e++) ne++;
+        char** inh = clean ? 0 : rt_env_now();
+        for (char** e = inh; e && *e; e++) ne++;
         envbuf = malloc((ne + (size_t)envc + 1) * sizeof *envbuf);
         size_t k = 0;
-        if (!clean) for (char** e = rt_environ; e && *e; e++) {
+        for (char** e = inh; e && *e; e++) {
             size_t nl = 0;
             while ((*e)[nl] && (*e)[nl] != '=') nl++;
             int hidden = 0;

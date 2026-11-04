@@ -224,6 +224,54 @@ User-mode instructions for the native build fell from 1,186M to 886M
 (`-c omega`), 5,045M to 155M (`[0-9]*7 alpha`), 16,466M to 2,545M (`-w`)
 and 7,451M to 672M (`-v '^0'`).
 
+### On 1 GB
+
+The same generator run to 10^9 bytes (18.2 million lines), the cases above
+and more pattern shapes, at `c80b952`. Best of 3, output piped to `md5sum`,
+the file in the page cache; two other builds were running on the machine,
+so treat differences under about 10% as noise. ripgrep (14.1.1, one file)
+is for reference. On every case the native and C builds printed exactly
+what GNU grep printed.
+
+| search | GNU | ripgrep | native | via C |
+|---|---:|---:|---:|---:|
+| `needle5007` (a literal, one line) | 261 ms | 35 ms | 137 ms | 140 ms |
+| `-c zzz` (no match) | 335 ms | 30 ms | 139 ms | 138 ms |
+| `-c omega` | 859 ms | 348 ms | 605 ms | 605 ms |
+| `-v -c omega` | 991 ms | 564 ms | 723 ms | 741 ms |
+| `-c '[0-9]*7 alpha'` | 719 ms | 49 ms | 148 ms | 148 ms |
+| `-c -E '(alpha\|beta) gamma'` | 1,097 ms | 383 ms | 629 ms | 599 ms |
+| `-c -i NEEDLE` | 746 ms | 72 ms | 181 ms | 163 ms |
+| `-c -i 'OMEGA BETA'` | 1,316 ms | 414 ms | 196 ms | 175 ms |
+| `-c -w eta` | 4,819 ms | 1,704 ms | 1,995 ms | 1,839 ms |
+| `-c -v '^0'` (every line) | 574 ms | 628 ms | 448 ms | 417 ms |
+| `-c -E 'a.*z.*e'` | 2,151 ms | 1,708 ms | 1,115 ms | 955 ms |
+| `-c -E 'needle(1\|2)[0-9]{3}7'` | 557 ms | 35 ms | 179 ms | 162 ms |
+| `-c -E '^[0-9]+7[0-9]'` | 438 ms | 782 ms | 573 ms | 530 ms |
+| `-c -E '(alpha\|omega) .*(beta\|psi)$'` | 2,580 ms | 950 ms | 1,257 ms | 1,131 ms |
+| `-c -x '[0-9]* alpha beta gamma delta'` | 390 ms | 31 ms | 143 ms | 138 ms |
+| `-c -F -f` five fixed strings | 1,308 ms | 395 ms | 1,734 ms | 1,656 ms |
+| `-n omega` | 2,417 ms | 1,382 ms | 2,129 ms | 1,864 ms |
+| `omega` (prints 8.8 million lines) | 1,842 ms | 825 ms | 1,522 ms | 1,366 ms |
+| `-o 'needle[0-9]*'` | 570 ms | 46 ms | 147 ms | 143 ms |
+| `-o -w eta` | 6,826 ms | 2,942 ms | 3,504 ms | 3,057 ms |
+| `-n -w eta` | 7,267 ms | 3,193 ms | 3,539 ms | 3,179 ms |
+
+The times scale with the file: each is about ten times its 100 MB figure,
+so nothing in the obx port grows worse than linearly.
+
+**Against GNU grep:** obx is ahead on 19 of 21 cases, often by 2 to 5 times.
+
+**Still behind GNU:**
+- `-F -f` with several fixed strings, 1.3 times slower. Each string becomes a branch of one regex, where GNU and ripgrep use a multi-string search (Aho-Corasick, Teddy).
+- `^[0-9]+7[0-9]`, also 1.3 times slower.
+
+**Against ripgrep:** ripgrep is faster wherever a literal or a rare
+required string can be found with SIMD (`needle`, `zzz`, `-x`, `-o`).
+obx is faster on case-insensitive patterns (`-i 'OMEGA BETA'`), on
+`a.*z.*e` and `^[0-9]+7[0-9]`, and when every line matches (`-v '^0'`). The two are
+close on `-w`.
+
 ## The compiler
 
 The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:

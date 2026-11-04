@@ -1,0 +1,19 @@
+// proc: a child inherits the parent's environment also in a native program that
+// is linked dynamically (an extern naming a libc function, cos, makes it so):
+// there the environment is libc's, variables os.setEnv sets included, and the
+// command's own entries still replace the inherited ones of the same name.
+// expect: cos 1
+// expect: HOME=set PROC_ENV_A=from-parent PROC_ENV_B=from-command
+import "proc"
+import "os"
+
+extern "c" fn cos(x: float): float
+
+fn main() {
+    println("cos " + intToStr(int(cos(0.0))))
+    os.setEnv("PROC_ENV_A", "from-parent").unwrap()
+    os.setEnv("PROC_ENV_B", "from-parent").unwrap()
+    var c = proc.command("sh", ["-c", "if [ -n \"$HOME\" ]; then h=set; else h=unset; fi; echo HOME=$h PROC_ENV_A=$PROC_ENV_A PROC_ENV_B=$PROC_ENV_B"])
+    c.setEnv("PROC_ENV_B", "from-command")
+    match proc.run(&c) { Ok(_) {} Err(e) { println("err") } }
+}

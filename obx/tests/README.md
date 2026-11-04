@@ -51,6 +51,10 @@ C build, `--memory` for the leak checks) runs `cmd/cat.obx`, `wc`, `sort`, `head
 `tail` against GNU coreutils and their own goldens (`tests/tools/`), and `grep` against
 GNU grep (346 cases, no goldens: skipped without a GNU grep), also outside the gates.
 
+`python3 obx/tests/zoxide.py [--c] [--ref PATH] [-k PATTERN] [-j N]` builds `cmd/zoxide.obx` and runs
+362 cases against the real zoxide 0.9.9 (`--ref`, `$ZOXIDE_REF` or `zoxide` on PATH; without
+one it exits 2), outside the gates. See [../cmd/README.md](../cmd/README.md).
+
 `OBX_PREV=old/obxc python3 obx/tests/run_prev.py [--native] [--lib] [--redteam] [--gen N]
 [--eza]` compares the compiler against a previous build, outside the gates. Both compilers
 build every run and error test, plus the library tests, the red-team rounds 1 to 5, N

@@ -378,10 +378,11 @@ pub fn readLib(path: str, data: &str, wanted: &Map[str, bool]): Lib {
         let bind = info >> 4
         let ty = info & 15
         if bind != 1 && bind != 2 { continue }                  // global or weak
-        if ty != 2 && ty != 10 { continue }                     // a function or an ifunc
+        if ty != 2 && ty != 10 && ty != 1 { continue }          // a function, an ifunc or a variable
         let vis = int(strByte(data, e + 5)) & 3
         if vis == 1 || vis == 2 { continue }                    // internal or hidden
         let name = cstrAt(data, strOff + rd(data, e, 4))
+        if ty == 1 && name != "environ" { continue }            // the only variable the runtime imports
         if !wanted.has(&name) || lib.defs.has(&name) { continue }
         var ver = ""
         if vsOff >= 0 {
