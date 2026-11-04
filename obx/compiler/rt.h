@@ -1842,7 +1842,8 @@ int64_t obxlib_proc_kill(int64_t pid, int64_t sig) { return kill((pid_t)pid, (in
    descriptors are close-on-exec, so the program has only 0, 1 and 2. The blob is NUL-terminated
    strings: the program, the directory ("": none), the paths for stdin, stdout and stderr (""
    unless the mode is a file), argc arguments, envc "NAME=value" strings (they replace the parent's
-   variables of the same names, or are all there is when bit 12 of modes is set). A mode (4 bits for each of stdin, stdout, stderr) is 0 inherit, 1 pipe, 2
+   variables of the same names, or are all there is when bit 12 of modes is set; bit 13 puts the child
+   in a process group of its own). A PATH among them is the one the program is looked up in. A mode (4 bits for each of stdin, stdout, stderr) is 0 inherit, 1 pipe, 2
    /dev/null, 3 file (stdin read; the others created and emptied), 4 file appended to, 5 (stderr
    only) the same as stdout. out[0] is the pidfd (-1: none; OBX_NO_PIDFD=1 or an old kernel),
    out[1..3] the parent's ends of the pipes, non-blocking and in the epoll set (-1: none).
@@ -1860,12 +1861,20 @@ static int rt_proc_hi(int fd) {                    /* a descriptor above 2 (the 
 static void rt_proc_closeall(int* fds, int n) {
     for (int i = 0; i < n; i++) if (fds[i] >= 0) { close(fds[i]); fds[i] = -1; }
 }
-/* PATH lookup for a name without "/": 0 and the path in *out, or -errno */
-static int rt_proc_find(const char* prog, char** out) {
+/* PATH lookup for a name without "/": 0 and the path in *out, or -errno. The PATH searched is the
+   one the child gets: a PATH= entry among the envc given ones (env, NUL-separated), else the default
+   when the environment is clean, else the parent's. */
+static int rt_proc_find(const char* prog, char** out, const char* env, int64_t envc, int clean) {
     size_t pl = strlen(prog);
     if (pl == 0) return -ENOENT;
     if (strchr(prog, '/')) { *out = strdup(prog); return 0; }
-    const char* path = getenv("PATH");
+    const char* path = 0;
+    for (int64_t i = 0; i < envc; i++) {
+        size_t el = strlen(env);
+        if (!path && strncmp(env, "PATH=", 5) == 0) path = env + 5;
+        env += el + 1;
+    }
+    if (!path && !clean) path = getenv("PATH");
     if (!path) path = "/usr/local/bin:/usr/bin:/bin";
     char* o = malloc(strlen(path) + pl + 3);
     int err = -ENOENT;
@@ -1891,12 +1900,12 @@ int64_t obxlib_proc_spawn(const uint8_t* blob, int64_t argc, int64_t envc, int64
     const char* fpath[3];
     for (int i = 0; i < 3; i++) { fpath[i] = p; p += strlen(p) + 1; }
     char* path = 0;
-    int r = rt_proc_find(prog, &path);
-    if (r < 0) return r;
     char** argv = malloc((size_t)(argc + 2) * sizeof *argv);
     argv[0] = (char*)prog;
     for (int64_t i = 0; i < argc; i++) { argv[i + 1] = (char*)p; p += strlen(p) + 1; }
     argv[argc + 1] = 0;
+    int r = rt_proc_find(prog, &path, p, envc, (int)((modes >> 12) & 1));
+    if (r < 0) { free(argv); return r; }
     char** envp;
     char** envbuf;
     {
@@ -1962,6 +1971,7 @@ int64_t obxlib_proc_spawn(const uint8_t* blob, int64_t argc, int64_t envc, int64
             sa.sa_handler = SIG_DFL;
             for (int s = 1; s < NSIG; s++) if (s != SIGKILL && s != SIGSTOP) sigaction(s, &sa, 0);
             int e = 0;
+            if (((modes >> 13) & 1) && setpgid(0, 0) != 0) e = errno;
             for (int i = 0; i < 3 && e == 0; i++) if (cfd[i] >= 0 && dup2(cfd[i], i) < 0) e = errno;
             if (e == 0 && dup_err && dup2(1, 2) < 0) e = errno;
             if (e == 0 && cwd[0] && chdir(cwd) != 0) e = errno;
@@ -1972,6 +1982,7 @@ int64_t obxlib_proc_spawn(const uint8_t* blob, int64_t argc, int64_t envc, int64
             _exit(127);
         }
         if (pid < 0) r = -errno;
+        else if ((modes >> 13) & 1) setpgid(pid, pid);   /* also in the parent: no race */
     }
     free(path);
     free(argv);

@@ -19,7 +19,9 @@
 // A Command names a program, its arguments, optionally environment entries
 // and a directory, and what each of the child's standard streams is: the
 // parent's (Inherit, the default), a pipe, /dev/null, a file. A program name
-// without "/" is looked up in the parent's PATH before anything is forked, so
+// without "/" is looked up before anything is forked, in the PATH the child
+// will get (a PATH entry of env; else, with cleanEnv, /usr/local/bin:/usr/bin:/bin;
+// else the parent's PATH), so
 // a program that does not exist is an ordinary Err (ENOENT), not an exit code
 // of the child. If the exec itself fails (EACCES, ENOEXEC, a bad directory) the
 // child reports its errno through a close-on-exec pipe and start returns it.
@@ -43,6 +45,10 @@
 // and collects it (no zombie, no orphan); its pipe ends are closed. A write to
 // a child that has closed its input is EPIPE, never SIGPIPE. A grandchild that
 // keeps a pipe open keeps output waiting for its end, as with any pipe.
+// By default signal, kill, cancellation and drop reach only the child itself, not
+// what it started. With newGroup the child leads a process group of its own and
+// they signal the whole group. (That is not the default: a process in a group
+// of its own cannot read the terminal under job control.)
 // A process with a live Child holds descriptors in the event loop, so
 // task.workers refuses to fork then (exit 15).
 
@@ -169,6 +175,7 @@ pub type Command = record {
     pub args: []str          // after the program name (argv[0] is the program as given)
     pub env: []str           // "NAME=value" entries added to the parent's environment
     pub cleanEnv: bool       // the child's environment is only env
+    pub newGroup: bool       // the child leads a new process group; signals go to the whole group
     pub cwd: str             // the child's working directory; "" the parent's
     pub stdin: Stdio
     pub stdout: Stdio
@@ -177,7 +184,7 @@ pub type Command = record {
 
 // A command for program with args, all streams inherited.
 pub fn command(program: str, args: []str): Command {
-    return Command{program: program, args: args, env: [], cleanEnv: false, cwd: "",
+    return Command{program: program, args: args, env: [], cleanEnv: false, newGroup: false, cwd: "",
                    stdin: Stdio.Inherit, stdout: Stdio.Inherit, stderr: Stdio.Inherit}
 }
 
@@ -332,6 +339,7 @@ pub fn (p: &PipeReader) readAll(w: Where): Result[[]byte, ProcError] {
 // A running (or ended) child process.
 pub type Child = record {
     pid: int
+    group: bool       // the child leads its own process group: signals go to it
     pidfd: int        // -1: none, wait polls
     program: str
     done: bool
@@ -378,10 +386,11 @@ fn spawn(cmd: &Command, sin: Stdio, sout: Stdio, serr: Stdio): Result[Child, Pro
     }
     let blob = strToBytes(b.toStr())
     var out = array(4, 0)
-    let modes = m0 + 16 * m1 + 256 * m2 + (if cmd.cleanEnv { 4096 } else { 0 })
+    let modes = m0 + 16 * m1 + 256 * m2 + (if cmd.cleanEnv { 4096 } else { 0 }) +
+                (if cmd.newGroup { 8192 } else { 0 })
     let pid = rtSpawn(&blob, len(cmd.args), len(cmd.env), modes, mut &out)
     if pid < 0 { return Err(perr(-pid, "start", prog)) }
-    return Ok(Child{pid: pid, pidfd: out[0], program: prog, done: false, status: 0,
+    return Ok(Child{pid: pid, group: cmd.newGroup, pidfd: out[0], program: prog, done: false, status: 0,
                     stdin: PipeWriter{fd: out[1], program: prog},
                     stdout: PipeReader{fd: out[2], program: prog},
                     stderr: PipeReader{fd: out[3], program: prog}})
@@ -405,10 +414,18 @@ pub fn (c: mut &Child) takeStderr(): PipeReader {
     return replace(mut &c.stderr, noReader(c.program))
 }
 
-// Sends the signal sig to the child (ESRCH once it has been collected).
+// The signal target: the child's pid, or, for a child with its own group, the
+// negative pid, which is the whole group.
+fn (c: &Child) target(): int { return if c.group { -c.pid } else { c.pid } }
+
+// The child's process group (its pid) when it was started with newGroup; 0 otherwise.
+pub fn (c: &Child) pgid(): int { return if c.group && !c.done { c.pid } else { 0 } }
+
+// Sends the signal sig to the child, or to its whole group (ESRCH once it has
+// been collected).
 pub fn (c: &Child) signal(sig: int): Result[Unit, ProcError] {
     if c.done { return Err(perr(ESRCH, "kill", c.program)) }
-    let r = rtKill(c.pid, sig)
+    let r = rtKill(c.target(), sig)
     if r != 0 { return Err(perr(-r, "kill", c.program)) }
     return Ok(Unit{})
 }
@@ -460,7 +477,7 @@ pub fn (c: mut &Child) wait(w: Where): Result[Exit, ProcError] {
 // SIGTERM, 2 s of grace (not cancellable), SIGKILL, collect.
 fn (c: mut &Child) terminate(w: Where) {
     if c.done { return }
-    let k0 = rtKill(c.pid, SIGTERM)
+    let k0 = rtKill(c.target(), SIGTERM)
     let end = rtClockNs(1) + GRACE_MS * 1000000
     while true {
         match c.reapNow() {
@@ -479,7 +496,7 @@ fn (c: mut &Child) terminate(w: Where) {
             rtNap(if left < POLL_MS { left } else { POLL_MS })
         }
     }
-    let k1 = rtKill(c.pid, SIGKILL)
+    let k1 = rtKill(c.target(), SIGKILL)
     var st = 0
     let r = rtReap(c.pid, 1, mut &st)
     c.done = true
@@ -490,7 +507,7 @@ fn (c: mut &Child) terminate(w: Where) {
 // it; the pipes are closed after.
 pub fn (c: mut &Child) drop() {
     if !c.done {
-        let k = rtKill(c.pid, SIGKILL)
+        let k = rtKill(c.target(), SIGKILL)
         var st = 0
         let r = rtReap(c.pid, 1, mut &st)
         c.done = true

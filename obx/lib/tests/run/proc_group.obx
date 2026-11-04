@@ -1,0 +1,138 @@
+// proc: the PATH a program is looked up in is the child's (a PATH entry of
+// env; the default with cleanEnv; the parent's otherwise), and newGroup puts
+// the child in a process group of its own, so kill, cancellation and drop
+// reach a grandchild too (and, without newGroup, do not).
+// expect: found in env PATH: hi from myprog
+// expect: not found without it: true
+// expect: not found with another PATH: true
+// expect: cleanEnv without PATH finds sh: true
+// expect: cleanEnv with env PATH finds the script: hi from myprog
+// expect: pgid is the pid: true
+// expect: kill reaches the grandchild: true
+// expect: no pgid without newGroup: true
+// expect: kill without newGroup leaves it: true
+// expect: cancel reaches the grandchild: true
+// expect: drop reaches the grandchild: true
+import "proc"
+import "task"
+import "io"
+
+fn shell(script: str): proc.Command { return proc.command("sh", ["-c", script]) }
+
+fn pidOf(path: str): int {
+    match io.read(path) {
+        Ok(s) {
+            var n = 0
+            for i in 0..len(s) {
+                let c = strByte(s, i)
+                if c >= '0' && c <= '9' { n = n * 10 + int(c - '0') }
+            }
+            return n
+        }
+        Err(e) { return 0 }
+    }
+}
+
+// Whether the process is gone: no /proc entry, or a zombie that init has not collected yet.
+fn gone1(pid: int): bool {
+    match io.read("/proc/" + intToStr(pid) + "/stat") {
+        Ok(s) {
+            var i = len(s) - 1
+            while i > 0 && strByte(s, i) != ')' { i -= 1 }
+            return i + 2 < len(s) && strByte(s, i + 2) == 'Z'
+        }
+        Err(e) { return e.errno == 2 }
+    }
+}
+
+fn goneSoon(pid: int): bool {
+    if pid <= 0 { return false }
+    for i in 0..300 {
+        if gone1(pid) { return true }
+        task.sleep(10).unwrap()
+    }
+    return false
+}
+
+fn started(path: str) {
+    for i in 0..300 {
+        if pidOf(path) > 0 { return }
+        task.sleep(10).unwrap()
+    }
+}
+
+// a shell with a grandchild; the grandchild's pid in tmp/g
+fn leaver(tmp: str, group: bool): proc.Command {
+    var c = shell("sleep 30 & echo $! > " + tmp + "/g; wait")
+    c.newGroup = group
+    return c
+}
+
+fn waiting(tmp: str): int {
+    match proc.output(&leaver(tmp, true)) {
+        Ok(_) { return 0 }
+        Err(e) { return 1 }
+    }
+}
+
+fn main() {
+    let dir = proc.output(&proc.command("mktemp", ["-d"])).unwrap().stdoutStr()
+    let tmp = strSlice(dir, 0, len(dir) - 1)
+
+    // PATH from the command's environment
+    proc.run(&shell("printf '#!/bin/sh\\necho hi from myprog\\n' > " + tmp + "/myprog; chmod 755 " + tmp + "/myprog")).unwrap()
+    var a = proc.command("myprog", [])
+    a.setEnv("PATH", tmp)
+    print("found in env PATH: " + proc.output(&a).unwrap().stdoutStr())
+    match proc.output(&proc.command("myprog", [])) {
+        Ok(_) { println("not found without it: false") }
+        Err(e) { println("not found without it: " + e.isNotFound().toStr()) }
+    }
+    var b = proc.command("sh", ["-c", "true"])
+    b.setEnv("PATH", tmp)
+    match proc.output(&b) {
+        Ok(_) { println("not found with another PATH: false") }
+        Err(e) { println("not found with another PATH: " + e.isNotFound().toStr()) }
+    }
+    var c = proc.command("sh", ["-c", "true"])
+    c.cleanEnv = true
+    println("cleanEnv without PATH finds sh: " + proc.output(&c).unwrap().exit.ok().toStr())
+    var d = proc.command("myprog", [])
+    d.cleanEnv = true
+    d.setEnv("PATH", tmp)
+    print("cleanEnv with env PATH finds the script: " + proc.output(&d).unwrap().stdoutStr())
+
+    // the group
+    var g = proc.start(&leaver(tmp, true)).unwrap()
+    started(tmp + "/g")
+    println("pgid is the pid: " + (g.pgid() == g.pid() && g.pid() > 0).toStr())
+    let g1 = pidOf(tmp + "/g")
+    g.kill().unwrap()
+    let ex = g.wait().unwrap()
+    println("kill reaches the grandchild: " + (goneSoon(g1) && ex.signal() == 9).toStr())
+
+    proc.run(&shell("rm -f " + tmp + "/g")).unwrap()
+    var n = proc.start(&leaver(tmp, false)).unwrap()
+    started(tmp + "/g")
+    println("no pgid without newGroup: " + (n.pgid() == 0).toStr())
+    let g2 = pidOf(tmp + "/g")
+    n.kill().unwrap()
+    n.wait().unwrap()
+    task.sleep(100).unwrap()
+    println("kill without newGroup leaves it: " + (!gone1(g2)).toStr())
+    proc.run(&proc.command("kill", ["-9", intToStr(g2)])).unwrap()
+
+    // cancellation
+    proc.run(&shell("rm -f " + tmp + "/g")).unwrap()
+    let r = task.within(300, fn(): int { return waiting(tmp) })
+    println("cancel reaches the grandchild: " + goneSoon(pidOf(tmp + "/g")).toStr())
+
+    // drop
+    proc.run(&shell("rm -f " + tmp + "/g")).unwrap()
+    task.scope(fn(s: mut &task.Scope) {
+        let child = proc.start(&leaver(tmp, true)).unwrap()
+        started(tmp + "/g")
+    })
+    println("drop reaches the grandchild: " + goneSoon(pidOf(tmp + "/g")).toStr())
+    proc.run(&proc.command("rm", ["-r", tmp])).unwrap()
+}
