@@ -890,6 +890,15 @@ let parts = re.split(text)
   text}` and `Span {start, end}` are value records; offsets are byte offsets.
   A search with `n < 0` finds all; as in Go, an empty match right after the
   previous match is skipped.
+- **Searchers.** `searcher(): Searcher` keeps a Regex's matching state (the
+  DFA's states) between searches; `findWith(mut &s, text, from):
+  Option[Span]` is `findFrom` through it, and `matchEndWith(mut &s, text,
+  from): int` only says whether there is a match and gives the end of one
+  (the first to end; -1 for none). Through a Searcher the DFA runs on short
+  texts too, so searching a line at a time costs little. With them,
+  `canMatchNewline()` (whether a match can contain `"\n"`) and
+  `requiredLiteral()` (a literal every match contains, `""` if none is known)
+  let a tool like grep search lines and literals first.
 - **Groups.** `captures(text): Option[Captures]`, `capturesAll`,
   `capturesN`; `Captures`: `count()` (groups plus one), `get(i):
   Option[Match]` (None for a group that did not take part), `whole()`,
@@ -944,7 +953,8 @@ the pattern, or one they all end with); Go's choice otherwise, and when the
 DFA's cache fills too often: the bounded backtracker for small programs on
 short texts (a visited bitmap: each instruction at each position once), and
 the Pike VM (an NFA simulation). The DFA's states live in the call's
-matching state, so a `findAll` reuses them but separate calls rebuild them.
+matching state, so a `findAll` reuses them but separate calls rebuild them
+(a `Searcher` keeps them).
 Speed: `PERFORMANCE.md` (via C 1.3 to 2.6 times Rust's `regex` on the
 benchmark set, 2 to 650 times faster than Go's `regexp`).
 

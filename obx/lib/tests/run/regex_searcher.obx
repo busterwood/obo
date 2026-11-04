@@ -1,0 +1,92 @@
+// regex: Searchers (findWith, matchEndWith), canMatchNewline and
+// requiredLiteral. A Searcher's searches agree with findFrom on random texts,
+// short and long, from every position and over several texts in turn; the
+// end matchEndWith gives is the end of a match that starts at or after the
+// position and no later than the leftmost match.
+// expect: agree ok
+// expect: newline abc n
+// expect: newline a.b n
+// expect: newline (?s)a.b y
+// expect: newline [^a]b y
+// expect: newline [[:space:]]x y
+// expect: newline a\nb y
+// expect: newline (?i)[^k] y
+// expect: newline [a-z]+ n
+// expect: must abc "abc"
+// expect: must [0-9]*7 alpha "7 alpha"
+// expect: must a.*zz.*e "zz"
+// expect: must (alpha|beta) gamma " gamma"
+// expect: must x+(foo)+y{2} "foo"
+// expect: must (?i)ab7 cd "7 "
+// expect: must a|b ""
+// expect: must (abc)? ""
+// expect: must a*b{0,3} ""
+
+import "regex"
+
+fn randomText(n: int, alphabet: str, seed0: int): str {
+    var seed = seed0
+    var b = newStrBuf()
+    for i in 0..n {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        b.addByte(alphabet[(seed >> 16) % len(alphabet)])
+    }
+    return b.toStr()
+}
+
+fn agree(): bool {
+    var ok = true
+    let pats = ["ab", "a+b", "a[bc]*d", "(a|bc)+", "b.*a", "x*", "(?i)AB", "[^a]b", "ab|ba|c", "a(b|c)*a", "\\bab", "^b", "a$"]
+    for p in pats {
+        for longest in [false, true] {
+            let re = if longest { regex.compileLongest(p).unwrap() } else { regex.compile(p).unwrap() }
+            // \z-anchored: the matches that end where the text ends
+            let at = if longest { regex.compileLongest("(?:" + p + ")\\z").unwrap() } else { regex.compile("(?:" + p + ")\\z").unwrap() }
+            var s = re.searcher()
+            for n in [0, 5, 40, 300] {
+                for seed in 1..4 {
+                    let t = randomText(n, "abcd\nx", seed * 7 + n)
+                    for from in 0..n + 1 {
+                        let want = re.findFrom(t, from)
+                        let got = re.findWith(mut &s, t, from)
+                        match want {
+                            None {
+                                if got.isSome() { println("findWith /" + p + "/ found too much"); ok = false }
+                                if re.matchEndWith(mut &s, t, from) != -1 { println("matchEndWith /" + p + "/ found too much"); ok = false }
+                            }
+                            Some(m) {
+                                match got {
+                                    None { println("findWith /" + p + "/ missed"); ok = false }
+                                    Some(g) {
+                                        if g.start != m.start || g.end != m.end { println("findWith /" + p + "/ differs"); ok = false }
+                                    }
+                                }
+                                let e = re.matchEndWith(mut &s, t, from)
+                                if e < m.start {
+                                    println("matchEndWith /" + p + "/ ends before the leftmost match"); ok = false
+                                }
+                                // a match from `from` ends at e (patterns with $ and \b see other context there)
+                                if e >= 0 && p != "a$" && p != "\\bab" && !at.findFrom(substr(t, 0, e), from).isSome() {
+                                    println("matchEndWith /" + p + "/ " + e.toStr() + " is no match end"); ok = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return ok
+}
+
+fn main() {
+    println("agree " + (if agree() { "ok" } else { "FAILED" }))
+    for p in ["abc", "a.b", "(?s)a.b", "[^a]b", "[[:space:]]x", "a\\nb", "(?i)[^k]", "[a-z]+"] {
+        let re = regex.compile(p).unwrap()
+        println("newline " + p + " " + (if re.canMatchNewline() { "y" } else { "n" }))
+    }
+    for p in ["abc", "[0-9]*7 alpha", "a.*zz.*e", "(alpha|beta) gamma", "x+(foo)+y{2}", "(?i)ab7 cd", "a|b", "(abc)?", "a*b{0,3}"] {
+        let re = regex.compile(p).unwrap()
+        println("must " + p + " \"" + re.requiredLiteral() + "\"")
+    }
+}

@@ -294,6 +294,13 @@ pub fn (c: mut &Cache) setup(d: &Dfa, budget: int, bail: bool) {
 
 pub fn (c: &Cache) ready(): bool { return c.stride != 0 }
 
+// Forgets the prefilter's last answer (the next search may be of another
+// text).
+pub fn (c: mut &Cache) forget() {
+    c.pfFrom = -1
+    c.pfCand = -1
+}
+
 // Empties the work queue.
 fn (c: mut &Cache) qclear() {
     c.vn = 0

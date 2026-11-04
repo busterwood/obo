@@ -350,11 +350,12 @@ type Exec = record {
     dfaFailed: bool       // the DFA gave up: Go's matchers from now on
     sufFrom: int          // the suffix literal: the last search, from where
     sufAt: int            // and where it was found (-1: nowhere)
+    warm: bool            // a Searcher's: the DFA also on short texts
 }
 
 fn newExec(): Exec {
     return Exec{pike: emptyPike(), pikeReady: false, bt: emptyBitState(), btReady: false, opcap: [], fc: lazy.newCache(),
-        rc: lazy.newCache(), ic: lazy.newCache(), dfaFailed: false, sufFrom: -1, sufAt: -1}
+        rc: lazy.newCache(), ic: lazy.newCache(), dfaFailed: false, sufFrom: -1, sufAt: -1, warm: false}
 }
 
 // Runs a search of text from pos, with ncap capture slots; fills out with
@@ -363,7 +364,7 @@ fn (re: &Regex) execute(x: mut &Exec, text: str, pos: int, ncap: int, out: mut &
     while len(out) > 0 { pop(out) }
     if len(text) < re.minInputLen { return false }
     if re.hasOnePass { return re.doOnePass(x, text, pos, ncap, out) }
-    if !x.dfaFailed && re.useDfa(len(text)) {
+    if !x.dfaFailed && re.useDfa(if x.warm && len(text) < DFA_MIN_TEXT { DFA_MIN_TEXT } else { len(text) }) {
         let r = re.dfaExecute(x, text, pos, ncap, out)
         if r >= 0 { return r == 1 }
         // The DFA gave up (its cache filled too often): Go's matchers
@@ -1596,6 +1597,136 @@ pub fn (re: &Regex) findIndex(text: str): Option[Span] {
     var a: []int = []
     if !re.execute(mut &x, text, 0, 2, mut &a) { return None }
     return Some(Span{start: a[0], end: a[1]})
+}
+
+// ---------------------------------------------------------------- searchers
+
+// The matching state of a Regex kept between searches: the DFA's states,
+// the matchers' arrays. A search through a Searcher reuses them instead of
+// building them again, and uses the DFA on short texts too (its states are
+// already there), so many small searches (a line at a time) cost little. A
+// Searcher belongs to the Regex that made it; with another one a search
+// stops the program.
+pub type Searcher = record {
+    x: Exec
+    out: []int
+    ninst: int
+    expr: str
+}
+
+// A new Searcher for re.
+pub fn (re: &Regex) searcher(): Searcher {
+    var x = newExec()
+    x.warm = true
+    return Searcher{x: x, out: [], ninst: len(re.prog.inst), expr: re.expr}
+}
+
+// Readies s for a search of a text that may not be the last one's: the
+// remembered literal positions are forgotten.
+fn (re: &Regex) begin(s: mut &Searcher) {
+    if s.ninst != len(re.prog.inst) || s.expr != re.expr { panic("regex: a Searcher used with another Regex") }
+    s.x.sufFrom = -1
+    s.x.sufAt = -1
+    s.x.fc.forget()
+    s.x.ic.forget()
+}
+
+// The leftmost match starting at or after from, as findFrom (the span
+// only), with s's states.
+pub fn (re: &Regex) findWith(s: mut &Searcher, text: str, from: int): Option[Span] {
+    if from < 0 || from > len(text) { return None }
+    re.begin(s)
+    if !re.execute(mut &s.x, text, from, 2, mut &s.out) { return None }
+    return Some(Span{start: s.out[0], end: s.out[1]})
+}
+
+// Whether text has a match starting at or after from: the end of one, -1
+// if there is none. The match is one that ends first (the DFA stops
+// there), or, when the DFA is not used, the leftmost one; either way no
+// match lies wholly before it. For tools that only need to know which
+// lines match.
+pub fn (re: &Regex) matchEndWith(s: mut &Searcher, text: str, from: int): int {
+    if from < 0 || from > len(text) { return -1 }
+    re.begin(s)
+    if len(text) < re.minInputLen { return -1 }
+    if !re.hasOnePass && !s.x.dfaFailed && re.useDfa(DFA_MIN_TEXT) {
+        let e = re.dfaEnd(mut &s.x, text, from)
+        if e >= -1 { return e }
+        s.x.dfaFailed = true
+    }
+    if !re.execute(mut &s.x, text, from, 2, mut &s.out) { return -1 }
+    return s.out[1]
+}
+
+// matchEndWith's DFA search: the end, -1 none, -2 the DFA gave up.
+fn (re: &Regex) dfaEnd(x: mut &Exec, text: str, from: int): int {
+    if re.cond & syn.EMPTY_BEGIN_TEXT != 0 && from != 0 { return -1 }
+    if re.literalOnly() {
+        let k = strFind(text, from, re.prefix)
+        return if k < 0 { -1 } else { k + len(re.prefix) }
+    }
+    if len(re.suffix) > 0 && !x.hasLiteral(text, from, re.suffix) { return -1 }
+    re.setupCaches(x)
+    let f = if re.inner { re.innerSearch(x, text, from, true) } else { re.dfaSearch(x, text, from, true) }
+    if f.status == 1 { return f.end }
+    if f.status == 0 { return -1 }
+    return -2
+}
+
+// Whether some match can contain a newline (a character class or `.`
+// with the s flag that admits "\n", or a literal "\n"). When none can, the
+// matches of a text are those of its lines, each searched by itself.
+pub fn (re: &Regex) canMatchNewline(): bool {
+    let p = &re.prog
+    for i in p.inst {
+        if i.op == syn.I_RUNE_ANY { return true }
+        if i.op == syn.I_RUNE1 && p.runes[i.rlo] == 10 { return true }
+        if i.op == syn.I_RUNE && syn.matchRunesAt(&p.runes, i.rlo, i.rn, i.arg, 10) >= 0 { return true }
+    }
+    return false
+}
+
+// A literal every match contains ("" if none is known): the rarest of the
+// literal pieces the pattern requires (in a concatenation, a group, a
+// repeat of at least one), by the byte frequencies of the literal
+// searches. Case-folded letters are left out, so a piece is matched as it
+// is. A tool can search for it first and run the pattern only near it.
+pub fn (re: &Regex) requiredLiteral(): str {
+    var lits: []str = []
+    requiredLits(&re.tree, re.tree.root, mut &lits)
+    var best = ""
+    var bestRate = 0
+    for l in lits {
+        let f = lazy.choosePrefilter(&[l])
+        if best == "" || f.rate < bestRate || (f.rate == bestRate && len(l) > len(best)) {
+            best = l
+            bestRate = f.rate
+        }
+    }
+    return best
+}
+
+fn requiredLits(t: &syn.Tree, at: int, out: mut &[]str) {
+    let n = &t.nodes[at]
+    let op = n.op
+    if op == syn.OP_LITERAL {
+        let fold = n.flags & syn.FOLD_CASE != 0
+        var b = newStrBuf()
+        for r in n.runes {
+            // U+FFFD also matches an invalid byte; a folded letter, others.
+            if r == 0xFFFD || (fold && syn.simpleFold(r) != r) {
+                if b.size() > 0 { append(out, b.toStr()) }
+                b = newStrBuf()
+            } else {
+                syn.addRune(mut &b, r)
+            }
+        }
+        if b.size() > 0 { append(out, b.toStr()) }
+    } else if op == syn.OP_CAPTURE || op == syn.OP_PLUS || (op == syn.OP_REPEAT && n.min >= 1) {
+        requiredLits(t, n.sub[0], out)
+    } else if op == syn.OP_CONCAT {
+        for x in n.sub { requiredLits(t, x, out) }
+    }
 }
 
 // Calls deliver for successive non-overlapping matches (at most n; n < 0
