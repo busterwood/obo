@@ -60,17 +60,17 @@ As of 2026-11-04:
   user's lines), `import "net"` (TCP sockets that park the task, on one
   epoll loop), and `blocking` C calls that park the task while a helper
   thread runs only the C function (SQLite's queries); Postgres queries park
-  on libpq's socket, with a connection pool. An HTTP/1.1 server example
-  holds 10,000 idle keep-alive connections at 13 KB each and serves 69,000
-  requests/s on one core, or 23,000 with a Postgres query each through a
-  pool (PERFORMANCE.md). Stage C2 is built too: `task.workers` forks worker
-  processes under a supervisor that restarts a crashed one and drains them
-  all on `SIGTERM`, signals arrive as events of the loop, and a listener
-  made before the fork is shared by the workers. The server with 8 workers
-  serves 133,000 requests/s (the machine's loopback limit with the load on
-  the other cores) and 71,000 with a Postgres query each; a worker killed
-  under load loses only the requests in flight on its connections and is
-  back in about 100 ms.
+  on libpq's socket, with a connection pool. The HTTP/1.1 server library
+  holds 10,000 idle keep-alive connections at 15 KB each and serves 63,000
+  requests/s on one core (Go's net/http 44,000), or 22,000 with a Postgres
+  query each through a pool (PERFORMANCE.md). Stage C2 is built too:
+  `task.workers` forks worker processes under a supervisor that restarts a
+  crashed one and drains them all on `SIGTERM`, signals arrive as events of
+  the loop, and a listener made before the fork is shared by the workers.
+  With 4 workers the server serves 128,000 requests/s (the machine's
+  loopback limit with the load on the other cores), with 8 workers 63,000
+  with a Postgres query each; a worker killed under load loses only the
+  requests in flight on its connections and is back in about 110 ms.
 
 ## Layout
 

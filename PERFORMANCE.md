@@ -10,17 +10,14 @@ obx builds a program in two ways:
 Both are built from the same IR and must behave identically; the gate checks
 that on 1,616 programs. This page measures what each costs. Measured on 3
 November 2026 at `2ce4860`, after the fifth native performance pass
-(inlining in the IR) and concurrency stage C1b (sockets and timers), on a
-quiet machine; the HTTP server table is from C1b's own run. The loop and
-array rows, the compiler's `--native` cost and the sixth pass's row are from
-the sixth native performance pass (loops; branch `perf6`), measured the same
-day; the blocking-call rows and the server-with-Postgres table are from
-concurrency stage C1c (branch `c1c`), the sieve row and the seventh
-pass's row from the seventh (branch `sieve`), and the worker-process
-tables from concurrency stage C2 (branch `c2`), measured the same day. The
-eighth pass's row is from that pass (branch `perf8`), the regex table from
-regex phase R2 (branch `r2`), both on 3 November; the compiler table and
-the binary sizes were measured again on 4 November. The numbers are
+(inlining in the IR), on a quiet machine. The loop and array rows, the
+compiler's `--native` cost and the sixth pass's row are from the sixth
+native performance pass (loops; branch `perf6`), measured the same day; the
+blocking-call rows are from concurrency stage C1c (branch `c1c`), the sieve
+row and the seventh pass's row from the seventh (branch `sieve`), the
+eighth pass's row from the eighth (branch `perf8`) and the regex table from
+regex phase R2 (branch `r2`), all on 3 November. The compiler table, the
+binary sizes and the HTTP tables were measured again on 4 November. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
@@ -355,39 +352,48 @@ query that reads the disk does not notice.
 
 ## HTTP server
 
-The tables in this section up to "On the server library" measured
-`obx/cmd/httpd.obx` as it was before stage S1, a hand-written server. Since
-S1 httpd is built on `obx/lib/httpserver.obx`; its numbers are in [On the
-server library (S1)](#on-the-server-library-s1) below.
-
-`obx/cmd/httpd.obx`, a keep-alive HTTP/1.1 server on one thread (one task
-per connection; several processes with worker processes, below), measured by `python3 obx/cmd/http_gate.py`: the server on
+`obx/cmd/httpd.obx` on the server library `obx/lib/httpserver.obx`
+(design/http-server.md, stage S1): a keep-alive HTTP/1.1 server on one
+thread, one task per connection, with every limit and timeout of the design
+on, the hangup cancellation armed around each handler, the request parsed
+strictly and the reply built by the library. Measured on 4 November 2026 by
+`python3 obx/cmd/http_gate.py --servers native,c,go,node`: the server on
 CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 1.
 10,000 idle keep-alive connections are opened first and stay open during
 the load; each load client sends `GET /` and waits for the reply, 5 s per
 row. Go 1.26's net/http (GOMAXPROCS=1) and Node 24's http serve the same
-reply, as references.
+reply, as references. This machine's numbers move by 5 to 10 % from one run
+to the next.
 
 | | obx native | obx via C | Go net/http | Node 24 |
 |---|---:|---:|---:|---:|
-| RSS per idle connection | 13.0 KB | 12.7 KB | 19.8 KB | 9.3 KB |
-| RSS with 10,000 idle connections | 124 MiB | 122 MiB | 195 MiB | 138 MiB |
-| 1 client: requests/s | 4,890 | 4,900 | 3,430 | 4,040 |
-| 10 clients: requests/s | 38,900 | 38,000 | 34,200 | 32,400 |
-| 100 clients: requests/s | 69,400 | 65,800 | 46,200 | 42,900 |
-| 1 client: latency p50 / p99 | 194 / 328 µs | 196 / 353 µs | 260 / 614 µs | 233 / 439 µs |
-| 10 clients: latency p50 / p99 | 252 / 371 µs | 256 / 397 µs | 278 / 473 µs | 295 / 515 µs |
-| 100 clients: latency p50 / p99 | 1.44 / 1.90 ms | 1.52 / 2.05 ms | 2.05 / 6.87 ms | 2.18 / 4.96 ms |
+| RSS per idle connection | 15.5 KB | 14.9 KB | 19.8 KB | 10.3 KB |
+| RSS with 10,000 idle connections | 155 MiB | 148 MiB | 195 MiB | 147 MiB |
+| 1 client: requests/s | 4,140 | 4,470 | 4,070 | 3,850 |
+| 10 clients: requests/s | 36,500 | 37,600 | 35,200 | 33,700 |
+| 100 clients: requests/s | 62,800 | 66,300 | 44,400 | 43,800 |
+| 1 client: latency p50 / p99 | 224 / 442 µs | 215 / 380 µs | 237 / 380 µs | 246 / 421 µs |
+| 10 clients: latency p50 / p99 | 261 / 418 µs | 257 / 398 µs | 268 / 461 µs | 285 / 467 µs |
+| 100 clients: latency p50 / p99 | 1.56 / 2.85 ms | 1.48 / 2.78 ms | 2.13 / 6.56 ms | 2.09 / 4.75 ms |
 
-An obx connection's resident cost is two pages of its task's stack (8 KiB;
-the stack is 256 KiB of address space), the server's 4 KiB read buffer and
-the task itself; with a 512-byte buffer it is 9.1 KB. Under the gate's
-`OBX_CHECK=1`, `GET /shutdown` with the 10,000 connections open cancels
-them all and ends the program in 0.19 s, exit 0, no leak. One client is
-bound by this machine's loopback round trip (above, about 190 µs); with 100
-clients the single-threaded load client may be the limit as much as the
-server. The `ulimit -n` here is 1,048,576; the gate raises the soft limit
-when it can and stops when it cannot.
+What a request costs the server beyond reading and writing the socket: the
+router's lookup (the router is a `task.Frozen`, read by every connection's
+task at once), the strict head parse (every field checked), a `poll` system
+call when the hangup cancellation is armed (it checks for a half-close that
+came with the request, which must not cancel it), the `Date` and
+`X-Content-Type-Options` headers and the counters. With the `requestId` and
+`accessLog` middleware on (the log written to `/dev/null`) the server gave
+about 10 % fewer requests per second at 100 clients (S1's measurement).
+
+An idle connection's resident cost is two pages of its task's stack (8 KiB;
+the stack is 256 KiB of address space), a 4 KiB read buffer, a 512-byte
+output buffer, and the request and response records with their header
+lists, kept for reuse. Under the gate's `OBX_CHECK=1`, `GET /shutdown` with
+the 10,000 connections open drains them all and ends the program in 0.5 s,
+exit 0, no leak. One client is bound by this machine's loopback round trip
+(above, about 210 µs); with 100 clients the single-threaded load client may
+be the limit as much as the server. The `ulimit -n` here is 1,048,576; the
+gate raises the soft limit when it can and stops when it cannot.
 
 ### The HTTP client
 
@@ -401,53 +407,50 @@ above.
 
 | connections | raw, native | client, native | raw, via C | client, via C |
 |---:|---:|---:|---:|---:|
-| 1: requests/s | 4,320 | 4,530 | 4,760 | 4,410 |
-| 100: requests/s | 69,700 | 59,900 | 69,700 | 65,400 |
-| 1,000: requests/s | 62,000 | 53,600 | 62,300 | 51,300 |
-| 1: latency p50 / p99 | 227 / 325 µs | 217 / 320 µs | 205 / 332 µs | 222 / 362 µs |
-| 100: latency p50 / p99 | 1.43 / 1.90 ms | 1.70 / 2.20 ms | 1.43 / 1.85 ms | 1.53 / 2.10 ms |
-| 1,000: latency p50 / p99 | 16.2 / 21.2 ms | 18.4 / 25.2 ms | 16.0 / 20.2 ms | 19.6 / 23.0 ms |
+| 1: requests/s | 4,430 | 4,390 | 4,560 | 4,380 |
+| 100: requests/s | 66,200 | 59,000 | 65,200 | 61,000 |
+| 1,000: requests/s | 56,000 | 48,600 | 53,400 | 49,500 |
+| 1: latency p50 / p99 | 214 / 401 µs | 218 / 406 µs | 212 / 378 µs | 217 / 402 µs |
+| 100: latency p50 / p99 | 1.49 / 2.11 ms | 1.69 / 2.53 ms | 1.50 / 2.24 ms | 1.60 / 2.19 ms |
+| 1,000: latency p50 / p99 | 17.6 / 22.1 ms | 19.9 / 24.3 ms | 18.2 / 23.0 ms | 19.5 / 24.1 ms |
 
-The client does about 7 µs of user time per request against the raw
-loop's 3.3 µs (system time is the same, about 12 µs): it builds a full
+The client does more work per request than the raw loop: it builds a full
 request, parses every reply header, works out the framing and goes through
-the pool. With the loader's core full, that is 82% to 94% of the raw
+the pool. With the loader's core full, that is 87 % to 94 % of the raw
 throughput from 100 connections on; with one connection the loopback round
 trip is the limit and they are level. The design's gate asked for parity,
 so it is not met (design/http-client.md, section 8).
 
 ### With a Postgres pool
 
-The C1c gate, `python3 obx/cmd/http_gate.py --db 4,16`: the same server
-and load, each request `GET /db`, which takes a connection from a
-`postgres.Pool` of 4 or 16 connections, runs `SELECT $1::int8 + 1` with the
-request's number, and returns the connection. PostgreSQL 16 on the same
-machine, over its Unix socket; the queries go through libpq's asynchronous
-API, so each request's task parks on the socket and the server's one thread
-serves the 10,000 idle connections and the load meanwhile. No Go or Node
-reference: neither has a Postgres driver installed here.
+`python3 obx/cmd/http_gate.py --db 4,16`: the same server and load, each
+request `GET /db`, which takes a connection from a `postgres.Pool` of 4 or
+16 connections, runs `SELECT $1::int8 + 1` with the request's number, and
+returns the connection. PostgreSQL 16 on the same machine, over its Unix
+socket; the queries go through libpq's asynchronous API, so each request's
+task parks on the socket and the server's one thread serves the 10,000 idle
+connections and the load meanwhile. No Go or Node reference: neither has a
+Postgres driver installed here.
 
 | | native, pool 4 | via C, pool 4 | native, pool 16 | via C, pool 16 |
 |---|---:|---:|---:|---:|
-| RSS per idle connection | 13.0 KB | 12.7 KB | 13.0 KB | 12.5 KB |
-| 1 client: requests/s | 2,790 | 3,300 | 2,850 | 2,530 |
-| 10 clients: requests/s | 22,500 | 23,100 | 20,800 | 21,200 |
-| 100 clients: requests/s | 23,100 | 23,200 | 25,000 | 27,200 |
-| 1 client: latency p50 / p99 | 339 / 575 µs | 287 / 475 µs | 337 / 536 µs | 347 / 1,061 µs |
-| 10 clients: latency p50 / p99 | 437 / 615 µs | 425 / 623 µs | 481 / 636 µs | 471 / 636 µs |
-| 100 clients: latency p50 / p99 | 4.27 / 5.81 ms | 4.25 / 5.84 ms | 3.86 / 5.84 ms | 3.63 / 5.22 ms |
+| 1 client: requests/s | 3,050 | 3,050 | 2,930 | 2,720 |
+| 10 clients: requests/s | 21,600 | 23,300 | 19,900 | 19,400 |
+| 100 clients: requests/s | 22,000 | 22,700 | 22,600 | 23,700 |
+| 1 client: latency p50 / p99 | 315 / 541 µs | 316 / 514 µs | 322 / 598 µs | 344 / 655 µs |
+| 10 clients: latency p50 / p99 | 451 / 666 µs | 422 / 593 µs | 499 / 704 µs | 506 / 806 µs |
+| 100 clients: latency p50 / p99 | 4.39 / 6.34 ms | 4.32 / 5.78 ms | 4.25 / 6.88 ms | 4.11 / 5.91 ms |
 
 One client pays two round trips, the HTTP one and the server's to
 PostgreSQL (about 100 µs: a lone connection does 11,000 queries a second).
 From 10 clients on, the server's one thread is the limit: each request is
 about 40 µs of it, mostly system calls (the HTTP read and write, and
 libpq's send, poll and receive on the database socket). With 100 clients,
-90 of them wait in the pool's queue, which is where the 4 ms comes from;
-16 connections help a little because more queries are in flight per pass of
-the event loop. A pool's waiting queue is first come, first served. After
-the load, `/shutdown` with the 10,000 idle connections open takes 0.18 to
-0.23 s, exit 0, no leak under `OBX_CHECK=1`, every pool connection idle and
-nobody waiting.
+90 of them wait in the pool's queue, which is where the 4 ms comes from. A
+pool's waiting queue is first come, first served. After the load,
+`/shutdown` with the 10,000 idle connections open takes about 0.5 s, exit
+0, no leak under `OBX_CHECK=1`, every pool connection idle and nobody
+waiting.
 
 The other way to run libpq, `PQexecParams` as a `blocking` extern on the
 helper pool, was measured without HTTP (tasks each with their own
@@ -464,123 +467,49 @@ s user and 0.58 s system time of 0.74 s); the helpers make their system
 calls on other cores. The library keeps the asynchronous API: it needs no
 thread per running query, a waiting query can be cancelled (`PQcancel`)
 when its task is, and its cost is the one thread's, the same budget the
-HTTP side uses; more cores come from processes (stage C2).
+HTTP side uses; more cores come from processes.
 
 ### With worker processes
 
-The C2 gate, `python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4
---listen both`: `httpd ADDR POOL WORKERS MODE`, n worker processes under
-`task.workers`, each with its own event loop and (for `/db`) its own pool
-of 4 PostgreSQL connections. No idle connections this time; 256 keep-alive
-load connections spread over 8 load processes (`httpload -p 8`), 5 s per
-row, `OBX_CHECK=1`. Pinning with `taskset`: the n workers on the first n of
-CPUs 0, 2, 4, 6, 1, 3, 5, 7 (this Ryzen's CPUs 2k and 2k+1 are the two
-hardware threads of core k, so 1 to 4 workers each have a core of their
-own and 8 workers share four cores with SMT), the load on CPUs 8-15 (the
-other four cores). PostgreSQL is not pinned. Requests/s, then latency p50 /
-p99 in ms, the default shared listener:
+`python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4`: `httpd ADDR POOL
+WORKERS`, n worker processes under `task.workers` sharing one listener
+made before the fork, each with its own event loop and (for `/db`) its own
+pool of 4 PostgreSQL connections. No idle connections this time; 256
+keep-alive load connections spread over 8 load processes (`httpload -p 8`),
+5 s per row, `OBX_CHECK=1`. Pinning with `taskset`: the n workers on the
+first n of CPUs 0, 2, 4, 6, 1, 3, 5, 7 (this Ryzen's CPUs 2k and 2k+1 are
+the two hardware threads of core k, so 1 to 4 workers each have a core of
+their own and 8 workers share four cores with SMT), the load on CPUs 8-15
+(the other four cores). PostgreSQL is not pinned. Requests/s, then latency
+p50 / p99 in ms:
 
 | workers | native `/` | via C `/` | native `/db` | via C `/db` |
 |---:|---:|---:|---:|---:|
-| 1 | 72,200; 3.46 / 4.89 | 64,200; 4.06 / 5.75 | 22,500; 11.0 / 14.1 | 22,300; 11.1 / 14.4 |
-| 2 | 115,500; 2.05 / 4.70 | 113,800; 2.10 / 4.77 | 36,800; 3.42 / 13.4 | 36,200; 6.88 / 8.86 |
-| 4 | 134,900; 1.64 / 5.43 | 135,100; 1.65 / 5.38 | 51,100; 4.33 / 10.5 | 50,600; 4.13 / 11.8 |
-| 8 | 133,200; 1.58 / 6.13 | 134,100; 1.55 / 6.20 | 71,300; 3.37 / 8.22 | 68,100; 3.53 / 8.79 |
+| 1 | 58,800; 4.28 / 6.44 | 57,400; 4.38 / 6.63 | 18,700; 13.4 / 17.5 | 19,900; 12.3 / 15.3 |
+| 2 | 95,500; 2.56 / 5.15 | 96,000; 2.52 / 6.07 | 33,000; 7.64 / 10.3 | 34,400; 7.31 / 10.2 |
+| 4 | 128,200; 1.71 / 5.85 | 116,200; 1.87 / 6.58 | 49,700; 4.88 / 11.5 | 50,300; 4.72 / 12.0 |
+| 8 | 123,500; 1.68 / 7.01 | 129,600; 1.60 / 6.60 | 63,500; 3.77 / 9.90 | 66,000; 3.83 / 9.72 |
 
-`/` scales 1.6 to 1.8 times at 2 workers and about 1.9 to 2.1 at 4, then
-stops: at 4 workers neither side is busy all the time (workers 67 to 91 %
-of a CPU, each load process about 52 %, sampled from `/proc`), and the
-ceiling is the machine's, the loopback TCP of both sides and the WSL2
-virtual machine's cross-CPU wake-ups. With 1,024 connections instead of 256
-(more requests per wake-up) native gives 59,800, 99,900, 139,300 and
-153,900 req/s for 1, 2, 4 and 8 workers, with all 16 hardware threads 80 to
-95 % busy. `/db` keeps scaling to 8 workers (3.1 to 3.2 times): each
-request is mostly waiting for PostgreSQL, whose backends run on whatever
-CPUs are free, and 8 workers keep 32 queries in flight.
-
-The other listener, `SO_REUSEPORT` (a socket per worker, `httpd ... WORKERS
-reuseport`), native: 65,100, 112,700, 134,400, 135,200 req/s on `/` and
-22,100, 36,300, 50,700, 70,900 on `/db` for 1, 2, 4 and 8 workers; via C
-within 4 % of that. The same rates. It spreads the keep-alive connections
-evenly (accepted per worker at 8 workers: 22 to 47, against 18 to 58 shared).
+`/` scales about 1.6 times at 2 workers and 2.0 to 2.2 at 4, then stops:
+the ceiling is the machine's, the loopback TCP of both sides and the WSL2
+virtual machine's cross-CPU wake-ups, not the workers (at 4 workers neither
+side is busy all the time). `/db` keeps scaling to 8 workers (3.3 to 3.4
+times): each request is mostly waiting for PostgreSQL, whose backends run
+on whatever CPUs are free, and 8 workers keep 32 queries in flight. A
+listener of its own in each worker (`httpd ... WORKERS reuseport`,
+`SO_REUSEPORT`) is the other mode; the shared listener is the default
+because connections waiting in a killed worker's own accept queue are reset
+with its socket.
 
 The kill test (4 workers, `/`, the load reconnecting after an error): a
-third of the way in, `SIGKILL` to one worker.
-
-| | native, shared | via C, shared | native, reuseport | via C, reuseport |
-|---|---:|---:|---:|---:|
-| the worker's connections | 36 | 44 | 55 | 59 |
-| requests lost | 36 | 44 | 59 | 65 |
-| started again after | 105 ms | 108 ms | 111 ms | 113 ms |
-| req/s over the 5 s | 132,400 | 129,300 | 131,700 | 129,500 |
-
-With the shared listener the lost requests are exactly the ones in flight
-on the killed worker's connections (one each); the supervisor starts it
-again after the 100 ms backoff, it accepts from the same queue, and the
-`/shutdown` that follows ends every worker drained, exit 0, the restart
-counted. With `SO_REUSEPORT` a few more are lost: connections waiting in
-the killed worker's own accept queue are reset with its socket. That and
-port 0 are why httpd shares one listener by default.
-
-### On the server library (S1)
-
-`cmd/httpd.obx` on `lib/httpserver.obx` (design/http-server.md, stage S1):
-the same routes, now through the router, with every limit and timeout of
-the design on, the hangup cancellation armed around each handler, the
-request parsed strictly and the reply built by the library. The same gate
-as the first table (`python3 obx/cmd/http_gate.py --servers
-native,c,go,node`: 10,000 idle connections, the server on CPU 0, the load
-on CPU 1, 5 s per row), measured 2026-11-03:
-
-| | obx native | obx via C | Go net/http | Node 24 |
-|---|---:|---:|---:|---:|
-| RSS per idle connection | 15.5 KB | 14.9 KB | 19.9 KB | 9.3 KB |
-| RSS with 10,000 idle connections | 155 MiB | 148 MiB | 197 MiB | 138 MiB |
-| 1 client: requests/s | 4,490 | 4,360 | 4,110 | 3,990 |
-| 10 clients: requests/s | 36,500 | 36,800 | 32,800 | 26,700 |
-| 100 clients: requests/s | 61,600 | 61,700 | 45,200 | 29,100 |
-| 1 client: latency p50 / p99 | 213 / 362 µs | 223 / 374 µs | 235 / 359 µs | 224 / 510 µs |
-| 10 clients: latency p50 / p99 | 267 / 388 µs | 265 / 394 µs | 288 / 509 µs | 349 / 687 µs |
-| 100 clients: latency p50 / p99 | 1.59 / 2.52 ms | 1.59 / 2.47 ms | 2.06 / 6.87 ms | 3.19 / 7.46 ms |
-
-This machine's numbers move by 10 % or more from one run to the next, so
-the old and the new httpd (both native, no idle connections, 100 clients,
-4 s) were also run in turn, seven times each. The medians: the old one
-69,200 req/s, p50 1.45 ms, p99 1.88 ms; the new one 64,300 req/s (-7.1 %),
-p50 1.53 ms, p99 2.36 ms. The design's target was 60,000 req/s, or within
-15 % of the old server. With the `requestId` and `accessLog` middleware on
-(the log written to `/dev/null`), the median of five runs was 58,300 req/s,
-p50 1.67 ms, p99 2.66 ms, against 65,000 without them in the same runs;
-the target there was 50,000. What the library adds per request (not timed one
-by one): the router's lookup inside a `Shared.with`, the strict head parse
-(every field checked), a `poll` system call when the hangup cancellation
-is armed (it checks for a half-close that came with the request, which
-must not cancel it), the `Date` and `X-Content-Type-Options` headers and
-the counters. An idle connection costs 15.5 KB against 13.0: the request
-and response records with their header lists, kept for reuse, and a
-512-byte output buffer (4 KiB at first, which made 19.2 KB). After `GET
-/shutdown` the drain closes the 10,000 idle connections and the program
-ends in 0.5 to 0.6 s, exit 0, no leak.
-
-With a Postgres pool (`--db 4,16`, `GET /db`, as in the C1c table):
-
-| | native, pool 4 | via C, pool 4 | native, pool 16 | via C, pool 16 |
-|---|---:|---:|---:|---:|
-| 1 client: requests/s | 2,930 | 2,910 | 2,880 | 3,000 |
-| 10 clients: requests/s | 21,900 | 22,100 | 19,200 | 19,500 |
-| 100 clients: requests/s | 21,700 | 21,700 | 24,300 | 24,400 |
-| 1 client: latency p50 / p99 | 332 / 523 µs | 334 / 534 µs | 336 / 525 µs | 321 / 511 µs |
-| 10 clients: latency p50 / p99 | 447 / 634 µs | 445 / 623 µs | 521 / 668 µs | 512 / 661 µs |
-| 100 clients: latency p50 / p99 | 4.53 / 6.29 ms | 4.51 / 6.33 ms | 4.06 / 5.58 ms | 4.02 / 5.53 ms |
-
-The database's round trip dominates; these are within the C1c table's
-spread. With worker processes (`--workers 1,2,4,8 --db 4`, native, the
-shared listener, 256 connections): `/` 61,500, 96,100, 127,100 and 128,400
-req/s for 1, 2, 4 and 8 workers; `/db` 19,800, 33,500, 49,100 and 63,000.
-The kill test lost the 80 requests in flight on the killed worker's 80
-connections, and the worker was started again after 104 ms
-(`http.workerPolicy`: a crash after the worker is ready never counts
-toward giving up).
+third of the way in, `SIGKILL` to one worker. Natively the worker held 45
+connections and 45 requests were lost (via C 112 and 112): exactly the ones
+in flight on its connections, one each. The supervisor started it again
+after 109 ms (the 100 ms backoff; `http.workerPolicy`: a crash after the
+worker is ready never counts toward giving up), it accepted from the same
+queue, and the run kept 124,000 req/s natively (129,700 via C) over the 5 s.
+The `/shutdown` that follows ends every worker drained, exit 0, the restart
+counted.
 
 The differential parsing test (`python3 obx/tests/httpsrvgen.py -n
 100000`, 16 threads) sends 100,000 generated request streams to both obx
@@ -597,7 +526,7 @@ obx/tools/native_selfbuild.sh                          # the natively built comp
 obx/compiler/out/obxc obx/bench/tasks.obx --native -o tasks && ./tasks
 python3 obx/cmd/http_gate.py                           # the server table (about 2 minutes)
 python3 obx/cmd/http_gate.py --servers native,c --db 4,16   # with Postgres ($OBX_PG_DSN)
-python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4 --listen both   # worker processes (about 5 minutes)
+python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4   # worker processes (about 3 minutes)
 python3 obx/tests/httpsrvgen.py -n 100000                              # the server's parsing against Go and llhttp
 ```
 
