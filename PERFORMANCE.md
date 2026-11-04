@@ -201,7 +201,12 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 | compiler binary | 1,951,608 bytes (dynamic, glibc) | 2,445,569 bytes (static, no libc) |
 
 Measured on 4 November at `fd6f747` (after the ninth pass; after the eighth
-the times were 493, 589, 274 and 310 ms on 270 fewer lines of compiler). The
+the times were 493, 589, 274 and 310 ms on 270 fewer lines of compiler). At
+`5900ba3` (bounds checks compared in place) the change is below the timing
+noise: the self-build's cycles went from 2,176M to about 2,164M, and on a
+later run of the same machine the `fd6f747` native compiler and the
+`5900ba3` one both took 589-594 ms (median of 21), the gcc-built one
+533-546 ms. The
 source is 23,710 lines of obx and 4,756 lines of C runtime (the C backend's
 `rt.h` and the native backend's freestanding `rt.c`, each with task stacks
 and switching, the event loop, timers, sockets and the SSE2 string
