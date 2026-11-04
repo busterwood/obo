@@ -143,7 +143,7 @@ type Gen = record {
     callFresh: bool             // ... a new local (it may be the hidden result pointer)
     destUsed: bool              // genCall put the result there
     byteDest: int               // the register the next inline rt_str_byte loads its byte into (rax)
-    aTaken: []bool              // per local: its address (or a member's) is taken
+    aTaken: []bool              // per local: its address (or a member's) is taken (marked by the counting scan)
     emptyS: int                 // an S_EMPTY node
     saved: []int                // the frame slots of the callee-saved registers the function uses
     frame: int
@@ -1077,9 +1077,7 @@ fn (g: mut &Gen) countUses() {
 fn (g: mut &Gen) simplify() {
     append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0})
     g.emptyS = len(g.u.nodes) - 1
-    for f in 0..len(g.u.funcs) {
-        if g.u.funcs[f].body >= 0 { g.walk(g.u.funcs[f].body, 3, -1, -1) }
-    }
+    // aTaken is complete: the first countUses marked it (scan)
     for f in 0..len(g.u.funcs) {
         if g.u.funcs[f].body >= 0 { g.simpStmt(g.u.funcs[f].body) }
     }
@@ -1359,8 +1357,7 @@ fn (g: mut &Gen) rename(l: int, j: int, t: int, s: int, end: int) {
 }
 
 // Over the tree x: op 0 counts the names of local l; 1 counts its assignments and the taking
-// of its address; 2 renames it to local to; 3 marks the locals whose addresses (or members')
-// are taken (aTaken).
+// of its address; 2 renames it to local to.
 fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
     if x < 0 { return 0 }
     let n = g.u.nodes[x]
@@ -1375,14 +1372,7 @@ fn (g: mut &Gen) walk(x: int, op: int, l: int, to: int): int {
         return 0
     }
     var hit = 0
-    if k == ir.E_ADDR || k == ir.E_DECAY {
-        var r = n.a
-        while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
-        if g.u.nk(r) == ir.E_LOCAL {
-            if op == 3 { g.aTaken[g.u.nodes[r].a] = true }
-            if op == 1 && g.u.nodes[r].a == l { hit = 1 }
-        }
-    } else if op == 1 && (k == ir.E_ASSIGN || k == ir.E_POSTINC) {
+    if op == 1 && (k == ir.E_ADDR || k == ir.E_DECAY || k == ir.E_ASSIGN || k == ir.E_POSTINC) {
         var r = n.a
         while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
         if g.u.nk(r) == ir.E_LOCAL && g.u.nodes[r].a == l { hit = 1 }
@@ -1610,8 +1600,9 @@ fn (g: &Gen) fusesReturn(d: int, s: int): bool {
 }
 
 // Weighs the uses of locals in the tree x (at loop depth depth), with the bodies of the calls
-// that are generated in place; when counting, counts the times x names each (uses); else
-// finds their positions, the loops and the loud positions (allocRegs).
+// that are generated in place; when counting, counts the times x names each (uses) and marks
+// the locals whose addresses (or members') are taken (aTaken); else finds their positions, the
+// loops and the loud positions (allocRegs).
 fn (g: mut &Gen) scan(x: int, depth: int) {
     if x < 0 { return }
     let n = g.u.nodes[x]
@@ -1636,6 +1627,13 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
             let l = g.u.nodes[n.a].a
             g.occur(l)
             g.bad[l] = true
+        }
+        if g.counting {
+            // the first count (before simplify, which reads aTaken first) visits every node of
+            // every body, as the count after it does: the marks are complete and stay so
+            var r = n.a
+            while g.u.nk(r) == ir.E_MEMBER { r = g.u.nodes[r].a }
+            if g.u.nk(r) == ir.E_LOCAL { g.aTaken[g.u.nodes[r].a] = true }
         }
         g.scan(n.a, depth)
     } else if k == ir.S_EXPR || k == ir.S_RETURN {
