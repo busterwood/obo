@@ -1075,7 +1075,7 @@ fn (g: mut &Gen) countUses() {
 // The C code is unchanged; only the native code generator sees the result.
 
 fn (g: mut &Gen) simplify() {
-    append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    append(mut &g.u.nodes, ir.Node{k: ir.S_EMPTY, ty: 0, line: 0, a: -1, b: -1, c: -1, d: -1, v: 0})
     g.emptyS = len(g.u.nodes) - 1
     for f in 0..len(g.u.funcs) {
         if g.u.funcs[f].body >= 0 { g.walk(g.u.funcs[f].body, 3, -1, -1) }
@@ -1180,7 +1180,7 @@ fn (g: mut &Gen) boolFold(d: int, s: int): int {
     if g.walk(v, 0, b, -1) > 0 { return -1 }
     let a = g.u.nodes[d].b
     append(mut &g.u.nodes, ir.Node{k: if isAnd { ir.E_LAND } else { ir.E_LOR }, ty: g.u.locals[b].ty,
-        line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+        line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0})
     return len(g.u.nodes) - 1
 }
 
@@ -2767,8 +2767,8 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
         var sz = g.size(en.ty)
-        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.nodes[en.a].s) + 1 < sz {
-            sz = len(g.u.nodes[en.a].s) + 1            // the copied bytes; the rest stays zero
+        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.strs[g.u.nodes[en.a].v]) + 1 < sz {
+            sz = len(g.u.strs[g.u.nodes[en.a].v]) + 1            // the copied bytes; the rest stays zero
         }
         var b = en.v
         while b < en.v + sz && b < n {
@@ -2802,7 +2802,7 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
         let t = en.ty
         let x = en.a
         if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
-            let str = g.u.nodes[x].s
+            let str = g.u.strs[g.u.nodes[x].v]
             var cnt = len(str) + 1
             if cnt > g.size(t) { cnt = g.size(t) }
             g.a.movRSym(RAX, g.symStr(str), 0)
@@ -2848,7 +2848,7 @@ fn (g: mut &Gen) genAddr(e: int) {
         let s = g.symFunc(n.a, e)
         if g.syms[s].kind == SK_DYN { g.a.loadAt(RAX, s) } else { g.a.movRSym(RAX, s, 0) }
     } else if k == ir.E_STR {
-        g.a.movRSym(RAX, g.symStr(n.s), 0)
+        g.a.movRSym(RAX, g.symStr(g.u.strs[n.v]), 0)
     } else if k == ir.E_DEREF {
         g.gen(n.a)
     } else if k == ir.E_MEMBER {
@@ -2953,7 +2953,7 @@ fn (g: &Gen) constAddrSym(e: int): int {
     if n.k != ir.E_DECAY && n.k != ir.E_ADDR { return -1 }
     let x = g.u.nodes[n.a]
     if x.k == ir.E_GLOBAL { return g.globalSym[x.a] }
-    if x.k == ir.E_STR { return g.strSym.getOr(&x.s, -1) }
+    if x.k == ir.E_STR { return g.strSym.getOr(&g.u.strs[x.v], -1) }
     return -1
 }
 
@@ -3304,7 +3304,7 @@ fn (g: mut &Gen) gen(e: int) {
     if k == ir.E_INT {
         g.a.movRI(RAX, n.v)
     } else if k == ir.E_FLT {
-        g.a.movRI(RAX, floatBits(n.f))
+        g.a.movRI(RAX, floatBits(g.u.flts[n.v]))
         g.a.movqXR(0, RAX)
     } else if k == ir.E_LOCAL || k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_GLOBAL || k == ir.E_STR ||
         k == ir.E_FUNC {
@@ -4671,7 +4671,7 @@ fn (g: &Gen) inlineDirect(x: int, p: int): bool {
 
 // The label of a jump to rt_trap(code, msg, where) for the location string w (a node).
 fn (g: mut &Gen) stub(code: int, msg: str, w: int): int {
-    let key = intToStr(code) + " " + msg + "\n" + g.u.nodes[g.u.nodes[w].a].s
+    let key = intToStr(code) + " " + msg + "\n" + g.u.strs[g.u.nodes[g.u.nodes[w].a].v]
     let have = g.stubOf.getOr(&key, -1)
     if have >= 0 { return have }
     let l = g.a.newLabel()
@@ -4686,7 +4686,7 @@ fn (g: mut &Gen) genStubs() {
         g.a.bind(st.label)
         g.a.movRI(RDI, st.code)
         g.a.movRSym(RSI, g.symStr(st.msg), 0)
-        g.a.movRSym(RDX, g.symStr(g.u.nodes[g.u.nodes[st.where].a].s), 0)
+        g.a.movRSym(RDX, g.symStr(g.u.strs[g.u.nodes[g.u.nodes[st.where].a].v]), 0)
         g.callRt("rt_trap")
     }
     g.stubOf.clear()
@@ -5237,7 +5237,7 @@ fn (g: mut &Gen) constOf(e: int): K {
     if k == ir.E_INT {
         return K{lo: n.v, hi: if n.v < 0 && g.u.isSigned(n.ty) { -1 } else { 0 }, sym: -1}
     }
-    if k == ir.E_FLT { return K{lo: floatBits(n.f), hi: 0, sym: -1} }
+    if k == ir.E_FLT { return K{lo: floatBits(g.u.flts[n.v]), hi: 0, sym: -1} }
     if k == ir.E_NEG && g.isF(n.ty) {
         let x = g.constOf(n.a)
         return K{lo: x.lo ^ (-9223372036854775807 - 1), hi: 0, sym: -1}
@@ -5279,7 +5279,7 @@ fn (g: mut &Gen) constAddr(e: int): K {
         if g.syms[s].kind == SK_DYN { g.fail(e, "the address of a C library function in a constant") }
         return K{lo: 0, hi: 0, sym: s}
     }
-    if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(n.s)} }
+    if n.k == ir.E_STR { return K{lo: 0, hi: 0, sym: g.symStr(g.u.strs[n.v])} }
     if n.k == ir.E_MEMBER {
         let x = g.constAddr(n.a)
         return K{lo: x.lo + n.v, hi: 0, sym: x.sym}
@@ -5315,7 +5315,7 @@ fn (g: mut &Gen) initData(buf: mut &[]byte, ro: bool, off: int, ents: int, reloc
         let x = en.a
         let o = off + en.v
         if g.u.nk(x) == ir.E_STR && g.tk(t) == ir.TY_ARR {
-            let s = g.u.nodes[x].s
+            let s = g.u.strs[g.u.nodes[x].v]
             for i in 0..len(s) {
                 if i < g.size(t) { buf[o + i] = strByte(s, i) }
             }

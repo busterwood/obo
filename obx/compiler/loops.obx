@@ -366,7 +366,7 @@ fn (o: &Loops) badLabels(s: int, direct: bool): bool {
 // ---------------------------------------------------------------- nodes
 
 fn (o: mut &Loops) mk(k: int, ty: int, a: int, line: int): int {
-    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: line, a: a, b: -1, c: -1, d: -1, v: 0, f: 0.0, s: ""})
+    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: line, a: a, b: -1, c: -1, d: -1, v: 0})
     return len(o.u.nodes) - 1
 }
 

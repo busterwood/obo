@@ -112,7 +112,7 @@ pub fn optimize(p: ir.Ir): ir.Ir {
 // ---------------------------------------------------------------- nodes
 
 fn (o: mut &Opt) mk1(k: int, ty: int, a: int, b: int, c: int): int {
-    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: 0, f: 0.0, s: ""})
+    append(mut &o.u.nodes, ir.Node{k: k, ty: ty, line: 0, a: a, b: b, c: c, d: -1, v: 0})
     o.grown += 1
     return len(o.u.nodes) - 1
 }

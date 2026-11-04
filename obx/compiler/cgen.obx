@@ -434,9 +434,9 @@ fn (g: &Gen) put(x: int, need: int, b: mut &StrBuf) {
         let s = g.intLit(n.ty, n.v)
         b.add(paren(s, if strByte(s, 0) == '-' || strByte(s, 0) == '(' { P_UNARY } else { P_POST }, need))
     } else if k == ir.E_FLT {
-        b.add(paren(fltLit(n.f), P_UNARY, need))
+        b.add(paren(fltLit(g.u.flts[n.v]), P_UNARY, need))
     } else if k == ir.E_STR {
-        b.add(strLit(n.s))
+        b.add(strLit(g.u.strs[n.v]))
     } else if k == ir.E_LOCAL {
         b.add(g.lname[n.a])
     } else if k == ir.E_GLOBAL {
