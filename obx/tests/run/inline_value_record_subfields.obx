@@ -1,0 +1,104 @@
+// A value record copied from a place and read through members of its fields
+// (`len(n.s)`, `n.tag.weight`, `n.tag.name`), the shapes the native backend
+// turns into the fields' own locals (compiler/opt.obx, value records in
+// fields): a scalar of a field is a copy of its own, a field read whole and
+// through its members is one local. A copy is a snapshot: writing or dropping
+// the source afterwards changes nothing in it.
+// Run with OBX_CHECK=1: every count must come back to zero.
+// expect: 2 3 11
+// expect: k1 2t1 2
+// expect: snapshot 2 n2 6
+// expect: dropped 2 4
+// expect: sum 62
+// expect: tagged t5 t59 2
+// expect: nested 7 5 13 6
+
+type Tag = value record {
+    name: str
+    weight: int
+}
+
+type Node = value record {
+    k: int
+    s: str
+    tag: Tag
+    t: str
+}
+
+type Box = record {
+    nodes: []Node
+}
+
+type Pos = value record {
+    x: int
+    y: int
+}
+
+type Span = value record {
+    from: Pos
+    n: int
+}
+
+type Item = value record {
+    name: str
+    span: Span
+}
+
+fn width(s: Span): int { return s.from.x + s.n }
+fn px(p: Pos): int { return p.x - 1 }
+
+fn nested(items: &[]Item, i: int): str {
+    let it = items[i]
+    return it.span.n.toStr() + " " + px(it.span.from).toStr() + " " + width(it.span).toStr() + " " + it.span.from.x.toStr()
+}
+
+fn mk(i: int): Node {
+    return Node{k: i, s: "n" + i.toStr(), tag: Tag{name: "t" + i.toStr(), weight: i + 4}, t: "unread"}
+}
+
+fn (b: &Box) lens(i: int): int {
+    let n = b.nodes[i]
+    if n.k == 0 { return -1 }
+    return len(n.s)
+}
+
+fn (b: &Box) both(i: int): str {
+    let n = b.nodes[i]
+    return "k" + n.k.toStr() + " " + len(n.tag.name).toStr() + n.tag.name + " " + len(n.s).toStr()
+}
+
+fn tagStr(t: Tag): str { return t.name + t.weight.toStr() }
+
+fn (b: &Box) tagged(i: int): str {
+    let n = b.nodes[i]
+    return n.tag.name + " " + tagStr(n.tag) + " " + len(n.tag.name).toStr()
+}
+
+fn main() {
+    var b = Box{nodes: []}
+    for i in 0..12 { append(mut &b.nodes, mk(i)) }
+    let n7 = b.nodes[7]
+    println(b.lens(3).toStr() + " " + b.lens(11).toStr() + " " + n7.tag.weight.toStr())
+    println(b.both(1))
+
+    // a snapshot: the source written after the copy
+    let n2 = b.nodes[2]
+    b.nodes[2].s = "changed!"
+    b.nodes[2].tag = Tag{name: "other", weight: 0}
+    println("snapshot " + len(n2.s).toStr() + " " + n2.s + " " + n2.tag.weight.toStr())
+
+    // the source dropped while the copy lives
+    let n4 = b.nodes[4]
+    b.nodes = []
+    println("dropped " + len(n4.s).toStr() + " " + n4.k.toStr())
+
+    var c = Box{nodes: []}
+    for i in 0..10 { append(mut &c.nodes, mk(i)) }
+    var sum = 0
+    for i in 0..10 { sum += c.lens(i) + i }
+    println("sum " + sum.toStr())
+    println("tagged " + c.tagged(5))
+    var items: []Item = []
+    for i in 0..4 { append(mut &items, Item{name: "i" + i.toStr(), span: Span{from: Pos{x: i * 2, y: i}, n: i + 4}}) }
+    println("nested " + nested(&items, 3))
+}

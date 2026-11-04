@@ -38,6 +38,8 @@ const M_NONE = -1         // not a local of the body being inlined
 const M_LOCAL = 0         // mv: the caller's local that stands for it
 const M_EXPR = 1          // mv: an expression of the caller (an argument), copied where it is named
 const M_DEREF = 2         // mv: a pointer local of the caller; the parameter is what it points to
+const M_LENT = 3          // ... as M_DEREF, for a str parameter given a copy of the place it points
+                          //     to (rt_str_dup): the body borrows the place, and its drops vanish
 
 type Opt = record {
     u: ir.Ir
@@ -476,6 +478,7 @@ type Fld = value record {
     drops: int              // `rt_str_drop(n.f);`
     away: bool              // some dup is not right after a declaration of the record
     loc: int                // the local that stands for it, or -1: none
+    outer: int              // the field (a record, a str) it is inside of, whose local holds it, or -1
 }
 
 type Cand = record {
@@ -509,7 +512,7 @@ fn (o: mut &Opt) field(c: int, x: int): int {
     for i in 0..len(o.cands[c].flds) {
         if o.cands[c].flds[i].off == off && o.cands[c].flds[i].ty == t { return i }
     }
-    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1})
+    append(mut &o.cands[c].flds, Fld{off: off, ty: t, tmpl: x, read: false, dups: 0, drops: 0, away: false, loc: -1, outer: -1})
     return len(o.cands[c].flds) - 1
 }
 
@@ -652,12 +655,36 @@ fn (o: mut &Opt) settle(c: int): bool {
     let n = len(o.cands[c].flds)
     for i in 0..n {
         let fi = o.cands[c].flds[i]
-        for j in i + 1..n {
+        let ei = fi.off + o.u.sizeOf(fi.ty)
+        for j in 0..n {
             let fj = o.cands[c].flds[j]
-            if fi.off < fj.off + o.u.sizeOf(fj.ty) && fj.off < fi.off + o.u.sizeOf(fi.ty) {
+            let ej = fj.off + o.u.sizeOf(fj.ty)
+            if i == j || !(fi.off < ej && fj.off < ei) { continue }
+            // fi inside the record fj (a member of a member: `n.s.len`): read from fj's local
+            let inside = fj.off <= fi.off && ei <= ej && o.u.tk(fj.ty) == ir.TY_STRUCT &&
+                !o.u.structs[o.u.tys[fj.ty].sid].isUnion && (ej - fj.off > ei - fi.off || o.u.tk(fi.ty) != ir.TY_STRUCT)
+            let fk = o.u.tk(fi.ty)
+            if inside && ((fk >= ir.TY_BOOL && fk <= ir.TY_U64) || fk == ir.TY_F64) {
+                // a scalar of it (`n.s.len`): a copy of its own (the copies are only read)
+                continue
+            }
+            if inside {
+                let q = o.cands[c].flds[i].outer
+                if q < 0 || o.u.sizeOf(o.cands[c].flds[q].ty) < ej - fj.off { o.cands[c].flds[i].outer = j }
+            } else if !(fi.off <= fj.off && ej <= ei) || (fi.off == fj.off && ei == ej) {
                 o.cands[c].bad = true
                 return false
             }
+        }
+    }
+    for i in 0..n {
+        let q = o.cands[c].flds[i].outer
+        if q >= 0 {
+            if o.cands[c].flds[i].dups > 0 || o.cands[c].flds[i].drops > 0 {
+                o.cands[c].bad = true
+                return false
+            }
+            o.cands[c].flds[q].read = true
         }
     }
     // a copy of a local is no copy from memory: worth it only for a count it saves
@@ -672,7 +699,7 @@ fn (o: mut &Opt) settle(c: int): bool {
     let name = o.u.locals[o.cands[c].l].name
     for i in 0..n {
         let f = o.cands[c].flds[i]
-        if f.read || f.dups != 1 || f.away {
+        if f.outer < 0 && (f.read || f.dups != 1 || f.away) {
             o.cands[c].flds[i].loc = o.local(name, f.ty, false)
         }
     }
@@ -738,6 +765,11 @@ fn (o: mut &Opt) sr(x: int) {
     }
     if k == ir.E_MEMBER {
         let c = o.done(x)
+        let fi = if c >= 0 { o.field(c, x) } else { -1 }
+        if c >= 0 && o.cands[c].flds[fi].outer >= 0 {
+            o.inner(c, x)
+            return
+        }
         if c >= 0 {
             let l = o.fieldLoc(c, x)
             o.u.nodes[x].k = ir.E_LOCAL
@@ -758,6 +790,32 @@ fn (o: mut &Opt) sr(x: int) {
     if l >= 0 {
         for j in 0..o.u.items[l] { o.sr(o.u.items[l + 1 + j]) }
     }
+}
+
+// The member chain x of candidate c, a field inside another (outer): the member of the chain
+// that is the outer field becomes its local.
+fn (o: mut &Opt) inner(c: int, x: int) {
+    let fi = o.field(c, x)
+    let q = o.cands[c].flds[fi].outer
+    let fq = o.cands[c].flds[q]
+    var off = 0
+    var r = x
+    while o.u.nk(r) == ir.E_MEMBER {
+        off += o.u.nodes[r].v
+        r = o.u.nodes[r].a
+    }
+    var y = x
+    while o.u.nk(y) == ir.E_MEMBER {
+        if off == fq.off && o.u.nodes[y].ty == fq.ty {
+            o.u.nodes[y].k = ir.E_LOCAL
+            o.u.nodes[y].a = fq.loc
+            o.u.nodes[y].v = 0
+            return
+        }
+        off -= o.u.nodes[y].v
+        y = o.u.nodes[y].a
+    }
+    ir.failAt("IR node", o.u.nodes[x].line, "opt: no outer field")
 }
 
 // sr of the statement x of a list, into out: whether it is not just x.
@@ -1028,6 +1086,15 @@ fn (o: mut &Opt) expand(c: int, g: int, out: mut &[]int) {
             o.mk[p] = M_EXPR
             o.mv[p] = x
             o.unrefAll(x)
+        } else if ro && o.lends(form, p, x, args, j) {
+            // f(rt_str_dup(y)) where f only reads its copy: f reads y
+            let y = o.u.listAt(o.u.nodes[x].b, 0)
+            let pt = o.u.ptrTo(t)
+            let q = o.local(o.u.locals[p].name, pt, false)
+            o.mk[p] = M_LENT
+            o.mv[p] = q
+            o.unrefAll(o.u.nodes[x].a)
+            append(out, o.mk1(ir.S_DECL, ir.TY_VOID, q, o.mk1(ir.E_ADDR, pt, y, -1, -1), -1))
         } else if ro && o.u.isAggr(t) && o.dropGlue(g) && o.u.nodes[x].ty == t && o.lvalue(x) {
             let pt = o.u.ptrTo(t)
             let q = o.local(o.u.locals[p].name, pt, false)
@@ -1052,6 +1119,100 @@ fn (o: mut &Opt) expand(c: int, g: int, out: mut &[]int) {
         o.mk[l] = M_NONE
         o.mv[l] = -1
     }
+}
+
+// Whether the str parameter p of the body form, given the argument x (argument j of the list
+// args), can borrow the place x copies: x is rt_str_dup(y) of a place y, and nothing can
+// change y or free it until the body is done: the arguments after x and the body write no
+// memory but their own locals and call only the runtime functions that read (calm), and the
+// body only reads p (in a member, or as an argument of a function that reads it) and drops it
+// (a statement of its own, which then vanishes).
+fn (o: &Opt) lends(form: int, p: int, x: int, args: int, j: int): bool {
+    let t = o.u.locals[p].ty
+    if o.dupF < 0 || o.dropF < 0 || o.aTaken[p] || o.callee(x) != o.dupF || o.u.listLen(o.u.nodes[x].b) != 1 {
+        return false
+    }
+    let y = o.u.listAt(o.u.nodes[x].b, 0)
+    if o.u.nodes[y].ty != t || o.u.nodes[x].ty != t || !o.lvalue(y) { return false }
+    for m in j + 1..o.u.listLen(args) {
+        if !o.calm(o.u.listAt(args, m), -1, false) { return false }
+    }
+    return o.calm(form, p, false)
+}
+
+// The runtime functions that only read their arguments and write no memory (READS: a str
+// argument read, not kept).
+const CALM: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_dup", "rt_str_drop", "rt_idx",
+    "rt_add_int", "rt_sub_int", "rt_mul_int"]
+const READS: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_dup"]
+
+fn named(names: &[str], n: str): bool {
+    for m in names {
+        if m == n { return true }
+    }
+    return false
+}
+
+// Whether the tree x writes no memory but its locals (assignments, increments, but never
+// through a pointer), calls only CALM functions, and names p (if p >= 0) only where it is read
+// (ok: in a member, or as an argument of a READS function) or dropped (a statement of its own).
+fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
+    if x < 0 { return true }
+    let k = o.u.nodes[x].k
+    let kc = KIDS[k]
+    if kc < 0 { return false }
+    let a = o.u.nodes[x].a
+    if k == ir.E_LOCAL { return a != p || ok }
+    if kc == K_NONE { return true }
+    if k == ir.E_ADDR || k == ir.E_DECAY {
+        let ak = o.u.nk(a)
+        if ak == ir.E_FUNC || ak == ir.E_STR { return true }
+        return o.root(a) != p && o.calm(a, p, false)
+    }
+    if k == ir.E_ASSIGN || k == ir.E_POSTINC {
+        let r = o.root(a)
+        if r < 0 || r == p { return false }
+        return o.calm(a, p, false) && o.calm(o.u.nodes[x].b, p, false)
+    }
+    if k == ir.S_EXPR && p >= 0 && o.callee(a) == o.dropF && o.u.listLen(o.u.nodes[a].b) == 1 {
+        let d = o.u.listAt(o.u.nodes[a].b, 0)
+        if o.u.nk(d) == ir.E_LOCAL && o.u.nodes[d].a == p { return true }
+    }
+    if k == ir.E_CALL {
+        let f = o.callee(x)
+        if f < 0 || o.u.funcs[f].body >= 0 || o.u.funcs[f].isExtern || !named(&CALM, o.u.funcs[f].name) { return false }
+        let r = named(&READS, o.u.funcs[f].name)
+        let l = o.u.nodes[x].b
+        for i in 0..o.u.listLen(l) {
+            if !o.calm(o.u.listAt(l, i), p, r) { return false }
+        }
+        return true
+    }
+    if k == ir.E_MEMBER { return o.calm(a, p, true) }
+    let b = o.u.nodes[x].b
+    if kc == K_A { return o.calm(a, p, false) }
+    if kc == K_AB { return o.calm(a, p, false) && o.calm(b, p, false) }
+    if kc == K_BLOCK || kc == K_CLIT {
+        let l = if kc == K_BLOCK { a } else { b }
+        if l < 0 { return true }
+        for i in 0..o.u.listLen(l) {
+            if !o.calm(o.u.listAt(l, i), p, false) { return false }
+        }
+        return true
+    }
+    let c = o.u.nodes[x].c
+    if kc == K_ABC { return o.calm(a, p, false) && o.calm(b, p, false) && o.calm(c, p, false) }
+    if kc == K_DECL {
+        if !o.calm(b, p, false) { return false }
+        if c >= 0 {
+            for i in 0..o.u.listLen(c) {
+                if !o.calm(o.u.listAt(c, i), p, false) { return false }
+            }
+        }
+        return true
+    }
+    if kc == K_CALL { return false }
+    return o.calm(a, p, false) && o.calm(b, p, false) && o.calm(c, p, false) && o.calm(o.u.nodes[x].d, p, false)
 }
 
 // Whether argument j of a call (in the list args) can stand for its parameter wherever the
@@ -1125,7 +1286,7 @@ fn (o: mut &Opt) cl(x: int): int {
         let l = o.u.nodes[x].a
         let m = o.mk[l]
         if m == M_EXPR { return o.cl(o.mv[l]) }
-        if m == M_DEREF {
+        if m == M_DEREF || m == M_LENT {
             let p = o.mk1(ir.E_LOCAL, o.u.locals[o.mv[l]].ty, o.mv[l], -1, -1)
             return o.mk1(ir.E_DEREF, o.u.nodes[x].ty, p, -1, -1)
         }
@@ -1133,6 +1294,11 @@ fn (o: mut &Opt) cl(x: int): int {
     }
     if k == ir.S_RETURN { return o.ret(o.u.nodes[x].a) }
     if o.nop(x) { return -1 }
+    if k == ir.S_EXPR && o.callee(o.u.nodes[x].a) == o.dropF {
+        // the drop of a parameter that borrows: nothing
+        let d = o.u.listAt(o.u.nodes[o.u.nodes[x].a].b, 0)
+        if o.u.nk(d) == ir.E_LOCAL && o.mk[o.u.nodes[d].a] == M_LENT { return -1 }
+    }
     append(mut &o.u.nodes, o.u.nodes[x])
     o.grown += 1
     let y = len(o.u.nodes) - 1

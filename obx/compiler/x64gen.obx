@@ -142,6 +142,7 @@ type Gen = record {
     callDest: x64.Mem           // for the next genCall: where its aggregate result goes (or base -9)
     callFresh: bool             // ... a new local (it may be the hidden result pointer)
     destUsed: bool              // genCall put the result there
+    byteDest: int               // the register the next inline rt_str_byte loads its byte into (rax)
     aTaken: []bool              // per local: its address (or a member's) is taken
     emptyS: int                 // an S_EMPTY node
     saved: []int                // the frame slots of the callee-saved registers the function uses
@@ -220,7 +221,7 @@ fn newGen(u: ir.Ir): Gen {
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
-        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, posOf: [], posSeen: [],
+        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
         inlPos: -1, held: [], nLocalRegs: 0, bareRet: false, rm: newMap(), noCopy: -1, sites: [],
         siteIdx: [], siteStamp: [], noSites: 0, rotBody: 0, ifDepth: 0, loopDepth: 0, posW: [], spill: [], spillSlot: []}
     g.a.peep = true
@@ -1302,6 +1303,19 @@ fn (g: mut &Gen) fwdSite(x: int, t: int, v: int): int {
         if r >= 0 && k == ir.E_MEMBER { return -1 }
         return r
     }
+    if k == ir.E_LAND || k == ir.E_LOR || k == ir.E_COND {
+        // a is evaluated first, the rest after it (or not at all): t in a is read before
+        // anything else of x, so the rest may be anything; t only perhaps read is no site
+        let r = g.fwdSite(n.a, t, v)
+        if r == -1 { return -1 }
+        if r >= 0 {
+            if g.walk(n.b, 0, t, -1) > 0 || g.walk(n.c, 0, t, -1) > 0 { return -1 }
+            return r
+        }
+        if g.fwdSite(n.b, t, v) != -2 { return -1 }
+        if k == ir.E_COND && g.fwdSite(n.c, t, v) != -2 { return -1 }
+        return -2
+    }
     var kids: []int = []
     if k == ir.E_CALL {
         append(mut &kids, n.a)
@@ -1309,7 +1323,7 @@ fn (g: mut &Gen) fwdSite(x: int, t: int, v: int): int {
     } else if k == ir.E_BIN || k == ir.E_PADD {
         append(mut &kids, n.a)
         append(mut &kids, n.b)
-    } else if k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_DEREF {
+    } else if k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT || k == ir.E_DEREF {
         append(mut &kids, n.a)
     } else if k == ir.E_ASSIGN {
         // into a local or a member of one, the value naming t
@@ -2032,6 +2046,8 @@ fn (g: mut &Gen) stmt1(s: int) {
                 g.genInto(n.b, g.reg[l])
             } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.arithInto(n.b, g.reg[l], true) {
                 // computed in the register
+            } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.reg[l]) {
+                // loaded into the register
             } else if n.b >= 0 {
                 g.gen(n.b)
                 if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
@@ -2050,6 +2066,9 @@ fn (g: mut &Gen) stmt1(s: int) {
             g.destUsed = false
             g.gen(n.b)
             if !g.destUsed { g.storeT(t, rbp(s2)) }
+        } else if n.b >= 0 && g.isAggr(t) && g.u.nk(n.b) == ir.E_CLIT && g.u.nodes[n.b].ty == t {
+            // built in the slot (the local is not named in its initializer)
+            g.initEntries(s2, g.size(t), g.u.nodes[n.b].b)
         } else if n.b >= 0 {
             g.gen(n.b)
             g.storeFrom(g.u.nodes[n.b].ty, t, rbp(s2))
@@ -2742,7 +2761,42 @@ fn (g: &Gen) viaReg(x: int): x64.Mem {
 
 // Fills the n bytes at rbp+s from initializer entries (zero first).
 fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
-    g.zeroFrame(s, n)
+    // zeroed: the words no entry fills whole (padding, fields not given, parts of words)
+    var full: []bool = array((n + 7) / 8, false)
+    var cov: []bool = array(n, false)
+    for j in 0..g.u.listLen(ents) {
+        let en = g.u.nodes[g.u.listAt(ents, j)]
+        var sz = g.size(en.ty)
+        if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.nodes[en.a].s) + 1 < sz {
+            sz = len(g.u.nodes[en.a].s) + 1            // the copied bytes; the rest stays zero
+        }
+        var b = en.v
+        while b < en.v + sz && b < n {
+            if b >= 0 { cov[b] = true }
+            b += 1
+        }
+    }
+    for w in 0..len(full) {
+        var all = true
+        var b = w * 8
+        while b < w * 8 + 8 && b < n {
+            if !cov[b] { all = false }
+            b += 1
+        }
+        full[w] = all
+    }
+    var w = 0
+    while w < len(full) {
+        if full[w] {
+            w += 1
+            continue
+        }
+        var e = w
+        while e < len(full) && !full[e] { e += 1 }
+        let end = if e * 8 < n { e * 8 } else { n }
+        g.zeroFrame(s + w * 8, end - w * 8)
+        w = e
+    }
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
         let t = en.ty
@@ -2753,11 +2807,31 @@ fn (g: mut &Gen) initEntries(s: int, n: int, ents: int) {
             if cnt > g.size(t) { cnt = g.size(t) }
             g.a.movRSym(RAX, g.symStr(str), 0)
             g.copyMem(rbp(s + en.v), x64.mem(RAX, 0), cnt)
+        } else if g.storeDirect(x, t, rbp(s + en.v)) {
+            // a constant or a register stored as it is
         } else {
             g.gen(x)
             g.storeT(t, rbp(s + en.v))
         }
     }
+}
+
+// Stores the integer or pointer x of type t at m with no code for x: a constant that a 32-bit
+// immediate holds, or a local in a register (normalized as a t); whether it did.
+fn (g: mut &Gen) storeDirect(x: int, t: int, m: x64.Mem): bool {
+    let k = g.tk(t)
+    if k != ir.TY_PTR && (k < ir.TY_BOOL || k > ir.TY_U64) { return false }
+    let cv = g.intConst(x, t)
+    if cv.c == 0 && x64.fits32(cv.v) {
+        g.a.storeI(g.size(t), m, cv.v)
+        return true
+    }
+    let r = g.regOf(x)
+    if r >= 0 && g.normAs(g.u.nodes[x].ty, t) {
+        g.a.store(g.size(t), m, r)
+        return true
+    }
+    return false
 }
 
 // ---------------------------------------------------------------- expressions
@@ -2850,6 +2924,27 @@ fn (g: &Gen) pure(x: int): bool {
     }
     if k == ir.E_BIN { return g.pure(n.a) && g.pure(n.b) }
     return g.pure(n.a) && g.pure(n.b) && g.pure(n.c)
+}
+
+// Whether e is an integer or pointer loaded through members and pointers from a local (or a
+// register): its evaluation cannot fail, has no effect, and uses rax alone (gen through place).
+fn (g: &Gen) loadOnly(e: int): bool {
+    let n = g.u.nodes[e]
+    if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) { return false }
+    return g.loadPath(e)
+}
+
+fn (g: &Gen) loadPath(e: int): bool {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_LOCAL || g.regOf(e) >= 0 { return true }
+    if n.k == ir.E_MEMBER { return g.loadPath(n.a) }
+    if n.k == ir.E_DEREF {
+        let p = g.u.nodes[n.a]
+        if p.k == ir.E_PADD || g.isAggr(p.ty) || g.isF(p.ty) || g.is128(p.ty) { return false }
+        return g.loadPath(n.a)
+    }
+    if g.noopCast(e) { return g.loadPath(n.a) }
+    return false
 }
 
 // The symbol of e if it is the address of a string literal or a global, else -1.
@@ -2959,6 +3054,18 @@ fn (g: mut &Gen) cmpPair(a: int, b: int) {
         g.a.alu(x64.CMP, 8, ra, RCX)
         return
     }
+    if ra >= 0 && !g.srcOnly(b) && !g.writesReg(b, ra) {
+        // b in rax, compared with a's register as it is after b (b does not change it)
+        g.gen(b)
+        g.a.alu(x64.CMP, 8, ra, RAX)
+        return
+    }
+    if ra < 0 && g.memOperand(a) && !g.srcOnly(b) && !g.simple(b) && g.pure(b) {
+        // a in memory b cannot change, read by the compare after b
+        g.gen(b)
+        g.a.aluMR(x64.CMP, 8, g.staticMem(a), RAX)
+        return
+    }
     g.aluSrc(x64.CMP, 8, RAX, g.pairSrc(a, b))
 }
 
@@ -3016,6 +3123,13 @@ fn (g: mut &Gen) pairC(a: int, b: int, comm: bool): Src {
         g.gen(b)
         g.a.movRR(8, RCX, RAX)
         g.genInto(a, RAX)
+        return rcx
+    }
+    if g.loadOnly(a) && g.pure(b) {
+        // a is loads that cannot fail and b changes nothing: b first, then a in rax alone
+        g.gen(b)
+        g.a.movRR(8, RCX, RAX)
+        g.gen(a)
         return rcx
     }
     g.gen(a)
@@ -3294,6 +3408,9 @@ fn (g: mut &Gen) gen(e: int) {
             let sc = n.v
             if sc == 1 || sc == 2 || sc == 4 || sc == 8 {
                 g.a.lea(RAX, x64.memx(RAX, RCX, sc, 0))
+            } else if x64.fits32(sc) {
+                g.a.imulI(8, RCX, RCX, sc)
+                g.a.alu(x64.ADD, 8, RAX, RCX)
             } else {
                 g.a.movRI(RDX, sc)
                 g.a.imul(8, RCX, RDX)
@@ -3326,44 +3443,100 @@ fn (g: mut &Gen) place(e: int): x64.Mem {
     return x64.mem(RAX, 0)
 }
 
-// Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8,
-// p needs no code but a load, and i is a local in a register, an rt_idx of one (the check done
+// Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8
+// (or any other, multiplied into rcx first), p needs no code but loads (simple, or loadOnly:
+// generated after i, in rax), and i is a local in a register, an rt_idx of one (the check done
 // first, in place), or pure (generated first, as pair does).
 fn (g: &Gen) paddFold(e: int): bool {
     let n = g.u.nodes[e]
-    if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !g.simple(n.a) { return false }
-    if n.v != 1 && n.v != 2 && n.v != 4 && n.v != 8 { return false }
+    if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !(g.simple(n.a) || g.loadOnly(n.a)) { return false }
+    if !x64.fits32(n.v) { return false }
     return g.regOf(n.b) >= 0 || g.idxReg(n.b) >= 0 || g.pure(n.b)
 }
 
-// The register of local i in rt_idx(i, len, w) (inline, len needing no code), else -1.
+fn scaleOk(sc: int): bool { return sc == 1 || sc == 2 || sc == 4 || sc == 8 }
+
+// The register of local i in rt_idx(i, len, w) (inline, len needing no code or only loads),
+// else -1.
 fn (g: &Gen) idxReg(b: int): int {
     if g.u.nk(b) != ir.E_CALL || g.rtName(b) != "rt_idx" { return -1 }
     let l = g.u.nodes[b].b
-    if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) || !g.srcOnly(g.u.listAt(l, 1)) { return -1 }
+    if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) { return -1 }
+    let ln = g.u.listAt(l, 1)
+    if !g.srcOnly(ln) && !(g.loadOnly(ln) && g.size(g.u.nodes[ln].ty) == 8) { return -1 }
     return g.regOf(g.u.listAt(l, 0))
 }
 
 // The code of p + i * size (paddFold) but the last add: the operand [p + i * size].
 fn (g: mut &Gen) paddMem(e: int): x64.Mem {
     let n = g.u.nodes[e]
-    let sc = n.v
+    var sc = n.v
     var ri = g.regOf(n.b)
     if ri < 0 && g.idxReg(n.b) >= 0 {
         let l = g.u.nodes[n.b].b
         ri = g.idxReg(n.b)
-        g.aluSrc(x64.CMP, 8, ri, g.pairSrc(-1, g.u.listAt(l, 1)))
+        let ln = g.u.listAt(l, 1)
+        if g.srcOnly(ln) {
+            g.aluSrc(x64.CMP, 8, ri, g.pairSrc(-1, ln))
+        } else {
+            g.gen(ln)                                   // loads into rax alone
+            g.a.alu(x64.CMP, 8, ri, RAX)
+        }
         g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(l, 2)))
     }
     if ri >= 0 {
+        if !scaleOk(sc) {
+            g.a.imulI(8, RCX, ri, sc)
+            ri = RCX
+            sc = 1
+        }
         if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), ri, sc, 0) }
-        g.genInto(n.a, RAX)
+        g.baseInto(n.a)
         return x64.memx(RAX, ri, sc, 0)
     }
     g.gen(n.b)
+    if !scaleOk(sc) {
+        g.a.imulI(8, RAX, RAX, sc)
+        sc = 1
+    }
     if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), RAX, sc, 0) }
-    g.genInto(n.a, RCX)
-    return x64.memx(RCX, RAX, sc, 0)
+    if g.simple(n.a) {
+        g.genInto(n.a, RCX)
+        return x64.memx(RCX, RAX, sc, 0)
+    }
+    g.a.movRR(8, RCX, RAX)
+    g.gen(n.a)                                          // loadOnly: rax alone
+    return x64.memx(RAX, RCX, sc, 0)
+}
+
+// A load of the integer or pointer e (through members and pointers: its place needs code) into
+// register r instead of rax, which the place's code may use; whether it was done. The place is
+// computed before r is written, so it may read r.
+fn (g: mut &Gen) loadInto(e: int, r: int): bool {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_CALL && g.rtName(e) == "rt_str_byte" && g.u.listLen(n.b) == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+        // the byte loaded straight into r
+        g.byteDest = r
+        g.gen(e)
+        g.byteDest = RAX
+        return true
+    }
+    if n.k != ir.E_MEMBER && n.k != ir.E_DEREF { return false }
+    if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) || g.regOf(e) >= 0 { return false }
+    let k = g.tk(n.ty)
+    if k != ir.TY_PTR && (k < ir.TY_BOOL || k > ir.TY_U64) { return false }
+    let m = g.staticMem(e)
+    if m.base != -9 {
+        g.loadInt(n.ty, r, m)
+    } else {
+        g.loadInt(n.ty, r, g.place(e))
+    }
+    return true
+}
+
+// The base p of paddMem into rax: simple, or loadOnly (rax alone).
+fn (g: mut &Gen) baseInto(a: int) {
+    if g.simple(a) { g.genInto(a, RAX) } else { g.gen(a) }
 }
 
 fn (g: mut &Gen) genAssign(e: int) {
@@ -3372,6 +3545,7 @@ fn (g: mut &Gen) genAssign(e: int) {
     let lhs = n.a
     let t = n.ty
     if g.regOf(lhs) >= 0 {
+        if unused && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.regOf(lhs)) { return }
         g.gen(n.b)
         if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
         g.a.movRR(8, g.regOf(lhs), RAX)
@@ -4698,6 +4872,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         return true
     }
     if name == "rt_str_byte" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+        let dst = replace(mut &g.byteDest, RAX)
         let sx = g.u.listAt(n.b, 0)
         let ix = g.u.listAt(n.b, 1)
         let m = g.staticMem(sx)
@@ -4708,7 +4883,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
                 ri = RCX
                 if g.simple(ix) {
                     g.genInto(ix, RCX)
-                } else {
+                } else if !g.arithInto(ix, RCX, true) {
                     g.gen(ix)
                     g.a.movRR(8, RCX, RAX)
                 }
@@ -4718,7 +4893,28 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
             g.a.loadZX(4, RAX, at(m, 8))                // off
             g.a.aluRM(x64.ADD, 8, RAX, m)               // + the block
-            g.a.loadZX(1, RAX, x64.memx(RAX, ri, 1, 8)) // data[off + i]
+            g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8)) // data[off + i]
+            return true
+        }
+        let br = if g.u.nk(sx) == ir.E_DEREF { g.regOf(g.u.nodes[sx].a) } else { -1 }
+        if br >= 0 && !g.writesReg(ix, br) && g.quietTree(ix) {
+            // through a pointer in a register: the index first, the str read where it is
+            var ri = g.regOf(ix)
+            if ri < 0 {
+                ri = RCX
+                if g.simple(ix) {
+                    g.genInto(ix, RCX)
+                } else if !g.arithInto(ix, RCX, true) {
+                    g.gen(ix)
+                    g.a.movRR(8, RCX, RAX)
+                }
+            }
+            g.a.loadZX(4, RDX, x64.mem(br, 12))             // len
+            g.a.alu(x64.CMP, 8, ri, RDX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            g.a.loadZX(4, RAX, x64.mem(br, 8))              // off
+            g.a.aluRM(x64.ADD, 8, RAX, x64.mem(br, 0))      // + the block
+            g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8))     // data[off + i]
             return true
         }
         g.gen(sx)                                       // the address of the str
@@ -4737,7 +4933,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.a.loadZX(4, RDX, x64.mem(RAX, 8))             // off
         g.a.load(8, RAX, x64.mem(RAX, 0))               // the block
         g.a.alu(x64.ADD, 8, RAX, RDX)
-        g.a.loadZX(1, RAX, x64.memx(RAX, RCX, 1, 8))    // data[off + i]
+        g.a.loadZX(1, dst, x64.memx(RAX, RCX, 1, 8))    // data[off + i]
         return true
     }
     if name == "rt_str_dup" && nargs == 1 {

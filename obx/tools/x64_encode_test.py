@@ -74,7 +74,7 @@ def mem_text(m):
 
 def gen(r):
     """One instruction: (encoder test line, as text)."""
-    k = r.randint(0, 34)
+    k = r.randint(0, 35)
     size = r.choice([1, 2, 4, 8])
     a, b = r.randint(0, 15), r.randint(0, 15)
     if k == 0:
@@ -194,6 +194,10 @@ def gen(r):
         mt, ma = mem_text(rnd_mem(r))
         v = rnd_imm(r, 8 * min(size, 4))
         return f'alumi {ALU[op]} {size} {mt} {v}', f'{ALU[op]} {PTR[size]} ptr {ma}, {v}'
+    if k == 35:
+        op = r.randint(0, 7)
+        mt, ma = mem_text(rnd_mem(r))
+        return f'alumr {ALU[op]} {size} {mt} {a}', f'{ALU[op]} {PTR[size]} ptr {ma}, {REGS[size][a]}'
     if k == 32:
         return (f'cvtsi2sd {a} {b}', f'cvtsi2sd xmm{a}, {R64[b]}') if r.random() < 0.5 else \
                (f'cvttsd2si {a} {b}', f'cvttsd2si {R64[a]}, xmm{b}')

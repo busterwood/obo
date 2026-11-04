@@ -247,6 +247,7 @@ fn pfxOf(size: int): int { return if size == 2 { 0x66 } else { 0 } }
 
 // mov dst, src (size 1, 2, 4 or 8; a 4-byte move zero-extends to 64 bits).
 pub fn (a: mut &Asm) movRR(size: int, dst: int, src: int) {
+    if a.peep && size == 8 && dst == src { return }     // peephole: a move that changes nothing
     a.rr(pfxOf(size), size == 8, if size == 1 { 0x88 } else { 0x89 }, src, dst, size == 1, size == 1)
 }
 
@@ -388,6 +389,11 @@ pub fn (a: mut &Asm) alu(op: int, size: int, dst: int, src: int) {
 // op dst, [m].
 pub fn (a: mut &Asm) aluRM(op: int, size: int, dst: int, m: Mem) {
     a.rm(pfxOf(size), size == 8, op * 8 + (if size == 1 { 2 } else { 3 }), dst, m, size == 1)
+}
+
+// op [m], src.
+pub fn (a: mut &Asm) aluMR(op: int, size: int, m: Mem, src: int) {
+    a.rm(pfxOf(size), size == 8, op * 8 + (if size == 1 { 0 } else { 1 }), src, m, size == 1)
 }
 
 // op dst, imm (size 4 or 8; the immediate fits 32 bits, sign-extended).
@@ -817,6 +823,8 @@ fn (a: mut &Asm) testLine(l: str) {
         a.aluI(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), num(w[4]))
     } else if k == "alum" {
         a.aluRM(nameIndex(ALU_NAMES, w[1]), num(w[2]), num(w[3]), memOf(w[4]))
+    } else if k == "alumr" {
+        a.aluMR(nameIndex(ALU_NAMES, w[1]), num(w[2]), memOf(w[3]), num(w[4]))
     } else if k == "alumi" {
         a.aluMI(nameIndex(ALU_NAMES, w[1]), num(w[2]), memOf(w[3]), num(w[4]))
     } else if k == "test" {
