@@ -26471,7 +26471,7 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
   int64_t v_codeBase_2 = t1;
   (*p_g)->f_codeBase = v_codeBase_2;
   int64_t t3 = v_codeBase_2;
-  int64_t t4 = f134_ir_alignUp(rt_add_int(t3, (*p_g)->f_a->f_code.len, "x64gen.obx:5414"), 16LL);
+  int64_t t4 = f134_ir_alignUp(rt_add_int(t3, (*p_g)->f_a->f_code.len, "x64gen.obx:5440"), 16LL);
   int64_t v_roBase_5 = t4;
   int64_t t6 = f134_ir_alignUp((*p_g)->f_rtBssEnd, 4096LL);
   int64_t v_dataBase_7 = t6;
@@ -26490,16 +26490,16 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     int64_t ap20 = 0LL;
     *(int64_t*)rt_arr_push(&v_gAddr_15, 8ULL) = ap20;
     int64_t ix21 = v_i_19;
-    bool c22 = (bool)!*((bool*)(*p_g)->f_gLive.data + rt_idx(ix21, (*p_g)->f_gLive.len, "x64gen.obx:5424"));
+    bool c22 = (bool)!*((bool*)(*p_g)->f_gLive.data + rt_idx(ix21, (*p_g)->f_gLive.len, "x64gen.obx:5450"));
     if (c22) {
       continue;
     }
     int64_t ix23 = v_i_19;
-    int64_t v_t_24 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix23, (*p_g)->f_u->f_globals.len, "x64gen.obx:5425")))->f_ty;
+    int64_t v_t_24 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix23, (*p_g)->f_u->f_globals.len, "x64gen.obx:5451")))->f_ty;
     int64_t ix25 = v_i_19;
-    int64_t v_init_26 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix25, (*p_g)->f_u->f_globals.len, "x64gen.obx:5426")))->f_init;
+    int64_t v_init_26 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix25, (*p_g)->f_u->f_globals.len, "x64gen.obx:5452")))->f_init;
     int64_t ix27 = v_i_19;
-    bool v_isConst_28 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix27, (*p_g)->f_u->f_globals.len, "x64gen.obx:5427")))->f_isConst;
+    bool v_isConst_28 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix27, (*p_g)->f_u->f_globals.len, "x64gen.obx:5453")))->f_isConst;
     int64_t t29 = f135_ir_Ir_alignOf(&(*p_g)->f_u, v_t_24);
     int64_t v_al_30 = t29;
     bool b31 = (bool)(v_init_26 < 0LL);
@@ -26517,10 +26517,10 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
         int64_t v_off_36 = t35;
         int64_t t37 = v_off_36;
         int64_t t38 = f136_x64gen_Gen_size(p_g, v_t_24);
-        f137_x64gen_growTo(&v_ro_9, rt_add_int(t37, t38, "x64gen.obx:5433"));
-        int64_t t39 = rt_add_int(v_roBase_5, v_off_36, "x64gen.obx:5434");
+        f137_x64gen_growTo(&v_ro_9, rt_add_int(t37, t38, "x64gen.obx:5459"));
+        int64_t t39 = rt_add_int(v_roBase_5, v_off_36, "x64gen.obx:5460");
         int64_t ix40 = v_i_19;
-        *((int64_t*)v_gAddr_15.data + rt_idx(ix40, v_gAddr_15.len, "x64gen.obx:5434")) = t39;
+        *((int64_t*)v_gAddr_15.data + rt_idx(ix40, v_gAddr_15.len, "x64gen.obx:5460")) = t39;
         bool c41 = (bool)(v_init_26 >= 0LL);
         if (c41) {
           f138_x64gen_Gen_initData(p_g, &v_ro_9, (bool)1LL, v_off_36, v_init_26, &v_relocs_13);
@@ -26530,10 +26530,10 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
         int64_t v_off_43 = t42;
         int64_t t44 = v_off_43;
         int64_t t45 = f136_x64gen_Gen_size(p_g, v_t_24);
-        f137_x64gen_growTo(&v_data_11, rt_add_int(t44, t45, "x64gen.obx:5438"));
-        int64_t t46 = rt_add_int(v_dataBase_7, v_off_43, "x64gen.obx:5439");
+        f137_x64gen_growTo(&v_data_11, rt_add_int(t44, t45, "x64gen.obx:5464"));
+        int64_t t46 = rt_add_int(v_dataBase_7, v_off_43, "x64gen.obx:5465");
         int64_t ix47 = v_i_19;
-        *((int64_t*)v_gAddr_15.data + rt_idx(ix47, v_gAddr_15.len, "x64gen.obx:5439")) = t46;
+        *((int64_t*)v_gAddr_15.data + rt_idx(ix47, v_gAddr_15.len, "x64gen.obx:5465")) = t46;
         f138_x64gen_Gen_initData(p_g, &v_data_11, (bool)0LL, v_off_43, v_init_26, &v_relocs_13);
       }
     }
@@ -26543,13 +26543,13 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
   int64_t end50 = (*p_g)->f_strs.len;
   for (int64_t v_i_51 = 0LL; v_i_51 < end50; v_i_51++) {
     int64_t ix52 = v_i_51;
-    obx_str v_s_53 = rt_str_dup(*((obx_str*)(*p_g)->f_strs.data + rt_idx(ix52, (*p_g)->f_strs.len, "x64gen.obx:5446")));
+    obx_str v_s_53 = rt_str_dup(*((obx_str*)(*p_g)->f_strs.data + rt_idx(ix52, (*p_g)->f_strs.len, "x64gen.obx:5472")));
     int64_t t54 = v_roBase_5;
-    int64_t ap55 = rt_add_int(t54, v_ro_9.len, "x64gen.obx:5447");
+    int64_t ap55 = rt_add_int(t54, v_ro_9.len, "x64gen.obx:5473");
     *(int64_t*)rt_arr_push(&v_sAddr_49, 8ULL) = ap55;
     int64_t end56 = (int64_t)v_s_53.len;
     for (int64_t v_j_57 = 0LL; v_j_57 < end56; v_j_57++) {
-      uint8_t t58 = rt_str_byte(v_s_53, v_j_57, "x64gen.obx:5448");
+      uint8_t t58 = rt_str_byte(v_s_53, v_j_57, "x64gen.obx:5474");
       uint8_t ap59 = t58;
       *(uint8_t*)rt_arr_push(&v_ro_9, 1ULL) = ap59;
     }
@@ -26571,18 +26571,18 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     int64_t v_dynOff_70 = t69;
     int64_t t71 = f140_elf_dynSize(v_needed_66.len);
     v_dynLen_62 = t71;
-    f137_x64gen_growTo(&v_data_11, rt_add_int(v_dynOff_70, v_dynLen_62, "x64gen.obx:5462"));
+    f137_x64gen_growTo(&v_data_11, rt_add_int(v_dynOff_70, v_dynLen_62, "x64gen.obx:5488"));
     int64_t v_gotOff_72 = v_data_11.len;
     int64_t t73 = v_gotOff_72;
-    f137_x64gen_growTo(&v_data_11, rt_add_int(t73, rt_mul_int(8LL, (*p_g)->f_imports.len, "x64gen.obx:5464"), "x64gen.obx:5464"));
-    v_dynAt_61 = rt_add_int(v_dataBase_7, v_dynOff_70, "x64gen.obx:5465");
-    v_gotAt_63 = rt_add_int(v_dataBase_7, v_gotOff_72, "x64gen.obx:5466");
+    f137_x64gen_growTo(&v_data_11, rt_add_int(t73, rt_mul_int(8LL, (*p_g)->f_imports.len, "x64gen.obx:5490"), "x64gen.obx:5490"));
+    v_dynAt_61 = rt_add_int(v_dataBase_7, v_dynOff_70, "x64gen.obx:5491");
+    v_gotAt_63 = rt_add_int(v_dataBase_7, v_gotOff_72, "x64gen.obx:5492");
     obx_arr a74 = rt_arr_new(0LL, 32ULL);
     obx_arr v_rels_75 = a74;
     int64_t end76 = (*p_g)->f_imports.len;
     for (int64_t v_i_77 = 0LL; v_i_77 < end76; v_i_77++) {
-      int64_t t78 = rt_add_int(v_gotAt_63, rt_mul_int(8LL, v_i_77, "x64gen.obx:5469"), "x64gen.obx:5469");
-      struct S30_elf_DynRel t79 = (struct S30_elf_DynRel){.f_at = t78, .f_sym = rt_add_int(v_i_77, 1LL, "x64gen.obx:5469"), .f_kind = 6LL, .f_addend = 0LL};
+      int64_t t78 = rt_add_int(v_gotAt_63, rt_mul_int(8LL, v_i_77, "x64gen.obx:5495"), "x64gen.obx:5495");
+      struct S30_elf_DynRel t79 = (struct S30_elf_DynRel){.f_at = t78, .f_sym = rt_add_int(v_i_77, 1LL, "x64gen.obx:5495"), .f_kind = 6LL, .f_addend = 0LL};
       struct S30_elf_DynRel ap80 = t79;
       *(struct S30_elf_DynRel*)rt_arr_push(&v_rels_75, 32ULL) = ap80;
     }
@@ -26593,12 +26593,12 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     for (int64_t v_k_85 = 0LL; v_k_85 < end84; v_k_85++) {
       obx_slice t86 = k6_x64gen_HOOKS;
       int64_t ix87 = v_k_85;
-      obx_str v_h_88 = rt_str_dup(*((obx_str*)t86.data + rt_idx(ix87, t86.len, "x64gen.obx:5473")));
+      obx_str v_h_88 = rt_str_dup(*((obx_str*)t86.data + rt_idx(ix87, t86.len, "x64gen.obx:5499")));
       int64_t t89 = f102_std_Map_getOr(&(*p_g)->f_importSym, &v_h_88, -1LL);
       int64_t ix90 = t89;
-      int64_t v_im_91 = ((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix90, (*p_g)->f_syms.len, "x64gen.obx:5474"))->f_idx;
-      int64_t t92 = rt_add_int(v_hooks_83, rt_mul_int(8LL, v_k_85, "x64gen.obx:5475"), "x64gen.obx:5475");
-      struct S30_elf_DynRel t93 = (struct S30_elf_DynRel){.f_at = t92, .f_sym = rt_add_int(v_im_91, 1LL, "x64gen.obx:5475"), .f_kind = 6LL, .f_addend = 0LL};
+      int64_t v_im_91 = ((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix90, (*p_g)->f_syms.len, "x64gen.obx:5500"))->f_idx;
+      int64_t t92 = rt_add_int(v_hooks_83, rt_mul_int(8LL, v_k_85, "x64gen.obx:5501"), "x64gen.obx:5501");
+      struct S30_elf_DynRel t93 = (struct S30_elf_DynRel){.f_at = t92, .f_sym = rt_add_int(v_im_91, 1LL, "x64gen.obx:5501"), .f_kind = 6LL, .f_addend = 0LL};
       struct S30_elf_DynRel ap94 = t93;
       *(struct S30_elf_DynRel*)rt_arr_push(&v_rels_75, 32ULL) = ap94;
       rt_str_drop(v_h_88);
@@ -26606,7 +26606,7 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     int64_t t95 = f134_ir_alignUp(v_ro_9.len, 8LL);
     int64_t v_tabOff_96 = t95;
     f137_x64gen_growTo(&v_ro_9, v_tabOff_96);
-    struct S32_elf_Dynamic*t97 = f143_elf_dynamic(&v_needed_66, &v_ims_68, &v_rels_75, rt_add_int(v_roBase_5, v_tabOff_96, "x64gen.obx:5479"));
+    struct S32_elf_Dynamic*t97 = f143_elf_dynamic(&v_needed_66, &v_ims_68, &v_rels_75, rt_add_int(v_roBase_5, v_tabOff_96, "x64gen.obx:5505"));
     struct S32_elf_Dynamic*v_d_98 = t97;
     obx_slice ap99 = rt_as_slice(&v_d_98->f_tables);
     for (int64_t i100 = 0LL; i100 < ap99.len; i100++) {
@@ -26617,9 +26617,9 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     int64_t end103 = v_d_98->f_dyn.len;
     for (int64_t v_i_104 = 0LL; v_i_104 < end103; v_i_104++) {
       int64_t ix105 = v_i_104;
-      uint8_t t106 = *((uint8_t*)v_d_98->f_dyn.data + rt_idx(ix105, v_d_98->f_dyn.len, "x64gen.obx:5481"));
-      int64_t ix107 = rt_add_int(v_dynOff_70, v_i_104, "x64gen.obx:5481");
-      *((uint8_t*)v_data_11.data + rt_idx(ix107, v_data_11.len, "x64gen.obx:5481")) = t106;
+      uint8_t t106 = *((uint8_t*)v_d_98->f_dyn.data + rt_idx(ix105, v_d_98->f_dyn.len, "x64gen.obx:5507"));
+      int64_t ix107 = rt_add_int(v_dynOff_70, v_i_104, "x64gen.obx:5507");
+      *((uint8_t*)v_data_11.data + rt_idx(ix107, v_data_11.len, "x64gen.obx:5507")) = t106;
     }
     gl17_drop(v_d_98);
     gl18_drop(v_rels_75);
@@ -26632,45 +26632,45 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
   for (int64_t i111 = 0LL; i111 < ap110.len; i111++) {
     int64_t v_i_112 = *((int64_t*)ap110.data + i111);
     int64_t ix113 = v_i_112;
-    int64_t v_t_114 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix113, (*p_g)->f_u->f_globals.len, "x64gen.obx:5485")))->f_ty;
+    int64_t v_t_114 = (*((struct S19_ir_Global**)(*p_g)->f_u->f_globals.data + rt_idx(ix113, (*p_g)->f_u->f_globals.len, "x64gen.obx:5511")))->f_ty;
     int64_t t115 = v_memEnd_109;
     int64_t t116 = f135_ir_Ir_alignOf(&(*p_g)->f_u, v_t_114);
     int64_t t117 = f134_ir_alignUp(t115, t116);
     v_memEnd_109 = t117;
-    int64_t t118 = rt_add_int(v_dataBase_7, v_memEnd_109, "x64gen.obx:5487");
+    int64_t t118 = rt_add_int(v_dataBase_7, v_memEnd_109, "x64gen.obx:5513");
     int64_t ix119 = v_i_112;
-    *((int64_t*)v_gAddr_15.data + rt_idx(ix119, v_gAddr_15.len, "x64gen.obx:5487")) = t118;
+    *((int64_t*)v_gAddr_15.data + rt_idx(ix119, v_gAddr_15.len, "x64gen.obx:5513")) = t118;
     int64_t t120 = v_memEnd_109;
     int64_t t121 = f136_x64gen_Gen_size(p_g, v_t_114);
-    v_memEnd_109 = rt_add_int(t120, t121, "x64gen.obx:5488");
+    v_memEnd_109 = rt_add_int(t120, t121, "x64gen.obx:5514");
   }
   obx_arr a122 = rt_arr_new(0LL, 8ULL);
   obx_arr v_addr_123 = a122;
   int64_t end124 = (*p_g)->f_syms.len;
   for (int64_t v_i_125 = 0LL; v_i_125 < end124; v_i_125++) {
     int64_t ix126 = v_i_125;
-    struct S31_x64gen_Sym v_s_127 = *((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix126, (*p_g)->f_syms.len, "x64gen.obx:5493"));
+    struct S31_x64gen_Sym v_s_127 = *((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix126, (*p_g)->f_syms.len, "x64gen.obx:5519"));
     bool c128 = (bool)(v_s_127.f_kind == 0LL);
     if (c128) {
       int64_t ix129 = v_s_127.f_idx;
-      int64_t ap130 = rt_add_int(v_codeBase_2, *((int64_t*)(*p_g)->f_funcPos.data + rt_idx(ix129, (*p_g)->f_funcPos.len, "x64gen.obx:5495")), "x64gen.obx:5495");
+      int64_t ap130 = rt_add_int(v_codeBase_2, *((int64_t*)(*p_g)->f_funcPos.data + rt_idx(ix129, (*p_g)->f_funcPos.len, "x64gen.obx:5521")), "x64gen.obx:5521");
       *(int64_t*)rt_arr_push(&v_addr_123, 8ULL) = ap130;
     } else {
       bool c131 = (bool)(v_s_127.f_kind == 1LL);
       if (c131) {
         int64_t ix132 = v_s_127.f_idx;
-        int64_t ap133 = *((int64_t*)v_gAddr_15.data + rt_idx(ix132, v_gAddr_15.len, "x64gen.obx:5497"));
+        int64_t ap133 = *((int64_t*)v_gAddr_15.data + rt_idx(ix132, v_gAddr_15.len, "x64gen.obx:5523"));
         *(int64_t*)rt_arr_push(&v_addr_123, 8ULL) = ap133;
       } else {
         bool c134 = (bool)(v_s_127.f_kind == 2LL);
         if (c134) {
           int64_t ix135 = v_s_127.f_idx;
-          int64_t ap136 = *((int64_t*)v_sAddr_49.data + rt_idx(ix135, v_sAddr_49.len, "x64gen.obx:5499"));
+          int64_t ap136 = *((int64_t*)v_sAddr_49.data + rt_idx(ix135, v_sAddr_49.len, "x64gen.obx:5525"));
           *(int64_t*)rt_arr_push(&v_addr_123, 8ULL) = ap136;
         } else {
           bool c137 = (bool)(v_s_127.f_kind == 4LL);
           if (c137) {
-            int64_t ap138 = rt_add_int(v_gotAt_63, rt_mul_int(8LL, v_s_127.f_idx, "x64gen.obx:5501"), "x64gen.obx:5501");
+            int64_t ap138 = rt_add_int(v_gotAt_63, rt_mul_int(8LL, v_s_127.f_idx, "x64gen.obx:5527"), "x64gen.obx:5527");
             *(int64_t*)rt_arr_push(&v_addr_123, 8ULL) = ap138;
           } else {
             int64_t t139 = f142_x64gen_Gen_rtSymAddr(p_g, v_s_127.f_idx);
@@ -26684,20 +26684,20 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
   int64_t end141 = (*p_g)->f_a->f_relocs.len;
   for (int64_t v_i_142 = 0LL; v_i_142 < end141; v_i_142++) {
     int64_t ix143 = v_i_142;
-    struct S33_x64_Reloc v_r_144 = *((struct S33_x64_Reloc*)(*p_g)->f_a->f_relocs.data + rt_idx(ix143, (*p_g)->f_a->f_relocs.len, "x64gen.obx:5507"));
+    struct S33_x64_Reloc v_r_144 = *((struct S33_x64_Reloc*)(*p_g)->f_a->f_relocs.data + rt_idx(ix143, (*p_g)->f_a->f_relocs.len, "x64gen.obx:5533"));
     int64_t ix145 = v_r_144.f_sym;
-    int64_t v_v_146 = rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix145, v_addr_123.len, "x64gen.obx:5508")), v_r_144.f_addend, "x64gen.obx:5508");
+    int64_t v_v_146 = rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix145, v_addr_123.len, "x64gen.obx:5534")), v_r_144.f_addend, "x64gen.obx:5534");
     bool c147 = (bool)(v_r_144.f_kind == 0LL);
     if (c147) {
       int64_t t148 = v_r_144.f_at;
       int64_t t149 = v_v_146;
-      f144_x64_Asm_put32(&(*p_g)->f_a, t148, rt_sub_int(t149, rt_add_int(rt_add_int(v_codeBase_2, v_r_144.f_at, "x64gen.obx:5510"), 4LL, "x64gen.obx:5510"), "x64gen.obx:5510"));
+      f144_x64_Asm_put32(&(*p_g)->f_a, t148, rt_sub_int(t149, rt_add_int(rt_add_int(v_codeBase_2, v_r_144.f_at, "x64gen.obx:5536"), 4LL, "x64gen.obx:5536"), "x64gen.obx:5536"));
     } else {
       bool c150 = (bool)(v_r_144.f_kind == 1LL);
       if (c150) {
         f144_x64_Asm_put32(&(*p_g)->f_a, v_r_144.f_at, v_v_146);
       } else {
-        rt_panic(sl3663, "x64gen.obx:5514");
+        rt_panic(sl3663, "x64gen.obx:5540");
       }
     }
   }
@@ -26708,11 +26708,11 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
     if (c154) {
       int64_t t155 = v_r_153.f_off;
       int64_t ix156 = v_r_153.f_sym;
-      f145_x64gen_putN(&v_ro_9, t155, rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix156, v_addr_123.len, "x64gen.obx:5519")), v_r_153.f_addend, "x64gen.obx:5519"), 8LL);
+      f145_x64gen_putN(&v_ro_9, t155, rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix156, v_addr_123.len, "x64gen.obx:5545")), v_r_153.f_addend, "x64gen.obx:5545"), 8LL);
     } else {
       int64_t t157 = v_r_153.f_off;
       int64_t ix158 = v_r_153.f_sym;
-      f145_x64gen_putN(&v_data_11, t157, rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix158, v_addr_123.len, "x64gen.obx:5521")), v_r_153.f_addend, "x64gen.obx:5521"), 8LL);
+      f145_x64gen_putN(&v_data_11, t157, rt_add_int(*((int64_t*)v_addr_123.data + rt_idx(ix158, v_addr_123.len, "x64gen.obx:5547")), v_r_153.f_addend, "x64gen.obx:5547"), 8LL);
     }
   }
   obx_arr a159 = rt_arr_new(0LL, 1ULL);
@@ -26720,22 +26720,22 @@ static obx_arr f131_x64gen_Gen_link(struct S27_x64gen_Gen**p_g) {
   obx_arr a161 = rt_arr_new(0LL, 1ULL);
   obx_arr v_rdata_162 = a161;
   f146_x64gen_Gen_rtBytes(p_g, &v_text_160, &v_rdata_162);
-  f137_x64gen_growTo(&v_text_160, rt_sub_int(v_codeBase_2, 4198400LL, "x64gen.obx:5528"));
+  f137_x64gen_growTo(&v_text_160, rt_sub_int(v_codeBase_2, 4198400LL, "x64gen.obx:5554"));
   obx_slice ap163 = rt_as_slice(&(*p_g)->f_a->f_code);
   for (int64_t i164 = 0LL; i164 < ap163.len; i164++) {
     uint8_t v_x_165 = *((uint8_t*)ap163.data + i164);
     uint8_t ap166 = v_x_165;
     *(uint8_t*)rt_arr_push(&v_text_160, 1ULL) = ap166;
   }
-  f137_x64gen_growTo(&v_text_160, rt_sub_int(v_roBase_5, 4198400LL, "x64gen.obx:5530"));
+  f137_x64gen_growTo(&v_text_160, rt_sub_int(v_roBase_5, 4198400LL, "x64gen.obx:5556"));
   obx_slice ap167 = rt_as_slice(&v_ro_9);
   for (int64_t i168 = 0LL; i168 < ap167.len; i168++) {
     uint8_t v_x_169 = *((uint8_t*)ap167.data + i168);
     uint8_t ap170 = v_x_169;
     *(uint8_t*)rt_arr_push(&v_text_160, 1ULL) = ap170;
   }
-  f137_x64gen_growTo(&v_rdata_162, rt_sub_int((*p_g)->f_rtDataEnd, 1073741824LL, "x64gen.obx:5532"));
-  int64_t v_rmem_171 = rt_sub_int((*p_g)->f_rtBssEnd, 1073741824LL, "x64gen.obx:5533");
+  f137_x64gen_growTo(&v_rdata_162, rt_sub_int((*p_g)->f_rtDataEnd, 1073741824LL, "x64gen.obx:5558"));
+  int64_t v_rmem_171 = rt_sub_int((*p_g)->f_rtBssEnd, 1073741824LL, "x64gen.obx:5559");
   struct S34_elf_Seg*o172 = (struct S34_elf_Seg*)rt_alloc(48ULL);
   o172->f_vaddr = 4198400LL;
   o172->f_flags = 5LL;
@@ -26983,13 +26983,13 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
   int64_t end3 = k3_rtx_SEC_KIND.len;
   for (int64_t v_i_4 = 0LL; v_i_4 < end3; v_i_4++) {
     int64_t ix5 = v_i_4;
-    bool c6 = (bool)!*((bool*)(*p_g)->f_rtLive.data + rt_idx(ix5, (*p_g)->f_rtLive.len, "x64gen.obx:5372"));
+    bool c6 = (bool)!*((bool*)(*p_g)->f_rtLive.data + rt_idx(ix5, (*p_g)->f_rtLive.len, "x64gen.obx:5398"));
     if (c6) {
       continue;
     }
     obx_slice t7 = k3_rtx_SEC_KIND;
     int64_t ix8 = v_i_4;
-    int64_t v_k_9 = rt_cvs_int((__int128)*((int32_t*)t7.data + rt_idx(ix8, t7.len, "x64gen.obx:5373")), "x64gen.obx:5373");
+    int64_t v_k_9 = rt_cvs_int((__int128)*((int32_t*)t7.data + rt_idx(ix8, t7.len, "x64gen.obx:5399")), "x64gen.obx:5399");
     bool c10 = (bool)(v_k_9 == 3LL);
     if (c10) {
       continue;
@@ -27001,13 +27001,13 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
     bool v_ro_12 = b11;
     int64_t v_base_14 = v_ro_12 ? 4198400LL : 1073741824LL;
     int64_t ix15 = v_i_4;
-    int64_t v_off_16 = rt_sub_int(*((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix15, (*p_g)->f_rtAt.len, "x64gen.obx:5377")), v_base_14, "x64gen.obx:5377");
+    int64_t v_off_16 = rt_sub_int(*((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix15, (*p_g)->f_rtAt.len, "x64gen.obx:5403")), v_base_14, "x64gen.obx:5403");
     obx_slice t17 = k3_rtx_SEC_OFF;
     int64_t ix18 = v_i_4;
-    int64_t v_src_19 = rt_cvs_int((__int128)*((int32_t*)t17.data + rt_idx(ix18, t17.len, "x64gen.obx:5378")), "x64gen.obx:5378");
+    int64_t v_src_19 = rt_cvs_int((__int128)*((int32_t*)t17.data + rt_idx(ix18, t17.len, "x64gen.obx:5404")), "x64gen.obx:5404");
     obx_slice t20 = k3_rtx_SEC_SIZE;
     int64_t ix21 = v_i_4;
-    int64_t v_size_22 = rt_cvs_int((__int128)*((int32_t*)t20.data + rt_idx(ix21, t20.len, "x64gen.obx:5379")), "x64gen.obx:5379");
+    int64_t v_size_22 = rt_cvs_int((__int128)*((int32_t*)t20.data + rt_idx(ix21, t20.len, "x64gen.obx:5405")), "x64gen.obx:5405");
     bool c23 = v_ro_12;
     if (c23) {
       while (1) {
@@ -27015,46 +27015,46 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
         if (!c24) {
           break;
         }
-        uint8_t ap26 = (uint8_t)(v_k_9 == 0LL ? (int32_t)rt_cvs_byte((__int128)204LL, "x64gen.obx:5381") : (int32_t)rt_cvs_byte((__int128)0LL, "x64gen.obx:5381"));
+        uint8_t ap26 = (uint8_t)(v_k_9 == 0LL ? (int32_t)rt_cvs_byte((__int128)204LL, "x64gen.obx:5407") : (int32_t)rt_cvs_byte((__int128)0LL, "x64gen.obx:5407"));
         *(uint8_t*)rt_arr_push(p_text, 1ULL) = ap26;
       }
       int64_t end27 = v_size_22;
       for (int64_t v_j_28 = 0LL; v_j_28 < end27; v_j_28++) {
-        int64_t ix29 = rt_add_int(v_src_19, v_j_28, "x64gen.obx:5382");
-        uint8_t ap30 = *((uint8_t*)v_all_2.data + rt_idx(ix29, v_all_2.len, "x64gen.obx:5382"));
+        int64_t ix29 = rt_add_int(v_src_19, v_j_28, "x64gen.obx:5408");
+        uint8_t ap30 = *((uint8_t*)v_all_2.data + rt_idx(ix29, v_all_2.len, "x64gen.obx:5408"));
         *(uint8_t*)rt_arr_push(p_text, 1ULL) = ap30;
       }
     } else {
       f137_x64gen_growTo(p_data, v_off_16);
       int64_t end31 = v_size_22;
       for (int64_t v_j_32 = 0LL; v_j_32 < end31; v_j_32++) {
-        int64_t ix33 = rt_add_int(v_src_19, v_j_32, "x64gen.obx:5385");
-        uint8_t ap34 = *((uint8_t*)v_all_2.data + rt_idx(ix33, v_all_2.len, "x64gen.obx:5385"));
+        int64_t ix33 = rt_add_int(v_src_19, v_j_32, "x64gen.obx:5411");
+        uint8_t ap34 = *((uint8_t*)v_all_2.data + rt_idx(ix33, v_all_2.len, "x64gen.obx:5411"));
         *(uint8_t*)rt_arr_push(p_data, 1ULL) = ap34;
       }
     }
     obx_slice t35 = k3_rtx_SEC_REL;
     int64_t ix36 = v_i_4;
-    int64_t t37 = rt_cvs_int((__int128)*((int32_t*)t35.data + rt_idx(ix36, t35.len, "x64gen.obx:5387")), "x64gen.obx:5387");
+    int64_t t37 = rt_cvs_int((__int128)*((int32_t*)t35.data + rt_idx(ix36, t35.len, "x64gen.obx:5413")), "x64gen.obx:5413");
     obx_slice t38 = k3_rtx_SEC_REL;
-    int64_t ix39 = rt_add_int(v_i_4, 1LL, "x64gen.obx:5387");
-    int64_t end40 = rt_cvs_int((__int128)*((int32_t*)t38.data + rt_idx(ix39, t38.len, "x64gen.obx:5387")), "x64gen.obx:5387");
+    int64_t ix39 = rt_add_int(v_i_4, 1LL, "x64gen.obx:5413");
+    int64_t end40 = rt_cvs_int((__int128)*((int32_t*)t38.data + rt_idx(ix39, t38.len, "x64gen.obx:5413")), "x64gen.obx:5413");
     for (int64_t v_r_41 = t37; v_r_41 < end40; v_r_41++) {
       int64_t ix42 = v_i_4;
-      int64_t t43 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix42, (*p_g)->f_rtAt.len, "x64gen.obx:5388"));
+      int64_t t43 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix42, (*p_g)->f_rtAt.len, "x64gen.obx:5414"));
       obx_slice t44 = k3_rtx_REL_OFF;
       int64_t ix45 = v_r_41;
-      int64_t v_at_46 = rt_add_int(t43, rt_cvs_int((__int128)*((int32_t*)t44.data + rt_idx(ix45, t44.len, "x64gen.obx:5388")), "x64gen.obx:5388"), "x64gen.obx:5388");
+      int64_t v_at_46 = rt_add_int(t43, rt_cvs_int((__int128)*((int32_t*)t44.data + rt_idx(ix45, t44.len, "x64gen.obx:5414")), "x64gen.obx:5414"), "x64gen.obx:5414");
       obx_slice t47 = k3_rtx_REL_TARGET;
       int64_t ix48 = v_r_41;
-      int64_t ix49 = rt_cvs_int((__int128)*((int32_t*)t47.data + rt_idx(ix48, t47.len, "x64gen.obx:5389")), "x64gen.obx:5389");
-      int64_t t50 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix49, (*p_g)->f_rtAt.len, "x64gen.obx:5389"));
+      int64_t ix49 = rt_cvs_int((__int128)*((int32_t*)t47.data + rt_idx(ix48, t47.len, "x64gen.obx:5415")), "x64gen.obx:5415");
+      int64_t t50 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix49, (*p_g)->f_rtAt.len, "x64gen.obx:5415"));
       obx_slice t51 = k3_rtx_REL_ADDEND;
       int64_t ix52 = v_r_41;
-      int64_t v_v_53 = rt_add_int(t50, rt_cvs_int((__int128)*((int32_t*)t51.data + rt_idx(ix52, t51.len, "x64gen.obx:5389")), "x64gen.obx:5389"), "x64gen.obx:5389");
+      int64_t v_v_53 = rt_add_int(t50, rt_cvs_int((__int128)*((int32_t*)t51.data + rt_idx(ix52, t51.len, "x64gen.obx:5415")), "x64gen.obx:5415"), "x64gen.obx:5415");
       obx_slice t54 = k3_rtx_REL_TYPE;
       int64_t ix55 = v_r_41;
-      int64_t v_ty_56 = rt_cvs_int((__int128)*((int32_t*)t54.data + rt_idx(ix55, t54.len, "x64gen.obx:5390")), "x64gen.obx:5390");
+      int64_t v_ty_56 = rt_cvs_int((__int128)*((int32_t*)t54.data + rt_idx(ix55, t54.len, "x64gen.obx:5416")), "x64gen.obx:5416");
       int64_t v_x_57 = v_v_53;
       int64_t v_w_58 = 4LL;
       bool c59 = (bool)(v_ty_56 == 1LL);
@@ -27063,14 +27063,14 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
       } else {
         bool c60 = (bool)(v_ty_56 == 2LL);
         if (c60) {
-          v_x_57 = rt_sub_int(v_v_53, v_at_46, "x64gen.obx:5396");
+          v_x_57 = rt_sub_int(v_v_53, v_at_46, "x64gen.obx:5422");
           bool b61 = (bool)(v_x_57 < -2147483648LL);
           if (!b61) {
             b61 = (bool)(v_x_57 > 2147483647LL);
           }
           bool c62 = b61;
           if (c62) {
-            rt_panic(sl3667, "x64gen.obx:5397");
+            rt_panic(sl3667, "x64gen.obx:5423");
           }
         } else {
           bool c63 = (bool)(v_ty_56 == 10LL);
@@ -27081,7 +27081,7 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
             }
             bool c65 = b64;
             if (c65) {
-              rt_panic(sl3668, "x64gen.obx:5399");
+              rt_panic(sl3668, "x64gen.obx:5425");
             }
           } else {
             bool c66 = (bool)(v_ty_56 == 11LL);
@@ -27092,19 +27092,19 @@ static void f146_x64gen_Gen_rtBytes(struct S27_x64gen_Gen**p_g, obx_arr*p_text, 
               }
               bool c68 = b67;
               if (c68) {
-                rt_panic(sl3669, "x64gen.obx:5401");
+                rt_panic(sl3669, "x64gen.obx:5427");
               }
             } else {
-              rt_panic(sl3670, "x64gen.obx:5403");
+              rt_panic(sl3670, "x64gen.obx:5429");
             }
           }
         }
       }
       bool c69 = v_ro_12;
       if (c69) {
-        f145_x64gen_putN(p_text, rt_sub_int(v_at_46, v_base_14, "x64gen.obx:5405"), v_x_57, v_w_58);
+        f145_x64gen_putN(p_text, rt_sub_int(v_at_46, v_base_14, "x64gen.obx:5431"), v_x_57, v_w_58);
       } else {
-        f145_x64gen_putN(p_data, rt_sub_int(v_at_46, v_base_14, "x64gen.obx:5405"), v_x_57, v_w_58);
+        f145_x64gen_putN(p_data, rt_sub_int(v_at_46, v_base_14, "x64gen.obx:5431"), v_x_57, v_w_58);
       }
     }
   }
@@ -27116,7 +27116,7 @@ static void f152_x64gen_chunks(obx_slice p_parts, obx_arr*p_out) {
     obx_str v_p_3 = rt_str_dup(*((obx_str*)ap1.data + i2));
     int64_t end4 = (int64_t)v_p_3.len;
     for (int64_t v_i_5 = 0LL; v_i_5 < end4; v_i_5++) {
-      uint8_t t6 = rt_str_byte(v_p_3, v_i_5, "x64gen.obx:5280");
+      uint8_t t6 = rt_str_byte(v_p_3, v_i_5, "x64gen.obx:5306");
       uint8_t ap7 = t6;
       *(uint8_t*)rt_arr_push(p_out, 1ULL) = ap7;
     }
@@ -27127,10 +27127,10 @@ static void f145_x64gen_putN(obx_arr*p_buf, int64_t p_off, int64_t p_v, int64_t 
   int64_t v_x_1 = p_v;
   int64_t end2 = p_n;
   for (int64_t v_i_3 = 0LL; v_i_3 < end2; v_i_3++) {
-    uint8_t t4 = rt_cvs_byte((__int128)(v_x_1 & 255LL), "x64gen.obx:5269");
-    int64_t ix5 = rt_add_int(p_off, v_i_3, "x64gen.obx:5269");
-    *((uint8_t*)p_buf->data + rt_idx(ix5, p_buf->len, "x64gen.obx:5269")) = t4;
-    v_x_1 = rt_shr_int(v_x_1, 8LL, "x64gen.obx:5270");
+    uint8_t t4 = rt_cvs_byte((__int128)(v_x_1 & 255LL), "x64gen.obx:5295");
+    int64_t ix5 = rt_add_int(p_off, v_i_3, "x64gen.obx:5295");
+    *((uint8_t*)p_buf->data + rt_idx(ix5, p_buf->len, "x64gen.obx:5295")) = t4;
+    v_x_1 = rt_shr_int(v_x_1, 8LL, "x64gen.obx:5296");
   }
 }
 static void f144_x64_Asm_put32(struct S35_x64_Asm**p_a, int64_t p_at, int64_t p_x) {
@@ -27436,11 +27436,11 @@ static int64_t f153_elf_addStr(obx_arr*p_strs, struct S22_std_Map**p_at, obx_str
 static int64_t f142_x64gen_Gen_rtSymAddr(struct S27_x64gen_Gen**p_g, int64_t p_rs) {
   obx_slice t1 = k3_rtx_SYM_SECS;
   int64_t ix2 = p_rs;
-  int64_t ix3 = rt_cvs_int((__int128)*((int32_t*)t1.data + rt_idx(ix2, t1.len, "x64gen.obx:5364")), "x64gen.obx:5364");
-  int64_t t4 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix3, (*p_g)->f_rtAt.len, "x64gen.obx:5364"));
+  int64_t ix3 = rt_cvs_int((__int128)*((int32_t*)t1.data + rt_idx(ix2, t1.len, "x64gen.obx:5390")), "x64gen.obx:5390");
+  int64_t t4 = *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix3, (*p_g)->f_rtAt.len, "x64gen.obx:5390"));
   obx_slice t5 = k3_rtx_SYM_OFFS;
   int64_t ix6 = p_rs;
-  int64_t r7 = rt_add_int(t4, rt_cvs_int((__int128)*((int32_t*)t5.data + rt_idx(ix6, t5.len, "x64gen.obx:5364")), "x64gen.obx:5364"), "x64gen.obx:5364");
+  int64_t r7 = rt_add_int(t4, rt_cvs_int((__int128)*((int32_t*)t5.data + rt_idx(ix6, t5.len, "x64gen.obx:5390")), "x64gen.obx:5390"), "x64gen.obx:5390");
   return r7;
 }
 static int64_t f141_x64gen_Gen_rtSymbol(struct S27_x64gen_Gen**p_g, obx_str p_name) {
@@ -27449,7 +27449,7 @@ static int64_t f141_x64gen_Gen_rtSymbol(struct S27_x64gen_Gen**p_g, obx_str p_na
   bool c3 = (bool)(v_rs_2 < 0LL);
   if (c3) {
     obx_str t4 = rt_str_concat(sl3671, p_name);
-    rt_panic(t4, "x64gen.obx:5360");
+    rt_panic(t4, "x64gen.obx:5386");
   }
   int64_t r5 = v_rs_2;
   rt_str_drop(p_name);
@@ -27479,7 +27479,7 @@ static void f139_x64gen_Gen_resolve(struct S27_x64gen_Gen**p_g, obx_arr*p_needed
       bool b15 = (bool)(v_found_12 < 0LL);
       if (b15) {
         int64_t ix16 = v_li_14;
-        bool t17 = f155_std_Map_has(&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix16, (*p_g)->f_libs.len, "x64gen.obx:5551")))->f_defs, &v_name_11);
+        bool t17 = f155_std_Map_has(&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix16, (*p_g)->f_libs.len, "x64gen.obx:5577")))->f_defs, &v_name_11);
         b15 = t17;
       }
       bool c18 = b15;
@@ -27511,7 +27511,7 @@ static void f139_x64gen_Gen_resolve(struct S27_x64gen_Gen**p_g, obx_arr*p_needed
       rt_exit(1LL);
     }
     int64_t ix32 = v_found_12;
-    *((bool*)v_used_4.data + rt_idx(ix32, v_used_4.len, "x64gen.obx:5559")) = (bool)1LL;
+    *((bool*)v_used_4.data + rt_idx(ix32, v_used_4.len, "x64gen.obx:5585")) = (bool)1LL;
     int64_t ap33 = v_found_12;
     *(int64_t*)rt_arr_push(&v_libOf_2, 8ULL) = ap33;
     rt_str_drop(v_name_11);
@@ -27523,25 +27523,25 @@ static void f139_x64gen_Gen_resolve(struct S27_x64gen_Gen**p_g, obx_arr*p_needed
     int64_t ap38 = p_needed->len;
     *(int64_t*)rt_arr_push(&v_index_35, 8ULL) = ap38;
     int64_t ix39 = v_li_37;
-    bool c40 = *((bool*)v_used_4.data + rt_idx(ix39, v_used_4.len, "x64gen.obx:5565"));
+    bool c40 = *((bool*)v_used_4.data + rt_idx(ix39, v_used_4.len, "x64gen.obx:5591"));
     if (c40) {
       int64_t ix41 = v_li_37;
-      obx_str ap42 = rt_str_dup((*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix41, (*p_g)->f_libs.len, "x64gen.obx:5565")))->f_soname);
+      obx_str ap42 = rt_str_dup((*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix41, (*p_g)->f_libs.len, "x64gen.obx:5591")))->f_soname);
       *(obx_str*)rt_arr_push(p_needed, 16ULL) = ap42;
     }
   }
   int64_t end43 = (*p_g)->f_imports.len;
   for (int64_t v_i_44 = 0LL; v_i_44 < end43; v_i_44++) {
     int64_t ix45 = v_i_44;
-    int64_t v_li_46 = *((int64_t*)v_libOf_2.data + rt_idx(ix45, v_libOf_2.len, "x64gen.obx:5568"));
+    int64_t v_li_46 = *((int64_t*)v_libOf_2.data + rt_idx(ix45, v_libOf_2.len, "x64gen.obx:5594"));
     int64_t ix47 = v_i_44;
-    obx_str t48 = rt_str_dup(*((obx_str*)(*p_g)->f_imports.data + rt_idx(ix47, (*p_g)->f_imports.len, "x64gen.obx:5569")));
+    obx_str t48 = rt_str_dup(*((obx_str*)(*p_g)->f_imports.data + rt_idx(ix47, (*p_g)->f_imports.len, "x64gen.obx:5595")));
     int64_t ix49 = v_li_46;
-    int64_t t50 = *((int64_t*)v_index_35.data + rt_idx(ix49, v_index_35.len, "x64gen.obx:5569"));
+    int64_t t50 = *((int64_t*)v_index_35.data + rt_idx(ix49, v_index_35.len, "x64gen.obx:5595"));
     int64_t ix51 = v_li_46;
-    (void)&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix51, (*p_g)->f_libs.len, "x64gen.obx:5569")))->f_defs;
+    (void)&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix51, (*p_g)->f_libs.len, "x64gen.obx:5595")))->f_defs;
     int64_t ix52 = v_i_44;
-    obx_str t53 = f156_std_Map_getOr(&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix51, (*p_g)->f_libs.len, "x64gen.obx:5569")))->f_defs, (obx_str*)(*p_g)->f_imports.data + rt_idx(ix52, (*p_g)->f_imports.len, "x64gen.obx:5569"), sl1723);
+    obx_str t53 = f156_std_Map_getOr(&(*((struct S25_elf_Lib**)(*p_g)->f_libs.data + rt_idx(ix51, (*p_g)->f_libs.len, "x64gen.obx:5595")))->f_defs, (obx_str*)(*p_g)->f_imports.data + rt_idx(ix52, (*p_g)->f_imports.len, "x64gen.obx:5595"), sl1723);
     struct S29_elf_Import t54 = (struct S29_elf_Import){.f_name = t48, .f_lib = t50, .f_ver = t53};
     struct S29_elf_Import ap55 = t54;
     *(struct S29_elf_Import*)rt_arr_push(p_ims, 40ULL) = ap55;
@@ -27610,10 +27610,10 @@ static void f138_x64gen_Gen_initData(struct S27_x64gen_Gen**p_g, obx_arr*p_buf, 
   for (int64_t v_j_3 = 0LL; v_j_3 < end2; v_j_3++) {
     int64_t t4 = f60_ir_Ir_listAt(&(*p_g)->f_u, p_ents, v_j_3);
     int64_t ix5 = t4;
-    struct S17_ir_Node v_en_6 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5287")));
+    struct S17_ir_Node v_en_6 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5313")));
     int64_t v_t_7 = v_en_6.f_ty;
     int64_t v_x_8 = v_en_6.f_a;
-    int64_t v_o_9 = rt_add_int(p_off, v_en_6.f_v, "x64gen.obx:5290");
+    int64_t v_o_9 = rt_add_int(p_off, v_en_6.f_v, "x64gen.obx:5316");
     int64_t t10 = f64_ir_Ir_nk(&(*p_g)->f_u, v_x_8);
     bool b11 = (bool)(t10 == 3LL);
     if (b11) {
@@ -27623,16 +27623,16 @@ static void f138_x64gen_Gen_initData(struct S27_x64gen_Gen**p_g, obx_arr*p_buf, 
     bool c13 = b11;
     if (c13) {
       int64_t ix14 = v_x_8;
-      obx_str v_s_15 = rt_str_dup(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix14, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5292"))->f_s);
+      obx_str v_s_15 = rt_str_dup(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix14, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5318"))->f_s);
       int64_t end16 = (int64_t)v_s_15.len;
       for (int64_t v_i_17 = 0LL; v_i_17 < end16; v_i_17++) {
         int64_t t18 = v_i_17;
         int64_t t19 = f136_x64gen_Gen_size(p_g, v_t_7);
         bool c20 = (bool)(t18 < t19);
         if (c20) {
-          uint8_t t21 = rt_str_byte(v_s_15, v_i_17, "x64gen.obx:5294");
-          int64_t ix22 = rt_add_int(v_o_9, v_i_17, "x64gen.obx:5294");
-          *((uint8_t*)p_buf->data + rt_idx(ix22, p_buf->len, "x64gen.obx:5294")) = t21;
+          uint8_t t21 = rt_str_byte(v_s_15, v_i_17, "x64gen.obx:5320");
+          int64_t ix22 = rt_add_int(v_o_9, v_i_17, "x64gen.obx:5320");
+          *((uint8_t*)p_buf->data + rt_idx(ix22, p_buf->len, "x64gen.obx:5320")) = t21;
         }
       }
       rt_str_drop(v_s_15);
@@ -27659,7 +27659,7 @@ static void f138_x64gen_Gen_initData(struct S27_x64gen_Gen**p_g, obx_arr*p_buf, 
           bool c33 = (bool)(t32 == 16LL);
           if (c33) {
             f145_x64gen_putN(p_buf, v_o_9, v_c_26.f_lo, 8LL);
-            f145_x64gen_putN(p_buf, rt_add_int(v_o_9, 8LL, "x64gen.obx:5305"), v_c_26.f_hi, 8LL);
+            f145_x64gen_putN(p_buf, rt_add_int(v_o_9, 8LL, "x64gen.obx:5331"), v_c_26.f_hi, 8LL);
           } else {
             int64_t t34 = v_o_9;
             int64_t t35 = v_c_26.f_lo;
@@ -27674,7 +27674,7 @@ static void f138_x64gen_Gen_initData(struct S27_x64gen_Gen**p_g, obx_arr*p_buf, 
 }
 static struct S37_x64gen_K f162_x64gen_Gen_constOf(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5209")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5235")));
   int64_t v_k_3 = v_n_2.f_k;
   bool c4 = (bool)(v_k_3 == 1LL);
   if (c4) {
@@ -27706,7 +27706,7 @@ static struct S37_x64gen_K f162_x64gen_Gen_constOf(struct S27_x64gen_Gen**p_g, i
   if (c17) {
     struct S37_x64gen_K t18 = f162_x64gen_Gen_constOf(p_g, v_n_2.f_a);
     struct S37_x64gen_K v_x_19 = t18;
-    struct S37_x64gen_K t20 = (struct S37_x64gen_K){.f_lo = v_x_19.f_lo ^ rt_sub_int(-9223372036854775807LL, 1LL, "x64gen.obx:5217"), .f_hi = 0LL, .f_sym = -1LL};
+    struct S37_x64gen_K t20 = (struct S37_x64gen_K){.f_lo = v_x_19.f_lo ^ rt_sub_int(-9223372036854775807LL, 1LL, "x64gen.obx:5243"), .f_hi = 0LL, .f_sym = -1LL};
     struct S37_x64gen_K r21 = t20;
     gl25_drop(v_n_2);
     return r21;
@@ -27727,7 +27727,7 @@ static struct S37_x64gen_K f162_x64gen_Gen_constOf(struct S27_x64gen_Gen**p_g, i
     struct S37_x64gen_K t27 = f162_x64gen_Gen_constOf(p_g, v_n_2.f_a);
     struct S37_x64gen_K v_x_28 = t27;
     int64_t ix29 = v_n_2.f_a;
-    int64_t v_st_30 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5222"))->f_ty;
+    int64_t v_st_30 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5248"))->f_ty;
     bool t31 = f165_x64gen_Gen_isF(p_g, v_n_2.f_ty);
     bool b32 = t31;
     if (!b32) {
@@ -27915,11 +27915,11 @@ static bool f167_x64gen_Gen_is128(struct S27_x64gen_Gen**p_g, int64_t p_t) {
 }
 static struct S37_x64gen_K f166_x64gen_Gen_constAddr(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5249")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5275")));
   bool c3 = (bool)(v_n_2.f_k == 5LL);
   if (c3) {
     int64_t ix4 = v_n_2.f_a;
-    struct S37_x64gen_K t5 = (struct S37_x64gen_K){.f_lo = 0LL, .f_hi = 0LL, .f_sym = *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix4, (*p_g)->f_globalSym.len, "x64gen.obx:5250"))};
+    struct S37_x64gen_K t5 = (struct S37_x64gen_K){.f_lo = 0LL, .f_hi = 0LL, .f_sym = *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix4, (*p_g)->f_globalSym.len, "x64gen.obx:5276"))};
     struct S37_x64gen_K r6 = t5;
     gl25_drop(v_n_2);
     return r6;
@@ -27929,7 +27929,7 @@ static struct S37_x64gen_K f166_x64gen_Gen_constAddr(struct S27_x64gen_Gen**p_g,
     int64_t t8 = f169_x64gen_Gen_symFunc(p_g, v_n_2.f_a, p_e);
     int64_t v_s_9 = t8;
     int64_t ix10 = v_s_9;
-    bool c11 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix10, (*p_g)->f_syms.len, "x64gen.obx:5253"))->f_kind == 4LL);
+    bool c11 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix10, (*p_g)->f_syms.len, "x64gen.obx:5279"))->f_kind == 4LL);
     if (c11) {
       f161_x64gen_Gen_fail(p_g, p_e, sl3678);
     }
@@ -27950,7 +27950,7 @@ static struct S37_x64gen_K f166_x64gen_Gen_constAddr(struct S27_x64gen_Gen**p_g,
   if (c18) {
     struct S37_x64gen_K t19 = f166_x64gen_Gen_constAddr(p_g, v_n_2.f_a);
     struct S37_x64gen_K v_x_20 = t19;
-    struct S37_x64gen_K t21 = (struct S37_x64gen_K){.f_lo = rt_add_int(v_x_20.f_lo, v_n_2.f_v, "x64gen.obx:5259"), .f_hi = 0LL, .f_sym = v_x_20.f_sym};
+    struct S37_x64gen_K t21 = (struct S37_x64gen_K){.f_lo = rt_add_int(v_x_20.f_lo, v_n_2.f_v, "x64gen.obx:5285"), .f_hi = 0LL, .f_sym = v_x_20.f_sym};
     struct S37_x64gen_K r22 = t21;
     gl25_drop(v_n_2);
     return r22;
@@ -28119,7 +28119,7 @@ static int64_t f164_x64gen_floatBits(double p_f0) {
     }
     double t11 = v_f_4;
     v_f_4 = t11 / 2.0;
-    v_e_8 = rt_add_int(v_e_8, 1LL, "x64gen.obx:5191");
+    v_e_8 = rt_add_int(v_e_8, 1LL, "x64gen.obx:5217");
   }
   while (1) {
     double t12 = v_f_4;
@@ -28133,21 +28133,21 @@ static int64_t f164_x64gen_floatBits(double p_f0) {
     }
     double t15 = v_f_4;
     v_f_4 = t15 * 2.0;
-    v_e_8 = rt_sub_int(v_e_8, 1LL, "x64gen.obx:5195");
+    v_e_8 = rt_sub_int(v_e_8, 1LL, "x64gen.obx:5221");
   }
   double t16 = v_f_4;
   bool c17 = (bool)(t16 < 1.0);
   if (c17) {
-    int64_t t18 = rt_shl_int(v_sign_5, 63LL, "x64gen.obx:5197");
+    int64_t t18 = rt_shl_int(v_sign_5, 63LL, "x64gen.obx:5223");
     double t19 = v_f_4;
-    int64_t r20 = t18 | rt_cvf_int(t19 * 4503599627370496.0, "x64gen.obx:5197");
+    int64_t r20 = t18 | rt_cvf_int(t19 * 4503599627370496.0, "x64gen.obx:5223");
     return r20;
   }
-  int64_t t21 = rt_shl_int(v_sign_5, 63LL, "x64gen.obx:5198");
-  int64_t t22 = t21 | rt_shl_int(rt_add_int(v_e_8, 1023LL, "x64gen.obx:5198"), 52LL, "x64gen.obx:5198");
+  int64_t t21 = rt_shl_int(v_sign_5, 63LL, "x64gen.obx:5224");
+  int64_t t22 = t21 | rt_shl_int(rt_add_int(v_e_8, 1023LL, "x64gen.obx:5224"), 52LL, "x64gen.obx:5224");
   double t23 = v_f_4;
   double t24 = t23 - 1.0;
-  int64_t r25 = t22 | rt_cvf_int(t24 * 4503599627370496.0, "x64gen.obx:5198");
+  int64_t r25 = t22 | rt_cvf_int(t24 * 4503599627370496.0, "x64gen.obx:5224");
   return r25;
 }
 static bool f163_ir_Ir_isSigned(struct S3_ir_Ir**p_p, int64_t p_t) {
@@ -28207,7 +28207,7 @@ static int64_t f134_ir_alignUp(int64_t p_v, int64_t p_a) {
 static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
   int64_t v_n_1 = k3_rtx_SEC_KIND.len;
   bool fill2 = (bool)0LL;
-  obx_arr a3 = rt_arr_fill(v_n_1, 1ULL, "x64gen.obx:5320");
+  obx_arr a3 = rt_arr_fill(v_n_1, 1ULL, "x64gen.obx:5346");
   for (int64_t i4 = 0LL; i4 < a3.len; i4++) {
     *((bool*)a3.data + i4) = fill2;
   }
@@ -28217,7 +28217,7 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
     (*p_g)->f_rtLive = nw5;
   }
   int64_t fill6 = 0LL;
-  obx_arr a7 = rt_arr_fill(v_n_1, 8ULL, "x64gen.obx:5321");
+  obx_arr a7 = rt_arr_fill(v_n_1, 8ULL, "x64gen.obx:5347");
   for (int64_t i8 = 0LL; i8 < a7.len; i8++) {
     *((int64_t*)a7.data + i8) = fill6;
   }
@@ -28231,12 +28231,12 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
   int64_t end12 = (*p_g)->f_syms.len;
   for (int64_t v_i_13 = 0LL; v_i_13 < end12; v_i_13++) {
     int64_t ix14 = v_i_13;
-    bool c15 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix14, (*p_g)->f_syms.len, "x64gen.obx:5324"))->f_kind == 3LL);
+    bool c15 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix14, (*p_g)->f_syms.len, "x64gen.obx:5350"))->f_kind == 3LL);
     if (c15) {
       obx_slice t16 = k3_rtx_SYM_SECS;
       int64_t ix17 = v_i_13;
-      int64_t ix18 = ((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix17, (*p_g)->f_syms.len, "x64gen.obx:5324"))->f_idx;
-      f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t16.data + rt_idx(ix18, t16.len, "x64gen.obx:5324")), "x64gen.obx:5324"), &v_work_11);
+      int64_t ix18 = ((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix17, (*p_g)->f_syms.len, "x64gen.obx:5350"))->f_idx;
+      f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t16.data + rt_idx(ix18, t16.len, "x64gen.obx:5350")), "x64gen.obx:5350"), &v_work_11);
     }
   }
   bool c19 = (*p_g)->f_dyn;
@@ -28244,25 +28244,25 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
     obx_slice t20 = k3_rtx_SYM_SECS;
     int64_t t21 = f141_x64gen_Gen_rtSymbol(p_g, sl632);
     int64_t ix22 = t21;
-    f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t20.data + rt_idx(ix22, t20.len, "x64gen.obx:5326")), "x64gen.obx:5326"), &v_work_11);
+    f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t20.data + rt_idx(ix22, t20.len, "x64gen.obx:5352")), "x64gen.obx:5352"), &v_work_11);
   }
   while (1) {
     bool c23 = (bool)(v_work_11.len > 0LL);
     if (!c23) {
       break;
     }
-    int64_t t24 = *(int64_t*)rt_arr_pop(&v_work_11, 8ULL, "x64gen.obx:5328");
+    int64_t t24 = *(int64_t*)rt_arr_pop(&v_work_11, 8ULL, "x64gen.obx:5354");
     int64_t v_sec_25 = t24;
     obx_slice t26 = k3_rtx_SEC_REL;
     int64_t ix27 = v_sec_25;
-    int64_t t28 = rt_cvs_int((__int128)*((int32_t*)t26.data + rt_idx(ix27, t26.len, "x64gen.obx:5329")), "x64gen.obx:5329");
+    int64_t t28 = rt_cvs_int((__int128)*((int32_t*)t26.data + rt_idx(ix27, t26.len, "x64gen.obx:5355")), "x64gen.obx:5355");
     obx_slice t29 = k3_rtx_SEC_REL;
-    int64_t ix30 = rt_add_int(v_sec_25, 1LL, "x64gen.obx:5329");
-    int64_t end31 = rt_cvs_int((__int128)*((int32_t*)t29.data + rt_idx(ix30, t29.len, "x64gen.obx:5329")), "x64gen.obx:5329");
+    int64_t ix30 = rt_add_int(v_sec_25, 1LL, "x64gen.obx:5355");
+    int64_t end31 = rt_cvs_int((__int128)*((int32_t*)t29.data + rt_idx(ix30, t29.len, "x64gen.obx:5355")), "x64gen.obx:5355");
     for (int64_t v_r_32 = t28; v_r_32 < end31; v_r_32++) {
       obx_slice t33 = k3_rtx_REL_TARGET;
       int64_t ix34 = v_r_32;
-      f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t33.data + rt_idx(ix34, t33.len, "x64gen.obx:5329")), "x64gen.obx:5329"), &v_work_11);
+      f174_x64gen_Gen_rtMark(p_g, rt_cvs_int((__int128)*((int32_t*)t33.data + rt_idx(ix34, t33.len, "x64gen.obx:5355")), "x64gen.obx:5355"), &v_work_11);
     }
   }
   int64_t v_code_35 = 4198400LL;
@@ -28271,13 +28271,13 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
   int64_t end37 = v_n_1;
   for (int64_t v_i_38 = 0LL; v_i_38 < end37; v_i_38++) {
     int64_t ix39 = v_i_38;
-    bool c40 = (bool)!*((bool*)(*p_g)->f_rtLive.data + rt_idx(ix39, (*p_g)->f_rtLive.len, "x64gen.obx:5335"));
+    bool c40 = (bool)!*((bool*)(*p_g)->f_rtLive.data + rt_idx(ix39, (*p_g)->f_rtLive.len, "x64gen.obx:5361"));
     if (c40) {
       continue;
     }
     obx_slice t41 = k3_rtx_SEC_KIND;
     int64_t ix42 = v_i_38;
-    int64_t v_k_43 = rt_cvs_int((__int128)*((int32_t*)t41.data + rt_idx(ix42, t41.len, "x64gen.obx:5336")), "x64gen.obx:5336");
+    int64_t v_k_43 = rt_cvs_int((__int128)*((int32_t*)t41.data + rt_idx(ix42, t41.len, "x64gen.obx:5362")), "x64gen.obx:5362");
     bool b44 = (bool)(v_k_43 == 0LL);
     if (!b44) {
       b44 = (bool)(v_k_43 == 1LL);
@@ -28287,26 +28287,26 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
       int64_t t46 = v_code_35;
       obx_slice t47 = k3_rtx_SEC_ALIGN;
       int64_t ix48 = v_i_38;
-      int64_t t49 = f134_ir_alignUp(t46, rt_cvs_int((__int128)*((int32_t*)t47.data + rt_idx(ix48, t47.len, "x64gen.obx:5338")), "x64gen.obx:5338"));
+      int64_t t49 = f134_ir_alignUp(t46, rt_cvs_int((__int128)*((int32_t*)t47.data + rt_idx(ix48, t47.len, "x64gen.obx:5364")), "x64gen.obx:5364"));
       v_code_35 = t49;
       int64_t ix50 = v_i_38;
-      *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix50, (*p_g)->f_rtAt.len, "x64gen.obx:5339")) = v_code_35;
+      *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix50, (*p_g)->f_rtAt.len, "x64gen.obx:5365")) = v_code_35;
       int64_t t51 = v_code_35;
       obx_slice t52 = k3_rtx_SEC_SIZE;
       int64_t ix53 = v_i_38;
-      v_code_35 = rt_add_int(t51, rt_cvs_int((__int128)*((int32_t*)t52.data + rt_idx(ix53, t52.len, "x64gen.obx:5340")), "x64gen.obx:5340"), "x64gen.obx:5340");
+      v_code_35 = rt_add_int(t51, rt_cvs_int((__int128)*((int32_t*)t52.data + rt_idx(ix53, t52.len, "x64gen.obx:5366")), "x64gen.obx:5366"), "x64gen.obx:5366");
     } else {
       int64_t t54 = v_data_36;
       obx_slice t55 = k3_rtx_SEC_ALIGN;
       int64_t ix56 = v_i_38;
-      int64_t t57 = f134_ir_alignUp(t54, rt_cvs_int((__int128)*((int32_t*)t55.data + rt_idx(ix56, t55.len, "x64gen.obx:5342")), "x64gen.obx:5342"));
+      int64_t t57 = f134_ir_alignUp(t54, rt_cvs_int((__int128)*((int32_t*)t55.data + rt_idx(ix56, t55.len, "x64gen.obx:5368")), "x64gen.obx:5368"));
       v_data_36 = t57;
       int64_t ix58 = v_i_38;
-      *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix58, (*p_g)->f_rtAt.len, "x64gen.obx:5343")) = v_data_36;
+      *((int64_t*)(*p_g)->f_rtAt.data + rt_idx(ix58, (*p_g)->f_rtAt.len, "x64gen.obx:5369")) = v_data_36;
       int64_t t59 = v_data_36;
       obx_slice t60 = k3_rtx_SEC_SIZE;
       int64_t ix61 = v_i_38;
-      v_data_36 = rt_add_int(t59, rt_cvs_int((__int128)*((int32_t*)t60.data + rt_idx(ix61, t60.len, "x64gen.obx:5344")), "x64gen.obx:5344"), "x64gen.obx:5344");
+      v_data_36 = rt_add_int(t59, rt_cvs_int((__int128)*((int32_t*)t60.data + rt_idx(ix61, t60.len, "x64gen.obx:5370")), "x64gen.obx:5370"), "x64gen.obx:5370");
       bool c62 = (bool)(v_k_43 == 2LL);
       if (c62) {
         (*p_g)->f_rtDataEnd = v_data_36;
@@ -28319,12 +28319,12 @@ static void f133_x64gen_Gen_rtLayout(struct S27_x64gen_Gen**p_g) {
 }
 static void f174_x64gen_Gen_rtMark(struct S27_x64gen_Gen**p_g, int64_t p_sec, obx_arr*p_work) {
   int64_t ix1 = p_sec;
-  bool c2 = *((bool*)(*p_g)->f_rtLive.data + rt_idx(ix1, (*p_g)->f_rtLive.len, "x64gen.obx:5353"));
+  bool c2 = *((bool*)(*p_g)->f_rtLive.data + rt_idx(ix1, (*p_g)->f_rtLive.len, "x64gen.obx:5379"));
   if (c2) {
     return;
   }
   int64_t ix3 = p_sec;
-  *((bool*)(*p_g)->f_rtLive.data + rt_idx(ix3, (*p_g)->f_rtLive.len, "x64gen.obx:5354")) = (bool)1LL;
+  *((bool*)(*p_g)->f_rtLive.data + rt_idx(ix3, (*p_g)->f_rtLive.len, "x64gen.obx:5380")) = (bool)1LL;
   int64_t ap4 = p_sec;
   *(int64_t*)rt_arr_push(p_work, 8ULL) = ap4;
 }
@@ -29340,8 +29340,8 @@ static void f213_x64gen_Gen_genStubs(struct S27_x64gen_Gen**p_g) {
     int64_t t7 = f170_x64gen_Gen_symStr(p_g, rt_str_dup(v_st_6.f_msg));
     f181_x64_Asm_movRSym(&(*p_g)->f_a, 6LL, t7, 0LL);
     int64_t ix8 = v_st_6.f_where;
-    int64_t ix9 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4683"))->f_a;
-    int64_t t10 = f170_x64gen_Gen_symStr(p_g, rt_str_dup(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4683"))->f_s));
+    int64_t ix9 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4689"))->f_a;
+    int64_t t10 = f170_x64gen_Gen_symStr(p_g, rt_str_dup(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4689"))->f_s));
     f181_x64_Asm_movRSym(&(*p_g)->f_a, 2LL, t10, 0LL);
     f232_x64gen_Gen_callRt(p_g, sl216);
     gl30_drop(v_st_6);
@@ -29908,7 +29908,7 @@ static int64_t f244_x64gen_Gen_jumpOnly(struct S27_x64gen_Gen**p_g, int64_t p_s)
 }
 static void f243_x64gen_Gen_genTest(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  int64_t v_t_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3996"))->f_ty;
+  int64_t v_t_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4002"))->f_ty;
   int64_t t3 = f159_x64gen_Gen_tk(p_g, v_t_2);
   int64_t v_k_4 = t3;
   int64_t t5 = f64_ir_Ir_nk(&(*p_g)->f_u, p_e);
@@ -30825,7 +30825,7 @@ static struct S42_x64gen_ArOp f294_x64gen_divOp(obx_str p_name) {
   }
   bool b5 = b4;
   if (!b5) {
-    uint8_t t6 = rt_str_byte(p_name, 6LL, "x64gen.obx:4722");
+    uint8_t t6 = rt_str_byte(p_name, 6LL, "x64gen.obx:4728");
     b5 = (bool)((int32_t)t6 != 95);
   }
   bool c7 = b5;
@@ -30834,7 +30834,7 @@ static struct S42_x64gen_ArOp f294_x64gen_divOp(obx_str p_name) {
     rt_str_drop(p_name);
     return r8;
   }
-  obx_str t9 = rt_str_sub(p_name, 3LL, 6LL, "x64gen.obx:4723");
+  obx_str t9 = rt_str_sub(p_name, 3LL, 6LL, "x64gen.obx:4729");
   obx_str v_o_10 = t9;
   int64_t v_op_16 = rt_str_eq(v_o_10, sl1922) ? 3LL : rt_str_eq(v_o_10, sl3693) ? 4LL : rt_str_eq(v_o_10, sl1924) ? 5LL : rt_str_eq(v_o_10, sl1925) ? 6LL : rt_str_eq(v_o_10, sl1919) ? 1LL : -1LL;
   bool c17 = (bool)(v_op_16 < 0LL);
@@ -30846,7 +30846,7 @@ static struct S42_x64gen_ArOp f294_x64gen_divOp(obx_str p_name) {
   }
   obx_str t19 = rt_str_dup(p_name);
   int64_t ix20 = (int64_t)p_name.len;
-  obx_str t21 = rt_str_sub(t19, 7LL, ix20, "x64gen.obx:4727");
+  obx_str t21 = rt_str_sub(t19, 7LL, ix20, "x64gen.obx:4733");
   int64_t t22 = f295_x64gen_suffixKind(t21);
   int64_t v_k_23 = t22;
   rt_str_drop(t19);
@@ -30957,7 +30957,7 @@ static bool f292_x64gen_Gen_isWhere(struct S27_x64gen_Gen**p_g, int64_t p_w) {
   bool b2 = (bool)(t1 == 11LL);
   if (b2) {
     int64_t ix3 = p_w;
-    int64_t t4 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4755"))->f_a);
+    int64_t t4 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4761"))->f_a);
     b2 = (bool)(t4 == 3LL);
   }
   bool r5 = b2;
@@ -30975,7 +30975,7 @@ static struct S42_x64gen_ArOp f291_x64gen_arOp(obx_str p_name) {
   }
   obx_str t6 = rt_str_dup(p_name);
   int64_t ix7 = (int64_t)p_name.len;
-  obx_str t8 = rt_str_sub(t6, 3LL, ix7, "x64gen.obx:4700");
+  obx_str t8 = rt_str_sub(t6, 3LL, ix7, "x64gen.obx:4706");
   obx_str v_rest_9 = t8;
   rt_str_drop(t6);
   bool v_wrap_10 = (bool)0LL;
@@ -30985,7 +30985,7 @@ static struct S42_x64gen_ArOp f291_x64gen_arOp(obx_str p_name) {
     v_wrap_10 = (bool)1LL;
     obx_str t13 = rt_str_dup(v_rest_9);
     int64_t ix14 = (int64_t)v_rest_9.len;
-    obx_str t15 = rt_str_sub(t13, 1LL, ix14, "x64gen.obx:4704");
+    obx_str t15 = rt_str_sub(t13, 1LL, ix14, "x64gen.obx:4710");
     {
       obx_str nw16 = t15;
       rt_str_drop(v_rest_9);
@@ -31018,7 +31018,7 @@ static struct S42_x64gen_ArOp f291_x64gen_arOp(obx_str p_name) {
   }
   obx_str t26 = rt_str_dup(v_rest_9);
   int64_t ix27 = (int64_t)v_rest_9.len;
-  obx_str t28 = rt_str_sub(t26, 4LL, ix27, "x64gen.obx:4709");
+  obx_str t28 = rt_str_sub(t26, 4LL, ix27, "x64gen.obx:4715");
   int64_t t29 = f295_x64gen_suffixKind(t28);
   struct S42_x64gen_ArOp t30 = (struct S42_x64gen_ArOp){.f_k = t29, .f_op = v_op_23, .f_wrap = v_wrap_10};
   struct S42_x64gen_ArOp r31 = t30;
@@ -31029,12 +31029,12 @@ static struct S42_x64gen_ArOp f291_x64gen_arOp(obx_str p_name) {
 }
 static obx_str f290_x64gen_Gen_rtName(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  int64_t v_c_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4301"))->f_a;
+  int64_t v_c_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4307"))->f_a;
   int64_t t3 = f64_ir_Ir_nk(&(*p_g)->f_u, v_c_2);
   bool b4 = (bool)(t3 != 11LL);
   if (!b4) {
     int64_t ix5 = v_c_2;
-    int64_t t6 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4302"))->f_a);
+    int64_t t6 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4308"))->f_a);
     b4 = (bool)(t6 != 6LL);
   }
   bool c7 = b4;
@@ -31043,13 +31043,13 @@ static obx_str f290_x64gen_Gen_rtName(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     return r8;
   }
   int64_t ix9 = v_c_2;
-  int64_t ix10 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4303"))->f_a;
-  int64_t v_f_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4303"))->f_a;
+  int64_t ix10 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4309"))->f_a;
+  int64_t v_f_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4309"))->f_a;
   int64_t ix12 = v_f_11;
-  bool b13 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix12, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4304")))->f_body >= 0LL);
+  bool b13 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix12, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4310")))->f_body >= 0LL);
   if (!b13) {
     int64_t ix14 = v_f_11;
-    b13 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix14, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4304")))->f_isExtern;
+    b13 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix14, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4310")))->f_isExtern;
   }
   bool c15 = b13;
   if (c15) {
@@ -31057,7 +31057,7 @@ static obx_str f290_x64gen_Gen_rtName(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     return r16;
   }
   int64_t ix17 = v_f_11;
-  obx_str r18 = rt_str_dup((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix17, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4305")))->f_name);
+  obx_str r18 = rt_str_dup((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix17, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4311")))->f_name);
   return r18;
 }
 static bool f287_x64gen_Gen_loudNode(struct S27_x64gen_Gen**p_g, int64_t p_x) {
@@ -31783,35 +31783,55 @@ static struct S2_x64_Mem f266_x64gen_Gen_paddMem(struct S27_x64gen_Gen**p_g, int
   }
   f247_x64gen_Gen_gen(p_g, v_n_2.f_b);
   bool t31 = f305_x64gen_scaleOk(v_sc_3);
-  bool c32 = (bool)!t31;
-  if (c32) {
+  bool b32 = (bool)!t31;
+  if (b32) {
+    int64_t t33 = f253_x64gen_Gen_regOf(p_g, v_n_2.f_a);
+    b32 = (bool)(t33 < 0LL);
+  }
+  bool b34 = b32;
+  if (b34) {
+    bool t35 = f272_x64gen_Gen_simple(p_g, v_n_2.f_a);
+    b34 = (bool)!t35;
+  }
+  bool c36 = b34;
+  if (c36) {
+    f269_x64_Asm_imulI(&(*p_g)->f_a, 8LL, 1LL, 0LL, v_sc_3);
+    f247_x64gen_Gen_gen(p_g, v_n_2.f_a);
+    struct S2_x64_Mem t37 = f268_x64_memx(0LL, 1LL, 1LL, 0LL);
+    struct S2_x64_Mem r38 = t37;
+    gl25_drop(v_n_2);
+    return r38;
+  }
+  bool t39 = f305_x64gen_scaleOk(v_sc_3);
+  bool c40 = (bool)!t39;
+  if (c40) {
     f269_x64_Asm_imulI(&(*p_g)->f_a, 8LL, 0LL, 0LL, v_sc_3);
     v_sc_3 = 1LL;
   }
-  int64_t t33 = f253_x64gen_Gen_regOf(p_g, v_n_2.f_a);
-  bool c34 = (bool)(t33 >= 0LL);
-  if (c34) {
-    int64_t t35 = f253_x64gen_Gen_regOf(p_g, v_n_2.f_a);
-    struct S2_x64_Mem t36 = f268_x64_memx(t35, 0LL, v_sc_3, 0LL);
-    struct S2_x64_Mem r37 = t36;
+  int64_t t41 = f253_x64gen_Gen_regOf(p_g, v_n_2.f_a);
+  bool c42 = (bool)(t41 >= 0LL);
+  if (c42) {
+    int64_t t43 = f253_x64gen_Gen_regOf(p_g, v_n_2.f_a);
+    struct S2_x64_Mem t44 = f268_x64_memx(t43, 0LL, v_sc_3, 0LL);
+    struct S2_x64_Mem r45 = t44;
     gl25_drop(v_n_2);
-    return r37;
+    return r45;
   }
-  bool t38 = f272_x64gen_Gen_simple(p_g, v_n_2.f_a);
-  bool c39 = t38;
-  if (c39) {
+  bool t46 = f272_x64gen_Gen_simple(p_g, v_n_2.f_a);
+  bool c47 = t46;
+  if (c47) {
     f273_x64gen_Gen_genInto(p_g, v_n_2.f_a, 1LL);
-    struct S2_x64_Mem t40 = f268_x64_memx(1LL, 0LL, v_sc_3, 0LL);
-    struct S2_x64_Mem r41 = t40;
+    struct S2_x64_Mem t48 = f268_x64_memx(1LL, 0LL, v_sc_3, 0LL);
+    struct S2_x64_Mem r49 = t48;
     gl25_drop(v_n_2);
-    return r41;
+    return r49;
   }
   f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
   f247_x64gen_Gen_gen(p_g, v_n_2.f_a);
-  struct S2_x64_Mem t42 = f268_x64_memx(0LL, 1LL, v_sc_3, 0LL);
-  struct S2_x64_Mem r43 = t42;
+  struct S2_x64_Mem t50 = f268_x64_memx(0LL, 1LL, v_sc_3, 0LL);
+  struct S2_x64_Mem r51 = t50;
   gl25_drop(v_n_2);
-  return r43;
+  return r51;
 }
 static void f306_x64gen_Gen_baseInto(struct S27_x64gen_Gen**p_g, int64_t p_a) {
   bool t1 = f272_x64gen_Gen_simple(p_g, p_a);
@@ -31844,8 +31864,8 @@ static int64_t f304_x64gen_Gen_stub(struct S27_x64gen_Gen**p_g, int64_t p_code, 
   obx_str t3 = rt_str_concat(t2, p_msg);
   obx_str t4 = rt_str_concat(t3, sl3527);
   int64_t ix5 = p_w;
-  int64_t ix6 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4668"))->f_a;
-  obx_str t7 = rt_str_concat(t4, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix6, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4668"))->f_s);
+  int64_t ix6 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4674"))->f_a;
+  obx_str t7 = rt_str_concat(t4, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix6, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4674"))->f_s);
   obx_str v_key_8 = t7;
   rt_str_drop(t4);
   rt_str_drop(t3);
@@ -32128,7 +32148,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   *&(*p_g)->f_unused = (bool)0LL;
   bool v_unused_2 = old1;
   int64_t ix3 = p_e;
-  struct S17_ir_Node v_n_4 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3544")));
+  struct S17_ir_Node v_n_4 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3550")));
   int64_t v_lhs_5 = v_n_4.f_a;
   int64_t v_t_6 = v_n_4.f_ty;
   int64_t t7 = f253_x64gen_Gen_regOf(p_g, v_lhs_5);
@@ -32137,7 +32157,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool b9 = v_unused_2;
     if (b9) {
       int64_t ix10 = v_n_4.f_b;
-      b9 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3548"))->f_ty == v_t_6);
+      b9 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3554"))->f_ty == v_t_6);
     }
     bool b11 = b9;
     if (b11) {
@@ -32153,7 +32173,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     }
     f247_x64gen_Gen_gen(p_g, v_n_4.f_b);
     int64_t ix16 = v_n_4.f_b;
-    bool t17 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix16, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3550"))->f_ty, v_t_6);
+    bool t17 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix16, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3556"))->f_ty, v_t_6);
     bool c18 = (bool)!t17;
     if (c18) {
       int64_t t19 = f159_x64gen_Gen_tk(p_g, v_t_6);
@@ -32195,7 +32215,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   if (b32) {
     int64_t t33 = v_lhs_5;
     int64_t ix34 = v_n_4.f_b;
-    int64_t t35 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix34, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3558"))->f_b, 0LL);
+    int64_t t35 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix34, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3564"))->f_b, 0LL);
     bool t36 = f311_x64gen_Gen_sameMem(p_g, t33, t35);
     b32 = t36;
   }
@@ -32223,7 +32243,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   bool b44 = b42;
   if (b44) {
     int64_t ix45 = v_n_4.f_b;
-    b44 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix45, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3562"))->f_ty == v_t_6);
+    b44 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix45, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3568"))->f_ty == v_t_6);
   }
   bool c46 = b44;
   if (c46) {
@@ -32273,7 +32293,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   if (c59) {
     f247_x64gen_Gen_gen(p_g, v_n_4.f_b);
     int64_t ix60 = v_n_4.f_b;
-    f314_x64gen_Gen_storeFrom(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix60, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3582"))->f_ty, v_t_6, v_m_22);
+    f314_x64gen_Gen_storeFrom(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix60, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3588"))->f_ty, v_t_6, v_m_22);
     bool t61 = f160_x64gen_Gen_isAggr(p_g, v_t_6);
     bool c62 = t61;
     if (c62) {
@@ -32330,7 +32350,7 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool b84 = (bool)(v_r_83 < 0LL);
     if (!b84) {
       int64_t ix85 = v_n_4.f_b;
-      b84 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix85, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3597"))->f_ty != v_t_6);
+      b84 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix85, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3603"))->f_ty != v_t_6);
     }
     bool c86 = b84;
     if (c86) {
@@ -32351,8 +32371,8 @@ static void f263_x64gen_Gen_genAssign(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   if (c90) {
     f247_x64gen_Gen_gen(p_g, v_n_4.f_b);
     int64_t ix91 = v_lhs_5;
-    int64_t ix92 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix91, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3607"))->f_a;
-    f181_x64_Asm_movRSym(&(*p_g)->f_a, 11LL, *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix92, (*p_g)->f_globalSym.len, "x64gen.obx:3607")), 0LL);
+    int64_t ix92 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix91, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3613"))->f_a;
+    f181_x64_Asm_movRSym(&(*p_g)->f_a, 11LL, *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix92, (*p_g)->f_globalSym.len, "x64gen.obx:3613")), 0LL);
   } else {
     bool t93 = f272_x64gen_Gen_simple(p_g, v_n_4.f_b);
     bool b94 = t93;
@@ -32480,7 +32500,7 @@ static struct S43_x64gen_IntK f313_x64gen_Gen_intConst(struct S27_x64gen_Gen**p_
       break;
     }
     int64_t ix10 = v_x_7;
-    int64_t t11 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3634"))->f_ty);
+    int64_t t11 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3640"))->f_ty);
     int64_t v_ck_12 = t11;
     bool b13 = (bool)(v_ck_12 < 1LL);
     if (!b13) {
@@ -32493,7 +32513,7 @@ static struct S43_x64gen_IntK f313_x64gen_Gen_intConst(struct S27_x64gen_Gen**p_
       return r16;
     }
     int64_t ix17 = v_x_7;
-    v_x_7 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3636"))->f_a;
+    v_x_7 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3642"))->f_a;
   }
   int64_t t18 = f64_ir_Ir_nk(&(*p_g)->f_u, v_x_7);
   bool c19 = (bool)(t18 != 1LL);
@@ -32503,7 +32523,7 @@ static struct S43_x64gen_IntK f313_x64gen_Gen_intConst(struct S27_x64gen_Gen**p_
     return r21;
   }
   int64_t ix22 = v_x_7;
-  int64_t v_v_23 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3640"))->f_v;
+  int64_t v_v_23 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3646"))->f_v;
   int64_t v_y_24 = p_e;
   obx_arr a25 = rt_arr_new(0LL, 8ULL);
   obx_arr v_chain_26 = a25;
@@ -32514,22 +32534,22 @@ static struct S43_x64gen_IntK f313_x64gen_Gen_intConst(struct S27_x64gen_Gen**p_
       break;
     }
     int64_t ix29 = v_y_24;
-    int64_t t30 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3644"))->f_ty);
+    int64_t t30 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3650"))->f_ty);
     int64_t ap31 = t30;
     *(int64_t*)rt_arr_push(&v_chain_26, 8ULL) = ap31;
     int64_t ix32 = v_y_24;
-    v_y_24 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix32, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3645"))->f_a;
+    v_y_24 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix32, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3651"))->f_a;
   }
-  int64_t v_j_33 = rt_sub_int(v_chain_26.len, 1LL, "x64gen.obx:3647");
+  int64_t v_j_33 = rt_sub_int(v_chain_26.len, 1LL, "x64gen.obx:3653");
   while (1) {
     bool c34 = (bool)(v_j_33 >= 0LL);
     if (!c34) {
       break;
     }
     int64_t ix35 = v_j_33;
-    int64_t t36 = f168_ir_truncTo(*((int64_t*)v_chain_26.data + rt_idx(ix35, v_chain_26.len, "x64gen.obx:3649")), v_v_23);
+    int64_t t36 = f168_ir_truncTo(*((int64_t*)v_chain_26.data + rt_idx(ix35, v_chain_26.len, "x64gen.obx:3655")), v_v_23);
     v_v_23 = t36;
-    v_j_33 = rt_sub_int(v_j_33, 1LL, "x64gen.obx:3650");
+    v_j_33 = rt_sub_int(v_j_33, 1LL, "x64gen.obx:3656");
   }
   int64_t t37 = f168_ir_truncTo(v_k_2, v_v_23);
   v_v_23 = t37;
@@ -32654,7 +32674,7 @@ static bool f311_x64gen_Gen_sameMem(struct S27_x64gen_Gen**p_g, int64_t p_a, int
 }
 static bool f310_x64gen_Gen_loadInto(struct S27_x64gen_Gen**p_g, int64_t p_e, int64_t p_r) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3516")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3522")));
   bool b3 = (bool)(v_n_2.f_k == 7LL);
   if (b3) {
     obx_str t4 = f290_x64gen_Gen_rtName(p_g, p_e);
@@ -32746,7 +32766,7 @@ static bool f310_x64gen_Gen_loadInto(struct S27_x64gen_Gen**p_g, int64_t p_e, in
 }
 static void f262_x64gen_Gen_branch(struct S27_x64gen_Gen**p_g, int64_t p_e, int64_t p_l, bool p_when) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4019")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4025")));
   int64_t v_k_3 = v_n_2.f_k;
   bool c4 = (bool)(v_k_3 == 1LL);
   if (c4) {
@@ -32804,7 +32824,7 @@ static void f262_x64gen_Gen_branch(struct S27_x64gen_Gen**p_g, int64_t p_e, int6
             bool b22 = b20;
             if (b22) {
               int64_t ix23 = v_n_2.f_a;
-              bool t24 = f167_x64gen_Gen_is128(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix23, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4041"))->f_ty);
+              bool t24 = f167_x64gen_Gen_is128(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix23, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4047"))->f_ty);
               b22 = (bool)!t24;
             }
             bool c25 = b22;
@@ -32842,7 +32862,7 @@ static void f323_x64gen_Gen_jumpCC(struct S27_x64gen_Gen**p_g, int64_t p_cc, int
 }
 static int64_t f322_x64gen_Gen_genCmp(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3917")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3923")));
   int64_t v_op_3 = v_n_2.f_v;
   int64_t v_c_4 = v_n_2.f_c;
   bool t5 = f165_x64gen_Gen_isF(p_g, v_c_4);
@@ -33114,10 +33134,10 @@ static bool f320_x64gen_Gen_branchInline(struct S27_x64gen_Gen**p_g, int64_t p_e
   bool b7 = (bool)(v_x_6 < 0LL);
   if (!b7) {
     int64_t ix8 = v_x_6;
-    int64_t t9 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4552"))->f_ty;
+    int64_t t9 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4558"))->f_ty;
     int64_t ix10 = v_f_2;
-    int64_t ix11 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4552")))->f_ty;
-    b7 = (bool)(t9 != ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix11, (*p_g)->f_u->f_tys.len, "x64gen.obx:4552"))->f_base);
+    int64_t ix11 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4558")))->f_ty;
+    b7 = (bool)(t9 != ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix11, (*p_g)->f_u->f_tys.len, "x64gen.obx:4558"))->f_base);
   }
   bool c12 = b7;
   if (c12) {
@@ -33137,7 +33157,7 @@ static bool f320_x64gen_Gen_branchInline(struct S27_x64gen_Gen**p_g, int64_t p_e
   int64_t ap20 = v_f_2;
   *(int64_t*)rt_arr_push(&(*p_g)->f_inlStack, 8ULL) = ap20;
   f262_x64gen_Gen_branch(p_g, v_x_6, p_l, p_when);
-  int64_t t21 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlStack, 8ULL, "x64gen.obx:4559");
+  int64_t t21 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlStack, 8ULL, "x64gen.obx:4565");
   f335_x64gen_Gen_unalias(p_g, &v_ch_17);
   bool r22 = (bool)1LL;
   gl8_drop(v_ch_17);
@@ -33145,16 +33165,16 @@ static bool f320_x64gen_Gen_branchInline(struct S27_x64gen_Gen**p_g, int64_t p_e
   return r22;
 }
 static void f335_x64gen_Gen_unalias(struct S27_x64gen_Gen**p_g, obx_arr*p_ch) {
-  int64_t end1 = rt_div_int(p_ch->len, 2LL, "x64gen.obx:4642");
+  int64_t end1 = rt_div_int(p_ch->len, 2LL, "x64gen.obx:4648");
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
-    int64_t ix3 = rt_mul_int(2LL, v_i_2, "x64gen.obx:4643");
-    int64_t ix4 = *((int64_t*)p_ch->data + rt_idx(ix3, p_ch->len, "x64gen.obx:4643"));
-    ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4643"))->f_k = 9LL;
-    int64_t ix5 = rt_add_int(rt_mul_int(2LL, v_i_2, "x64gen.obx:4644"), 1LL, "x64gen.obx:4644");
-    int64_t t6 = *((int64_t*)p_ch->data + rt_idx(ix5, p_ch->len, "x64gen.obx:4644"));
-    int64_t ix7 = rt_mul_int(2LL, v_i_2, "x64gen.obx:4644");
-    int64_t ix8 = *((int64_t*)p_ch->data + rt_idx(ix7, p_ch->len, "x64gen.obx:4644"));
-    ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4644"))->f_a = t6;
+    int64_t ix3 = rt_mul_int(2LL, v_i_2, "x64gen.obx:4649");
+    int64_t ix4 = *((int64_t*)p_ch->data + rt_idx(ix3, p_ch->len, "x64gen.obx:4649"));
+    ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4649"))->f_k = 9LL;
+    int64_t ix5 = rt_add_int(rt_mul_int(2LL, v_i_2, "x64gen.obx:4650"), 1LL, "x64gen.obx:4650");
+    int64_t t6 = *((int64_t*)p_ch->data + rt_idx(ix5, p_ch->len, "x64gen.obx:4650"));
+    int64_t ix7 = rt_mul_int(2LL, v_i_2, "x64gen.obx:4650");
+    int64_t ix8 = *((int64_t*)p_ch->data + rt_idx(ix7, p_ch->len, "x64gen.obx:4650"));
+    ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix8, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4650"))->f_a = t6;
   }
 }
 static obx_arr f334_x64gen_Gen_applyAlias(struct S27_x64gen_Gen**p_g, int64_t p_f, obx_arr*p_al) {
@@ -33163,31 +33183,31 @@ static obx_arr f334_x64gen_Gen_applyAlias(struct S27_x64gen_Gen**p_g, int64_t p_
   int64_t end3 = p_al->len;
   for (int64_t v_j_4 = 0LL; v_j_4 < end3; v_j_4++) {
     int64_t ix5 = v_j_4;
-    bool c6 = (bool)(*((int64_t*)p_al->data + rt_idx(ix5, p_al->len, "x64gen.obx:4628")) < 0LL);
+    bool c6 = (bool)(*((int64_t*)p_al->data + rt_idx(ix5, p_al->len, "x64gen.obx:4634")) < 0LL);
     if (c6) {
       continue;
     }
     obx_arr a7 = rt_arr_new(0LL, 8ULL);
     obx_arr v_ds_8 = a7;
     int64_t ix9 = p_f;
-    int64_t t10 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix9, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4630")))->f_body;
+    int64_t t10 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix9, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4636")))->f_body;
     int64_t ix11 = p_f;
     int64_t ix12 = v_j_4;
-    f336_x64gen_Gen_derefsOf(p_g, t10, *((int64_t*)(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4630")))->f_params.data + rt_idx(ix12, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4630")))->f_params.len, "x64gen.obx:4630")), &v_ds_8);
+    f336_x64gen_Gen_derefsOf(p_g, t10, *((int64_t*)(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4636")))->f_params.data + rt_idx(ix12, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4636")))->f_params.len, "x64gen.obx:4636")), &v_ds_8);
     obx_slice ap13 = rt_as_slice(&v_ds_8);
     for (int64_t i14 = 0LL; i14 < ap13.len; i14++) {
       int64_t v_x_15 = *((int64_t*)ap13.data + i14);
       int64_t ap16 = v_x_15;
       *(int64_t*)rt_arr_push(&v_ch_2, 8ULL) = ap16;
       int64_t ix17 = v_x_15;
-      int64_t ap18 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4633"))->f_a;
+      int64_t ap18 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4639"))->f_a;
       *(int64_t*)rt_arr_push(&v_ch_2, 8ULL) = ap18;
       int64_t ix19 = v_x_15;
-      ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4634"))->f_k = 4LL;
+      ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4640"))->f_k = 4LL;
       int64_t ix20 = v_j_4;
-      int64_t t21 = *((int64_t*)p_al->data + rt_idx(ix20, p_al->len, "x64gen.obx:4635"));
+      int64_t t21 = *((int64_t*)p_al->data + rt_idx(ix20, p_al->len, "x64gen.obx:4641"));
       int64_t ix22 = v_x_15;
-      ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4635"))->f_a = t21;
+      ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4641"))->f_a = t21;
     }
     gl8_drop(v_ds_8);
   }
@@ -33200,7 +33220,7 @@ static void f336_x64gen_Gen_derefsOf(struct S27_x64gen_Gen**p_g, int64_t p_x, in
     return;
   }
   int64_t ix2 = p_x;
-  struct S17_ir_Node v_n_3 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix2, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4594")));
+  struct S17_ir_Node v_n_3 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix2, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4600")));
   bool b4 = (bool)(v_n_3.f_k == 9LL);
   if (b4) {
     int64_t t5 = f64_ir_Ir_nk(&(*p_g)->f_u, v_n_3.f_a);
@@ -33209,7 +33229,7 @@ static void f336_x64gen_Gen_derefsOf(struct S27_x64gen_Gen**p_g, int64_t p_x, in
   bool b6 = b4;
   if (b6) {
     int64_t ix7 = v_n_3.f_a;
-    b6 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix7, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4595"))->f_a == p_p);
+    b6 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix7, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4601"))->f_a == p_p);
   }
   bool c8 = b6;
   if (c8) {
@@ -33360,11 +33380,11 @@ static void f336_x64gen_Gen_derefsOf(struct S27_x64gen_Gen**p_g, int64_t p_x, in
 }
 static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, int64_t p_e, obx_arr*p_al) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4422")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4428")));
   obx_arr a3 = rt_arr_new(0LL, 8ULL);
   obx_arr v_ps_4 = a3;
   int64_t ix5 = p_f;
-  obx_slice ap6 = rt_as_slice(&(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix5, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4424")))->f_params);
+  obx_slice ap6 = rt_as_slice(&(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix5, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4430")))->f_params);
   for (int64_t i7 = 0LL; i7 < ap6.len; i7++) {
     int64_t v_p_8 = *((int64_t*)ap6.data + i7);
     int64_t ap9 = v_p_8;
@@ -33376,11 +33396,11 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
   int64_t end13 = v_nargs_11;
   for (int64_t v_j_14 = 0LL; v_j_14 < end13; v_j_14++) {
     int64_t ix15 = v_j_14;
-    bool b16 = (bool)(*((int64_t*)p_al->data + rt_idx(ix15, p_al->len, "x64gen.obx:4428")) < 0LL);
+    bool b16 = (bool)(*((int64_t*)p_al->data + rt_idx(ix15, p_al->len, "x64gen.obx:4434")) < 0LL);
     if (b16) {
       int64_t t17 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, v_j_14);
       int64_t ix18 = v_j_14;
-      bool t19 = f337_x64gen_Gen_inlineDirect(p_g, t17, *((int64_t*)v_ps_4.data + rt_idx(ix18, v_ps_4.len, "x64gen.obx:4428")));
+      bool t19 = f337_x64gen_Gen_inlineDirect(p_g, t17, *((int64_t*)v_ps_4.data + rt_idx(ix18, v_ps_4.len, "x64gen.obx:4434")));
       b16 = (bool)!t19;
     }
     bool c20 = b16;
@@ -33402,17 +33422,17 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
     int64_t t30 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, v_j_29);
     int64_t v_x_31 = t30;
     int64_t ix32 = v_j_29;
-    int64_t ix33 = *((int64_t*)v_ps_4.data + rt_idx(ix32, v_ps_4.len, "x64gen.obx:4439"));
-    int64_t v_t_34 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix33, (*p_g)->f_u->f_locals.len, "x64gen.obx:4439"))->f_ty;
+    int64_t ix33 = *((int64_t*)v_ps_4.data + rt_idx(ix32, v_ps_4.len, "x64gen.obx:4445"));
+    int64_t v_t_34 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix33, (*p_g)->f_u->f_locals.len, "x64gen.obx:4445"))->f_ty;
     int64_t ix35 = v_j_29;
-    bool c36 = (bool)(*((int64_t*)p_al->data + rt_idx(ix35, p_al->len, "x64gen.obx:4440")) >= 0LL);
+    bool c36 = (bool)(*((int64_t*)p_al->data + rt_idx(ix35, p_al->len, "x64gen.obx:4446")) >= 0LL);
     if (c36) {
       int64_t ap37 = 2LL;
       *(int64_t*)rt_arr_push(&v_tmp_22, 8ULL) = ap37;
       continue;
     }
     int64_t ix38 = v_j_29;
-    bool t39 = f337_x64gen_Gen_inlineDirect(p_g, v_x_31, *((int64_t*)v_ps_4.data + rt_idx(ix38, v_ps_4.len, "x64gen.obx:4444")));
+    bool t39 = f337_x64gen_Gen_inlineDirect(p_g, v_x_31, *((int64_t*)v_ps_4.data + rt_idx(ix38, v_ps_4.len, "x64gen.obx:4450")));
     bool c40 = t39;
     if (c40) {
       int64_t ap41 = 0LL;
@@ -33424,7 +33444,7 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
     bool b43 = (bool)!t42;
     if (b43) {
       int64_t ix44 = v_x_31;
-      bool t45 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix44, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4449"))->f_ty, v_t_34);
+      bool t45 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix44, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4455"))->f_ty, v_t_34);
       b43 = (bool)!t45;
     }
     bool c46 = b43;
@@ -33448,7 +33468,7 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
     if (c53) {
       bool v_quiet_54 = (bool)1LL;
       int64_t end55 = v_nargs_11;
-      for (int64_t v_k_56 = rt_add_int(v_j_29, 1LL, "x64gen.obx:4458"); v_k_56 < end55; v_k_56++) {
+      for (int64_t v_k_56 = rt_add_int(v_j_29, 1LL, "x64gen.obx:4464"); v_k_56 < end55; v_k_56++) {
         int64_t t57 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, v_k_56);
         bool t58 = f278_x64gen_Gen_quietTree(p_g, t57);
         bool c59 = (bool)!t58;
@@ -33458,12 +33478,12 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
       }
       int64_t t60 = f283_x64gen_Gen_calleeTemp(p_g, v_x_31, (bool)!v_quiet_54);
       int64_t ix61 = v_j_29;
-      *((int64_t*)v_hregs_24.data + rt_idx(ix61, v_hregs_24.len, "x64gen.obx:4461")) = t60;
+      *((int64_t*)v_hregs_24.data + rt_idx(ix61, v_hregs_24.len, "x64gen.obx:4467")) = t60;
       int64_t ix62 = v_j_29;
-      bool c63 = (bool)(*((int64_t*)v_hregs_24.data + rt_idx(ix62, v_hregs_24.len, "x64gen.obx:4462")) >= 0LL);
+      bool c63 = (bool)(*((int64_t*)v_hregs_24.data + rt_idx(ix62, v_hregs_24.len, "x64gen.obx:4468")) >= 0LL);
       if (c63) {
         int64_t ix64 = v_j_29;
-        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)v_hregs_24.data + rt_idx(ix64, v_hregs_24.len, "x64gen.obx:4463")), 0LL);
+        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)v_hregs_24.data + rt_idx(ix64, v_hregs_24.len, "x64gen.obx:4469")), 0LL);
         int64_t ap65 = 3LL;
         *(int64_t*)rt_arr_push(&v_tmp_22, 8ULL) = ap65;
         continue;
@@ -33477,40 +33497,40 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
     int64_t ap70 = v_s_67;
     *(int64_t*)rt_arr_push(&v_tmp_22, 8ULL) = ap70;
   }
-  int64_t v_k_71 = rt_sub_int(v_nargs_11, 1LL, "x64gen.obx:4472");
+  int64_t v_k_71 = rt_sub_int(v_nargs_11, 1LL, "x64gen.obx:4478");
   while (1) {
     bool c72 = (bool)(v_k_71 >= 0LL);
     if (!c72) {
       break;
     }
     int64_t ix73 = v_k_71;
-    bool c74 = (bool)(*((int64_t*)v_hregs_24.data + rt_idx(ix73, v_hregs_24.len, "x64gen.obx:4474")) >= 0LL);
+    bool c74 = (bool)(*((int64_t*)v_hregs_24.data + rt_idx(ix73, v_hregs_24.len, "x64gen.obx:4480")) >= 0LL);
     if (c74) {
-      int64_t t75 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4474");
+      int64_t t75 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4480");
     }
-    v_k_71 = rt_sub_int(v_k_71, 1LL, "x64gen.obx:4475");
+    v_k_71 = rt_sub_int(v_k_71, 1LL, "x64gen.obx:4481");
   }
   int64_t end76 = v_nargs_11;
   for (int64_t v_j_77 = 0LL; v_j_77 < end76; v_j_77++) {
     int64_t ix78 = v_j_77;
-    int64_t v_p_79 = *((int64_t*)v_ps_4.data + rt_idx(ix78, v_ps_4.len, "x64gen.obx:4478"));
+    int64_t v_p_79 = *((int64_t*)v_ps_4.data + rt_idx(ix78, v_ps_4.len, "x64gen.obx:4484"));
     int64_t ix80 = v_p_79;
-    int64_t v_t_81 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix80, (*p_g)->f_u->f_locals.len, "x64gen.obx:4479"))->f_ty;
+    int64_t v_t_81 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix80, (*p_g)->f_u->f_locals.len, "x64gen.obx:4485"))->f_ty;
     int64_t ix82 = v_j_77;
-    bool c83 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix82, v_tmp_22.len, "x64gen.obx:4480")) == 1LL);
+    bool c83 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix82, v_tmp_22.len, "x64gen.obx:4486")) == 1LL);
     if (c83) {
       int64_t ix84 = v_p_79;
-      bool c85 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix84, (*p_g)->f_reg.len, "x64gen.obx:4481")) >= 0LL);
+      bool c85 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix84, (*p_g)->f_reg.len, "x64gen.obx:4487")) >= 0LL);
       if (c85) {
         int64_t ix86 = v_p_79;
-        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix86, (*p_g)->f_reg.len, "x64gen.obx:4482")), 0LL);
+        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix86, (*p_g)->f_reg.len, "x64gen.obx:4488")), 0LL);
       } else {
         int64_t t87 = f202_x64gen_Gen_tempFor(p_g, v_t_81);
         int64_t ix88 = v_p_79;
-        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix88, (*p_g)->f_slots.len, "x64gen.obx:4484")) = t87;
+        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix88, (*p_g)->f_slots.len, "x64gen.obx:4490")) = t87;
         int64_t t89 = v_t_81;
         int64_t ix90 = v_p_79;
-        struct S2_x64_Mem t91 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix90, (*p_g)->f_slots.len, "x64gen.obx:4485")));
+        struct S2_x64_Mem t91 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix90, (*p_g)->f_slots.len, "x64gen.obx:4491")));
         f312_x64gen_Gen_storeT(p_g, t89, t91);
       }
     }
@@ -33518,47 +33538,47 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
   int64_t end92 = v_nargs_11;
   for (int64_t v_j_93 = 0LL; v_j_93 < end92; v_j_93++) {
     int64_t ix94 = v_j_93;
-    int64_t v_p_95 = *((int64_t*)v_ps_4.data + rt_idx(ix94, v_ps_4.len, "x64gen.obx:4490"));
+    int64_t v_p_95 = *((int64_t*)v_ps_4.data + rt_idx(ix94, v_ps_4.len, "x64gen.obx:4496"));
     int64_t ix96 = v_p_95;
-    int64_t v_t_97 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix96, (*p_g)->f_u->f_locals.len, "x64gen.obx:4491"))->f_ty;
+    int64_t v_t_97 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix96, (*p_g)->f_u->f_locals.len, "x64gen.obx:4497"))->f_ty;
     int64_t ix98 = v_j_93;
-    bool c99 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix98, v_tmp_22.len, "x64gen.obx:4492")) < 0LL);
+    bool c99 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix98, v_tmp_22.len, "x64gen.obx:4498")) < 0LL);
     if (c99) {
       int64_t ix100 = v_p_95;
-      bool c101 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix100, (*p_g)->f_reg.len, "x64gen.obx:4493")) >= 0LL);
+      bool c101 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix100, (*p_g)->f_reg.len, "x64gen.obx:4499")) >= 0LL);
       if (c101) {
         int64_t t102 = v_t_97;
         int64_t ix103 = v_p_95;
-        int64_t t104 = *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix103, (*p_g)->f_reg.len, "x64gen.obx:4494"));
+        int64_t t104 = *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix103, (*p_g)->f_reg.len, "x64gen.obx:4500"));
         int64_t ix105 = v_j_93;
-        struct S2_x64_Mem t106 = f197_x64gen_rbp(*((int64_t*)v_tmp_22.data + rt_idx(ix105, v_tmp_22.len, "x64gen.obx:4494")));
+        struct S2_x64_Mem t106 = f197_x64gen_rbp(*((int64_t*)v_tmp_22.data + rt_idx(ix105, v_tmp_22.len, "x64gen.obx:4500")));
         f200_x64gen_Gen_loadInt(p_g, t102, t104, t106);
       } else {
         int64_t ix107 = v_j_93;
-        int64_t t108 = *((int64_t*)v_tmp_22.data + rt_idx(ix107, v_tmp_22.len, "x64gen.obx:4496"));
+        int64_t t108 = *((int64_t*)v_tmp_22.data + rt_idx(ix107, v_tmp_22.len, "x64gen.obx:4502"));
         int64_t ix109 = v_p_95;
-        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix109, (*p_g)->f_slots.len, "x64gen.obx:4496")) = t108;
+        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix109, (*p_g)->f_slots.len, "x64gen.obx:4502")) = t108;
       }
     } else {
       int64_t ix110 = v_j_93;
-      bool c111 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix110, v_tmp_22.len, "x64gen.obx:4498")) == 3LL);
+      bool c111 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix110, v_tmp_22.len, "x64gen.obx:4504")) == 3LL);
       if (c111) {
         int64_t ix112 = v_p_95;
-        bool c113 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix112, (*p_g)->f_reg.len, "x64gen.obx:4499")) >= 0LL);
+        bool c113 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix112, (*p_g)->f_reg.len, "x64gen.obx:4505")) >= 0LL);
         if (c113) {
           int64_t ix114 = v_p_95;
-          int64_t t115 = *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix114, (*p_g)->f_reg.len, "x64gen.obx:4500"));
+          int64_t t115 = *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix114, (*p_g)->f_reg.len, "x64gen.obx:4506"));
           int64_t ix116 = v_j_93;
-          f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, t115, *((int64_t*)v_hregs_24.data + rt_idx(ix116, v_hregs_24.len, "x64gen.obx:4500")));
+          f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, t115, *((int64_t*)v_hregs_24.data + rt_idx(ix116, v_hregs_24.len, "x64gen.obx:4506")));
         } else {
           int64_t t117 = f202_x64gen_Gen_tempFor(p_g, v_t_97);
           int64_t ix118 = v_p_95;
-          *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix118, (*p_g)->f_slots.len, "x64gen.obx:4502")) = t117;
+          *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix118, (*p_g)->f_slots.len, "x64gen.obx:4508")) = t117;
           int64_t ix119 = v_j_93;
-          f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 0LL, *((int64_t*)v_hregs_24.data + rt_idx(ix119, v_hregs_24.len, "x64gen.obx:4503")));
+          f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 0LL, *((int64_t*)v_hregs_24.data + rt_idx(ix119, v_hregs_24.len, "x64gen.obx:4509")));
           int64_t t120 = v_t_97;
           int64_t ix121 = v_p_95;
-          struct S2_x64_Mem t122 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix121, (*p_g)->f_slots.len, "x64gen.obx:4504")));
+          struct S2_x64_Mem t122 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix121, (*p_g)->f_slots.len, "x64gen.obx:4510")));
           f312_x64gen_Gen_storeT(p_g, t120, t122);
         }
       }
@@ -33567,27 +33587,27 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
   int64_t end123 = v_nargs_11;
   for (int64_t v_j_124 = 0LL; v_j_124 < end123; v_j_124++) {
     int64_t ix125 = v_j_124;
-    int64_t v_p_126 = *((int64_t*)v_ps_4.data + rt_idx(ix125, v_ps_4.len, "x64gen.obx:4509"));
+    int64_t v_p_126 = *((int64_t*)v_ps_4.data + rt_idx(ix125, v_ps_4.len, "x64gen.obx:4515"));
     int64_t ix127 = v_p_126;
-    int64_t v_t_128 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix127, (*p_g)->f_u->f_locals.len, "x64gen.obx:4510"))->f_ty;
+    int64_t v_t_128 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix127, (*p_g)->f_u->f_locals.len, "x64gen.obx:4516"))->f_ty;
     int64_t ix129 = v_j_124;
-    bool c130 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix129, v_tmp_22.len, "x64gen.obx:4511")) == 0LL);
+    bool c130 = (bool)(*((int64_t*)v_tmp_22.data + rt_idx(ix129, v_tmp_22.len, "x64gen.obx:4517")) == 0LL);
     if (c130) {
       int64_t t131 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, v_j_124);
       int64_t v_x_132 = t131;
       int64_t ix133 = v_p_126;
-      bool c134 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix133, (*p_g)->f_reg.len, "x64gen.obx:4513")) >= 0LL);
+      bool c134 = (bool)(*((int64_t*)(*p_g)->f_reg.data + rt_idx(ix133, (*p_g)->f_reg.len, "x64gen.obx:4519")) >= 0LL);
       if (c134) {
         int64_t ix135 = v_p_126;
-        f273_x64gen_Gen_genInto(p_g, v_x_132, *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix135, (*p_g)->f_reg.len, "x64gen.obx:4514")));
+        f273_x64gen_Gen_genInto(p_g, v_x_132, *((int64_t*)(*p_g)->f_reg.data + rt_idx(ix135, (*p_g)->f_reg.len, "x64gen.obx:4520")));
       } else {
         int64_t t136 = f202_x64gen_Gen_tempFor(p_g, v_t_128);
         int64_t ix137 = v_p_126;
-        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix137, (*p_g)->f_slots.len, "x64gen.obx:4516")) = t136;
+        *((int64_t*)(*p_g)->f_slots.data + rt_idx(ix137, (*p_g)->f_slots.len, "x64gen.obx:4522")) = t136;
         f273_x64gen_Gen_genInto(p_g, v_x_132, 0LL);
         int64_t t138 = f136_x64gen_Gen_size(p_g, v_t_128);
         int64_t ix139 = v_p_126;
-        struct S2_x64_Mem t140 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix139, (*p_g)->f_slots.len, "x64gen.obx:4518")));
+        struct S2_x64_Mem t140 = f197_x64gen_rbp(*((int64_t*)(*p_g)->f_slots.data + rt_idx(ix139, (*p_g)->f_slots.len, "x64gen.obx:4524")));
         f198_x64_Asm_store(&(*p_g)->f_a, t138, t140, 0LL);
       }
     }
@@ -33599,7 +33619,7 @@ static void f333_x64gen_Gen_inlineArgs(struct S27_x64gen_Gen**p_g, int64_t p_f, 
 }
 static bool f337_x64gen_Gen_inlineDirect(struct S27_x64gen_Gen**p_g, int64_t p_x, int64_t p_p) {
   int64_t ix1 = p_p;
-  int64_t v_t_2 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix1, (*p_g)->f_u->f_locals.len, "x64gen.obx:4660"))->f_ty;
+  int64_t v_t_2 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix1, (*p_g)->f_u->f_locals.len, "x64gen.obx:4666"))->f_ty;
   bool t3 = f272_x64gen_Gen_simple(p_g, p_x);
   bool b4 = t3;
   if (b4) {
@@ -33609,7 +33629,7 @@ static bool f337_x64gen_Gen_inlineDirect(struct S27_x64gen_Gen**p_g, int64_t p_x
   bool b6 = b4;
   if (b6) {
     int64_t ix7 = p_x;
-    bool t8 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix7, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4661"))->f_ty, v_t_2);
+    bool t8 = f299_x64gen_Gen_normAs(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix7, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4667"))->f_ty, v_t_2);
     b6 = t8;
   }
   bool r9 = b6;
@@ -33619,17 +33639,17 @@ static obx_arr f332_x64gen_Gen_aliases(struct S27_x64gen_Gen**p_g, int64_t p_f, 
   obx_arr a1 = rt_arr_new(0LL, 8ULL);
   obx_arr v_out_2 = a1;
   int64_t ix3 = p_e;
-  int64_t v_args_4 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4570"))->f_b;
+  int64_t v_args_4 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4576"))->f_b;
   int64_t ix5 = p_f;
-  int64_t v_body_6 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix5, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4571")))->f_body;
+  int64_t v_body_6 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix5, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4577")))->f_body;
   int64_t ix7 = p_f;
-  int64_t end8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4572")))->f_params.len;
+  int64_t end8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4578")))->f_params.len;
   for (int64_t v_j_9 = 0LL; v_j_9 < end8; v_j_9++) {
     int64_t ix10 = p_f;
     int64_t ix11 = v_j_9;
-    int64_t v_p_12 = *((int64_t*)(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4573")))->f_params.data + rt_idx(ix11, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4573")))->f_params.len, "x64gen.obx:4573"));
+    int64_t v_p_12 = *((int64_t*)(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4579")))->f_params.data + rt_idx(ix11, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix10, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4579")))->f_params.len, "x64gen.obx:4579"));
     int64_t ix13 = v_p_12;
-    int64_t v_pt_14 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix13, (*p_g)->f_u->f_locals.len, "x64gen.obx:4574"))->f_ty;
+    int64_t v_pt_14 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix13, (*p_g)->f_u->f_locals.len, "x64gen.obx:4580"))->f_ty;
     int64_t t15 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_args_4, v_j_9);
     int64_t v_x_16 = t15;
     int64_t v_l_17 = -1LL;
@@ -33642,18 +33662,18 @@ static obx_arr f332_x64gen_Gen_aliases(struct S27_x64gen_Gen**p_g, int64_t p_f, 
     bool b21 = b19;
     if (b21) {
       int64_t ix22 = v_x_16;
-      int64_t t23 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4577"))->f_a);
+      int64_t t23 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4583"))->f_a);
       b21 = (bool)(t23 == 4LL);
     }
     bool c24 = b21;
     if (c24) {
       int64_t ix25 = v_x_16;
-      int64_t ix26 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix25, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4578"))->f_a;
-      v_l_17 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix26, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4578"))->f_a;
+      int64_t ix26 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix25, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4584"))->f_a;
+      v_l_17 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix26, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4584"))->f_a;
       int64_t ix27 = v_l_17;
-      int64_t t28 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix27, (*p_g)->f_u->f_locals.len, "x64gen.obx:4579"))->f_ty;
+      int64_t t28 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix27, (*p_g)->f_u->f_locals.len, "x64gen.obx:4585"))->f_ty;
       int64_t ix29 = v_pt_14;
-      bool b30 = (bool)(t28 != ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix29, (*p_g)->f_u->f_tys.len, "x64gen.obx:4579"))->f_base);
+      bool b30 = (bool)(t28 != ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix29, (*p_g)->f_u->f_tys.len, "x64gen.obx:4585"))->f_base);
       if (!b30) {
         int64_t t31 = f338_x64gen_Gen_walk(p_g, v_body_6, 1LL, v_p_12, -1LL);
         b30 = (bool)(t31 > 0LL);
@@ -33993,12 +34013,12 @@ static int64_t f339_x64gen_Gen_walkList(struct S27_x64gen_Gen**p_g, int64_t p_l,
 }
 static int64_t f331_x64gen_Gen_onlyReturn(struct S27_x64gen_Gen**p_g, int64_t p_f) {
   int64_t ix1 = p_f;
-  int64_t v_body_2 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix1, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4650")))->f_body;
+  int64_t v_body_2 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix1, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4656")))->f_body;
   int64_t t3 = f64_ir_Ir_nk(&(*p_g)->f_u, v_body_2);
   bool b4 = (bool)(t3 != 48LL);
   if (!b4) {
     int64_t ix5 = v_body_2;
-    int64_t t6 = f59_ir_Ir_listLen(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4651"))->f_a);
+    int64_t t6 = f59_ir_Ir_listLen(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4657"))->f_a);
     b4 = (bool)(t6 != 1LL);
   }
   bool c7 = b4;
@@ -34007,7 +34027,7 @@ static int64_t f331_x64gen_Gen_onlyReturn(struct S27_x64gen_Gen**p_g, int64_t p_
     return r8;
   }
   int64_t ix9 = v_body_2;
-  int64_t t10 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4652"))->f_a, 0LL);
+  int64_t t10 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4658"))->f_a, 0LL);
   int64_t v_s_11 = t10;
   int64_t t12 = f64_ir_Ir_nk(&(*p_g)->f_u, v_s_11);
   bool c13 = (bool)(t12 != 47LL);
@@ -34016,17 +34036,17 @@ static int64_t f331_x64gen_Gen_onlyReturn(struct S27_x64gen_Gen**p_g, int64_t p_
     return r14;
   }
   int64_t ix15 = v_s_11;
-  int64_t r16 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4654"))->f_a;
+  int64_t r16 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4660"))->f_a;
   return r16;
 }
 static int64_t f330_x64gen_Gen_inlineTarget(struct S27_x64gen_Gen**p_g, int64_t p_e, bool p_inScan, int64_t p_loops) {
   int64_t ix1 = p_e;
-  int64_t v_c_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4349"))->f_a;
+  int64_t v_c_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4355"))->f_a;
   int64_t t3 = f64_ir_Ir_nk(&(*p_g)->f_u, v_c_2);
   bool b4 = (bool)(t3 != 11LL);
   if (!b4) {
     int64_t ix5 = v_c_2;
-    int64_t t6 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4350"))->f_a);
+    int64_t t6 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4356"))->f_a);
     b4 = (bool)(t6 != 6LL);
   }
   bool c7 = b4;
@@ -34035,8 +34055,8 @@ static int64_t f330_x64gen_Gen_inlineTarget(struct S27_x64gen_Gen**p_g, int64_t 
     return r8;
   }
   int64_t ix9 = v_c_2;
-  int64_t ix10 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4351"))->f_a;
-  int64_t v_f_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4351"))->f_a;
+  int64_t ix10 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4357"))->f_a;
+  int64_t v_f_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix10, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4357"))->f_a;
   bool b12 = (bool)(v_f_11 == (*p_g)->f_curFunc);
   if (!b12) {
     bool t13 = f340_x64gen_Gen_inlinable(p_g, v_f_11);
@@ -34050,7 +34070,7 @@ static int64_t f330_x64gen_Gen_inlineTarget(struct S27_x64gen_Gen**p_g, int64_t 
   bool b16 = (bool)(p_loops == 0LL);
   if (b16) {
     int64_t ix17 = v_f_11;
-    b16 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix17, (*p_g)->f_inl.len, "x64gen.obx:4353")) > 16LL);
+    b16 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix17, (*p_g)->f_inl.len, "x64gen.obx:4359")) > 16LL);
   }
   bool c18 = b16;
   if (c18) {
@@ -34068,10 +34088,10 @@ static int64_t f330_x64gen_Gen_inlineTarget(struct S27_x64gen_Gen**p_g, int64_t 
     int64_t ifx26;
     if (p_inScan) {
       int64_t ix27 = v_i_25;
-      ifx26 = *((int64_t*)(*p_g)->f_scanStack.data + rt_idx(ix27, (*p_g)->f_scanStack.len, "x64gen.obx:4357"));
+      ifx26 = *((int64_t*)(*p_g)->f_scanStack.data + rt_idx(ix27, (*p_g)->f_scanStack.len, "x64gen.obx:4363"));
     } else {
       int64_t ix28 = v_i_25;
-      ifx26 = *((int64_t*)(*p_g)->f_inlStack.data + rt_idx(ix28, (*p_g)->f_inlStack.len, "x64gen.obx:4357"));
+      ifx26 = *((int64_t*)(*p_g)->f_inlStack.data + rt_idx(ix28, (*p_g)->f_inlStack.len, "x64gen.obx:4363"));
     }
     bool c29 = (bool)(ifx26 == v_f_11);
     if (c29) {
@@ -34084,25 +34104,25 @@ static int64_t f330_x64gen_Gen_inlineTarget(struct S27_x64gen_Gen**p_g, int64_t 
 }
 static bool f340_x64gen_Gen_inlinable(struct S27_x64gen_Gen**p_g, int64_t p_f) {
   int64_t ix1 = p_f;
-  bool c2 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix1, (*p_g)->f_inl.len, "x64gen.obx:4365")) >= 0LL);
+  bool c2 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix1, (*p_g)->f_inl.len, "x64gen.obx:4371")) >= 0LL);
   if (c2) {
     int64_t ix3 = p_f;
-    bool r4 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix3, (*p_g)->f_inl.len, "x64gen.obx:4365")) <= 40LL);
+    bool r4 = (bool)(*((int64_t*)(*p_g)->f_inl.data + rt_idx(ix3, (*p_g)->f_inl.len, "x64gen.obx:4371")) <= 40LL);
     return r4;
   }
-  int64_t t5 = rt_add_int(40LL, 1LL, "x64gen.obx:4366");
+  int64_t t5 = rt_add_int(40LL, 1LL, "x64gen.obx:4372");
   int64_t ix6 = p_f;
-  *((int64_t*)(*p_g)->f_inl.data + rt_idx(ix6, (*p_g)->f_inl.len, "x64gen.obx:4366")) = t5;
+  *((int64_t*)(*p_g)->f_inl.data + rt_idx(ix6, (*p_g)->f_inl.len, "x64gen.obx:4372")) = t5;
   int64_t ix7 = p_f;
-  bool b8 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4367")))->f_body < 0LL);
+  bool b8 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4373")))->f_body < 0LL);
   if (!b8) {
     int64_t ix9 = p_f;
-    b8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix9, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4367")))->f_isExtern;
+    b8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix9, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4373")))->f_isExtern;
   }
   bool b10 = b8;
   if (!b10) {
     int64_t ix11 = p_f;
-    b10 = rt_str_eq((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4367")))->f_name, sl3647);
+    b10 = rt_str_eq((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix11, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4373")))->f_name, sl3647);
   }
   bool c12 = b10;
   if (c12) {
@@ -34110,8 +34130,8 @@ static bool f340_x64gen_Gen_inlinable(struct S27_x64gen_Gen**p_g, int64_t p_f) {
     return r13;
   }
   int64_t ix14 = p_f;
-  int64_t ix15 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix14, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4368")))->f_ty;
-  int64_t v_rt_16 = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix15, (*p_g)->f_u->f_tys.len, "x64gen.obx:4368"))->f_base;
+  int64_t ix15 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix14, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4374")))->f_ty;
+  int64_t v_rt_16 = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix15, (*p_g)->f_u->f_tys.len, "x64gen.obx:4374"))->f_base;
   int64_t t17 = f159_x64gen_Gen_tk(p_g, v_rt_16);
   bool b18 = (bool)(t17 != 0LL);
   if (b18) {
@@ -34129,11 +34149,11 @@ static bool f340_x64gen_Gen_inlinable(struct S27_x64gen_Gen**p_g, int64_t p_f) {
     return r23;
   }
   int64_t ix24 = p_f;
-  obx_slice ap25 = rt_as_slice(&(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix24, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4370")))->f_params);
+  obx_slice ap25 = rt_as_slice(&(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix24, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4376")))->f_params);
   for (int64_t i26 = 0LL; i26 < ap25.len; i26++) {
     int64_t v_p_27 = *((int64_t*)ap25.data + i26);
     int64_t ix28 = v_p_27;
-    int64_t v_t_29 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix28, (*p_g)->f_u->f_locals.len, "x64gen.obx:4371"))->f_ty;
+    int64_t v_t_29 = ((struct S21_ir_Local*)(*p_g)->f_u->f_locals.data + rt_idx(ix28, (*p_g)->f_u->f_locals.len, "x64gen.obx:4377"))->f_ty;
     bool t30 = f315_ir_Ir_isScalar(&(*p_g)->f_u, v_t_29);
     bool b31 = (bool)!t30;
     if (!b31) {
@@ -34148,15 +34168,15 @@ static bool f340_x64gen_Gen_inlinable(struct S27_x64gen_Gen**p_g, int64_t p_f) {
   }
   int64_t v_budget_35 = 40LL;
   int64_t ix36 = p_f;
-  bool t37 = f341_x64gen_Gen_small(p_g, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix36, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4375")))->f_body, &v_budget_35);
+  bool t37 = f341_x64gen_Gen_small(p_g, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix36, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4381")))->f_body, &v_budget_35);
   bool c38 = (bool)!t37;
   if (c38) {
     bool r39 = (bool)0LL;
     return r39;
   }
-  int64_t t40 = rt_sub_int(40LL, v_budget_35, "x64gen.obx:4376");
+  int64_t t40 = rt_sub_int(40LL, v_budget_35, "x64gen.obx:4382");
   int64_t ix41 = p_f;
-  *((int64_t*)(*p_g)->f_inl.data + rt_idx(ix41, (*p_g)->f_inl.len, "x64gen.obx:4376")) = t40;
+  *((int64_t*)(*p_g)->f_inl.data + rt_idx(ix41, (*p_g)->f_inl.len, "x64gen.obx:4382")) = t40;
   bool r42 = (bool)1LL;
   return r42;
 }
@@ -34166,14 +34186,14 @@ static bool f341_x64gen_Gen_small(struct S27_x64gen_Gen**p_g, int64_t p_x, int64
     bool r2 = (bool)1LL;
     return r2;
   }
-  *p_budget = rt_sub_int(*p_budget, 1LL, "x64gen.obx:4383");
+  *p_budget = rt_sub_int(*p_budget, 1LL, "x64gen.obx:4389");
   bool c3 = (bool)(*p_budget < 0LL);
   if (c3) {
     bool r4 = (bool)0LL;
     return r4;
   }
   int64_t ix5 = p_x;
-  struct S17_ir_Node v_n_6 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4385")));
+  struct S17_ir_Node v_n_6 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix5, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4391")));
   int64_t v_k_7 = v_n_6.f_k;
   bool b8 = (bool)(v_k_7 == 1LL);
   if (!b8) {
@@ -34443,7 +34463,7 @@ static void f259_x64_Asm_unary(struct S35_x64_Asm**p_a, int64_t p_op, int64_t p_
 }
 static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3756")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3762")));
   int64_t v_op_3 = v_n_2.f_v;
   bool t4 = f321_x64gen_isCmp(v_op_3);
   bool c5 = t4;
@@ -34470,7 +34490,7 @@ static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       f161_x64gen_Gen_fail(p_g, p_e, sl3702);
     }
     int64_t ix14 = v_op_3;
-    f328_x64_Asm_sse(&(*p_g)->f_a, *((int64_t*)v_ops_12.data + rt_idx(ix14, v_ops_12.len, "x64gen.obx:3768")), 0LL, 1LL);
+    f328_x64_Asm_sse(&(*p_g)->f_a, *((int64_t*)v_ops_12.data + rt_idx(ix14, v_ops_12.len, "x64gen.obx:3774")), 0LL, 1LL);
     gl8_drop(v_ops_12);
     gl25_drop(v_n_2);
     return;
@@ -34489,13 +34509,13 @@ static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       int64_t v_s_20 = t19;
       struct S2_x64_Mem t21 = f197_x64gen_rbp(v_s_20);
       f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t21, 0LL);
-      struct S2_x64_Mem t22 = f197_x64gen_rbp(rt_add_int(v_s_20, 8LL, "x64gen.obx:3776"));
+      struct S2_x64_Mem t22 = f197_x64gen_rbp(rt_add_int(v_s_20, 8LL, "x64gen.obx:3782"));
       f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t22, 2LL);
       f247_x64gen_Gen_gen(p_g, v_n_2.f_b);
       f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
       struct S2_x64_Mem t23 = f197_x64gen_rbp(v_s_20);
       f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 0LL, t23);
-      struct S2_x64_Mem t24 = f197_x64gen_rbp(rt_add_int(v_s_20, 8LL, "x64gen.obx:3780"));
+      struct S2_x64_Mem t24 = f197_x64gen_rbp(rt_add_int(v_s_20, 8LL, "x64gen.obx:3786"));
       f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t24);
       int64_t t25 = v_op_3;
       f344_x64gen_Gen_shift128(p_g, t25, (bool)(v_ck_9 == 10LL));
@@ -34562,7 +34582,7 @@ static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   bool c43 = (bool)(v_rk_42 > 0LL);
   if (c43) {
     int64_t ix44 = v_n_2.f_a;
-    f247_x64gen_Gen_gen(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix44, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3819"))->f_a);
+    f247_x64gen_Gen_gen(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix44, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3825"))->f_a);
     f346_x64_Asm_shiftI(&(*p_g)->f_a, 0LL, 8LL, 0LL, v_rk_42);
     gl25_drop(v_n_2);
     return;
@@ -34627,7 +34647,7 @@ static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
               }
               bool c66 = b65;
               if (c66) {
-                f346_x64_Asm_shiftI(&(*p_g)->f_a, 4LL, v_sz_56, 0LL, v_src_53.f_v & rt_sub_int(rt_mul_int(v_sz_56, 8LL, "x64gen.obx:3840"), 1LL, "x64gen.obx:3840"));
+                f346_x64_Asm_shiftI(&(*p_g)->f_a, 4LL, v_sz_56, 0LL, v_src_53.f_v & rt_sub_int(rt_mul_int(v_sz_56, 8LL, "x64gen.obx:3846"), 1LL, "x64gen.obx:3846"));
               } else {
                 bool b67 = (bool)(v_op_3 == 6LL);
                 if (b67) {
@@ -34635,7 +34655,7 @@ static void f258_x64gen_Gen_genBin(struct S27_x64gen_Gen**p_g, int64_t p_e) {
                 }
                 bool c68 = b67;
                 if (c68) {
-                  f346_x64_Asm_shiftI(&(*p_g)->f_a, v_sgn_58 ? 7LL : 5LL, v_sz_56, 0LL, v_src_53.f_v & rt_sub_int(rt_mul_int(v_sz_56, 8LL, "x64gen.obx:3842"), 1LL, "x64gen.obx:3842"));
+                  f346_x64_Asm_shiftI(&(*p_g)->f_a, v_sgn_58 ? 7LL : 5LL, v_sz_56, 0LL, v_src_53.f_v & rt_sub_int(rt_mul_int(v_sz_56, 8LL, "x64gen.obx:3848"), 1LL, "x64gen.obx:3848"));
                 } else {
                   bool b70 = (bool)(v_op_3 == 3LL);
                   if (!b70) {
@@ -34775,7 +34795,7 @@ static void f346_x64_Asm_shiftI(struct S35_x64_Asm**p_a, int64_t p_op, int64_t p
 }
 static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3866")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3872")));
   bool b3 = (bool)(v_n_2.f_v != 8LL);
   if (!b3) {
     int64_t t4 = f136_x64gen_Gen_size(p_g, v_n_2.f_c);
@@ -34805,10 +34825,10 @@ static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t v_l_13 = v_n_2.f_a;
   int64_t v_r_14 = v_n_2.f_b;
   int64_t ix15 = v_l_13;
-  bool b16 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3870"))->f_k != 13LL);
+  bool b16 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3876"))->f_k != 13LL);
   if (!b16) {
     int64_t ix17 = v_r_14;
-    b16 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3870"))->f_k != 13LL);
+    b16 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3876"))->f_k != 13LL);
   }
   bool c18 = b16;
   if (c18) {
@@ -34817,15 +34837,15 @@ static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     return r19;
   }
   int64_t ix20 = v_l_13;
-  bool c21 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix20, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3871"))->f_v == 6LL);
+  bool c21 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix20, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3877"))->f_v == 6LL);
   if (c21) {
     v_l_13 = v_n_2.f_b;
     v_r_14 = v_n_2.f_a;
   }
   int64_t ix22 = v_l_13;
-  struct S17_ir_Node v_ln_23 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3875")));
+  struct S17_ir_Node v_ln_23 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3881")));
   int64_t ix24 = v_r_14;
-  struct S17_ir_Node v_rn_25 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix24, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3876")));
+  struct S17_ir_Node v_rn_25 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix24, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3882")));
   bool b26 = (bool)(v_ln_23.f_v != 5LL);
   if (!b26) {
     b26 = (bool)(v_rn_25.f_v != 6LL);
@@ -34839,9 +34859,9 @@ static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     return r28;
   }
   int64_t ix29 = v_ln_23.f_a;
-  struct S17_ir_Node v_x_30 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3878")));
+  struct S17_ir_Node v_x_30 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix29, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3884")));
   int64_t ix31 = v_rn_25.f_a;
-  struct S17_ir_Node v_y_32 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix31, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3879")));
+  struct S17_ir_Node v_y_32 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix31, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3885")));
   bool b33 = (bool)(v_x_30.f_k != 4LL);
   if (!b33) {
     b33 = (bool)(v_y_32.f_k != 4LL);
@@ -34861,9 +34881,9 @@ static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     return r36;
   }
   int64_t ix37 = v_ln_23.f_b;
-  struct S17_ir_Node v_kl_38 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix37, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3881")));
+  struct S17_ir_Node v_kl_38 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix37, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3887")));
   int64_t ix39 = v_rn_25.f_b;
-  struct S17_ir_Node v_kr_40 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix39, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3882")));
+  struct S17_ir_Node v_kr_40 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix39, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3888")));
   bool b41 = (bool)(v_kl_38.f_k != 1LL);
   if (!b41) {
     b41 = (bool)(v_kr_40.f_k != 1LL);
@@ -34878,7 +34898,7 @@ static int64_t f345_x64gen_Gen_rotl(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   }
   bool b44 = b43;
   if (!b44) {
-    b44 = (bool)(rt_add_int(v_kl_38.f_v, v_kr_40.f_v, "x64gen.obx:3883") != 64LL);
+    b44 = (bool)(rt_add_int(v_kl_38.f_v, v_kr_40.f_v, "x64gen.obx:3889") != 64LL);
   }
   bool c45 = b44;
   if (c45) {
@@ -34957,10 +34977,10 @@ static void f343_x64gen_Gen_setFromCC(struct S27_x64gen_Gen**p_g, int64_t p_cc) 
 }
 static void f257_x64gen_Gen_genCast(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3663")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3669")));
   int64_t v_t_3 = v_n_2.f_ty;
   int64_t ix4 = v_n_2.f_a;
-  int64_t v_s_5 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3665"))->f_ty;
+  int64_t v_s_5 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3671"))->f_ty;
   f247_x64gen_Gen_gen(p_g, v_n_2.f_a);
   int64_t t6 = f159_x64gen_Gen_tk(p_g, v_t_3);
   int64_t v_tk_7 = t6;
@@ -35112,7 +35132,7 @@ static void f257_x64gen_Gen_genCast(struct S27_x64gen_Gen**p_g, int64_t p_e) {
 }
 static bool f357_x64gen_Gen_isBoolVal(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3751")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:3757")));
   bool b3 = (bool)(v_n_2.f_k == 13LL);
   if (b3) {
     bool t4 = f321_x64gen_isCmp(v_n_2.f_v);
@@ -35146,10 +35166,10 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   (*p_g)->f_callDest = k6_x64gen_NO_MEM;
   (*p_g)->f_callFresh = (bool)0LL;
   int64_t ix3 = p_e;
-  struct S17_ir_Node v_n_4 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4058")));
+  struct S17_ir_Node v_n_4 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix3, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4064")));
   int64_t v_ft_5 = v_n_4.f_c;
   int64_t ix6 = v_ft_5;
-  int64_t v_rt_7 = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix6, (*p_g)->f_u->f_tys.len, "x64gen.obx:4060"))->f_base;
+  int64_t v_rt_7 = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix6, (*p_g)->f_u->f_tys.len, "x64gen.obx:4066"))->f_base;
   obx_arr t8 = f99_ir_Ir_fnParams(&(*p_g)->f_u, v_ft_5);
   obx_arr v_pts_9 = t8;
   int64_t v_callee_10 = v_n_4.f_a;
@@ -35158,29 +35178,29 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   bool b13 = (bool)(t12 == 11LL);
   if (b13) {
     int64_t ix14 = v_callee_10;
-    int64_t t15 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix14, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4064"))->f_a);
+    int64_t t15 = f64_ir_Ir_nk(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix14, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4070"))->f_a);
     b13 = (bool)(t15 == 6LL);
   }
   bool c16 = b13;
   if (c16) {
     int64_t ix17 = v_callee_10;
-    int64_t ix18 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4065"))->f_a;
-    v_direct_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix18, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4065"))->f_a;
+    int64_t ix18 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix17, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4071"))->f_a;
+    v_direct_11 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix18, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4071"))->f_a;
   }
   bool b19 = (bool)(v_direct_11 >= 0LL);
   if (b19) {
     int64_t ix20 = v_direct_11;
-    b19 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix20, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4067")))->f_body < 0LL);
+    b19 = (bool)((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix20, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4073")))->f_body < 0LL);
   }
   bool b21 = b19;
   if (b21) {
     int64_t ix22 = v_direct_11;
-    b21 = (bool)!(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix22, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4067")))->f_isExtern;
+    b21 = (bool)!(*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix22, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4073")))->f_isExtern;
   }
   bool b23 = b21;
   if (b23) {
     int64_t ix24 = v_direct_11;
-    bool t25 = f358_x64gen_Gen_inlineRt(p_g, p_e, rt_str_dup((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix24, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4068")))->f_name));
+    bool t25 = f358_x64gen_Gen_inlineRt(p_g, p_e, rt_str_dup((*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix24, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4074")))->f_name));
     b23 = t25;
   }
   bool c26 = b23;
@@ -35236,7 +35256,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       gl8_drop(v_rcls_47);
       v_rcls_47 = nw50;
     }
-    bool c51 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4099")) == -1LL);
+    bool c51 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4105")) == -1LL);
     if (c51) {
       v_ni_41 = 1LL;
     }
@@ -35251,20 +35271,20 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t end59 = v_nargs_33;
   for (int64_t v_j_60 = 0LL; v_j_60 < end59; v_j_60++) {
     int64_t ix61 = v_j_60;
-    int64_t v_t_62 = *((int64_t*)v_pts_9.data + rt_idx(ix61, v_pts_9.len, "x64gen.obx:4108"));
+    int64_t v_t_62 = *((int64_t*)v_pts_9.data + rt_idx(ix61, v_pts_9.len, "x64gen.obx:4114"));
     obx_arr t63 = f196_x64gen_Gen_classify(p_g, v_t_62);
     obx_arr v_cls_64 = t63;
     int64_t t65 = f199_x64gen_countCl(&v_cls_64, 1LL);
     int64_t v_nInt_66 = t65;
     int64_t t67 = f199_x64gen_countCl(&v_cls_64, 2LL);
     int64_t v_nSse_68 = t67;
-    bool b69 = (bool)(*((int64_t*)v_cls_64.data + rt_idx(0LL, v_cls_64.len, "x64gen.obx:4112")) == -1LL);
+    bool b69 = (bool)(*((int64_t*)v_cls_64.data + rt_idx(0LL, v_cls_64.len, "x64gen.obx:4118")) == -1LL);
     if (!b69) {
-      b69 = (bool)(rt_add_int(v_ti_57, v_nInt_66, "x64gen.obx:4112") > 6LL);
+      b69 = (bool)(rt_add_int(v_ti_57, v_nInt_66, "x64gen.obx:4118") > 6LL);
     }
     bool b70 = b69;
     if (!b70) {
-      b70 = (bool)(rt_add_int(v_tx_58, v_nSse_68, "x64gen.obx:4112") > 8LL);
+      b70 = (bool)(rt_add_int(v_tx_58, v_nSse_68, "x64gen.obx:4118") > 8LL);
     }
     bool c71 = b70;
     if (c71) {
@@ -35284,18 +35304,18 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       int64_t t78 = v_stackOff_56;
       int64_t t79 = f136_x64gen_Gen_size(p_g, v_t_62);
       int64_t t80 = f134_ir_alignUp(t79, 8LL);
-      v_stackOff_56 = rt_add_int(t78, t80, "x64gen.obx:4115");
+      v_stackOff_56 = rt_add_int(t78, t80, "x64gen.obx:4121");
     } else {
       int64_t ap81 = -1LL;
       *(int64_t*)rt_arr_push(&v_place_53, 8ULL) = ap81;
-      v_ti_57 = rt_add_int(v_ti_57, v_nInt_66, "x64gen.obx:4118");
-      v_tx_58 = rt_add_int(v_tx_58, v_nSse_68, "x64gen.obx:4119");
+      v_ti_57 = rt_add_int(v_ti_57, v_nInt_66, "x64gen.obx:4124");
+      v_tx_58 = rt_add_int(v_tx_58, v_nSse_68, "x64gen.obx:4125");
     }
     int64_t ifx82;
-    if (rt_sub_int(v_ti_57, v_nInt_66, "x64gen.obx:4121") < 6LL) {
+    if (rt_sub_int(v_ti_57, v_nInt_66, "x64gen.obx:4127") < 6LL) {
       obx_slice t83 = k6_x64gen_INT_REGS;
-      int64_t ix84 = rt_sub_int(v_ti_57, v_nInt_66, "x64gen.obx:4121");
-      ifx82 = *((int64_t*)t83.data + rt_idx(ix84, t83.len, "x64gen.obx:4121"));
+      int64_t ix84 = rt_sub_int(v_ti_57, v_nInt_66, "x64gen.obx:4127");
+      ifx82 = *((int64_t*)t83.data + rt_idx(ix84, t83.len, "x64gen.obx:4127"));
     } else {
       ifx82 = -1LL;
     }
@@ -35309,10 +35329,10 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     int64_t t89 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_4.f_b, v_j_88);
     int64_t v_x_90 = t89;
     int64_t ix91 = v_j_88;
-    bool b92 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix91, v_place_53.len, "x64gen.obx:4129")) < 0LL);
+    bool b92 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix91, v_place_53.len, "x64gen.obx:4135")) < 0LL);
     if (b92) {
       int64_t ix93 = v_j_88;
-      bool t94 = f360_x64gen_Gen_argDirect(p_g, v_x_90, *((int64_t*)v_pts_9.data + rt_idx(ix93, v_pts_9.len, "x64gen.obx:4129")));
+      bool t94 = f360_x64gen_Gen_argDirect(p_g, v_x_90, *((int64_t*)v_pts_9.data + rt_idx(ix93, v_pts_9.len, "x64gen.obx:4135")));
       b92 = t94;
     }
     bool c95 = (bool)!b92;
@@ -35325,19 +35345,19 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool b97 = (bool)(v_stackOff_56 > 0LL);
     if (!b97) {
       int64_t ix98 = v_inRax_86;
-      bool t99 = f160_x64gen_Gen_isAggr(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix98, v_pts_9.len, "x64gen.obx:4131")));
+      bool t99 = f160_x64gen_Gen_isAggr(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix98, v_pts_9.len, "x64gen.obx:4137")));
       b97 = t99;
     }
     bool b100 = b97;
     if (!b100) {
       int64_t ix101 = v_inRax_86;
-      bool t102 = f165_x64gen_Gen_isF(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix101, v_pts_9.len, "x64gen.obx:4131")));
+      bool t102 = f165_x64gen_Gen_isF(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix101, v_pts_9.len, "x64gen.obx:4137")));
       b100 = t102;
     }
     bool b103 = b100;
     if (!b103) {
       int64_t ix104 = v_inRax_86;
-      bool t105 = f167_x64gen_Gen_is128(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix104, v_pts_9.len, "x64gen.obx:4131")));
+      bool t105 = f167_x64gen_Gen_is128(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix104, v_pts_9.len, "x64gen.obx:4137")));
       b103 = t105;
     }
     b96 = b103;
@@ -35357,13 +35377,13 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     int64_t t115 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_4.f_b, v_j_114);
     int64_t v_x_116 = t115;
     int64_t ix117 = v_j_114;
-    int64_t v_t_118 = *((int64_t*)v_pts_9.data + rt_idx(ix117, v_pts_9.len, "x64gen.obx:4139"));
+    int64_t v_t_118 = *((int64_t*)v_pts_9.data + rt_idx(ix117, v_pts_9.len, "x64gen.obx:4145"));
     int64_t ap119 = -1LL;
     *(int64_t*)rt_arr_push(&v_dups_110, 8ULL) = ap119;
     int64_t ap120 = -1LL;
     *(int64_t*)rt_arr_push(&v_hregs_112, 8ULL) = ap120;
     int64_t ix121 = v_j_114;
-    bool b122 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix121, v_place_53.len, "x64gen.obx:4142")) < 0LL);
+    bool b122 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix121, v_place_53.len, "x64gen.obx:4148")) < 0LL);
     if (b122) {
       bool t123 = f360_x64gen_Gen_argDirect(p_g, v_x_116, v_t_118);
       b122 = t123;
@@ -35383,12 +35403,12 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool b129 = b127;
     if (b129) {
       int64_t ix130 = v_x_116;
-      b129 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix130, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4146"))->f_ty == v_t_118);
+      b129 = (bool)(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix130, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4152"))->f_ty == v_t_118);
     }
     bool b131 = b129;
     if (b131) {
       int64_t ix132 = v_j_114;
-      bool b133 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix132, v_place_53.len, "x64gen.obx:4146")) < 0LL);
+      bool b133 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix132, v_place_53.len, "x64gen.obx:4152")) < 0LL);
       if (b133) {
         bool t134 = f361_x64gen_Gen_dupArg(p_g, p_e, v_j_114);
         b133 = t134;
@@ -35418,7 +35438,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool b144 = (bool)(v_j_114 == v_inRax_86);
     if (b144) {
       int64_t ix145 = v_j_114;
-      bool t146 = f362_x64gen_Gen_arithInto(p_g, v_x_116, *((int64_t*)v_argReg_55.data + rt_idx(ix145, v_argReg_55.len, "x64gen.obx:4157")), (bool)0LL);
+      bool t146 = f362_x64gen_Gen_arithInto(p_g, v_x_116, *((int64_t*)v_argReg_55.data + rt_idx(ix145, v_argReg_55.len, "x64gen.obx:4163")), (bool)0LL);
       b144 = t146;
     }
     bool c147 = b144;
@@ -35435,7 +35455,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       continue;
     }
     int64_t ix151 = v_j_114;
-    bool b152 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix151, v_place_53.len, "x64gen.obx:4167")) < 0LL);
+    bool b152 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix151, v_place_53.len, "x64gen.obx:4173")) < 0LL);
     if (b152) {
       bool t153 = f361_x64gen_Gen_dupArg(p_g, p_e, v_j_114);
       b152 = t153;
@@ -35443,15 +35463,15 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     bool c154 = b152;
     if (c154) {
       int64_t ix155 = v_x_116;
-      int64_t t156 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix155, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4169"))->f_b, 0LL);
+      int64_t t156 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix155, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4175"))->f_b, 0LL);
       int64_t ix157 = v_j_114;
-      *((int64_t*)v_dups_110.data + rt_idx(ix157, v_dups_110.len, "x64gen.obx:4169")) = t156;
+      *((int64_t*)v_dups_110.data + rt_idx(ix157, v_dups_110.len, "x64gen.obx:4175")) = t156;
       int64_t ap158 = -1LL;
       *(int64_t*)rt_arr_push(&v_slots_108, 8ULL) = ap158;
       continue;
     }
     int64_t ix159 = v_j_114;
-    bool b160 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix159, v_place_53.len, "x64gen.obx:4173")) < 0LL);
+    bool b160 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix159, v_place_53.len, "x64gen.obx:4179")) < 0LL);
     if (b160) {
       bool t161 = f160_x64gen_Gen_isAggr(p_g, v_t_118);
       b160 = (bool)!t161;
@@ -35470,7 +35490,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     if (c166) {
       bool v_quiet_167 = (bool)1LL;
       int64_t end168 = v_nargs_33;
-      for (int64_t v_k_169 = rt_add_int(v_j_114, 1LL, "x64gen.obx:4177"); v_k_169 < end168; v_k_169++) {
+      for (int64_t v_k_169 = rt_add_int(v_j_114, 1LL, "x64gen.obx:4183"); v_k_169 < end168; v_k_169++) {
         int64_t t170 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_4.f_b, v_k_169);
         bool t171 = f278_x64gen_Gen_quietTree(p_g, t170);
         bool c172 = (bool)!t171;
@@ -35480,12 +35500,12 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       }
       int64_t t173 = f283_x64gen_Gen_calleeTemp(p_g, v_x_116, (bool)!v_quiet_167);
       int64_t ix174 = v_j_114;
-      *((int64_t*)v_hregs_112.data + rt_idx(ix174, v_hregs_112.len, "x64gen.obx:4180")) = t173;
+      *((int64_t*)v_hregs_112.data + rt_idx(ix174, v_hregs_112.len, "x64gen.obx:4186")) = t173;
       int64_t ix175 = v_j_114;
-      bool c176 = (bool)(*((int64_t*)v_hregs_112.data + rt_idx(ix175, v_hregs_112.len, "x64gen.obx:4181")) >= 0LL);
+      bool c176 = (bool)(*((int64_t*)v_hregs_112.data + rt_idx(ix175, v_hregs_112.len, "x64gen.obx:4187")) >= 0LL);
       if (c176) {
         int64_t ix177 = v_j_114;
-        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)v_hregs_112.data + rt_idx(ix177, v_hregs_112.len, "x64gen.obx:4182")), 0LL);
+        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)v_hregs_112.data + rt_idx(ix177, v_hregs_112.len, "x64gen.obx:4188")), 0LL);
         int64_t ap178 = 2LL;
         *(int64_t*)rt_arr_push(&v_slots_108, 8ULL) = ap178;
         continue;
@@ -35512,7 +35532,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
         if (c190) {
           struct S2_x64_Mem t191 = f197_x64gen_rbp(v_s_180);
           f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t191, 0LL);
-          struct S2_x64_Mem t192 = f197_x64gen_rbp(rt_add_int(v_s_180, 8LL, "x64gen.obx:4194"));
+          struct S2_x64_Mem t192 = f197_x64gen_rbp(rt_add_int(v_s_180, 8LL, "x64gen.obx:4200"));
           f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t192, 2LL);
         } else {
           struct S2_x64_Mem t193 = f197_x64gen_rbp(v_s_180);
@@ -35531,7 +35551,7 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
     if (b197) {
       bool b198 = v_fresh_2;
       if (!b198) {
-        b198 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4204")) != -1LL);
+        b198 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4210")) != -1LL);
       }
       b197 = b198;
     }
@@ -35549,14 +35569,14 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t end202 = v_nargs_33;
   for (int64_t v_j_203 = 0LL; v_j_203 < end202; v_j_203++) {
     int64_t ix204 = v_j_203;
-    bool c205 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix204, v_place_53.len, "x64gen.obx:4213")) >= 0LL);
+    bool c205 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix204, v_place_53.len, "x64gen.obx:4219")) >= 0LL);
     if (c205) {
       int64_t ix206 = v_j_203;
-      int64_t v_t_207 = *((int64_t*)v_pts_9.data + rt_idx(ix206, v_pts_9.len, "x64gen.obx:4214"));
+      int64_t v_t_207 = *((int64_t*)v_pts_9.data + rt_idx(ix206, v_pts_9.len, "x64gen.obx:4220"));
       int64_t ix208 = v_j_203;
-      struct S2_x64_Mem t209 = f216_x64_mem(4LL, *((int64_t*)v_place_53.data + rt_idx(ix208, v_place_53.len, "x64gen.obx:4215")));
+      struct S2_x64_Mem t209 = f216_x64_mem(4LL, *((int64_t*)v_place_53.data + rt_idx(ix208, v_place_53.len, "x64gen.obx:4221")));
       int64_t ix210 = v_j_203;
-      struct S2_x64_Mem t211 = f197_x64gen_rbp(*((int64_t*)v_slots_108.data + rt_idx(ix210, v_slots_108.len, "x64gen.obx:4215")));
+      struct S2_x64_Mem t211 = f197_x64gen_rbp(*((int64_t*)v_slots_108.data + rt_idx(ix210, v_slots_108.len, "x64gen.obx:4221")));
       int64_t t212 = f136_x64gen_Gen_size(p_g, v_t_207);
       int64_t t213 = f134_ir_alignUp(t212, 8LL);
       f317_x64gen_Gen_copyMem(p_g, t209, t211, t213);
@@ -35569,82 +35589,82 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   int64_t end215 = v_nargs_33;
   for (int64_t v_j_216 = 0LL; v_j_216 < end215; v_j_216++) {
     int64_t ix217 = v_j_216;
-    bool c218 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix217, v_place_53.len, "x64gen.obx:4220")) < 0LL);
+    bool c218 = (bool)(*((int64_t*)v_place_53.data + rt_idx(ix217, v_place_53.len, "x64gen.obx:4226")) < 0LL);
     if (c218) {
       int64_t t219 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_4.f_b, v_j_216);
       int64_t v_x_220 = t219;
       int64_t ix221 = v_j_216;
-      obx_arr t222 = f196_x64gen_Gen_classify(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix221, v_pts_9.len, "x64gen.obx:4222")));
+      obx_arr t222 = f196_x64gen_Gen_classify(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix221, v_pts_9.len, "x64gen.obx:4228")));
       obx_arr v_cls_223 = t222;
       int64_t ix224 = v_j_216;
-      bool b225 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix224, v_slots_108.len, "x64gen.obx:4223")) == 0LL);
+      bool b225 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix224, v_slots_108.len, "x64gen.obx:4229")) == 0LL);
       if (b225) {
         int64_t ix226 = v_j_216;
-        bool t227 = f160_x64gen_Gen_isAggr(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix226, v_pts_9.len, "x64gen.obx:4223")));
+        bool t227 = f160_x64gen_Gen_isAggr(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix226, v_pts_9.len, "x64gen.obx:4229")));
         b225 = (bool)!t227;
       }
       bool b228 = b225;
       if (b228) {
         int64_t ix229 = v_j_216;
-        bool t230 = f165_x64gen_Gen_isF(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix229, v_pts_9.len, "x64gen.obx:4223")));
+        bool t230 = f165_x64gen_Gen_isF(p_g, *((int64_t*)v_pts_9.data + rt_idx(ix229, v_pts_9.len, "x64gen.obx:4229")));
         b228 = (bool)!t230;
       }
       bool c231 = b228;
       if (c231) {
         obx_slice t232 = k6_x64gen_INT_REGS;
         int64_t ix233 = v_ni_41;
-        f273_x64gen_Gen_genInto(p_g, v_x_220, *((int64_t*)t232.data + rt_idx(ix233, t232.len, "x64gen.obx:4224")));
-        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4225");
+        f273_x64gen_Gen_genInto(p_g, v_x_220, *((int64_t*)t232.data + rt_idx(ix233, t232.len, "x64gen.obx:4230")));
+        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4231");
         gl8_drop(v_cls_223);
         continue;
       }
       int64_t ix234 = v_j_216;
-      bool c235 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix234, v_slots_108.len, "x64gen.obx:4228")) == 1LL);
+      bool c235 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix234, v_slots_108.len, "x64gen.obx:4234")) == 1LL);
       if (c235) {
         obx_slice t236 = k6_x64gen_INT_REGS;
         int64_t ix237 = v_ni_41;
-        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)t236.data + rt_idx(ix237, t236.len, "x64gen.obx:4229")), 0LL);
-        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4230");
+        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, *((int64_t*)t236.data + rt_idx(ix237, t236.len, "x64gen.obx:4235")), 0LL);
+        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4236");
         gl8_drop(v_cls_223);
         continue;
       }
       int64_t ix238 = v_j_216;
-      bool c239 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix238, v_slots_108.len, "x64gen.obx:4233")) == 2LL);
+      bool c239 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix238, v_slots_108.len, "x64gen.obx:4239")) == 2LL);
       if (c239) {
         obx_slice t240 = k6_x64gen_INT_REGS;
         int64_t ix241 = v_ni_41;
-        int64_t t242 = *((int64_t*)t240.data + rt_idx(ix241, t240.len, "x64gen.obx:4234"));
+        int64_t t242 = *((int64_t*)t240.data + rt_idx(ix241, t240.len, "x64gen.obx:4240"));
         int64_t ix243 = v_j_216;
-        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, t242, *((int64_t*)v_hregs_112.data + rt_idx(ix243, v_hregs_112.len, "x64gen.obx:4234")));
-        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4235");
+        f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, t242, *((int64_t*)v_hregs_112.data + rt_idx(ix243, v_hregs_112.len, "x64gen.obx:4240")));
+        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4241");
         gl8_drop(v_cls_223);
         continue;
       }
       int64_t ix244 = v_j_216;
-      bool c245 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix244, v_slots_108.len, "x64gen.obx:4238")) == 3LL);
+      bool c245 = (bool)(*((int64_t*)v_slots_108.data + rt_idx(ix244, v_slots_108.len, "x64gen.obx:4244")) == 3LL);
       if (c245) {
         obx_slice t246 = k6_x64gen_INT_REGS;
         int64_t ix247 = v_ni_41;
-        bool t248 = f362_x64gen_Gen_arithInto(p_g, v_x_220, *((int64_t*)t246.data + rt_idx(ix247, t246.len, "x64gen.obx:4239")), (bool)1LL);
-        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4240");
+        bool t248 = f362_x64gen_Gen_arithInto(p_g, v_x_220, *((int64_t*)t246.data + rt_idx(ix247, t246.len, "x64gen.obx:4245")), (bool)1LL);
+        v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4246");
         gl8_drop(v_cls_223);
         continue;
       }
       int64_t ix249 = v_j_216;
       struct S2_x64_Mem ifx250;
-      if (*((int64_t*)v_slots_108.data + rt_idx(ix249, v_slots_108.len, "x64gen.obx:4243")) == 0LL) {
+      if (*((int64_t*)v_slots_108.data + rt_idx(ix249, v_slots_108.len, "x64gen.obx:4249")) == 0LL) {
         struct S2_x64_Mem t251 = f254_x64gen_Gen_staticMem(p_g, v_x_220);
         ifx250 = t251;
       } else {
         int64_t ix252 = v_j_216;
         struct S2_x64_Mem ifx253;
-        if (*((int64_t*)v_slots_108.data + rt_idx(ix252, v_slots_108.len, "x64gen.obx:4243")) == -1LL) {
+        if (*((int64_t*)v_slots_108.data + rt_idx(ix252, v_slots_108.len, "x64gen.obx:4249")) == -1LL) {
           int64_t ix254 = v_j_216;
-          struct S2_x64_Mem t255 = f254_x64gen_Gen_staticMem(p_g, *((int64_t*)v_dups_110.data + rt_idx(ix254, v_dups_110.len, "x64gen.obx:4243")));
+          struct S2_x64_Mem t255 = f254_x64gen_Gen_staticMem(p_g, *((int64_t*)v_dups_110.data + rt_idx(ix254, v_dups_110.len, "x64gen.obx:4249")));
           ifx253 = t255;
         } else {
           int64_t ix256 = v_j_216;
-          struct S2_x64_Mem t257 = f197_x64gen_rbp(*((int64_t*)v_slots_108.data + rt_idx(ix256, v_slots_108.len, "x64gen.obx:4244")));
+          struct S2_x64_Mem t257 = f197_x64gen_rbp(*((int64_t*)v_slots_108.data + rt_idx(ix256, v_slots_108.len, "x64gen.obx:4250")));
           ifx253 = t257;
         }
         ifx250 = ifx253;
@@ -35653,22 +35673,22 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
       int64_t end259 = v_cls_223.len;
       for (int64_t v_i_260 = 0LL; v_i_260 < end259; v_i_260++) {
         int64_t ix261 = v_i_260;
-        bool c262 = (bool)(*((int64_t*)v_cls_223.data + rt_idx(ix261, v_cls_223.len, "x64gen.obx:4247")) == 2LL);
+        bool c262 = (bool)(*((int64_t*)v_cls_223.data + rt_idx(ix261, v_cls_223.len, "x64gen.obx:4253")) == 2LL);
         if (c262) {
           int64_t t263 = v_nx_42;
-          struct S2_x64_Mem t264 = f318_x64gen_at(v_m_258, rt_mul_int(8LL, v_i_260, "x64gen.obx:4248"));
+          struct S2_x64_Mem t264 = f318_x64gen_at(v_m_258, rt_mul_int(8LL, v_i_260, "x64gen.obx:4254"));
           f329_x64_Asm_movsdLoad(&(*p_g)->f_a, t263, t264);
-          v_nx_42 = rt_add_int(v_nx_42, 1LL, "x64gen.obx:4249");
+          v_nx_42 = rt_add_int(v_nx_42, 1LL, "x64gen.obx:4255");
         } else {
           int64_t ix265 = v_i_260;
-          bool c266 = (bool)(*((int64_t*)v_cls_223.data + rt_idx(ix265, v_cls_223.len, "x64gen.obx:4250")) == 1LL);
+          bool c266 = (bool)(*((int64_t*)v_cls_223.data + rt_idx(ix265, v_cls_223.len, "x64gen.obx:4256")) == 1LL);
           if (c266) {
             obx_slice t267 = k6_x64gen_INT_REGS;
             int64_t ix268 = v_ni_41;
-            int64_t t269 = *((int64_t*)t267.data + rt_idx(ix268, t267.len, "x64gen.obx:4251"));
-            struct S2_x64_Mem t270 = f318_x64gen_at(v_m_258, rt_mul_int(8LL, v_i_260, "x64gen.obx:4251"));
+            int64_t t269 = *((int64_t*)t267.data + rt_idx(ix268, t267.len, "x64gen.obx:4257"));
+            struct S2_x64_Mem t270 = f318_x64gen_at(v_m_258, rt_mul_int(8LL, v_i_260, "x64gen.obx:4257"));
             f209_x64_Asm_load(&(*p_g)->f_a, 8LL, t269, t270);
-            v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4252");
+            v_ni_41 = rt_add_int(v_ni_41, 1LL, "x64gen.obx:4258");
           }
         }
       }
@@ -35677,35 +35697,35 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   }
   bool b271 = v_aggrRet_45;
   if (b271) {
-    b271 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4257")) == -1LL);
+    b271 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4263")) == -1LL);
   }
   bool c272 = b271;
   if (c272) {
     f264_x64_Asm_lea(&(*p_g)->f_a, 7LL, v_rm_195);
   }
-  int64_t v_k_273 = rt_sub_int(v_nargs_33, 1LL, "x64gen.obx:4259");
+  int64_t v_k_273 = rt_sub_int(v_nargs_33, 1LL, "x64gen.obx:4265");
   while (1) {
     bool c274 = (bool)(v_k_273 >= 0LL);
     if (!c274) {
       break;
     }
     int64_t ix275 = v_k_273;
-    bool c276 = (bool)(*((int64_t*)v_hregs_112.data + rt_idx(ix275, v_hregs_112.len, "x64gen.obx:4261")) >= 0LL);
+    bool c276 = (bool)(*((int64_t*)v_hregs_112.data + rt_idx(ix275, v_hregs_112.len, "x64gen.obx:4267")) >= 0LL);
     if (c276) {
-      int64_t t277 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4261");
+      int64_t t277 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4267");
     }
-    v_k_273 = rt_sub_int(v_k_273, 1LL, "x64gen.obx:4262");
+    v_k_273 = rt_sub_int(v_k_273, 1LL, "x64gen.obx:4268");
   }
   bool c278 = (bool)(v_calleeReg_31 >= 0LL);
   if (c278) {
-    int64_t t279 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4264");
+    int64_t t279 = *(int64_t*)rt_arr_pop(&(*p_g)->f_held, 8ULL, "x64gen.obx:4270");
   }
   bool c280 = (bool)(v_direct_11 >= 0LL);
   if (c280) {
     int64_t t281 = f169_x64gen_Gen_symFunc(p_g, v_direct_11, p_e);
     int64_t v_s_282 = t281;
     int64_t ix283 = v_s_282;
-    bool c284 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix283, (*p_g)->f_syms.len, "x64gen.obx:4267"))->f_kind == 4LL);
+    bool c284 = (bool)(((struct S31_x64gen_Sym*)(*p_g)->f_syms.data + rt_idx(ix283, (*p_g)->f_syms.len, "x64gen.obx:4273"))->f_kind == 4LL);
     if (c284) {
       f231_x64_Asm_movRI(&(*p_g)->f_a, 0LL, v_nx_42);
       f182_x64_Asm_callAt(&(*p_g)->f_a, v_s_282);
@@ -35724,25 +35744,25 @@ static void f256_x64gen_Gen_genCall(struct S27_x64gen_Gen**p_g, int64_t p_e) {
   }
   bool c287 = v_aggrRet_45;
   if (c287) {
-    bool c288 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4280")) != -1LL);
+    bool c288 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(0LL, v_rcls_47.len, "x64gen.obx:4286")) != -1LL);
     if (c288) {
       int64_t v_ri_289 = 0LL;
       int64_t v_rx_290 = 0LL;
       int64_t end291 = v_rcls_47.len;
       for (int64_t v_i_292 = 0LL; v_i_292 < end291; v_i_292++) {
         int64_t ix293 = v_i_292;
-        bool c294 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(ix293, v_rcls_47.len, "x64gen.obx:4284")) == 2LL);
+        bool c294 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(ix293, v_rcls_47.len, "x64gen.obx:4290")) == 2LL);
         if (c294) {
-          struct S2_x64_Mem t295 = f318_x64gen_at(v_rm_195, rt_mul_int(8LL, v_i_292, "x64gen.obx:4285"));
+          struct S2_x64_Mem t295 = f318_x64gen_at(v_rm_195, rt_mul_int(8LL, v_i_292, "x64gen.obx:4291"));
           f203_x64_Asm_movsdStore(&(*p_g)->f_a, t295, v_rx_290);
-          v_rx_290 = rt_add_int(v_rx_290, 1LL, "x64gen.obx:4286");
+          v_rx_290 = rt_add_int(v_rx_290, 1LL, "x64gen.obx:4292");
         } else {
           int64_t ix296 = v_i_292;
-          bool c297 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(ix296, v_rcls_47.len, "x64gen.obx:4287")) == 1LL);
+          bool c297 = (bool)(*((int64_t*)v_rcls_47.data + rt_idx(ix296, v_rcls_47.len, "x64gen.obx:4293")) == 1LL);
           if (c297) {
-            struct S2_x64_Mem t298 = f318_x64gen_at(v_rm_195, rt_mul_int(8LL, v_i_292, "x64gen.obx:4288"));
+            struct S2_x64_Mem t298 = f318_x64gen_at(v_rm_195, rt_mul_int(8LL, v_i_292, "x64gen.obx:4294"));
             f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t298, v_ri_289 == 0LL ? 0LL : 2LL);
-            v_ri_289 = rt_add_int(v_ri_289, 1LL, "x64gen.obx:4289");
+            v_ri_289 = rt_add_int(v_ri_289, 1LL, "x64gen.obx:4295");
           }
         }
       }
@@ -35774,7 +35794,7 @@ static void f363_x64_Asm_callR(struct S35_x64_Asm**p_a, int64_t p_r) {
 }
 static bool f362_x64gen_Gen_arithInto(struct S27_x64gen_Gen**p_g, int64_t p_e, int64_t p_r, bool p_gen) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4786")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4792")));
   int64_t v_a_3 = -1LL;
   int64_t v_b_4 = -1LL;
   int64_t v_op_5 = 0LL;
@@ -35980,7 +36000,7 @@ static void f364_x64gen_Gen_ovfCheck(struct S27_x64gen_Gen**p_g, struct S42_x64g
 }
 static bool f361_x64gen_Gen_dupArg(struct S27_x64gen_Gen**p_g, int64_t p_e, int64_t p_j) {
   int64_t ix1 = p_e;
-  int64_t v_l_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4313"))->f_b;
+  int64_t v_l_2 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4319"))->f_b;
   int64_t t3 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_l_2, p_j);
   int64_t v_x_4 = t3;
   int64_t t5 = f64_ir_Ir_nk(&(*p_g)->f_u, v_x_4);
@@ -35993,7 +36013,7 @@ static bool f361_x64gen_Gen_dupArg(struct S27_x64gen_Gen**p_g, int64_t p_e, int6
   bool b8 = b6;
   if (!b8) {
     int64_t ix9 = v_x_4;
-    int64_t t10 = f59_ir_Ir_listLen(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4315"))->f_b);
+    int64_t t10 = f59_ir_Ir_listLen(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix9, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4321"))->f_b);
     b8 = (bool)(t10 != 1LL);
   }
   bool c11 = b8;
@@ -36002,7 +36022,7 @@ static bool f361_x64gen_Gen_dupArg(struct S27_x64gen_Gen**p_g, int64_t p_e, int6
     return r12;
   }
   int64_t ix13 = v_x_4;
-  int64_t t14 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix13, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4316"))->f_b, 0LL);
+  int64_t t14 = f60_ir_Ir_listAt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix13, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4322"))->f_b, 0LL);
   int64_t v_s_15 = t14;
   struct S2_x64_Mem t16 = f254_x64gen_Gen_staticMem(p_g, v_s_15);
   bool c17 = (bool)(t16.f_base == -9LL);
@@ -36018,27 +36038,27 @@ static bool f361_x64gen_Gen_dupArg(struct S27_x64gen_Gen**p_g, int64_t p_e, int6
       break;
     }
     int64_t ix22 = v_r_19;
-    v_r_19 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4319"))->f_a;
+    v_r_19 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix22, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4325"))->f_a;
   }
   int64_t t23 = f64_ir_Ir_nk(&(*p_g)->f_u, v_r_19);
   bool b24 = (bool)(t23 != 4LL);
   if (!b24) {
     int64_t ix25 = v_r_19;
-    int64_t ix26 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix25, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4320"))->f_a;
-    b24 = *((bool*)(*p_g)->f_aTaken.data + rt_idx(ix26, (*p_g)->f_aTaken.len, "x64gen.obx:4320"));
+    int64_t ix26 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix25, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4326"))->f_a;
+    b24 = *((bool*)(*p_g)->f_aTaken.data + rt_idx(ix26, (*p_g)->f_aTaken.len, "x64gen.obx:4326"));
   }
   bool c27 = b24;
   if (c27) {
     bool r28 = (bool)0LL;
     return r28;
   }
-  int64_t t29 = rt_add_int(p_j, 1LL, "x64gen.obx:4321");
+  int64_t t29 = rt_add_int(p_j, 1LL, "x64gen.obx:4327");
   int64_t t30 = f59_ir_Ir_listLen(&(*p_g)->f_u, v_l_2);
   int64_t end31 = t30;
   for (int64_t v_k_32 = t29; v_k_32 < end31; v_k_32++) {
     int64_t t33 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_l_2, v_k_32);
     int64_t ix34 = v_r_19;
-    int64_t t35 = f338_x64gen_Gen_walk(p_g, t33, 1LL, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix34, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4322"))->f_a, -1LL);
+    int64_t t35 = f338_x64gen_Gen_walk(p_g, t33, 1LL, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix34, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4328"))->f_a, -1LL);
     bool c36 = (bool)(t35 > 0LL);
     if (c36) {
       bool r37 = (bool)0LL;
@@ -36080,8 +36100,8 @@ static void f359_x64gen_Gen_genInline(struct S27_x64gen_Gen**p_g, int64_t p_f, i
   int64_t v_saveRet_5 = (*p_g)->f_retTy;
   int64_t v_saveDecl_6 = (*p_g)->f_declMark;
   int64_t ix7 = p_f;
-  int64_t ix8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4532")))->f_ty;
-  (*p_g)->f_retTy = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix8, (*p_g)->f_u->f_tys.len, "x64gen.obx:4532"))->f_base;
+  int64_t ix8 = (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix7, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4538")))->f_ty;
+  (*p_g)->f_retTy = ((struct S18_ir_Ty*)(*p_g)->f_u->f_tys.data + rt_idx(ix8, (*p_g)->f_u->f_tys.len, "x64gen.obx:4538"))->f_base;
   int64_t t9 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
   int64_t v_end_10 = t9;
   bool c11 = (bool)((*p_g)->f_inlStack.len == 0LL);
@@ -36094,9 +36114,9 @@ static void f359_x64gen_Gen_genInline(struct S27_x64gen_Gen**p_g, int64_t p_f, i
   int64_t ap14 = v_end_10;
   *(int64_t*)rt_arr_push(&(*p_g)->f_inlEnd, 8ULL) = ap14;
   int64_t ix15 = p_f;
-  f204_x64gen_Gen_stmt(p_g, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix15, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4537")))->f_body);
-  int64_t t16 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlStack, 8ULL, "x64gen.obx:4538");
-  int64_t t17 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlEnd, 8ULL, "x64gen.obx:4539");
+  f204_x64gen_Gen_stmt(p_g, (*((struct S16_ir_Func**)(*p_g)->f_u->f_funcs.data + rt_idx(ix15, (*p_g)->f_u->f_funcs.len, "x64gen.obx:4543")))->f_body);
+  int64_t t16 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlStack, 8ULL, "x64gen.obx:4544");
+  int64_t t17 = *(int64_t*)rt_arr_pop(&(*p_g)->f_inlEnd, 8ULL, "x64gen.obx:4545");
   f335_x64gen_Gen_unalias(p_g, &v_ch_4);
   f206_x64_Asm_bind(&(*p_g)->f_a, v_end_10);
   (*p_g)->f_retTy = v_saveRet_5;
@@ -36106,7 +36126,7 @@ static void f359_x64gen_Gen_genInline(struct S27_x64gen_Gen**p_g, int64_t p_f, i
 }
 static bool f358_x64gen_Gen_inlineRt(struct S27_x64gen_Gen**p_g, int64_t p_e, obx_str p_name) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4837")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4843")));
   int64_t t3 = f59_ir_Ir_listLen(&(*p_g)->f_u, v_n_2.f_b);
   int64_t v_nargs_4 = t3;
   struct S42_x64gen_ArOp t5 = f291_x64gen_arOp(rt_str_dup(p_name));
@@ -36225,7 +36245,7 @@ static bool f358_x64gen_Gen_inlineRt(struct S27_x64gen_Gen**p_g, int64_t p_e, ob
   }
   bool b56 = b53;
   if (b56) {
-    int64_t t57 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, rt_sub_int(v_nargs_4, 1LL, "x64gen.obx:4864"));
+    int64_t t57 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, rt_sub_int(v_nargs_4, 1LL, "x64gen.obx:4870"));
     bool t58 = f292_x64gen_Gen_isWhere(p_g, t57);
     b56 = t58;
   }
@@ -36250,410 +36270,474 @@ static bool f358_x64gen_Gen_inlineRt(struct S27_x64gen_Gen**p_g, int64_t p_e, ob
   bool c65 = b62;
   if (c65) {
     int64_t t66 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    int64_t t67 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    struct S40_x64gen_Src t68 = f302_x64gen_Gen_pairSrc(p_g, t66, t67);
-    f303_x64gen_Gen_aluSrc(p_g, 7LL, 8LL, 0LL, t68);
-    obx_str t69 = sl3700;
-    int64_t t70 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
-    int64_t t71 = f304_x64gen_Gen_stub(p_g, 3LL, t69, t70);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t71);
-    bool r72 = (bool)1LL;
+    int64_t v_ix_67 = t66;
+    int64_t t68 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t v_ln_69 = t68;
+    int64_t t70 = f253_x64gen_Gen_regOf(p_g, v_ix_67);
+    int64_t v_ri_71 = t70;
+    bool b72 = (bool)(v_ri_71 >= 0LL);
+    if (b72) {
+      bool t73 = f301_x64gen_Gen_srcOnly(p_g, v_ln_69);
+      b72 = (bool)!t73;
+    }
+    bool b74 = b72;
+    if (b74) {
+      bool t75 = f275_x64gen_Gen_writesReg(p_g, v_ln_69, v_ri_71);
+      b74 = (bool)!t75;
+    }
+    bool c76 = b74;
+    if (c76) {
+      f247_x64gen_Gen_gen(p_g, v_ln_69);
+      f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, v_ri_71, 0LL);
+      obx_str t77 = sl3700;
+      int64_t t78 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+      int64_t t79 = f304_x64gen_Gen_stub(p_g, 3LL, t77, t78);
+      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t79);
+      f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 0LL, v_ri_71);
+      bool r80 = (bool)1LL;
+      gl25_drop(v_n_2);
+      rt_str_drop(p_name);
+      return r80;
+    }
+    bool b81 = (bool)(v_ri_71 < 0LL);
+    if (b81) {
+      bool t82 = f309_x64gen_Gen_memOperand(p_g, v_ix_67);
+      b81 = t82;
+    }
+    bool b83 = b81;
+    if (b83) {
+      bool t84 = f301_x64gen_Gen_srcOnly(p_g, v_ln_69);
+      b83 = (bool)!t84;
+    }
+    bool b85 = b83;
+    if (b85) {
+      bool t86 = f272_x64gen_Gen_simple(p_g, v_ln_69);
+      b85 = (bool)!t86;
+    }
+    bool b87 = b85;
+    if (b87) {
+      bool t88 = f276_x64gen_Gen_pure(p_g, v_ln_69);
+      b87 = t88;
+    }
+    bool c89 = b87;
+    if (c89) {
+      f247_x64gen_Gen_gen(p_g, v_ln_69);
+      struct S2_x64_Mem t90 = f254_x64gen_Gen_staticMem(p_g, v_ix_67);
+      struct S2_x64_Mem v_m_91 = t90;
+      f327_x64_Asm_aluMR(&(*p_g)->f_a, 7LL, 8LL, v_m_91, 0LL);
+      obx_str t92 = sl3700;
+      int64_t t93 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+      int64_t t94 = f304_x64gen_Gen_stub(p_g, 3LL, t92, t93);
+      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t94);
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 0LL, v_m_91);
+      bool r95 = (bool)1LL;
+      gl25_drop(v_n_2);
+      rt_str_drop(p_name);
+      return r95;
+    }
+    struct S40_x64gen_Src t96 = f302_x64gen_Gen_pairSrc(p_g, v_ix_67, v_ln_69);
+    f303_x64gen_Gen_aluSrc(p_g, 7LL, 8LL, 0LL, t96);
+    obx_str t97 = sl3700;
+    int64_t t98 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+    int64_t t99 = f304_x64gen_Gen_stub(p_g, 3LL, t97, t98);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t99);
+    bool r100 = (bool)1LL;
     gl25_drop(v_n_2);
     rt_str_drop(p_name);
-    return r72;
+    return r100;
   }
-  bool b73 = rt_str_eq(p_name, sl156);
-  if (b73) {
-    b73 = (bool)(v_nargs_4 == 3LL);
+  bool b101 = rt_str_eq(p_name, sl156);
+  if (b101) {
+    b101 = (bool)(v_nargs_4 == 3LL);
   }
-  bool b74 = b73;
-  if (b74) {
-    int64_t t75 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
-    bool t76 = f292_x64gen_Gen_isWhere(p_g, t75);
-    b74 = t76;
+  bool b102 = b101;
+  if (b102) {
+    int64_t t103 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+    bool t104 = f292_x64gen_Gen_isWhere(p_g, t103);
+    b102 = t104;
   }
-  bool c77 = b74;
-  if (c77) {
-    int64_t old78 = *&(*p_g)->f_byteDest;
+  bool c105 = b102;
+  if (c105) {
+    int64_t old106 = *&(*p_g)->f_byteDest;
     *&(*p_g)->f_byteDest = 0LL;
-    int64_t v_dst_79 = old78;
-    int64_t t80 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    int64_t v_sx_81 = t80;
-    int64_t t82 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    int64_t v_ix_83 = t82;
-    struct S2_x64_Mem t84 = f254_x64gen_Gen_staticMem(p_g, v_sx_81);
-    struct S2_x64_Mem v_m_85 = t84;
-    bool c86 = (bool)(v_m_85.f_base != -9LL);
-    if (c86) {
-      int64_t t87 = f253_x64gen_Gen_regOf(p_g, v_ix_83);
-      int64_t v_ri_88 = t87;
-      bool c89 = (bool)(v_ri_88 < 0LL);
-      if (c89) {
-        v_ri_88 = 1LL;
-        bool t90 = f272_x64gen_Gen_simple(p_g, v_ix_83);
-        bool c91 = t90;
-        if (c91) {
-          f273_x64gen_Gen_genInto(p_g, v_ix_83, 1LL);
+    int64_t v_dst_107 = old106;
+    int64_t t108 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+    int64_t v_sx_109 = t108;
+    int64_t t110 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t v_ix_111 = t110;
+    struct S2_x64_Mem t112 = f254_x64gen_Gen_staticMem(p_g, v_sx_109);
+    struct S2_x64_Mem v_m_113 = t112;
+    bool c114 = (bool)(v_m_113.f_base != -9LL);
+    if (c114) {
+      int64_t t115 = f253_x64gen_Gen_regOf(p_g, v_ix_111);
+      int64_t v_ri_116 = t115;
+      bool c117 = (bool)(v_ri_116 < 0LL);
+      if (c117) {
+        v_ri_116 = 1LL;
+        bool t118 = f272_x64gen_Gen_simple(p_g, v_ix_111);
+        bool c119 = t118;
+        if (c119) {
+          f273_x64gen_Gen_genInto(p_g, v_ix_111, 1LL);
         } else {
-          bool t92 = f362_x64gen_Gen_arithInto(p_g, v_ix_83, 1LL, (bool)1LL);
-          bool c93 = (bool)!t92;
-          if (c93) {
-            f247_x64gen_Gen_gen(p_g, v_ix_83);
+          bool t120 = f362_x64gen_Gen_arithInto(p_g, v_ix_111, 1LL, (bool)1LL);
+          bool c121 = (bool)!t120;
+          if (c121) {
+            f247_x64gen_Gen_gen(p_g, v_ix_111);
             f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
           }
         }
       }
-      struct S2_x64_Mem t94 = f318_x64gen_at(v_m_85, 12LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t94);
-      f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, v_ri_88, 2LL);
-      obx_str t95 = sl3705;
-      int64_t t96 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
-      int64_t t97 = f304_x64gen_Gen_stub(p_g, 3LL, t95, t96);
-      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t97);
-      struct S2_x64_Mem t98 = f318_x64gen_at(v_m_85, 8LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 0LL, t98);
-      f307_x64_Asm_aluRM(&(*p_g)->f_a, 0LL, 8LL, 0LL, v_m_85);
-      int64_t t99 = v_dst_79;
-      struct S2_x64_Mem t100 = f268_x64_memx(0LL, v_ri_88, 1LL, 8LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t99, t100);
-      bool r101 = (bool)1LL;
+      struct S2_x64_Mem t122 = f318_x64gen_at(v_m_113, 12LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t122);
+      f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, v_ri_116, 2LL);
+      obx_str t123 = sl3705;
+      int64_t t124 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+      int64_t t125 = f304_x64gen_Gen_stub(p_g, 3LL, t123, t124);
+      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t125);
+      struct S2_x64_Mem t126 = f318_x64gen_at(v_m_113, 8LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 0LL, t126);
+      f307_x64_Asm_aluRM(&(*p_g)->f_a, 0LL, 8LL, 0LL, v_m_113);
+      int64_t t127 = v_dst_107;
+      struct S2_x64_Mem t128 = f268_x64_memx(0LL, v_ri_116, 1LL, 8LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t127, t128);
+      bool r129 = (bool)1LL;
       gl25_drop(v_n_2);
       rt_str_drop(p_name);
-      return r101;
+      return r129;
     }
-    int64_t t102 = f64_ir_Ir_nk(&(*p_g)->f_u, v_sx_81);
-    int64_t ifx103;
-    if (t102 == 9LL) {
-      int64_t ix104 = v_sx_81;
-      int64_t t105 = f253_x64gen_Gen_regOf(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix104, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4899"))->f_a);
-      ifx103 = t105;
+    int64_t t130 = f64_ir_Ir_nk(&(*p_g)->f_u, v_sx_109);
+    int64_t ifx131;
+    if (t130 == 9LL) {
+      int64_t ix132 = v_sx_109;
+      int64_t t133 = f253_x64gen_Gen_regOf(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix132, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4925"))->f_a);
+      ifx131 = t133;
     } else {
-      ifx103 = -1LL;
+      ifx131 = -1LL;
     }
-    int64_t v_br_106 = ifx103;
-    bool b107 = (bool)(v_br_106 >= 0LL);
-    if (b107) {
-      bool t108 = f275_x64gen_Gen_writesReg(p_g, v_ix_83, v_br_106);
-      b107 = (bool)!t108;
+    int64_t v_br_134 = ifx131;
+    bool b135 = (bool)(v_br_134 >= 0LL);
+    if (b135) {
+      bool t136 = f275_x64gen_Gen_writesReg(p_g, v_ix_111, v_br_134);
+      b135 = (bool)!t136;
     }
-    bool b109 = b107;
-    if (b109) {
-      bool t110 = f278_x64gen_Gen_quietTree(p_g, v_ix_83);
-      b109 = t110;
+    bool b137 = b135;
+    if (b137) {
+      bool t138 = f278_x64gen_Gen_quietTree(p_g, v_ix_111);
+      b137 = t138;
     }
-    bool c111 = b109;
-    if (c111) {
-      int64_t t112 = f253_x64gen_Gen_regOf(p_g, v_ix_83);
-      int64_t v_ri_113 = t112;
-      bool c114 = (bool)(v_ri_113 < 0LL);
-      if (c114) {
-        v_ri_113 = 1LL;
-        bool t115 = f272_x64gen_Gen_simple(p_g, v_ix_83);
-        bool c116 = t115;
-        if (c116) {
-          f273_x64gen_Gen_genInto(p_g, v_ix_83, 1LL);
+    bool c139 = b137;
+    if (c139) {
+      int64_t t140 = f253_x64gen_Gen_regOf(p_g, v_ix_111);
+      int64_t v_ri_141 = t140;
+      bool c142 = (bool)(v_ri_141 < 0LL);
+      if (c142) {
+        v_ri_141 = 1LL;
+        bool t143 = f272_x64gen_Gen_simple(p_g, v_ix_111);
+        bool c144 = t143;
+        if (c144) {
+          f273_x64gen_Gen_genInto(p_g, v_ix_111, 1LL);
         } else {
-          bool t117 = f362_x64gen_Gen_arithInto(p_g, v_ix_83, 1LL, (bool)1LL);
-          bool c118 = (bool)!t117;
-          if (c118) {
-            f247_x64gen_Gen_gen(p_g, v_ix_83);
+          bool t145 = f362_x64gen_Gen_arithInto(p_g, v_ix_111, 1LL, (bool)1LL);
+          bool c146 = (bool)!t145;
+          if (c146) {
+            f247_x64gen_Gen_gen(p_g, v_ix_111);
             f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
           }
         }
       }
-      struct S2_x64_Mem t119 = f216_x64_mem(v_br_106, 12LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t119);
-      f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, v_ri_113, 2LL);
-      obx_str t120 = sl3705;
-      int64_t t121 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
-      int64_t t122 = f304_x64gen_Gen_stub(p_g, 3LL, t120, t121);
-      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t122);
-      struct S2_x64_Mem t123 = f216_x64_mem(v_br_106, 8LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 0LL, t123);
-      struct S2_x64_Mem t124 = f216_x64_mem(v_br_106, 0LL);
-      f307_x64_Asm_aluRM(&(*p_g)->f_a, 0LL, 8LL, 0LL, t124);
-      int64_t t125 = v_dst_79;
-      struct S2_x64_Mem t126 = f268_x64_memx(0LL, v_ri_113, 1LL, 8LL);
-      f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t125, t126);
-      bool r127 = (bool)1LL;
+      struct S2_x64_Mem t147 = f216_x64_mem(v_br_134, 12LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t147);
+      f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, v_ri_141, 2LL);
+      obx_str t148 = sl3705;
+      int64_t t149 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+      int64_t t150 = f304_x64gen_Gen_stub(p_g, 3LL, t148, t149);
+      f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t150);
+      struct S2_x64_Mem t151 = f216_x64_mem(v_br_134, 8LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 0LL, t151);
+      struct S2_x64_Mem t152 = f216_x64_mem(v_br_134, 0LL);
+      f307_x64_Asm_aluRM(&(*p_g)->f_a, 0LL, 8LL, 0LL, t152);
+      int64_t t153 = v_dst_107;
+      struct S2_x64_Mem t154 = f268_x64_memx(0LL, v_ri_141, 1LL, 8LL);
+      f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t153, t154);
+      bool r155 = (bool)1LL;
       gl25_drop(v_n_2);
       rt_str_drop(p_name);
-      return r127;
+      return r155;
     }
-    f247_x64gen_Gen_gen(p_g, v_sx_81);
-    bool t128 = f272_x64gen_Gen_simple(p_g, v_ix_83);
-    bool c129 = t128;
-    if (c129) {
-      f273_x64gen_Gen_genInto(p_g, v_ix_83, 1LL);
+    f247_x64gen_Gen_gen(p_g, v_sx_109);
+    bool t156 = f272_x64gen_Gen_simple(p_g, v_ix_111);
+    bool c157 = t156;
+    if (c157) {
+      f273_x64gen_Gen_genInto(p_g, v_ix_111, 1LL);
     } else {
-      int64_t t130 = v_ix_83;
-      bool t131 = f278_x64gen_Gen_quietTree(p_g, v_ix_83);
-      struct S41_x64gen_Hold t132 = f279_x64gen_Gen_hold(p_g, t130, t131);
-      struct S41_x64gen_Hold v_h_133 = t132;
-      f247_x64gen_Gen_gen(p_g, v_ix_83);
-      f280_x64gen_Gen_unhold(p_g, v_h_133);
+      int64_t t158 = v_ix_111;
+      bool t159 = f278_x64gen_Gen_quietTree(p_g, v_ix_111);
+      struct S41_x64gen_Hold t160 = f279_x64gen_Gen_hold(p_g, t158, t159);
+      struct S41_x64gen_Hold v_h_161 = t160;
+      f247_x64gen_Gen_gen(p_g, v_ix_111);
+      f280_x64gen_Gen_unhold(p_g, v_h_161);
       f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
-      f282_x64gen_Gen_unholdInto(p_g, v_h_133, 0LL);
+      f282_x64gen_Gen_unholdInto(p_g, v_h_161, 0LL);
     }
-    struct S2_x64_Mem t134 = f216_x64_mem(0LL, 12LL);
-    f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t134);
+    struct S2_x64_Mem t162 = f216_x64_mem(0LL, 12LL);
+    f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t162);
     f176_x64_Asm_alu(&(*p_g)->f_a, 7LL, 8LL, 1LL, 2LL);
-    obx_str t135 = sl3705;
-    int64_t t136 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
-    int64_t t137 = f304_x64gen_Gen_stub(p_g, 3LL, t135, t136);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t137);
-    struct S2_x64_Mem t138 = f216_x64_mem(0LL, 8LL);
-    f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t138);
-    struct S2_x64_Mem t139 = f216_x64_mem(0LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 0LL, t139);
+    obx_str t163 = sl3705;
+    int64_t t164 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
+    int64_t t165 = f304_x64gen_Gen_stub(p_g, 3LL, t163, t164);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 3LL, t165);
+    struct S2_x64_Mem t166 = f216_x64_mem(0LL, 8LL);
+    f367_x64_Asm_loadZX(&(*p_g)->f_a, 4LL, 2LL, t166);
+    struct S2_x64_Mem t167 = f216_x64_mem(0LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 0LL, t167);
     f176_x64_Asm_alu(&(*p_g)->f_a, 0LL, 8LL, 0LL, 2LL);
-    int64_t t140 = v_dst_79;
-    struct S2_x64_Mem t141 = f268_x64_memx(0LL, 1LL, 1LL, 8LL);
-    f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t140, t141);
-    bool r142 = (bool)1LL;
+    int64_t t168 = v_dst_107;
+    struct S2_x64_Mem t169 = f268_x64_memx(0LL, 1LL, 1LL, 8LL);
+    f367_x64_Asm_loadZX(&(*p_g)->f_a, 1LL, t168, t169);
+    bool r170 = (bool)1LL;
     gl25_drop(v_n_2);
     rt_str_drop(p_name);
-    return r142;
+    return r170;
   }
-  bool b143 = rt_str_eq(p_name, sl241);
-  if (b143) {
-    b143 = (bool)(v_nargs_4 == 1LL);
+  bool b171 = rt_str_eq(p_name, sl241);
+  if (b171) {
+    b171 = (bool)(v_nargs_4 == 1LL);
   }
-  bool c144 = b143;
-  if (c144) {
-    int64_t t145 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    int64_t v_x_146 = t145;
-    struct S2_x64_Mem t147 = f254_x64gen_Gen_staticMem(p_g, v_x_146);
-    struct S2_x64_Mem v_m_148 = t147;
-    int64_t v_s_149 = 0LL;
-    bool c150 = (bool)(v_m_148.f_base != -9LL);
-    if (c150) {
-      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, v_m_148);
+  bool c172 = b171;
+  if (c172) {
+    int64_t t173 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+    int64_t v_x_174 = t173;
+    struct S2_x64_Mem t175 = f254_x64gen_Gen_staticMem(p_g, v_x_174);
+    struct S2_x64_Mem v_m_176 = t175;
+    int64_t v_s_177 = 0LL;
+    bool c178 = (bool)(v_m_176.f_base != -9LL);
+    if (c178) {
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, v_m_176);
     } else {
-      int64_t t151 = f195_x64gen_Gen_temp(p_g, 16LL, 8LL);
-      v_s_149 = t151;
-      f247_x64gen_Gen_gen(p_g, v_x_146);
-      struct S2_x64_Mem t152 = f216_x64_mem(0LL, 0LL);
-      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t152);
-      struct S2_x64_Mem t153 = f216_x64_mem(0LL, 8LL);
-      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t153);
-      struct S2_x64_Mem t154 = f197_x64gen_rbp(v_s_149);
-      f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t154, 1LL);
-      struct S2_x64_Mem t155 = f197_x64gen_rbp(rt_add_int(v_s_149, 8LL, "x64gen.obx:4953"));
-      f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t155, 2LL);
+      int64_t t179 = f195_x64gen_Gen_temp(p_g, 16LL, 8LL);
+      v_s_177 = t179;
+      f247_x64gen_Gen_gen(p_g, v_x_174);
+      struct S2_x64_Mem t180 = f216_x64_mem(0LL, 0LL);
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t180);
+      struct S2_x64_Mem t181 = f216_x64_mem(0LL, 8LL);
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t181);
+      struct S2_x64_Mem t182 = f197_x64gen_rbp(v_s_177);
+      f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t182, 1LL);
+      struct S2_x64_Mem t183 = f197_x64gen_rbp(rt_add_int(v_s_177, 8LL, "x64gen.obx:4979"));
+      f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t183, 2LL);
     }
-    int64_t t156 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_done_157 = t156;
+    int64_t t184 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_done_185 = t184;
     f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 1LL, 1LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_done_157);
-    struct S2_x64_Mem t158 = f216_x64_mem(1LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t158);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_done_185);
+    struct S2_x64_Mem t186 = f216_x64_mem(1LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t186);
     f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 2LL, 2LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 8LL, v_done_157);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 8LL, v_done_185);
     f179_x64_Asm_aluI(&(*p_g)->f_a, 0LL, 8LL, 2LL, 1LL);
-    struct S2_x64_Mem t159 = f216_x64_mem(1LL, 0LL);
-    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t159, 2LL);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_157);
-    struct S2_x64_Mem ifx160;
-    if (v_m_148.f_base != -9LL) {
-      ifx160 = v_m_148;
+    struct S2_x64_Mem t187 = f216_x64_mem(1LL, 0LL);
+    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t187, 2LL);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_185);
+    struct S2_x64_Mem ifx188;
+    if (v_m_176.f_base != -9LL) {
+      ifx188 = v_m_176;
     } else {
-      struct S2_x64_Mem t161 = f197_x64gen_rbp(v_s_149);
-      ifx160 = t161;
+      struct S2_x64_Mem t189 = f197_x64gen_rbp(v_s_177);
+      ifx188 = t189;
     }
-    f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, ifx160);
-    bool r162 = (bool)1LL;
+    f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, ifx188);
+    bool r190 = (bool)1LL;
     gl25_drop(v_n_2);
     rt_str_drop(p_name);
-    return r162;
+    return r190;
   }
-  bool b163 = rt_str_eq(p_name, sl255);
-  if (b163) {
-    b163 = (bool)(v_nargs_4 == 2LL);
+  bool b191 = rt_str_eq(p_name, sl255);
+  if (b191) {
+    b191 = (bool)(v_nargs_4 == 2LL);
   }
-  bool b164 = b163;
-  if (b164) {
-    int64_t t165 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    int64_t t166 = f64_ir_Ir_nk(&(*p_g)->f_u, t165);
-    b164 = (bool)(t166 == 1LL);
-  }
-  bool b167 = b164;
-  if (b167) {
-    int64_t t168 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    int64_t ix169 = t168;
-    bool t170 = f234_x64_fits32(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix169, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4968"))->f_v);
-    b167 = t170;
-  }
-  bool c171 = b167;
-  if (c171) {
-    int64_t t172 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    int64_t ix173 = t172;
-    int64_t v_size_174 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix173, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4970"))->f_v;
-    int64_t t175 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    f247_x64gen_Gen_gen(p_g, t175);
-    int64_t t176 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_slow_177 = t176;
-    int64_t t178 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_done_179 = t178;
-    struct S2_x64_Mem t180 = f216_x64_mem(0LL, 8LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t180);
-    struct S2_x64_Mem t181 = f216_x64_mem(0LL, 16LL);
-    f307_x64_Asm_aluRM(&(*p_g)->f_a, 7LL, 8LL, 1LL, t181);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_slow_177);
-    struct S2_x64_Mem t182 = f216_x64_mem(1LL, 1LL);
-    f264_x64_Asm_lea(&(*p_g)->f_a, 2LL, t182);
-    struct S2_x64_Mem t183 = f216_x64_mem(0LL, 8LL);
-    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t183, 2LL);
-    struct S2_x64_Mem t184 = f216_x64_mem(0LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t184);
-    bool b185 = (bool)(v_size_174 == 1LL);
-    if (!b185) {
-      b185 = (bool)(v_size_174 == 2LL);
-    }
-    bool b186 = b185;
-    if (!b186) {
-      b186 = (bool)(v_size_174 == 4LL);
-    }
-    bool b187 = b186;
-    if (!b187) {
-      b187 = (bool)(v_size_174 == 8LL);
-    }
-    bool c188 = b187;
-    if (c188) {
-      struct S2_x64_Mem t189 = f268_x64_memx(2LL, 1LL, v_size_174, 0LL);
-      f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, t189);
-    } else {
-      f269_x64_Asm_imulI(&(*p_g)->f_a, 8LL, 1LL, 1LL, v_size_174);
-      struct S2_x64_Mem t190 = f268_x64_memx(2LL, 1LL, 1LL, 0LL);
-      f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, t190);
-    }
-    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_179);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_slow_177);
-    f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 7LL, 0LL);
-    f231_x64_Asm_movRI(&(*p_g)->f_a, 6LL, v_size_174);
-    f232_x64gen_Gen_callRt(p_g, sl255);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_179);
-    bool r191 = (bool)1LL;
-    gl25_drop(v_n_2);
-    rt_str_drop(p_name);
-    return r191;
-  }
-  bool b192 = rt_str_eq(p_name, sl242);
+  bool b192 = b191;
   if (b192) {
-    b192 = (bool)(v_nargs_4 == 1LL);
+    int64_t t193 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t t194 = f64_ir_Ir_nk(&(*p_g)->f_u, t193);
+    b192 = (bool)(t194 == 1LL);
   }
-  bool c193 = b192;
-  if (c193) {
-    int64_t t194 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    struct S2_x64_Mem t195 = f254_x64gen_Gen_staticMem(p_g, t194);
-    struct S2_x64_Mem v_m_196 = t195;
-    bool c197 = (bool)(v_m_196.f_base != -9LL);
-    if (c197) {
-      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, v_m_196);
-    } else {
-      int64_t t198 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-      f247_x64gen_Gen_gen(p_g, t198);
-      struct S2_x64_Mem t199 = f216_x64_mem(0LL, 0LL);
-      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, t199);
+  bool b195 = b192;
+  if (b195) {
+    int64_t t196 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t ix197 = t196;
+    bool t198 = f234_x64_fits32(((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix197, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4994"))->f_v);
+    b195 = t198;
+  }
+  bool c199 = b195;
+  if (c199) {
+    int64_t t200 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t ix201 = t200;
+    int64_t v_size_202 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix201, (*p_g)->f_u->f_nodes.len, "x64gen.obx:4996"))->f_v;
+    int64_t t203 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+    f247_x64gen_Gen_gen(p_g, t203);
+    int64_t t204 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_slow_205 = t204;
+    int64_t t206 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_done_207 = t206;
+    struct S2_x64_Mem t208 = f216_x64_mem(0LL, 8LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t208);
+    struct S2_x64_Mem t209 = f216_x64_mem(0LL, 16LL);
+    f307_x64_Asm_aluRM(&(*p_g)->f_a, 7LL, 8LL, 1LL, t209);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_slow_205);
+    struct S2_x64_Mem t210 = f216_x64_mem(1LL, 1LL);
+    f264_x64_Asm_lea(&(*p_g)->f_a, 2LL, t210);
+    struct S2_x64_Mem t211 = f216_x64_mem(0LL, 8LL);
+    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t211, 2LL);
+    struct S2_x64_Mem t212 = f216_x64_mem(0LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t212);
+    bool b213 = (bool)(v_size_202 == 1LL);
+    if (!b213) {
+      b213 = (bool)(v_size_202 == 2LL);
     }
-    int64_t t200 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_done_201 = t200;
-    f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 7LL, 7LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_done_201);
-    struct S2_x64_Mem t202 = f216_x64_mem(7LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t202);
-    f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 1LL, 1LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 14LL, v_done_201);
-    f179_x64_Asm_aluI(&(*p_g)->f_a, 5LL, 8LL, 1LL, 1LL);
-    struct S2_x64_Mem t203 = f216_x64_mem(7LL, 0LL);
-    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t203, 1LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 5LL, v_done_201);
-    f232_x64gen_Gen_callRt(p_g, sl225);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_201);
-    bool r204 = (bool)1LL;
+    bool b214 = b213;
+    if (!b214) {
+      b214 = (bool)(v_size_202 == 4LL);
+    }
+    bool b215 = b214;
+    if (!b215) {
+      b215 = (bool)(v_size_202 == 8LL);
+    }
+    bool c216 = b215;
+    if (c216) {
+      struct S2_x64_Mem t217 = f268_x64_memx(2LL, 1LL, v_size_202, 0LL);
+      f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, t217);
+    } else {
+      f269_x64_Asm_imulI(&(*p_g)->f_a, 8LL, 1LL, 1LL, v_size_202);
+      struct S2_x64_Mem t218 = f268_x64_memx(2LL, 1LL, 1LL, 0LL);
+      f264_x64_Asm_lea(&(*p_g)->f_a, 0LL, t218);
+    }
+    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_207);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_slow_205);
+    f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 7LL, 0LL);
+    f231_x64_Asm_movRI(&(*p_g)->f_a, 6LL, v_size_202);
+    f232_x64gen_Gen_callRt(p_g, sl255);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_207);
+    bool r219 = (bool)1LL;
     gl25_drop(v_n_2);
     rt_str_drop(p_name);
-    return r204;
+    return r219;
   }
-  bool b205 = rt_str_eq(p_name, sl243);
-  if (b205) {
-    b205 = (bool)(v_nargs_4 == 2LL);
+  bool b220 = rt_str_eq(p_name, sl242);
+  if (b220) {
+    b220 = (bool)(v_nargs_4 == 1LL);
   }
-  bool c206 = b205;
-  if (c206) {
-    int64_t t207 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
-    int64_t v_a_208 = t207;
-    int64_t t209 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
-    int64_t v_b_210 = t209;
-    bool t211 = f368_x64gen_Gen_strPlace(p_g, v_b_210);
-    bool c212 = t211;
-    if (c212) {
-      f247_x64gen_Gen_gen(p_g, v_a_208);
-      f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
-      f369_x64gen_Gen_strAddr(p_g, v_b_210, 2LL);
+  bool c221 = b220;
+  if (c221) {
+    int64_t t222 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+    struct S2_x64_Mem t223 = f254_x64gen_Gen_staticMem(p_g, t222);
+    struct S2_x64_Mem v_m_224 = t223;
+    bool c225 = (bool)(v_m_224.f_base != -9LL);
+    if (c225) {
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, v_m_224);
     } else {
-      bool t213 = f368_x64gen_Gen_strPlace(p_g, v_a_208);
-      bool b214 = t213;
-      if (b214) {
-        bool t215 = f276_x64gen_Gen_pure(p_g, v_b_210);
-        b214 = t215;
+      int64_t t226 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+      f247_x64gen_Gen_gen(p_g, t226);
+      struct S2_x64_Mem t227 = f216_x64_mem(0LL, 0LL);
+      f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, t227);
+    }
+    int64_t t228 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_done_229 = t228;
+    f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 7LL, 7LL);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_done_229);
+    struct S2_x64_Mem t230 = f216_x64_mem(7LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t230);
+    f250_x64_Asm_test(&(*p_g)->f_a, 8LL, 1LL, 1LL);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 14LL, v_done_229);
+    f179_x64_Asm_aluI(&(*p_g)->f_a, 5LL, 8LL, 1LL, 1LL);
+    struct S2_x64_Mem t231 = f216_x64_mem(7LL, 0LL);
+    f198_x64_Asm_store(&(*p_g)->f_a, 8LL, t231, 1LL);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 5LL, v_done_229);
+    f232_x64gen_Gen_callRt(p_g, sl225);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_229);
+    bool r232 = (bool)1LL;
+    gl25_drop(v_n_2);
+    rt_str_drop(p_name);
+    return r232;
+  }
+  bool b233 = rt_str_eq(p_name, sl243);
+  if (b233) {
+    b233 = (bool)(v_nargs_4 == 2LL);
+  }
+  bool c234 = b233;
+  if (c234) {
+    int64_t t235 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 0LL);
+    int64_t v_a_236 = t235;
+    int64_t t237 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 1LL);
+    int64_t v_b_238 = t237;
+    bool t239 = f368_x64gen_Gen_strPlace(p_g, v_b_238);
+    bool c240 = t239;
+    if (c240) {
+      f247_x64gen_Gen_gen(p_g, v_a_236);
+      f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 1LL, 0LL);
+      f369_x64gen_Gen_strAddr(p_g, v_b_238, 2LL);
+    } else {
+      bool t241 = f368_x64gen_Gen_strPlace(p_g, v_a_236);
+      bool b242 = t241;
+      if (b242) {
+        bool t243 = f276_x64gen_Gen_pure(p_g, v_b_238);
+        b242 = t243;
       }
-      bool c216 = b214;
-      if (c216) {
-        f247_x64gen_Gen_gen(p_g, v_b_210);
+      bool c244 = b242;
+      if (c244) {
+        f247_x64gen_Gen_gen(p_g, v_b_238);
         f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 2LL, 0LL);
-        f369_x64gen_Gen_strAddr(p_g, v_a_208, 1LL);
+        f369_x64gen_Gen_strAddr(p_g, v_a_236, 1LL);
       } else {
-        f247_x64gen_Gen_gen(p_g, v_a_208);
-        int64_t t217 = v_b_210;
-        bool t218 = f278_x64gen_Gen_quietTree(p_g, v_b_210);
-        struct S41_x64gen_Hold t219 = f279_x64gen_Gen_hold(p_g, t217, t218);
-        struct S41_x64gen_Hold v_h_220 = t219;
-        f247_x64gen_Gen_gen(p_g, v_b_210);
-        f280_x64gen_Gen_unhold(p_g, v_h_220);
+        f247_x64gen_Gen_gen(p_g, v_a_236);
+        int64_t t245 = v_b_238;
+        bool t246 = f278_x64gen_Gen_quietTree(p_g, v_b_238);
+        struct S41_x64gen_Hold t247 = f279_x64gen_Gen_hold(p_g, t245, t246);
+        struct S41_x64gen_Hold v_h_248 = t247;
+        f247_x64gen_Gen_gen(p_g, v_b_238);
+        f280_x64gen_Gen_unhold(p_g, v_h_248);
         f177_x64_Asm_movRR(&(*p_g)->f_a, 8LL, 2LL, 0LL);
-        f282_x64gen_Gen_unholdInto(p_g, v_h_220, 1LL);
+        f282_x64gen_Gen_unholdInto(p_g, v_h_248, 1LL);
       }
     }
-    int64_t t221 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_no_222 = t221;
-    int64_t t223 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_yes_224 = t223;
-    int64_t t225 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
-    int64_t v_done_226 = t225;
-    struct S2_x64_Mem t227 = f216_x64_mem(1LL, 12LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 4LL, 0LL, t227);
-    struct S2_x64_Mem t228 = f216_x64_mem(2LL, 12LL);
-    f307_x64_Asm_aluRM(&(*p_g)->f_a, 7LL, 4LL, 0LL, t228);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 5LL, v_no_222);
+    int64_t t249 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_no_250 = t249;
+    int64_t t251 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_yes_252 = t251;
+    int64_t t253 = f214_x64_Asm_newLabel(&(*p_g)->f_a);
+    int64_t v_done_254 = t253;
+    struct S2_x64_Mem t255 = f216_x64_mem(1LL, 12LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 4LL, 0LL, t255);
+    struct S2_x64_Mem t256 = f216_x64_mem(2LL, 12LL);
+    f307_x64_Asm_aluRM(&(*p_g)->f_a, 7LL, 4LL, 0LL, t256);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 5LL, v_no_250);
     f250_x64_Asm_test(&(*p_g)->f_a, 4LL, 0LL, 0LL);
-    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_yes_224);
-    struct S2_x64_Mem t229 = f216_x64_mem(1LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, t229);
-    struct S2_x64_Mem t230 = f216_x64_mem(1LL, 8LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 6LL, t230);
-    struct S2_x64_Mem t231 = f216_x64_mem(2LL, 8LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t231);
-    struct S2_x64_Mem t232 = f216_x64_mem(2LL, 0LL);
-    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t232);
+    f215_x64_Asm_jcc(&(*p_g)->f_a, 4LL, v_yes_252);
+    struct S2_x64_Mem t257 = f216_x64_mem(1LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 7LL, t257);
+    struct S2_x64_Mem t258 = f216_x64_mem(1LL, 8LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 6LL, t258);
+    struct S2_x64_Mem t259 = f216_x64_mem(2LL, 8LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 1LL, t259);
+    struct S2_x64_Mem t260 = f216_x64_mem(2LL, 0LL);
+    f209_x64_Asm_load(&(*p_g)->f_a, 8LL, 2LL, t260);
     f232_x64gen_Gen_callRt(p_g, sl243);
     f201_x64gen_Gen_normR(p_g, 1LL, 0LL);
-    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_226);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_no_222);
+    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_254);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_no_250);
     f231_x64_Asm_movRI(&(*p_g)->f_a, 0LL, 0LL);
-    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_226);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_yes_224);
+    f218_x64_Asm_jmp(&(*p_g)->f_a, v_done_254);
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_yes_252);
     f231_x64_Asm_movRI(&(*p_g)->f_a, 0LL, 1LL);
-    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_226);
-    bool r233 = (bool)1LL;
+    f206_x64_Asm_bind(&(*p_g)->f_a, v_done_254);
+    bool r261 = (bool)1LL;
     gl25_drop(v_n_2);
     rt_str_drop(p_name);
-    return r233;
+    return r261;
   }
-  bool r234 = (bool)0LL;
+  bool r262 = (bool)0LL;
   gl25_drop(v_n_2);
   rt_str_drop(p_name);
-  return r234;
+  return r262;
 }
 static void f369_x64gen_Gen_strAddr(struct S27_x64gen_Gen**p_g, int64_t p_x, int64_t p_r) {
   struct S2_x64_Mem t1 = f254_x64gen_Gen_staticMem(p_g, p_x);
@@ -36663,8 +36747,8 @@ static void f369_x64gen_Gen_strAddr(struct S27_x64gen_Gen**p_g, int64_t p_x, int
     f264_x64_Asm_lea(&(*p_g)->f_a, p_r, v_m_2);
   } else {
     int64_t ix4 = p_x;
-    int64_t ix5 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5073"))->f_a;
-    f181_x64_Asm_movRSym(&(*p_g)->f_a, p_r, *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix5, (*p_g)->f_globalSym.len, "x64gen.obx:5073")), 0LL);
+    int64_t ix5 = ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix4, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5099"))->f_a;
+    f181_x64_Asm_movRSym(&(*p_g)->f_a, p_r, *((int64_t*)(*p_g)->f_globalSym.data + rt_idx(ix5, (*p_g)->f_globalSym.len, "x64gen.obx:5099")), 0LL);
   }
 }
 static bool f368_x64gen_Gen_strPlace(struct S27_x64gen_Gen**p_g, int64_t p_x) {
@@ -36692,7 +36776,7 @@ static void f367_x64_Asm_loadZX(struct S35_x64_Asm**p_a, int64_t p_size, int64_t
 }
 static void f366_x64gen_Gen_inlineDiv(struct S27_x64gen_Gen**p_g, struct S42_x64gen_ArOp p_dv, int64_t p_e) {
   int64_t ix1 = p_e;
-  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5117")));
+  struct S17_ir_Node v_n_2 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix1, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5143")));
   int64_t v_k_3 = p_dv.f_k;
   bool b4 = (bool)(v_k_3 == 8LL);
   if (!b4) {
@@ -36723,8 +36807,8 @@ static void f366_x64gen_Gen_inlineDiv(struct S27_x64gen_Gen**p_g, struct S42_x64
   int64_t t17 = f60_ir_Ir_listAt(&(*p_g)->f_u, v_n_2.f_b, 2LL);
   int64_t v_w_18 = t17;
   int64_t ix19 = v_b_16;
-  struct S17_ir_Node v_bn_20 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5131")));
-  int64_t v_bits_22 = v_k_3 == 3LL ? 8LL : rt_mul_int(v_sz_6, 8LL, "x64gen.obx:5132");
+  struct S17_ir_Node v_bn_20 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5157")));
+  int64_t v_bits_22 = v_k_3 == 3LL ? 8LL : rt_mul_int(v_sz_6, 8LL, "x64gen.obx:5158");
   bool b23 = (bool)(p_dv.f_op == 5LL);
   if (!b23) {
     b23 = (bool)(p_dv.f_op == 6LL);
@@ -36750,7 +36834,7 @@ static void f366_x64gen_Gen_inlineDiv(struct S27_x64gen_Gen**p_g, struct S42_x64
     } else {
       struct S40_x64gen_Src t32 = f302_x64gen_Gen_pairSrc(p_g, v_a_10, v_b_16);
       f349_x64gen_Gen_srcRCX(p_g, t32);
-      f179_x64_Asm_aluI(&(*p_g)->f_a, 7LL, 8LL, 1LL, rt_sub_int(v_bits_22, 1LL, "x64gen.obx:5140"));
+      f179_x64_Asm_aluI(&(*p_g)->f_a, 7LL, 8LL, 1LL, rt_sub_int(v_bits_22, 1LL, "x64gen.obx:5166"));
       int64_t t33 = f304_x64gen_Gen_stub(p_g, 10LL, sl3706, v_w_18);
       f215_x64_Asm_jcc(&(*p_g)->f_a, 7LL, t33);
       f352_x64_Asm_shiftCL(&(*p_g)->f_a, v_sop_27, v_sz_6, 0LL);
@@ -36835,7 +36919,7 @@ static int64_t f370_x64gen_kindMin(int64_t p_k) {
   }
   bool c7 = (bool)(p_k == 8LL);
   if (c7) {
-    int64_t r8 = rt_sub_int(-9223372036854775807LL, 1LL, "x64gen.obx:4737");
+    int64_t r8 = rt_sub_int(-9223372036854775807LL, 1LL, "x64gen.obx:4743");
     return r8;
   }
   int64_t r9 = 0LL;
@@ -36844,12 +36928,12 @@ static int64_t f370_x64gen_kindMin(int64_t p_k) {
 static bool f365_x64gen_Gen_inlineCv(struct S27_x64gen_Gen**p_g, obx_str p_name, int64_t p_v, int64_t p_w) {
   obx_str t1 = rt_str_dup(p_name);
   int64_t ix2 = (int64_t)p_name.len;
-  obx_str t3 = rt_str_sub(t1, 7LL, ix2, "x64gen.obx:5081");
+  obx_str t3 = rt_str_sub(t1, 7LL, ix2, "x64gen.obx:5107");
   int64_t t4 = f295_x64gen_suffixKind(t3);
   int64_t v_tk_5 = t4;
   rt_str_drop(t1);
   int64_t ix6 = p_v;
-  struct S17_ir_Node v_vn_7 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix6, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5082")));
+  struct S17_ir_Node v_vn_7 = gl24_dup(*((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix6, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5108")));
   bool b8 = (bool)(v_tk_5 < 0LL);
   if (!b8) {
     b8 = (bool)(v_vn_7.f_k != 12LL);
@@ -36862,13 +36946,13 @@ static bool f365_x64gen_Gen_inlineCv(struct S27_x64gen_Gen**p_g, obx_str p_name,
   bool b11 = b9;
   if (!b11) {
     int64_t ix12 = v_vn_7.f_a;
-    bool t13 = f296_ir_Ir_isInt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix12, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5083"))->f_ty);
+    bool t13 = f296_ir_Ir_isInt(&(*p_g)->f_u, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix12, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5109"))->f_ty);
     b11 = (bool)!t13;
   }
   bool b14 = b11;
   if (!b14) {
     int64_t ix15 = v_vn_7.f_a;
-    bool t16 = f167_x64gen_Gen_is128(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5083"))->f_ty);
+    bool t16 = f167_x64gen_Gen_is128(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix15, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5109"))->f_ty);
     b14 = t16;
   }
   bool c17 = b14;
@@ -36879,7 +36963,7 @@ static bool f365_x64gen_Gen_inlineCv(struct S27_x64gen_Gen**p_g, obx_str p_name,
     return r18;
   }
   int64_t ix19 = v_vn_7.f_a;
-  int64_t t20 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5086"))->f_ty);
+  int64_t t20 = f159_x64gen_Gen_tk(p_g, ((struct S17_ir_Node*)(*p_g)->f_u->f_nodes.data + rt_idx(ix19, (*p_g)->f_u->f_nodes.len, "x64gen.obx:5112"))->f_ty);
   int64_t v_sk_21 = t20;
   f247_x64gen_Gen_gen(p_g, v_vn_7.f_a);
   bool t22 = f72_ir_isSignedK(v_sk_21);
