@@ -79,6 +79,24 @@ void* memcpy(void* d, const void* s, size_t n) {
         while (n--) *p++ = *q++;
         return r;
     }
+    /* rep movsb is about 15 times slower when the destination is a few bytes past the
+       source modulo 4 KiB (AMD Zen 4: 1 to about 32): then 64 bytes a step with SSE2. */
+    if ((((uintptr_t)d - (uintptr_t)s) & 4095) - 1 < 63) {
+        typedef char v16 __attribute__((vector_size(16), aligned(1)));
+        unsigned char* p = d;
+        const unsigned char* q = s;
+        while (n >= 64) {
+            v16 a = *(const v16*)q, b = *(const v16*)(q + 16), c = *(const v16*)(q + 32), e = *(const v16*)(q + 48);
+            *(v16*)p = a; *(v16*)(p + 16) = b; *(v16*)(p + 32) = c; *(v16*)(p + 48) = e;
+            p += 64; q += 64; n -= 64;
+        }
+        if (n) {    /* the last 64 bytes again, overlapping what is written (n >= 64 at the start) */
+            p += n - 64; q += n - 64;
+            v16 a = *(const v16*)q, b = *(const v16*)(q + 16), c = *(const v16*)(q + 32), e = *(const v16*)(q + 48);
+            *(v16*)p = a; *(v16*)(p + 16) = b; *(v16*)(p + 32) = c; *(v16*)(p + 48) = e;
+        }
+        return r;
+    }
     __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
     return r;
 }
