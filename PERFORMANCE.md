@@ -487,6 +487,10 @@ and a scan of 4 entries per load, store and move: 47M instructions in the
 self-build (the budget was 10M). A cheaper table would not change the sign:
 all of the saving is 0.16%. The cycle changes in the table of design/native.md
 section 8 (fib -23%, wc +13%) are layout, as the instruction counts are equal.
+Under "Judging a pass" (`perfsuite.py 7d519d1 perf16`) it still fails:
+the compile suite costs 0.59% of its instructions, the run suite gains
+0.19% (maps 2.1%, lists 0.7%, the rest under 0.2%). The run suite's cycles
+gain 2.2%, but that is fib's 23% on identical instructions, which is layout.
 
 `perf15`'s second part, the hoisting of `str` headers out of loops, was
 kept: the self-build is level (0.2% fewer instructions in the native
