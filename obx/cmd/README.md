@@ -36,6 +36,53 @@ takes about 2.5 minutes (`-j 8`), most of it the harness building fixtures.
 72 cases are skipped: they need a live eza or a terminal and have no
 golden. Our eza runs with `OBX_CHECK=1`, so a leak fails a case.
 
+## cat, wc, sort, head, tail
+
+`cat.obx`, `wc.obx`, `sort.obx`, `head.obx` and `tail.obx` are ports of obo's
+small tools (`archive/obo/cmd/`): a deliberate subset of GNU coreutils 9.x
+with its output, error messages and exit codes. The header comment of each
+file lists the options, the edge cases and what is rejected (`cat -nbsET`,
+`wc -lwc`, `sort -nru`, `head -n/-c`, `tail -n/-c/-f` and `--lines`/`--bytes`;
+every other option, long ones included, is an error as in obo). Each is one
+file. The library has whole-file reads only, so each tool reads its input in
+64 KiB chunks through a small `Reader` (libc `read` as a local `extern`)
+that is repeated in the files; `tail -f` also uses `obx_stat` for the
+inode and device. `sort` keeps obo's radix sorts (the default order and the
+exact `-n` decimal order) unchanged.
+
+Build from `obx/`:
+
+    compiler/out/obxc cmd/cat.obx --native -o cat    # native x86-64
+    compiler/out/obxc cmd/cat.obx -o cat             # through C
+
+### Tests
+
+[../tests/tools.py](../tests/tools.py) is obo's differential gate with its
+cases, models and goldens (`../tests/tools/golden/`): every case runs our tool
+and GNU coreutils (from `/usr/bin:/bin`) and compares stdout, stderr and the
+exit status, and the `usage` and `writeerror` cases are pinned by own goldens.
+`tools_gate.py` runs it:
+
+    python3 cmd/tools_gate.py -j 8                    # native build, GNU reference
+    python3 cmd/tools_gate.py --c -j 8                # C build
+    python3 cmd/tools_gate.py -j 8 --reference=none   # models and goldens only
+    python3 cmd/tools_gate.py --memory                # 16 MiB inputs, leak check
+
+Our tools run with `OBX_CHECK=1`, so a leak fails a case. 509 cases pass for
+each build against GNU 9.4 (506 with `--reference=none`). `--memory` replaces
+obo's peak-heap budget (which needed `OBO_STATS`) by a clean exit with no
+runtime report on the four large-input cases.
+
+| Tool | native | through C |
+|---|---:|---:|
+| `cat` | 38,032 | 73,504 |
+| `wc` | 42,144 | 77,792 |
+| `sort` | 107,736 | 107,080 |
+| `head` | 42,432 | 74,152 |
+| `tail` | 59,008 | 83,768 |
+
+(obo's static binaries were 90 to 119 KB.)
+
 ## httpd and httpload
 
 `httpd.obx` is a small HTTP/1.1 server on one thread, the gate of

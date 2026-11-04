@@ -1,0 +1,2 @@
+tail: cannot open 'missing' for reading: No such file or directory
+tail: write error: No space left on device

@@ -1,0 +1,2 @@
+tail: error reading 'dir': Is a directory
+tail: write error: No space left on device

@@ -1,0 +1,1809 @@
+// sort: sorts lines, with -n (exact decimal), -r and -u. A port of obo's sort
+// (archive/obo/cmd/sort.obx), a GNU coreutils 9.x subset, with the same
+// behaviour and the same algorithms:
+//
+//     obxc cmd/sort.obx --native -o sort
+//
+// The subset is deliberate: -k, -t, -f, -b, -d, -i, -M, -h, -V, -s, -c, -C, -o,
+// -m, -z, --parallel, long options, --help and --version are unsupported (see
+// cmd/README.md). The whole input is read before anything is written: an open
+// or read error prints one message and exits 2 with no stdout.
+//
+// Input rules: each operand is split on newlines; the final partial line is a
+// line and the final newline is optional; an empty file has no lines; "\n" is
+// one empty line. A partial final line is finalized before the next operand
+// starts. Every output line ends with '\n', including a final input line that
+// had none. Lines are opaque bytes and default order is unsigned byte order
+// (LC_ALL=C).
+//
+// -n is GNU's exact decimal strnumcmp, not floating point: optional leading
+// blanks (space/tab), an optional '-', digits, and an optional fractional part.
+// A '+' is not accepted, and parsing stops at the first other byte, so "+2",
+// "1e3" (1), "0x10" (0), "abc" (0) and "--5" (0) follow GNU. Only ASCII digits
+// count: GNU 9.4 skips byte 0x80 while scanning the integer digit run, and this
+// build stops at every non-ASCII byte, so high-byte numeric inputs are
+// unsupported and kept out of the differential matrix. Leading integer zeros
+// and trailing fraction zeros are stripped and the parts compare as digit
+// strings, so there is no overflow. A numeric tie uses the whole line as the
+// last-resort comparison; -r reverses that too. -u compares keys only (the whole
+// line, or the numeric value) and keeps the first input occurrence, which a
+// stable sort makes exact.
+//
+// Errors: a named operand is preflighted (open+close) before any is read, so the
+// first operand that cannot be opened wins even when an earlier one is a
+// directory; that prints `sort: cannot read: <p>: <text>` and exits 2. A
+// directory read prints `sort: read failed: <p>: <text>` and exits 2. A write
+// error prints `sort: write error` and exits 2 (GNU 9.4 prints two lines there;
+// the harness shape-compares).
+//
+// Performance: the whole input becomes one byte buffer -- one read loop for a
+// single regular-file operand, chunked reads appended to a buffer for stdin and
+// several operands -- and every line in it is followed by the '\n' that ended it
+// (a synthetic one for a final partial line, or to finalize a partial line
+// before the next operand). A line is therefore a start offset into the buffer,
+// and the byte '\n' is its terminator: no per-line allocation, no lengths.
+// Default order is a stable MSD radix sort over those offsets: ranges partition
+// by byte with a counting pass and a stable scatter, the terminator digit sorts
+// below every byte, insertion sort finishes small ranges, and a range whose
+// elements all share a byte jumps over the whole common prefix instead of
+// paying one pass per byte. One linear pass detects already-ascending and
+// descending input, which then skips the sort entirely. -r reverses the finished
+// order (equal default-order lines are identical, and -u keeps the first input
+// occurrence before the reversal). Output is assembled in 64 KiB blocks.
+//
+// -n parses every line once into parallel []int key arrays over the same
+// buffer (nothing is copied): the integer digit end with the sign folded in,
+// the significant integer length, the fraction length after trailing zeros,
+// and the integer part's exact int64 value when it has at most 18 significant
+// digits. When every integer part fits that value, a stable MSD radix sorts
+// line ids by it: sign category, magnitude byte count, magnitude bytes, then a
+// fraction-digit stage for ties, with every bucket order reversed inside the
+// negative category so magnitudes descend while a stable scatter keeps equal
+// keys in incoming order. Otherwise (a line with a longer integer part) a digit
+// radix compares the exact decimal strings: integer digit count (a decade
+// scheme past 255), the digits, and the same fraction stage, whose terminator
+// sorts below '0' so a longer fraction is larger after a common prefix; nothing
+// overflows. Numerically equal keys fall through to a whole-line byte radix
+// (the last-resort tie-break) unless -u, so one sort produces the complete
+// order. Both radices start from input order and are stable: -u keeps the
+// first input occurrence among equal keys, and -r reverses the finished
+// ascending list (the whole-line tie order included). Ranges of at most
+// CUTOFF elements finish with an insertion sort.
+
+import "io"
+
+extern "c" fn openFd(path: str, how: int): int as "obx_open"
+extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
+extern "c" fn sysClose(fd: i32): i32 as "close"
+extern "c" fn errnoNow(): int as "obx_errno"
+extern "c" fn rawStat(path: str, follow: int): int as "obx_stat"
+extern "c" fn statField(i: int): int as "obx_stat_field"
+
+// Cuts an array back to k elements (there is no truncate).
+fn trunc(a: mut &[]int, k: int) {
+    while len(a) > k { pop(mut &a) }
+}
+
+type SortOpts = record {
+    numeric: bool      // -n
+    reverse: bool      // -r
+    unique: bool       // -u
+}
+
+// -n numeric keys are three parallel []int arrays indexed by line id, filled
+// once from the input buffer:
+// - xs[i] = the offset just past the line's integer digit run (iend), with the
+//   sign folded in (-iend - 1 for a line whose number is negative). The
+//   integer digits that matter are the last is[i] bytes before iend (leading
+//   zeros are stripped), and when fs[i] > 0 the fraction digits follow the '.'
+//   at iend, so iend + 1 is the fraction start.
+// - is[i] = the significant integer digit count (0 for "no integer part").
+// - fs[i] = the fraction digit count with trailing zeros stripped.
+// is[i] == 0 && fs[i] == 0 is the value zero whatever the sign. Nothing is
+// allocated per line and no digit is copied out of the buffer.
+const ST_CAT = 0       // sign category: negative, zero, positive
+const ST_LEN = 1       // significant integer digit count, 0..255 (255 = more)
+const ST_LENLEN = 2    // decimal digit count of a length of 255 or more
+const ST_LENDIG = 3    // the decimal digits of that length
+const ST_INT = 4       // significant integer digits
+const ST_FRAC = 5      // fraction digits, terminator below '0'
+const ST_LINE = 6      // whole-line tie-break for numerically equal keys
+const ST_ICAT = 7      // the int64 path's sign category
+const ST_IBYTES = 8    // magnitude byte count of an int64 key
+const ST_IBYTE = 9     // one magnitude byte of an int64 key
+
+const CUTOFF = 20
+
+// Compare the two '\n'-terminated lines starting at a and b: unsigned byte
+// order, where a terminator sorts below every byte (a prefix is smaller).
+fn cmpLines(buf: &[byte], a: int, b: int): int {
+    var k = 0
+    while true {
+        let ca = buf[a + k]
+        let cb = buf[b + k]
+        if ca != cb {
+            if ca == '\n' { return -1 }
+            if cb == '\n' { return 1 }
+            if ca < cb { return -1 }
+            return 1
+        }
+        if ca == '\n' { return 0 }
+        k += 1
+    }
+}
+
+// Exact numeric order of two line ids: sign, then magnitude by integer length,
+// integer digits, and fraction digits with a longer fraction larger after a
+// common prefix. All reads are straight out of the input buffer.
+fn cmpNum(buf: &[byte], xs: &[int], is: &[int], fs: &[int], a: int, b: int): int {
+    let ia = is[a]
+    let ib = is[b]
+    let fa = fs[a]
+    let fb = fs[b]
+    let za = ia == 0 && fa == 0
+    let zb = ib == 0 && fb == 0
+    if za {
+        if zb { return 0 }
+        if xs[b] < 0 { return 1 }
+        return -1
+    }
+    if zb {
+        if xs[a] < 0 { return -1 }
+        return 1
+    }
+    let xa = xs[a]
+    let xb = xs[b]
+    let na = xa < 0
+    let nb = xb < 0
+    if na != nb {
+        if na { return -1 }
+        return 1
+    }
+    var c = 0
+    if ia < ib {
+        c = -1
+    } else if ia > ib {
+        c = 1
+    } else {
+        var sa = xa
+        if na { sa = -xa - 1 }
+        var sb = xb
+        if nb { sb = -xb - 1 }
+        sa -= ia
+        sb -= ib
+        var k = 0
+        while k < ia {
+            let ca = buf[sa + k]
+            let cb = buf[sb + k]
+            if ca < cb {
+                c = -1
+                break
+            }
+            if ca > cb {
+                c = 1
+                break
+            }
+            k += 1
+        }
+        if c == 0 {
+            var m = fa
+            if fb < m { m = fb }
+            if m > 0 {
+                var p = xa
+                if na { p = -xa - 1 }
+                var q = xb
+                if nb { q = -xb - 1 }
+                p += 1
+                q += 1
+                var k2 = 0
+                while k2 < m {
+                    let ca = buf[p + k2]
+                    let cb = buf[q + k2]
+                    if ca < cb {
+                        c = -1
+                        break
+                    }
+                    if ca > cb {
+                        c = 1
+                        break
+                    }
+                    k2 += 1
+                }
+            }
+            if c == 0 {
+                if fa < fb {
+                    c = -1
+                } else if fa > fb {
+                    c = 1
+                }
+            }
+        }
+    }
+    if na { return -c }
+    return c
+}
+
+// Stable insertion sort of a small range by the full comparison: numeric, then
+// the whole line unless keyOnly (-u). Small radix ranges finish here, and ties
+// stay in their incoming order.
+fn insertionNum(buf: &[byte], starts: &[int], xs: &[int], is: &[int],
+                fs: &[int], order: mut &[int], lo: int, hi: int, keyOnly: bool) {
+    var i = lo + 1
+    while i < hi {
+        let s = order[i]
+        var j = i - 1
+        var stop = false
+        while j >= lo && !stop {
+            let t = order[j]
+            var c = cmpNum(buf, xs, is, fs, t, s)
+            if c == 0 && !keyOnly { c = cmpLines(buf, starts[t], starts[s]) }
+            if c <= 0 {
+                stop = true
+            } else {
+                order[j + 1] = order[j]
+                j -= 1
+            }
+        }
+        order[j + 1] = s
+        i += 1
+    }
+}
+
+// Stable insertion sort of a small run of numerically equal lines by whole-line
+// byte order, whose first depth bytes already match (the radix's ST_LINE).
+fn insertionLines(buf: &[byte], starts: &[int], order: mut &[int], lo: int,
+                  hi: int, d: int) {
+    var i = lo + 1
+    while i < hi {
+        let s = order[i]
+        let ps = starts[s]
+        var j = i - 1
+        var stop = false
+        while j >= lo && !stop {
+            let t = order[j]
+            let pt = starts[t]
+            var k = d
+            var shift = false
+            var done = false
+            while !done {
+                let ca = buf[ps + k]
+                let cb = buf[pt + k]
+                if ca != cb {
+                    if cb == '\n' {
+                        shift = false
+                    } else if ca == '\n' {
+                        shift = true
+                    } else {
+                        shift = cb > ca
+                    }
+                    done = true
+                } else {
+                    if ca == '\n' { done = true } else { k += 1 }
+                }
+            }
+            if !shift {
+                stop = true
+            } else {
+                order[j + 1] = order[j]
+                j -= 1
+            }
+        }
+        order[j + 1] = s
+        i += 1
+    }
+}
+
+// push (lo, hi, stage, depth, reverse) on the radix stack
+fn pushRange(st: mut &[]int, lo: int, hi: int, stage: int, depth: int, rev: int) {
+    append(mut &st, lo)
+    append(mut &st, hi)
+    append(mut &st, stage)
+    append(mut &st, depth)
+    append(mut &st, rev)
+}
+
+// A range whose integer length bucket was a real length (under 255) or the
+// "255 or more" bucket: continue with the digits, or the fraction when there
+// are no significant integer digits.
+fn pushLenNext(st: mut &[]int, lo: int, hi: int, d: int, rev: int) {
+    if d == 255 {
+        pushRange(st, lo, hi, ST_LENLEN, 0, rev)
+    } else if d == 0 {
+        pushRange(st, lo, hi, ST_FRAC, 0, rev)
+    } else {
+        pushRange(st, lo, hi, ST_INT, 0, rev)
+    }
+}
+
+// The stage after the integer magnitude bytes of an int64-path range: the next
+// magnitude byte, else the fraction digits when any line has them, else the
+// whole-line tie-break (or nothing under -u).
+fn pushFastNext(st: mut &[]int, lo: int, hi: int, last: bool, depth: int,
+                rev: int, frac: bool, keyOnly: bool) {
+    if !last {
+        pushRange(st, lo, hi, ST_IBYTE, depth + 1, rev)
+    } else if frac {
+        pushRange(st, lo, hi, ST_FRAC, 0, rev)
+    } else if !keyOnly {
+        pushRange(st, lo, hi, ST_LINE, 0, 0)
+    }
+}
+
+// One ST_LINE range: the whole-line byte radix for a run of numerically equal
+// ids (or a sub-range of one). The digit is byte + 1 with 0 for the terminator,
+// so a prefix sorts below every byte; a range whose lines all share a byte walks
+// the common prefix once and re-queues at the first depth that can separate
+// them. Line offsets are reached through starts.
+fn lineStage(buf: &[byte], starts: &[int], order: mut &[int], lo: int, hi: int,
+             depth: int, stack: mut &[]int, counts: mut &[int], pos: mut &[int],
+             cur: mut &[int], aux: mut &[int], digits: mut &[int],
+             used: mut &[]int) {
+    trunc(mut &used, 0)
+    var t = lo
+    while t < hi {
+        let id = order[t]
+        let b = buf[starts[id] + depth]
+        var c = int(b) + 1
+        if b == '\n' { c = 0 }
+        digits[t] = c
+        let old = counts[c]
+        counts[c] = old + 1
+        if old == 0 { append(mut &used, c) }
+        t += 1
+    }
+    if len(used) == 1 {
+        let c = used[0]
+        counts[c] = 0
+        if c != 0 {
+            // every line has a real byte here; walk the common prefix with
+            // the first line once, capped at the best so far
+            let p = starts[order[lo]]
+            var best = 1073741824
+            var i3 = lo + 1
+            while i3 < hi && best > 0 {
+                let q = starts[order[i3]]
+                var k = depth + 1
+                let lim = depth + 1 + best
+                while k < lim {
+                    let bp = buf[p + k]
+                    if bp != buf[q + k] { break }
+                    if bp == '\n' { break }
+                    k += 1
+                }
+                let l = k - (depth + 1)
+                if l < best { best = l }
+                i3 += 1
+            }
+            pushRange(mut &stack, lo, hi, ST_LINE, depth + 1 + best, 0)
+        }
+    } else {
+        var running = lo
+        var c = 0
+        while c < 257 {
+            pos[c] = running
+            cur[c] = running
+            running += counts[c]
+            c += 1
+        }
+        var t2 = lo
+        while t2 < hi {
+            let s = order[t2]
+            let sl = digits[t2]
+            aux[cur[sl]] = s
+            cur[sl] = cur[sl] + 1
+            t2 += 1
+        }
+        var t3 = lo
+        while t3 < hi {
+            order[t3] = aux[t3]
+            t3 += 1
+        }
+        var b = 1
+        while b < 257 {
+            if counts[b] > 1 {
+                pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LINE, depth + 1,
+                          0)
+            }
+            counts[b] = 0
+            b += 1
+        }
+        counts[0] = 0
+    }
+}
+
+// One ST_FRAC range: the fraction digits of ids whose integer parts match.
+// A key with no digit at this depth gets 0 and sorts below '0' (so a longer
+// fraction is larger after a common prefix); a range of terminators is
+// numerically equal and falls through to the whole-line stage unless -u.
+// Negative ranges reverse every bucket so magnitudes descend.
+fn fracStage(buf: &[byte], xs: &[int], fs: &[int], order: mut &[int],
+              lo: int, hi: int, depth: int, rev: int, keyOnly: bool,
+              stack: mut &[]int, counts: mut &[int], pos: mut &[int],
+              cur: mut &[int], aux: mut &[int], digits: mut &[int],
+              used: mut &[]int) {
+    trunc(mut &used, 0)
+    var t = lo
+    while t < hi {
+        let id = order[t]
+        var x = xs[id]
+        if x < 0 { x = -x - 1 }
+        let f = fs[id]
+        var d = 0
+        if depth < f { d = int(buf[x + 1 + depth]) - 47 }
+        var sl = d
+        if rev == 1 { sl = 10 - d }
+        digits[t] = sl
+        let old = counts[sl]
+        counts[sl] = old + 1
+        if old == 0 { append(mut &used, sl) }
+        t += 1
+    }
+    if len(used) == 1 {
+        let sl = used[0]
+        counts[sl] = 0
+        if sl != (rev * 10) {
+            pushRange(mut &stack, lo, hi, ST_FRAC, depth + 1, rev)
+        } else if !keyOnly {
+            pushRange(mut &stack, lo, hi, ST_LINE, 0, 0)
+        }
+    } else {
+        var running = lo
+        var c = 0
+        while c < 11 {
+            pos[c] = running
+            cur[c] = running
+            running += counts[c]
+            c += 1
+        }
+        var t2 = lo
+        while t2 < hi {
+            let s = order[t2]
+            let sl = digits[t2]
+            aux[cur[sl]] = s
+            cur[sl] = cur[sl] + 1
+            t2 += 1
+        }
+        var t3 = lo
+        while t3 < hi {
+            order[t3] = aux[t3]
+            t3 += 1
+        }
+        var b = 0
+        while b < 11 {
+            if counts[b] > 1 {
+                if b != (rev * 10) {
+                    pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_FRAC,
+                              depth + 1, rev)
+                } else if !keyOnly {
+                    pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LINE,
+                              0, 0)
+                }
+            }
+            counts[b] = 0
+            b += 1
+        }
+    }
+}
+
+// Decimal digit count of a non-negative int (0 has one digit)
+fn numDigits(v: int): int {
+    var n = 1
+    var t = v
+    while t >= 10 {
+        t = t / 10
+        n += 1
+    }
+    return n
+}
+
+// Fill the three key arrays; one pass over the input bytes plus one per line.
+// Also fills vals with the exact int64 value of the integer part when it has
+// at most 18 significant digits, and returns the key mode: 0 when some line's
+// integer part is longer (the exact digit radix below handles those), 1 when
+// every line's integer part fits and no line has fraction digits, and 2 when
+// every integer part fits and some line has fraction digits. The int64 radix
+// sorts modes 1 and 2; the value comparison only decides ties for the fraction
+// digits, so "-.5" (integer part zero) still needs its sign and its fraction.
+fn buildNumKeys(buf: &[byte], starts: &[int], xs: mut &[int], is: mut &[int],
+                fs: mut &[int], vals: mut &[int]): int {
+    var fit = true
+    var frac = false
+    var i = 0
+    while i < len(starts) {
+        let s = starts[i]
+        var p = s
+        while buf[p] == ' ' || buf[p] == '\t' { p += 1 }
+        var neg = false
+        if buf[p] == '-' {
+            neg = true
+            p += 1
+        }
+        let dstart = p
+        while buf[p] >= '0' && buf[p] <= '9' { p += 1 }
+        let iend = p
+        var j = dstart
+        while j < iend && buf[j] == '0' { j += 1 }
+        let ilen = iend - j
+        var flen = 0
+        if buf[p] == '.' {
+            p += 1
+            let fstart = p
+            while buf[p] >= '0' && buf[p] <= '9' { p += 1 }
+            var fend = p
+            while fend > fstart && buf[fend - 1] == '0' { fend -= 1 }
+            flen = fend - fstart
+        }
+        if flen > 0 { frac = true }
+        var x = iend
+        if neg { x = -iend - 1 }
+        xs[i] = x
+        is[i] = ilen
+        fs[i] = flen
+        var v = 0
+        if ilen <= 18 {
+            var k = j
+            while k < iend {
+                v = v * 10 + (int(buf[k]) - 48)
+                k += 1
+            }
+            if neg { v = -v }
+        } else {
+            fit = false
+        }
+        vals[i] = v
+        i += 1
+    }
+    if !fit { return 0 }
+    if frac { return 2 }
+    return 1
+}
+
+// Stable MSD radix sort by the exact numeric key, over line ids. The key is a
+// digit sequence whose lexicographic order is numeric order: sign category,
+// integer length (a 256-bucket pass, with a decade scheme for lengths of 255
+// and up), the significant integer digits, then the fraction digits, where a
+// key with no digit at a position sorts below '0' (so a longer fraction is
+// larger after a common prefix). Within the negative category every bucket
+// order is reversed, which sorts magnitudes descending while a stable scatter
+// keeps numerically equal keys in incoming order -- no block reversal, so
+// equal-key ties are never reversed. A range of keys that match through the
+// fraction falls through to ST_LINE (whole-line order) unless keyOnly (-u),
+// which is how the non -u last-resort tie-break reaches one sort. Ranges of at
+// most CUTOFF elements finish with the insertion sorts above.
+fn numRadix(buf: &[byte], starts: &[int], xs: &[int], is: &[int], fs: &[int],
+            order: mut &[int], keyOnly: bool, digits: mut &[int]) {
+    let n = len(order)
+    if n < 2 { return }
+    var aux = array(n, 0)
+    var counts = array(257, 0)
+    var pos = array(257, 0)
+    var cur = array(257, 0)
+    var used: []int = []
+    var stack: []int = []
+    pushRange(mut &stack, 0, n, ST_CAT, 0, 0)
+    while len(stack) > 0 {
+        let rev = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let depth = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let stage = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let hi = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let lo = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let nr = hi - lo
+        if nr < 2 {
+        } else if nr <= CUTOFF {
+            if stage == ST_LINE {
+                insertionLines(buf, starts, order, lo, hi, depth)
+            } else {
+                insertionNum(buf, starts, xs, is, fs, order, lo, hi, keyOnly)
+            }
+        } else if stage == ST_CAT {
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var c = 2
+                if is[id] == 0 && fs[id] == 0 {
+                    c = 1
+                } else if xs[id] < 0 {
+                    c = 0
+                }
+                digits[t] = c
+                let old = counts[c]
+                counts[c] = old + 1
+                if old == 0 { append(mut &used, c) }
+                t += 1
+            }
+            if len(used) == 1 {
+                let c = used[0]
+                counts[c] = 0
+                if c == 0 {
+                    pushRange(mut &stack, lo, hi, ST_LEN, 0, 1)
+                } else if c == 2 {
+                    pushRange(mut &stack, lo, hi, ST_LEN, 0, 0)
+                } else if !keyOnly {
+                    pushRange(mut &stack, lo, hi, ST_LINE, 0, 0)
+                }
+            } else {
+                var running = lo
+                var c2 = 0
+                while c2 < 3 {
+                    pos[c2] = running
+                    cur[c2] = running
+                    running += counts[c2]
+                    c2 += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 3 {
+                    if counts[b] > 1 {
+                        if b == 0 {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LEN, 0, 1)
+                        } else if b == 2 {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LEN, 0, 0)
+                        } else if !keyOnly {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LINE, 0, 0)
+                        }
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_LEN {
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var d = is[id]
+                if d > 255 { d = 255 }
+                var sl = d
+                if rev == 1 { sl = 255 - d }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                var d = sl
+                if rev == 1 { d = 255 - sl }
+                pushLenNext(mut &stack, lo, hi, d, rev)
+            } else {
+                var running = lo
+                var c = 0
+                while c < 256 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 256 {
+                    if counts[b] > 1 {
+                        var d = b
+                        if rev == 1 { d = 255 - b }
+                        pushLenNext(mut &stack, pos[b], pos[b] + counts[b], d, rev)
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_LENLEN {
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var d = numDigits(is[id])
+                var sl = d
+                if rev == 1 { sl = 19 - d }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                var d = sl
+                if rev == 1 { d = 19 - sl }
+                var div = 1
+                var k = 1
+                while k < d {
+                    div *= 10
+                    k += 1
+                }
+                pushRange(mut &stack, lo, hi, ST_LENDIG, div, rev)
+            } else {
+                var running = lo
+                var c = 0
+                while c < 20 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 20 {
+                    if counts[b] > 1 {
+                        var d = b
+                        if rev == 1 { d = 19 - b }
+                        var div = 1
+                        var k = 1
+                        while k < d {
+                            div *= 10
+                            k += 1
+                        }
+                        pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LENDIG, div, rev)
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_LENDIG {
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var d = (is[id] / depth) % 10
+                var sl = d
+                if rev == 1 { sl = 9 - d }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            let div2 = depth / 10
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                if div2 == 0 {
+                    pushRange(mut &stack, lo, hi, ST_INT, 0, rev)
+                } else {
+                    pushRange(mut &stack, lo, hi, ST_LENDIG, div2, rev)
+                }
+            } else {
+                var running = lo
+                var c = 0
+                while c < 10 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 10 {
+                    if counts[b] > 1 {
+                        if div2 == 0 {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_INT, 0, rev)
+                        } else {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LENDIG, div2, rev)
+                        }
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_INT {
+            let il = is[order[lo]]
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var x = xs[id]
+                if x < 0 { x = -x - 1 }
+                var d = int(buf[x - il + depth]) - 48
+                var sl = d
+                if rev == 1 { sl = 9 - d }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            var next = ST_INT
+            var nd = depth + 1
+            if nd >= il {
+                next = ST_FRAC
+                nd = 0
+            }
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                pushRange(mut &stack, lo, hi, next, nd, rev)
+            } else {
+                var running = lo
+                var c = 0
+                while c < 10 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 10 {
+                    if counts[b] > 1 {
+                        pushRange(mut &stack, pos[b], pos[b] + counts[b], next, nd, rev)
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_FRAC {
+            fracStage(buf, xs, fs, order, lo, hi, depth, rev, keyOnly,
+                      mut &stack, mut &counts, mut &pos, mut &cur,
+                      mut &aux, digits, mut &used)
+        } else if stage == ST_LINE {
+            lineStage(buf, starts, order, lo, hi, depth, mut &stack, mut &counts, mut &pos,
+                      mut &cur, mut &aux, digits, mut &used)
+        }
+        // a numerically equal range with no whole-line tie-break (-u) or a
+        // stage that reached its end is done: the range keeps its order
+    }
+}
+
+// Exact numeric order for the int64-value path: zero, sign, integer-part value,
+// then the fraction digits (negated for negatives, so 1.2 < 1.25 and
+// -1.2 > -1.25). Every integer part here has at most 18 significant digits.
+fn cmpFast(buf: &[byte], xs: &[int], is: &[int], fs: &[int], vals: &[int],
+           a: int, b: int): int {
+    let va = vals[a]
+    let vb = vals[b]
+    if va < vb { return -1 }
+    if va > vb { return 1 }
+    // equal integer parts: only now do zero, sign and fractions matter
+    let za = is[a] == 0 && fs[a] == 0
+    let zb = is[b] == 0 && fs[b] == 0
+    if za {
+        if zb { return 0 }
+        if xs[b] < 0 { return 1 }
+        return -1
+    }
+    if zb {
+        if xs[a] < 0 { return -1 }
+        return 1
+    }
+    let xa = xs[a]
+    let xb = xs[b]
+    let na = xa < 0
+    let nb = xb < 0
+    if na != nb {
+        if na { return -1 }
+        return 1
+    }
+    let fa = fs[a]
+    let fb = fs[b]
+    var p = xa
+    if na { p = -xa - 1 }
+    var q = xb
+    if nb { q = -xb - 1 }
+    p += 1
+    q += 1
+    var m = fa
+    if fb < m { m = fb }
+    var c = 0
+    var k = 0
+    while k < m {
+        let ca = buf[p + k]
+        let cb = buf[q + k]
+        if ca < cb {
+            c = -1
+            break
+        }
+        if ca > cb {
+            c = 1
+            break
+        }
+        k += 1
+    }
+    if c == 0 {
+        if fa < fb {
+            c = -1
+        } else if fa > fb {
+            c = 1
+        }
+    }
+    if na { return -c }
+    return c
+}
+
+// Stable insertion sort of a small range for the int64-value path.
+fn insertionFast(buf: &[byte], starts: &[int], xs: &[int], is: &[int],
+                 fs: &[int], vals: &[int], order: mut &[int], lo: int, hi: int,
+                 keyOnly: bool) {
+    var i = lo + 1
+    while i < hi {
+        let s = order[i]
+        var j = i - 1
+        var stop = false
+        while j >= lo && !stop {
+            let t = order[j]
+            var c = cmpFast(buf, xs, is, fs, vals, t, s)
+            if c == 0 && !keyOnly { c = cmpLines(buf, starts[t], starts[s]) }
+            if c <= 0 {
+                stop = true
+            } else {
+                order[j + 1] = order[j]
+                j -= 1
+            }
+        }
+        order[j + 1] = s
+        i += 1
+    }
+}
+
+// The int64 fast path: a stable MSD radix over line ids when every line's
+// integer part has at most 18 significant digits. The key sequence is sign
+// category, integer magnitude byte count, then the magnitude bytes from the
+// most significant; negatives reverse every bucket order (magnitudes
+// descending) while the stable scatter keeps equal values in incoming order.
+// When the integer parts end, a fraction stage compares the fraction digits
+// (reversed for negatives) and then a numerically equal range falls through to
+// ST_LINE (whole-line order) unless keyOnly. Integer parts compare directly, so
+// a small range finishes with one int comparison (plus the fraction and line
+// tie-breaks) instead of the digit walk.
+fn intRadix(buf: &[byte], starts: &[int], xs: &[int], is: &[int], fs: &[int],
+            vals: &[int], order: mut &[int], keyOnly: bool, frac: bool) {
+    let n = len(order)
+    if n < 2 { return }
+    var aux = array(n, 0)
+    var digits = array(n, 0)
+    var counts = array(257, 0)
+    var pos = array(257, 0)
+    var cur = array(257, 0)
+    var used: []int = []
+    var stack: []int = []
+    pushRange(mut &stack, 0, n, ST_ICAT, 0, 0)
+    while len(stack) > 0 {
+        let rev = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let depth = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let stage = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let hi = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let lo = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let nr = hi - lo
+        if nr < 2 {
+        } else if nr <= CUTOFF {
+            if stage == ST_LINE {
+                insertionLines(buf, starts, order, lo, hi, depth)
+            } else {
+                insertionFast(buf, starts, xs, is, fs, vals, order, lo, hi, keyOnly)
+            }
+        } else if stage == ST_ICAT {
+            trunc(mut &used, 0)
+            var t = lo
+            if frac {
+                while t < hi {
+                    let id = order[t]
+                    var c = 2
+                    if is[id] == 0 && fs[id] == 0 {
+                        c = 1
+                    } else if xs[id] < 0 {
+                        c = 0
+                    }
+                    digits[t] = c
+                    let old = counts[c]
+                    counts[c] = old + 1
+                    if old == 0 { append(mut &used, c) }
+                    t += 1
+                }
+            } else {
+                // no fraction digits: the value alone carries zero and sign
+                while t < hi {
+                    let id = order[t]
+                    var c = 2
+                    if vals[id] == 0 {
+                        c = 1
+                    } else if vals[id] < 0 {
+                        c = 0
+                    }
+                    digits[t] = c
+                    let old = counts[c]
+                    counts[c] = old + 1
+                    if old == 0 { append(mut &used, c) }
+                    t += 1
+                }
+            }
+            if len(used) == 1 {
+                let c = used[0]
+                counts[c] = 0
+                if c == 0 {
+                    pushRange(mut &stack, lo, hi, ST_IBYTES, 0, 1)
+                } else if c == 2 {
+                    pushRange(mut &stack, lo, hi, ST_IBYTES, 0, 0)
+                } else if !keyOnly {
+                    pushRange(mut &stack, lo, hi, ST_LINE, 0, 0)
+                }
+            } else {
+                var running = lo
+                var c2 = 0
+                while c2 < 3 {
+                    pos[c2] = running
+                    cur[c2] = running
+                    running += counts[c2]
+                    c2 += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 3 {
+                    if counts[b] > 1 {
+                        if b == 0 {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_IBYTES,
+                                      0, 1)
+                        } else if b == 2 {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_IBYTES,
+                                      0, 0)
+                        } else if !keyOnly {
+                            pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_LINE,
+                                      0, 0)
+                        }
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_IBYTES {
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var mag = vals[id]
+                if mag < 0 { mag = -mag }
+                var q = 0
+                while mag >= 256 {
+                    mag = mag >> 8
+                    q += 1
+                }
+                var sl = q
+                if rev == 1 { sl = 7 - q }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                pushRange(mut &stack, lo, hi, ST_IBYTE, 0, rev)
+            } else {
+                var running = lo
+                var c = 0
+                while c < 8 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 8 {
+                    if counts[b] > 1 {
+                        pushRange(mut &stack, pos[b], pos[b] + counts[b], ST_IBYTE,
+                                  0, rev)
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_IBYTE {
+            var mag0 = vals[order[lo]]
+            if mag0 < 0 { mag0 = -mag0 }
+            var k = 1
+            while mag0 >= 256 {
+                mag0 = mag0 >> 8
+                k += 1
+            }
+            let shift = 8 * (k - 1 - depth)
+            trunc(mut &used, 0)
+            var t = lo
+            while t < hi {
+                let id = order[t]
+                var mag = vals[id]
+                if mag < 0 { mag = -mag }
+                var d = (mag >> shift) & 255
+                var sl = d
+                if rev == 1 { sl = 255 - d }
+                digits[t] = sl
+                let old = counts[sl]
+                counts[sl] = old + 1
+                if old == 0 { append(mut &used, sl) }
+                t += 1
+            }
+            let last = depth + 1 >= k
+            if len(used) == 1 {
+                let sl = used[0]
+                counts[sl] = 0
+                pushFastNext(mut &stack, lo, hi, last, depth, rev, frac, keyOnly)
+            } else {
+                var running = lo
+                var c = 0
+                while c < 256 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var t2 = lo
+                while t2 < hi {
+                    let s = order[t2]
+                    let sl = digits[t2]
+                    aux[cur[sl]] = s
+                    cur[sl] = cur[sl] + 1
+                    t2 += 1
+                }
+                var t3 = lo
+                while t3 < hi {
+                    order[t3] = aux[t3]
+                    t3 += 1
+                }
+                var b = 0
+                while b < 256 {
+                    if counts[b] > 1 {
+                        pushFastNext(mut &stack, pos[b], pos[b] + counts[b], last,
+                                     depth, rev, frac, keyOnly)
+                    }
+                    counts[b] = 0
+                    b += 1
+                }
+            }
+        } else if stage == ST_FRAC {
+            fracStage(buf, xs, fs, order, lo, hi, depth, rev, keyOnly,
+                      mut &stack, mut &counts, mut &pos, mut &cur,
+                      mut &aux, mut &digits, mut &used)
+        } else if stage == ST_LINE {
+            lineStage(buf, starts, order, lo, hi, depth, mut &stack, mut &counts, mut &pos,
+                      mut &cur, mut &aux, mut &digits, mut &used)
+        }
+    }
+}
+
+// Start offset of every line; the buffer is empty or ends with '\n', so every
+// newline but the last starts a line.
+fn lineStarts(buf: &[byte]): []int {
+    var starts: []int = []
+    let m = len(buf)
+    if m == 0 { return starts }
+    append(mut &starts, 0)
+    var i = 0
+    while i + 8 <= m {
+        if buf[i] == '\n' { append(mut &starts, i + 1) }
+        if buf[i + 1] == '\n' { append(mut &starts, i + 2) }
+        if buf[i + 2] == '\n' { append(mut &starts, i + 3) }
+        if buf[i + 3] == '\n' { append(mut &starts, i + 4) }
+        if buf[i + 4] == '\n' { append(mut &starts, i + 5) }
+        if buf[i + 5] == '\n' { append(mut &starts, i + 6) }
+        if buf[i + 6] == '\n' { append(mut &starts, i + 7) }
+        if buf[i + 7] == '\n' { append(mut &starts, i + 8) }
+        i += 8
+    }
+    while i < m {
+        if buf[i] == '\n' { append(mut &starts, i + 1) }
+        i += 1
+    }
+    // the final newline's sentinel (the end of the buffer) is not a line start
+    if starts[len(starts) - 1] == m { trunc(mut &starts, len(starts) - 1) }
+    return starts
+}
+
+// 1 = already ascending, 2 = already descending, 0 = unsorted. One pass; a
+// random input decides after a few comparisons, and ordered input is the win.
+fn detect(buf: &[byte], order: &[int]): int {
+    let n = len(order)
+    if n < 2 { return 1 }
+    var asc = true
+    var desc = true
+    var i = 1
+    while i < n && (asc || desc) {
+        let c = cmpLines(buf, order[i - 1], order[i])
+        if c > 0 { asc = false }
+        if c < 0 { desc = false }
+        i += 1
+    }
+    if asc { return 1 }
+    if desc { return 2 }
+    return 0
+}
+
+// Insertion sort of a small range whose elements already share bytes [0, d) of
+// their keys; the comparison starts at depth d.
+fn insertionRange(buf: &[byte], order: mut &[int], lo: int, hi: int, d: int) {
+    var i = lo + 1
+    while i < hi {
+        let s = order[i]
+        var j = i - 1
+        var stop = false
+        while j >= lo && !stop {
+            let t = order[j]
+            var k = d
+            var shift = false
+            var done = false
+            while !done {
+                let ca = buf[s + k]
+                let cb = buf[t + k]
+                if ca != cb {
+                    if cb == '\n' {
+                        shift = false
+                    } else if ca == '\n' {
+                        shift = true
+                    } else {
+                        shift = cb > ca
+                    }
+                    done = true
+                } else {
+                    if ca == '\n' { done = true } else { k += 1 }
+                }
+            }
+            if !shift {
+                stop = true
+            } else {
+                order[j + 1] = order[j]
+                j -= 1
+            }
+        }
+        order[j + 1] = s
+        i += 1
+    }
+}
+
+// Stable MSD radix sort over line start offsets. A digit is byte + 1, with 0
+// for the terminator, so 257 buckets carry unsigned byte order and the
+// terminator sorts below every byte. Ranges of at most CUTOFF elements finish
+// with insertion sort. When every element of a range shares the byte at depth d,
+// the range walks the common prefix with its first element and re-queues at the
+// first differing depth, so a long common prefix costs one pass over its bytes
+// instead of one full counting pass per byte.
+fn radix(buf: &[byte], order: mut &[int]) {
+    let n = len(order)
+    if n < 2 { return }
+    var aux = array(n, 0)
+    var counts = array(257, 0)
+    var pos = array(257, 0)
+    var cur = array(257, 0)
+    var used: []int = []
+    var stack: []int = []          // (lo, hi, depth) triples
+    append(mut &stack, 0)
+    append(mut &stack, n)
+    append(mut &stack, 0)
+    while len(stack) > 0 {
+        let d = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let hi = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let lo = stack[len(stack) - 1]
+        trunc(mut &stack, len(stack) - 1)
+        let lenr = hi - lo
+        if lenr < 2 { } else if lenr <= CUTOFF {
+            insertionRange(buf, order, lo, hi, d)
+        } else {
+            trunc(mut &used, 0)
+            var i = lo
+            while i < hi {
+                let b = buf[order[i] + d]
+                var c = int(b) + 1
+                if b == '\n' { c = 0 }
+                let old = counts[c]
+                counts[c] = old + 1
+                if old == 0 { append(mut &used, c) }
+                i += 1
+            }
+            if len(used) == 1 {
+                let c = used[0]
+                counts[c] = 0
+                if c != 0 {
+                    // every line has a real byte at d; walk the common prefix
+                    // with the range's first line once, capped at the best so
+                    // far, to find the first depth that can separate them
+                    let p = order[lo]
+                    var best = 1073741824
+                    var i3 = lo + 1
+                    while i3 < hi && best > 0 {
+                        let q = order[i3]
+                        var k = d + 1
+                        let lim = d + 1 + best
+                        while k < lim {
+                            let bp = buf[p + k]
+                            if bp != buf[q + k] { break }
+                            if bp == '\n' { break }
+                            k += 1
+                        }
+                        let l = k - (d + 1)
+                        if l < best { best = l }
+                        i3 += 1
+                    }
+                    append(mut &stack, lo)
+                    append(mut &stack, hi)
+                    append(mut &stack, d + 1 + best)
+                }
+            } else {
+                var running = lo
+                var c = 0
+                while c < 257 {
+                    pos[c] = running
+                    cur[c] = running
+                    running += counts[c]
+                    c += 1
+                }
+                var i2 = lo
+                while i2 < hi {
+                    let s = order[i2]
+                    let b = buf[s + d]
+                    var cc = int(b) + 1
+                    if b == '\n' { cc = 0 }
+                    let at = cur[cc]
+                    aux[at] = s
+                    cur[cc] = at + 1
+                    i2 += 1
+                }
+                var t = lo
+                while t < hi {
+                    order[t] = aux[t]
+                    t += 1
+                }
+                var b2 = 1
+                while b2 < 257 {
+                    if counts[b2] > 1 {
+                        append(mut &stack, pos[b2])
+                        append(mut &stack, pos[b2] + counts[b2])
+                        append(mut &stack, d + 1)
+                    }
+                    b2 += 1
+                }
+                var u = 0
+                while u < len(used) {
+                    counts[used[u]] = 0
+                    u += 1
+                }
+            }
+        }
+    }
+}
+
+fn reverseOrder(order: mut &[int]) {
+    var i = 0
+    var j = len(order) - 1
+    while i < j {
+        let t = order[i]
+        order[i] = order[j]
+        order[j] = t
+        i += 1
+        j -= 1
+    }
+}
+
+// Default-order permutation: ascending, already ordered, or already reversed.
+fn orderDefault(buf: &[byte], starts: &[int]): []int {
+    var order = array(len(starts), 0)
+    for i in 0..len(starts) { order[i] = starts[i] }
+    let kind = detect(buf, &order)
+    if kind == 2 { reverseOrder(mut &order) }
+    if kind == 0 { radix(buf, mut &order) }
+    return order
+}
+
+// -u in default order: equal whole lines are identical bytes, so adjacent
+// equality keeps the first input occurrence.
+fn uniqBytes(buf: &[byte], order: &[int]): []int {
+    var kept: []int = []
+    var i = 0
+    while i < len(order) {
+        var keep = true
+        if len(kept) > 0 {
+            let last = kept[len(kept) - 1]
+            if cmpLines(buf, order[i], last) == 0 { keep = false }
+        }
+        if keep { append(mut &kept, order[i]) }
+        i += 1
+    }
+    return kept
+}
+
+// The -n permutation as output start offsets. Keys are built once, the stable
+// numeric radix sorts line ids from input order, -u keeps the first input
+// occurrence of each numeric key (they are adjacent after the sort), and -r
+// reverses the finished ascending list -- the whole list for the non -u
+// last-resort tie-break included, and the unique list for -u.
+fn numericLines(buf: &[byte], starts: &[int], opts: &SortOpts): []int {
+    let n = len(starts)
+    var xs = array(n, 0)
+    var is = array(n, 0)
+    var fs = array(n, 0)
+    var vals = array(n, 0)
+    let mode = buildNumKeys(buf, starts, mut &xs, mut &is, mut &fs, mut &vals)
+    var order = array(n, 0)
+    for i in 0..n { order[i] = i }
+    if mode == 0 {
+        // vals holds no value here: the exact digit radix reuses it as its
+        // per-element digit scratch, so this path allocates one array less
+        numRadix(buf, starts, &xs, &is, &fs, mut &order, opts.unique, mut &vals)
+    } else {
+        intRadix(buf, starts, &xs, &is, &fs, &vals, mut &order, opts.unique, mode == 2)
+    }
+    var m = n
+    if opts.unique {
+        var k = 0
+        var i = 0
+        while i < n {
+            var same = false
+            if k > 0 {
+                if mode == 0 {
+                    same = cmpNum(buf, &xs, &is, &fs, order[i], order[k - 1]) == 0
+                } else if mode == 1 {
+                    same = vals[order[i]] == vals[order[k - 1]]
+                } else {
+                    same = cmpFast(buf, &xs, &is, &fs, &vals, order[i],
+                                   order[k - 1]) == 0
+                }
+            }
+            if !same {
+                order[k] = order[i]
+                k += 1
+            }
+            i += 1
+        }
+        trunc(mut &order, k)
+        m = k
+    }
+    if opts.reverse { reverseOrder(mut &order) }
+    var kept = array(m, 0)
+    var j = 0
+    while j < m {
+        kept[j] = starts[order[j]]
+        j += 1
+    }
+    return kept
+}
+
+// ------------------------------------------------------------------- input
+
+// A file descriptor read in chunks.
+type Reader = record {
+    fd: int
+    buf: []byte
+    n: int
+}
+
+fn newReader(fd: int): Reader {
+    return Reader{fd: fd, buf: array(65536, 0), n: 0}
+}
+
+// Reads the next chunk (retrying an interrupted read): its length, 0 at the
+// end of the input, or minus the errno.
+fn (r: mut &Reader) fill(): int {
+    while true {
+        let k = sysRead(i32(r.fd), mut &r.buf, 65536)
+        if k >= 0 {
+            r.n = k
+            return k
+        }
+        let e = errnoNow()
+        if e != 4 { return -e }
+    }
+    return 0
+}
+
+// Reads one descriptor to EOF and appends it to buf. A partial last line of the
+// earlier operands is finalized first, but only once this operand has a byte,
+// so an empty operand adds nothing. 0, or the errno of a failed read.
+fn readInto(fd: int, buf: mut &[]byte): int {
+    var r = newReader(fd)
+    var started = false
+    while true {
+        let n = r.fill()
+        if n < 0 { return -n }
+        if n == 0 { return 0 }
+        if !started {
+            started = true
+            if len(buf) > 0 && buf[len(buf) - 1] != '\n' { append(mut &buf, '\n') }
+        }
+        for k in 0..n { append(mut &buf, r.buf[k]) }
+    }
+    return 0
+}
+
+// Reads one operand ("-" is stdin) onto buf; false means an error was printed.
+fn readOperand(path: str, buf: mut &[]byte): bool {
+    if path == "-" {
+        let e = readInto(0, buf)
+        if e != 0 {
+            eprintln("sort: read failed: -: " + io.errorText(e))
+            return false
+        }
+        return true
+    }
+    let fd = openFd(path, 0)
+    if fd < 0 {
+        eprintln("sort: cannot read: " + path + ": " + io.errorText(-fd))
+        return false
+    }
+    let e = readInto(fd, buf)
+    sysClose(i32(fd))
+    if e != 0 {
+        eprintln("sort: read failed: " + path + ": " + io.errorText(e))
+        return false
+    }
+    return true
+}
+
+// Collects every operand (or stdin when there are none) into one buffer. Operand
+// bytes are concatenated; a newline is inserted between two operands only when
+// the earlier one ended mid-line, so each operand's final partial line is
+// finalized before the next starts. A synthetic final newline terminates a
+// partial last line, so every line in the buffer is '\n'-terminated.
+fn collect(operands: &[]str): Option[[]byte] {
+    var buf: []byte = []
+    if len(operands) == 0 {
+        if !readOperand("-", mut &buf) { return None }
+    } else {
+        for p in operands {
+            if !readOperand(p, mut &buf) { return None }
+        }
+    }
+    if len(buf) > 0 && buf[len(buf) - 1] != '\n' { append(mut &buf, '\n') }
+    return Some(buf)
+}
+
+// The single-operand fast path: a plain regular file whose reported size is
+// positive and is exactly what one read loop returned is read straight into one
+// allocation (with room for a final newline). Everything else falls back to
+// collect, which reads incrementally and produces the reader's error messages,
+// so this path can never change what is read: stdin, every other file kind, a
+// stat failure, an open or read failure, a size of zero (/proc and other
+// synthetic regular files report st_size 0 while holding data), and any
+// stat/read length disagreement all return None here.
+fn slurpRegular(path: str): Option[[]byte] {
+    if path == "-" { return None }
+    if rawStat(path, 1) != 0 { return None }
+    if (statField(1) & 0xF000) != 0x8000 { return None }
+    let size = statField(0)
+    if size <= 0 { return None }
+    let fd = openFd(path, 0)
+    if fd < 0 { return None }
+    var buf: []byte = array(size + 1, 0)
+    var got = 0
+    var failed = false
+    while got < size && !failed {
+        let k = sysRead(i32(fd), mut &buf[got..size], size - got)
+        if k < 0 {
+            if errnoNow() != 4 { failed = true }
+        } else if k == 0 {
+            break
+        } else {
+            got += k
+        }
+    }
+    sysClose(i32(fd))
+    if failed || got != size { return None }
+    if buf[size - 1] != '\n' {
+        buf[size] = '\n'
+    } else {
+        pop(mut &buf)
+    }
+    return Some(buf)
+}
+
+// ------------------------------------------------------------------ output
+
+// Writes the first used bytes of block and flushes; false after a write error.
+fn putBlock(w: mut &io.Writer, block: &[]byte, used: int): bool {
+    w.write(strFromBytes(&block[0..used]))
+    match w.flush() {
+        Ok(_) { return true }
+        Err(_) { return false }
+    }
+}
+
+// Emits the lines at the kept start offsets. Blocks are filled by byte copy and
+// written when full; the copy runs until the block is full, so a line longer
+// than a block simply spans several blocks and costs one pass over its bytes.
+fn emit(w: mut &io.Writer, buf: &[byte], kept: &[int]): bool {
+    let nb = len(kept)
+    if nb == 0 { return true }
+    var block: []byte = array(65536, 0)
+    var used = 0
+    var i = 0
+    while i < nb {
+        let s = kept[i]
+        var k = s
+        var done = false
+        while !done {
+            let room = 65536 - used
+            var j = 0
+            while j < room {
+                let b = buf[k]
+                if b == '\n' {
+                    done = true
+                    break
+                }
+                block[used + j] = b
+                j += 1
+                k += 1
+            }
+            used += j
+            if !done {
+                // the block is full (used == 65536) and the line continues
+                if !putBlock(w, &block, used) { return false }
+                used = 0
+            }
+        }
+        block[used] = '\n'
+        used += 1
+        i += 1
+    }
+    if used > 0 {
+        if !putBlock(w, &block, used) { return false }
+    }
+    return true
+}
+
+// Preflights every named operand in order: the first one that cannot be opened
+// wins, before any byte is read. "-" is stdin and is skipped.
+fn preflight(operands: &[]str): bool {
+    for p in operands {
+        if p != "-" {
+            let fd = openFd(p, 0)
+            if fd < 0 {
+                eprintln("sort: cannot read: " + p + ": " + io.errorText(-fd))
+                return false
+            }
+            sysClose(i32(fd))
+        }
+    }
+    return true
+}
+
+// Applies one short-option character; false means it is not one of ours.
+fn setOpt(o: mut &SortOpts, c: byte): bool {
+    if c == 'n' { o.numeric = true; return true }
+    if c == 'r' { o.reverse = true; return true }
+    if c == 'u' { o.unique = true; return true }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    var opts = SortOpts{numeric: false, reverse: false, unique: false}
+    var operands: []str = []
+    var endOpts = false
+    for i in 1..len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("sort: unrecognized option '" + a + "'")
+                exit(2)
+            }
+            for j in 1..len(a) {
+                if !setOpt(mut &opts, a[j]) {
+                    eprintln("sort: invalid option -- '" + substr(a, j, j + 1) + "'")
+                    exit(2)
+                }
+            }
+        } else {
+            append(mut &operands, a)
+        }
+    }
+
+    if !preflight(&operands) { exit(2) }
+
+    var data: Option[[]byte] = None
+    if len(operands) == 1 { data = slurpRegular(operands[0]) }
+    if data.isNone() { data = collect(&operands) }
+    if data.isNone() { exit(2) }
+    let buf: []byte = data.unwrap()
+
+    let starts = lineStarts(&buf)
+    var kept: []int = []
+    if opts.numeric {
+        kept = numericLines(&buf, &starts, &opts)
+    } else {
+        kept = orderDefault(&buf, &starts)
+        if opts.unique { kept = uniqBytes(&buf, &kept) }
+        if opts.reverse { reverseOrder(mut &kept) }
+    }
+
+    var w = io.stdout()
+    if !emit(mut &w, &buf, &kept) {
+        eprintln("sort: write error")
+        exit(2)
+    }
+}

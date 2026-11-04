@@ -1,0 +1,291 @@
+// head: prints the first 10 lines (or -n COUNT lines, or -c COUNT bytes) of
+// each operand, with GNU's multiple-operand headers. A port of obo's head
+// (archive/obo/cmd/head.obx), a GNU coreutils 9.x subset, with the same
+// behaviour:
+//
+//     obxc cmd/head.obx --native -o head
+//
+// The subset is deliberate: negative counts, size suffixes, -q, -v, -z, long
+// options, --help and --version are unsupported (see cmd/README.md).
+//
+// Input is read incrementally and written through an io.Writer; the tool never
+// holds a whole operand. Line mode counts '\n' bytes and stops after the
+// requested line (a final partial line is copied at EOF but is not a line).
+// Byte mode copies exactly COUNT bytes. COUNT 0 still opens the operand and
+// prints its header, but reads nothing, matching GNU.
+//
+// With two or more operands GNU prints `==> NAME <==` before each one and one
+// blank line between groups; a single operand has no header. `-` is the
+// operand "standard input". Repeated `-` operands share one buffered Reader, so
+// unread bytes remain for the next `-` even when file operands intervene; a
+// COUNT of 0 never reads it. An open error prints before that operand's header
+// (so the header is absent), while a directory opens and fails when read (so
+// its header is present). Open/read errors set the failure and continue.
+//
+// The Writer buffers up to 64 KiB, so a write error is observed only when a
+// flush reaches the broken output. Small output followed by failing operands
+// can therefore print their diagnostics before the final write error (GNU does
+// the same); once a write error is detected, the tool stops and opens no later
+// operand. Once 64 KiB of output has been written, the tool flushes, so a
+// broken sink is detected early. Exit 1 after any failure.
+
+import "io"
+
+extern "c" fn openFd(path: str, how: int): int as "obx_open"
+extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
+extern "c" fn sysClose(fd: i32): i32 as "close"
+extern "c" fn errnoNow(): int as "obx_errno"
+
+const CHUNK = 65536
+
+type Opts = record {
+    bytesMode: bool       // -c instead of -n
+    count: int            // 0..999999999999999999
+}
+
+type State = record {
+    remaining: int        // units left in the current operand
+    printed: bool         // at least one operand header was written
+    failed: bool          // an open/read error happened
+    fatal: bool           // a write error happened
+    unflushed: int        // bytes written since the last flush
+}
+
+// A file descriptor read in chunks: buf[pos..n] is what was read and not yet
+// used.
+type Reader = record {
+    fd: int
+    buf: []byte
+    n: int
+    pos: int
+}
+
+fn newReader(fd: int): Reader {
+    return Reader{fd: fd, buf: array(CHUNK, 0), n: 0, pos: 0}
+}
+
+// Reads the next chunk (retrying an interrupted read): its length, 0 at the
+// end of the input, or minus the errno.
+fn (r: mut &Reader) fill(): int {
+    while true {
+        let k = sysRead(i32(r.fd), mut &r.buf, CHUNK)
+        if k >= 0 {
+            r.n = k
+            r.pos = 0
+            return k
+        }
+        let e = errnoNow()
+        if e != 4 { return -e }
+    }
+    return 0
+}
+
+// Decimal count with an optional leading '+'. The return value is -1 for an
+// unsupported count: a negative sign, a suffix, an empty string or more than
+// 18 digits. 18 digits keep v * 10 + digit inside a signed 64-bit int and let a
+// too-large limit saturate to "the whole operand" without overflow.
+fn parseCount(s: str): int {
+    var i = 0
+    if len(s) > 0 && s[0] == '+' { i = 1 }
+    if i >= len(s) { return -1 }
+    if len(s) - i > 18 { return -1 }
+    var v = 0
+    while i < len(s) {
+        let b = s[i]
+        if b < '0' || b > '9' { return -1 }
+        v = v * 10 + int(b) - 48
+        i += 1
+    }
+    return v
+}
+
+fn writeError(st: mut &State, e: io.IoError) {
+    eprintln("head: write error: " + io.errorText(e.errno))
+    st.fatal = true
+}
+
+// Writes s; once 64 KiB has gone out since the last flush, flushes, so a
+// broken sink stops the tool early. false means a write error was printed and
+// the whole tool must stop.
+fn put(w: mut &io.Writer, s: str, st: mut &State): bool {
+    w.write(s)
+    st.unflushed += len(s)
+    if st.unflushed >= CHUNK {
+        st.unflushed = 0
+        match w.flush() {
+            Ok(_) {}
+            Err(e) {
+                writeError(st, e)
+                return false
+            }
+        }
+    }
+    return true
+}
+
+// Copies the useful prefix of the reader's unused bytes. Line mode stops at the
+// newline that completes the requested line; byte mode stops at the requested
+// byte. Advances r.pos past what it used. false after a write error.
+fn headChunk(r: mut &Reader, w: mut &io.Writer, o: &Opts, st: mut &State): bool {
+    let from = r.pos
+    var to = r.n
+    if o.bytesMode {
+        if to - from > st.remaining { to = from + st.remaining }
+        st.remaining -= to - from
+    } else {
+        var k = from
+        var done = false
+        while k < to && !done {
+            if r.buf[k] == '\n' {
+                st.remaining -= 1
+                if st.remaining == 0 { done = true }
+            }
+            k += 1
+        }
+        to = k
+    }
+    r.pos = to
+    if to == from { return true }
+    return put(w, strFromBytes(&r.buf[from..to]), st)
+}
+
+// Streams one reader until the limit is reached or EOF. A write error is
+// reported here (st.fatal); the result is 0, or the errno of a read error,
+// which the operand handler prints before it goes on with the next operand.
+fn headReader(r: mut &Reader, w: mut &io.Writer, o: &Opts, st: mut &State): int {
+    while st.remaining > 0 {
+        if r.pos >= r.n {
+            let n = r.fill()
+            if n < 0 { return -n }
+            if n == 0 { return 0 }
+        }
+        if !headChunk(r, w, o, st) { return 0 }
+    }
+    return 0
+}
+
+// GNU's header for one operand, with the blank line before every group after
+// the first. false means a write error was printed and the tool must stop.
+fn headerFor(w: mut &io.Writer, label: str, multi: bool, st: mut &State): bool {
+    if !multi { return true }
+    var text = "==> " + label + " <==\n"
+    if st.printed { text = "\n" + text }
+    st.printed = true
+    return put(w, text, st)
+}
+
+// Reads one operand. Returns false only for a fatal write error; open and read
+// errors are printed here and return true (continue with the next operand).
+// All '-' operands share stdinReader, so bytes left in its current chunk are
+// not discarded when a file operand intervenes. Stdin is never opened/closed.
+fn headOperand(path: str, w: mut &io.Writer, stdinReader: mut &Reader, o: &Opts,
+               multi: bool, st: mut &State): bool {
+    st.remaining = o.count
+    if path == "-" {
+        if !headerFor(w, "standard input", multi, st) { return false }
+        if o.count == 0 { return true }
+        let e = headReader(stdinReader, w, o, st)
+        if st.fatal { return false }
+        if e != 0 {
+            eprintln("head: error reading 'standard input': " + io.errorText(e))
+            st.failed = true
+        }
+        return true
+    }
+    let fd = openFd(path, 0)
+    if fd < 0 {
+        eprintln("head: cannot open '" + path + "' for reading: " + io.errorText(-fd))
+        st.failed = true
+        return true
+    }
+    var cont = true
+    if !headerFor(w, path, multi, st) {
+        cont = false
+    } else if o.count > 0 {
+        var r = newReader(fd)
+        let e = headReader(mut &r, w, o, st)
+        if st.fatal {
+            cont = false
+        } else if e != 0 {
+            eprintln("head: error reading '" + path + "': " + io.errorText(e))
+            st.failed = true
+        }
+    }
+    sysClose(i32(fd))
+    return cont
+}
+
+// Applies one count option and its value. The last -n/-c wins, as GNU's does.
+fn setCount(o: mut &Opts, bytesMode: bool, value: str): bool {
+    let n = parseCount(value)
+    if n < 0 {
+        if bytesMode {
+            eprintln("head: invalid number of bytes: '" + value + "'")
+        } else {
+            eprintln("head: invalid number of lines: '" + value + "'")
+        }
+        return false
+    }
+    o.bytesMode = bytesMode
+    o.count = n
+    return true
+}
+
+fn main() {
+    let argv = args()
+    var o = Opts{bytesMode: false, count: 10}
+    var operands: []str = []
+    var endOpts = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("head: unrecognized option '" + a + "'")
+                exit(1)
+            }
+            let c = a[1]
+            if c != 'n' && c != 'c' {
+                eprintln("head: invalid option -- '" + substr(a, 1, 2) + "'")
+                exit(1)
+            }
+            var value = ""
+            if 2 < len(a) {
+                value = substr(a, 2, len(a))
+            } else {
+                i += 1
+                if i >= len(argv) {
+                    eprintln("head: option requires an argument -- '" + substr(a, 1, 2) + "'")
+                    exit(1)
+                }
+                value = argv[i]
+            }
+            if !setCount(mut &o, c == 'c', value) { exit(1) }
+        } else {
+            append(mut &operands, a)
+        }
+        i += 1
+    }
+
+    var multi = len(operands) > 1
+    if len(operands) == 0 {
+        append(mut &operands, "-")
+        multi = false
+    }
+
+    var w = io.stdout()
+    var stdinReader = newReader(0)
+    var st = State{remaining: o.count, printed: false, failed: false, fatal: false, unflushed: 0}
+    for p in operands {
+        if !headOperand(p, mut &w, mut &stdinReader, &o, multi, mut &st) { break }
+    }
+    if !st.fatal {
+        match w.flush() {
+            Ok(_) {}
+            Err(e) { writeError(mut &st, e) }
+        }
+    }
+    if st.fatal || st.failed { exit(1) }
+}
