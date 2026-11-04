@@ -195,6 +195,9 @@ pub type Ir = record {
     // never assigned) that nothing in the loop may write, by their declarations: the native code
     // generator may drop such a declaration and read the place at each use instead
     pub hoisted: Map[int, int]
+    // loops: the locals holding the data pointer or the length of a str hoisted out of a loop
+    // (keys; the value is 1): the native code generator gives them half their weight
+    pub strHd: Map[int, int]
     // the payloads of E_STR and E_FLT nodes (their v): appended, never removed, so they stay
     // valid however the passes copy, rewrite or drop nodes
     pub strs: []str
@@ -202,7 +205,7 @@ pub type Ir = record {
 }
 
 pub fn newIr(): Ir {
-    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(), hoisted: newMap(),
+    var p = Ir{tys: [], structs: [], nodes: [], items: [], funcs: [], globals: [], locals: [], ptrOf: newMap(), hoisted: newMap(), strHd: newMap(),
         strs: [], flts: [],
         nRtStructs: 0, nRtFuncs: 0, nRtGlobals: 0}
     let sizes: []int = [1, 1, 1, 1, 2, 2, 4, 4, 8, 8, 16, 16, 8]
