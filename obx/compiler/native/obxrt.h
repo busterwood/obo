@@ -48,6 +48,7 @@ int rt_str_cmp(obx_str a, obx_str b);
 obx_str rt_str_concat(obx_str a, obx_str b);
 uint8_t rt_str_byte(obx_str s, int64_t i, const char* w);
 obx_str rt_str_sub(obx_str s, int64_t a, int64_t b, const char* w);
+obx_str rt_str_view(obx_str s, int64_t a, int64_t b, const char* w);
 obx_str rt_str_from_bytes(obx_slice b);
 obx_str rt_str_from_c(void* p);
 int64_t rt_str_find_byte(obx_str s, int64_t from, uint8_t c);
