@@ -1302,6 +1302,19 @@ fn (g: mut &Gen) fwdSite(x: int, t: int, v: int): int {
         if r >= 0 && k == ir.E_MEMBER { return -1 }
         return r
     }
+    if k == ir.E_LAND || k == ir.E_LOR || k == ir.E_COND {
+        // a is evaluated first, the rest after it (or not at all): t in a is read before
+        // anything else of x, so the rest may be anything; t only perhaps read is no site
+        let r = g.fwdSite(n.a, t, v)
+        if r == -1 { return -1 }
+        if r >= 0 {
+            if g.walk(n.b, 0, t, -1) > 0 || g.walk(n.c, 0, t, -1) > 0 { return -1 }
+            return r
+        }
+        if g.fwdSite(n.b, t, v) != -2 { return -1 }
+        if k == ir.E_COND && g.fwdSite(n.c, t, v) != -2 { return -1 }
+        return -2
+    }
     var kids: []int = []
     if k == ir.E_CALL {
         append(mut &kids, n.a)
@@ -1309,7 +1322,7 @@ fn (g: mut &Gen) fwdSite(x: int, t: int, v: int): int {
     } else if k == ir.E_BIN || k == ir.E_PADD {
         append(mut &kids, n.a)
         append(mut &kids, n.b)
-    } else if k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_DEREF {
+    } else if k == ir.E_NEG || k == ir.E_BNOT || k == ir.E_LNOT || k == ir.E_DEREF {
         append(mut &kids, n.a)
     } else if k == ir.E_ASSIGN {
         // into a local or a member of one, the value naming t
@@ -2032,6 +2045,8 @@ fn (g: mut &Gen) stmt1(s: int) {
                 g.genInto(n.b, g.reg[l])
             } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.arithInto(n.b, g.reg[l], true) {
                 // computed in the register
+            } else if n.b >= 0 && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.reg[l]) {
+                // loaded into the register
             } else if n.b >= 0 {
                 g.gen(n.b)
                 if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
@@ -2852,6 +2867,27 @@ fn (g: &Gen) pure(x: int): bool {
     return g.pure(n.a) && g.pure(n.b) && g.pure(n.c)
 }
 
+// Whether e is an integer or pointer loaded through members and pointers from a local (or a
+// register): its evaluation cannot fail, has no effect, and uses rax alone (gen through place).
+fn (g: &Gen) loadOnly(e: int): bool {
+    let n = g.u.nodes[e]
+    if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) { return false }
+    return g.loadPath(e)
+}
+
+fn (g: &Gen) loadPath(e: int): bool {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_LOCAL || g.regOf(e) >= 0 { return true }
+    if n.k == ir.E_MEMBER { return g.loadPath(n.a) }
+    if n.k == ir.E_DEREF {
+        let p = g.u.nodes[n.a]
+        if p.k == ir.E_PADD || g.isAggr(p.ty) || g.isF(p.ty) || g.is128(p.ty) { return false }
+        return g.loadPath(n.a)
+    }
+    if g.noopCast(e) { return g.loadPath(n.a) }
+    return false
+}
+
 // The symbol of e if it is the address of a string literal or a global, else -1.
 fn (g: &Gen) constAddrSym(e: int): int {
     let n = g.u.nodes[e]
@@ -3016,6 +3052,13 @@ fn (g: mut &Gen) pairC(a: int, b: int, comm: bool): Src {
         g.gen(b)
         g.a.movRR(8, RCX, RAX)
         g.genInto(a, RAX)
+        return rcx
+    }
+    if g.loadOnly(a) && g.pure(b) {
+        // a is loads that cannot fail and b changes nothing: b first, then a in rax alone
+        g.gen(b)
+        g.a.movRR(8, RCX, RAX)
+        g.gen(a)
         return rcx
     }
     g.gen(a)
@@ -3294,6 +3337,9 @@ fn (g: mut &Gen) gen(e: int) {
             let sc = n.v
             if sc == 1 || sc == 2 || sc == 4 || sc == 8 {
                 g.a.lea(RAX, x64.memx(RAX, RCX, sc, 0))
+            } else if x64.fits32(sc) {
+                g.a.imulI(8, RCX, RCX, sc)
+                g.a.alu(x64.ADD, 8, RAX, RCX)
             } else {
                 g.a.movRI(RDX, sc)
                 g.a.imul(8, RCX, RDX)
@@ -3326,44 +3372,93 @@ fn (g: mut &Gen) place(e: int): x64.Mem {
     return x64.mem(RAX, 0)
 }
 
-// Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8,
-// p needs no code but a load, and i is a local in a register, an rt_idx of one (the check done
+// Whether the pointer e is p + i * size that paddMem folds into an operand: size 1, 2, 4 or 8
+// (or any other, multiplied into rcx first), p needs no code but loads (simple, or loadOnly:
+// generated after i, in rax), and i is a local in a register, an rt_idx of one (the check done
 // first, in place), or pure (generated first, as pair does).
 fn (g: &Gen) paddFold(e: int): bool {
     let n = g.u.nodes[e]
-    if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !g.simple(n.a) { return false }
-    if n.v != 1 && n.v != 2 && n.v != 4 && n.v != 8 { return false }
+    if n.k != ir.E_PADD || g.u.nk(n.b) == ir.E_INT || !(g.simple(n.a) || g.loadOnly(n.a)) { return false }
+    if !x64.fits32(n.v) { return false }
     return g.regOf(n.b) >= 0 || g.idxReg(n.b) >= 0 || g.pure(n.b)
 }
 
-// The register of local i in rt_idx(i, len, w) (inline, len needing no code), else -1.
+fn scaleOk(sc: int): bool { return sc == 1 || sc == 2 || sc == 4 || sc == 8 }
+
+// The register of local i in rt_idx(i, len, w) (inline, len needing no code or only loads),
+// else -1.
 fn (g: &Gen) idxReg(b: int): int {
     if g.u.nk(b) != ir.E_CALL || g.rtName(b) != "rt_idx" { return -1 }
     let l = g.u.nodes[b].b
-    if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) || !g.srcOnly(g.u.listAt(l, 1)) { return -1 }
+    if g.u.listLen(l) != 3 || !g.isWhere(g.u.listAt(l, 2)) { return -1 }
+    let ln = g.u.listAt(l, 1)
+    if !g.srcOnly(ln) && !(g.loadOnly(ln) && g.size(g.u.nodes[ln].ty) == 8) { return -1 }
     return g.regOf(g.u.listAt(l, 0))
 }
 
 // The code of p + i * size (paddFold) but the last add: the operand [p + i * size].
 fn (g: mut &Gen) paddMem(e: int): x64.Mem {
     let n = g.u.nodes[e]
-    let sc = n.v
+    var sc = n.v
     var ri = g.regOf(n.b)
     if ri < 0 && g.idxReg(n.b) >= 0 {
         let l = g.u.nodes[n.b].b
         ri = g.idxReg(n.b)
-        g.aluSrc(x64.CMP, 8, ri, g.pairSrc(-1, g.u.listAt(l, 1)))
+        let ln = g.u.listAt(l, 1)
+        if g.srcOnly(ln) {
+            g.aluSrc(x64.CMP, 8, ri, g.pairSrc(-1, ln))
+        } else {
+            g.gen(ln)                                   // loads into rax alone
+            g.a.alu(x64.CMP, 8, ri, RAX)
+        }
         g.a.jcc(x64.CC_AE, g.stub(3, "index out of range", g.u.listAt(l, 2)))
     }
     if ri >= 0 {
+        if !scaleOk(sc) {
+            g.a.imulI(8, RCX, ri, sc)
+            ri = RCX
+            sc = 1
+        }
         if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), ri, sc, 0) }
-        g.genInto(n.a, RAX)
+        g.baseInto(n.a)
         return x64.memx(RAX, ri, sc, 0)
     }
     g.gen(n.b)
+    if !scaleOk(sc) {
+        g.a.imulI(8, RAX, RAX, sc)
+        sc = 1
+    }
     if g.regOf(n.a) >= 0 { return x64.memx(g.regOf(n.a), RAX, sc, 0) }
-    g.genInto(n.a, RCX)
-    return x64.memx(RCX, RAX, sc, 0)
+    if g.simple(n.a) {
+        g.genInto(n.a, RCX)
+        return x64.memx(RCX, RAX, sc, 0)
+    }
+    g.a.movRR(8, RCX, RAX)
+    g.gen(n.a)                                          // loadOnly: rax alone
+    return x64.memx(RAX, RCX, sc, 0)
+}
+
+// A load of the integer or pointer e (through members and pointers: its place needs code) into
+// register r instead of rax, which the place's code may use; whether it was done. The place is
+// computed before r is written, so it may read r.
+fn (g: mut &Gen) loadInto(e: int, r: int): bool {
+    let n = g.u.nodes[e]
+    if n.k != ir.E_MEMBER && n.k != ir.E_DEREF { return false }
+    if g.isAggr(n.ty) || g.isF(n.ty) || g.is128(n.ty) || g.regOf(e) >= 0 { return false }
+    let k = g.tk(n.ty)
+    if k != ir.TY_PTR && (k < ir.TY_BOOL || k > ir.TY_U64) { return false }
+    let m = g.staticMem(e)
+    if m.base != -9 {
+        g.loadInt(n.ty, r, m)
+    } else {
+        g.loadInt(n.ty, r, g.place(e))
+    }
+    return true
+}
+
+// The base p of paddMem into rax: simple, or loadOnly (rax alone).
+fn (g: mut &Gen) baseInto(a: int) {
+    if g.simple(a) { g.genInto(a, RAX) } else { g.gen(a) }
 }
 
 fn (g: mut &Gen) genAssign(e: int) {
@@ -3372,6 +3467,7 @@ fn (g: mut &Gen) genAssign(e: int) {
     let lhs = n.a
     let t = n.ty
     if g.regOf(lhs) >= 0 {
+        if unused && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.regOf(lhs)) { return }
         g.gen(n.b)
         if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
         g.a.movRR(8, g.regOf(lhs), RAX)
