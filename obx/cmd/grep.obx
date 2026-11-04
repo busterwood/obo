@@ -787,11 +787,11 @@ type G = record {
     lnPos: int
     lnNo: int
     base: int
-    // the searchers of re, full and wre, and the end of the line nextMatchLine found
+    // the searchers of re, full and wre
     sre: regex.Searcher
     sfull: regex.Searcher
     sw: regex.Searcher
-    mle: int
+    lines: []int             // findLines: start and end of each line found
 }
 
 type Compiled = record {
@@ -880,7 +880,7 @@ fn newG(o: Opts, c: Compiled): G {
     let sre = c.re.searcher()
     let sfull = c.full.searcher()
     let sw = c.wre.searcher()
-    return G{o: o, c: c, sre: sre, sfull: sfull, sw: sw, mle: 0, w: io.stdout(), nul: nulString(),
+    return G{o: o, c: c, sre: sre, sfull: sfull, sw: sw, lines: [], w: io.stdout(), nul: nulString(),
         unflushed: 0, withName: false, ctxOn: false, after: 0, before: 0, failed: false, fatal: false,
         selectedAny: false, quitNow: false, anyOutput: false, name: "", nsel: 0, done: false,
         draining: false, binary: false, pending: 0, lastNo: -1, ringNo: [], ringOff: [], ringText: [],
@@ -1011,33 +1011,33 @@ fn selMatchEnd(g: mut &G, text: str, from: int): int {
     return g.c.re.matchEndWith(mut &g.sre, text, from)
 }
 
-// The first line at or after pos (a line start) before lim with a match:
-// its start, and its end (its newline) in g.mle; lim if there is none.
-fn nextMatchLine(g: mut &G, text: str, pos: int, lim: int): int {
+// The lines with a match in text[pos..lim] (pos a line start), at most max:
+// their starts and ends (newlines) in g.lines. Returns where the search
+// stopped: lim, or the start of the line after the last one found.
+fn findLines(g: mut &G, text: str, pos: int, lim: int, max: int): int {
+    while len(g.lines) > 0 { pop(mut &g.lines) }
     if g.c.none { return lim }
-    var p = pos
-    if g.c.must != "" {
-        // the lines with the literal, each searched by itself
-        while p < lim {
-            let h = strFind(text, p, g.c.must)
-            if h < 0 || h >= lim { return lim }
-            var ls = h
-            while ls > p && text[ls - 1] != '\n' { ls -= 1 }
-            let le = strFindByte(text, h, '\n')
-            if selMatchEnd(g, substr(text, ls, le), 0) >= 0 {
-                g.mle = le
-                return ls
-            }
-            p = le + 1
-        }
-        return lim
+    if g.c.must == "" {
+        if g.c.useW { return g.c.wre.matchingLines(mut &g.sw, text, pos, lim, max, mut &g.lines) }
+        return g.c.re.matchingLines(mut &g.sre, text, pos, lim, max, mut &g.lines)
     }
-    let e = selMatchEnd(g, text, p)
-    if e < 0 || e >= lim { return lim }
-    var ls = e
-    while ls > p && text[ls - 1] != '\n' { ls -= 1 }
-    g.mle = strFindByte(text, e, '\n')
-    return ls
+    // the lines with the literal, each searched by itself
+    var p = pos
+    var found = 0
+    while p < lim && found < max {
+        let h = strFind(text, p, g.c.must)
+        if h < 0 || h >= lim { return lim }
+        var ls = h
+        while ls > p && text[ls - 1] != '\n' { ls -= 1 }
+        let le = strFindByte(text, h, '\n')
+        if selMatchEnd(g, substr(text, ls, le), 0) >= 0 {
+            append(mut &g.lines, ls)
+            append(mut &g.lines, le)
+            found += 1
+        }
+        p = le + 1
+    }
+    return p
 }
 
 // ------------------------------------------------------------- selection
@@ -1243,12 +1243,13 @@ fn processChunk(g: mut &G, text: str, lim: int) {
     if g.c.lineLocal { processLines(g, text, lim) } else { processSpans(g, text, lim) }
 }
 
-// processChunk when no match contains a newline: from each match, its line
-// is taken, and the search goes on after it.
+// processChunk when no match contains a newline: the lines with a match are
+// found a batch at a time, and those between are not looked at.
 fn processLines(g: mut &G, text: str, lim: int) {
     g.lnPos = 0
     var pos = 0
     let invert = g.o.invert
+    let batch = if g.o.quiet || g.o.list != 0 { 1 } else { 1024 }
     while pos < lim && !g.done {
         if g.draining {
             // after -m: trailing context, selected or not
@@ -1257,13 +1258,21 @@ fn processLines(g: mut &G, text: str, lim: int) {
             pos = le + 1
             continue
         }
-        let ls = nextMatchLine(g, text, pos, lim)
-        // the lines in [pos, ls) have no match
-        if invert { selectRange(g, text, pos, ls) } else { skipRange(g, text, pos, ls) }
-        if g.done || ls >= lim { break }
-        let le = g.mle
-        if invert { skipRange(g, text, ls, le + 1) } else { selectLine(g, text, ls, le) }
-        pos = le + 1
+        let stop = findLines(g, text, pos, lim, batch)
+        var i = 0
+        while i < len(g.lines) && !g.done && !g.draining {
+            let ls = g.lines[i]
+            let le = g.lines[i + 1]
+            // the lines in [pos, ls) have no match
+            if invert { selectRange(g, text, pos, ls) } else { skipRange(g, text, pos, ls) }
+            if g.done { break }
+            if invert { skipRange(g, text, ls, le + 1) } else { selectLine(g, text, ls, le) }
+            pos = le + 1
+            i += 2
+        }
+        if g.done || g.draining { continue }
+        if invert { selectRange(g, text, pos, stop) } else { skipRange(g, text, pos, stop) }
+        pos = stop
     }
     if !g.done || g.draining {
         // keep the line numbers right for the next chunk
