@@ -195,24 +195,28 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 493 ms | 589 ms |
-| self-build to C (`--emit-c`) | 274 ms | 310 ms |
-| full build through gcc | 15 s, nearly all of it gcc | — |
-| compiler binary | 1,938,784 bytes (dynamic, glibc) | 2,711,761 bytes (static, no libc) |
+| self-build to an executable (`--native`) | 509 ms | 570 ms |
+| self-build to C (`--emit-c`) | 286 ms | 300 ms |
+| full build through gcc | 17 s, nearly all of it gcc | — |
+| compiler binary | 1,951,608 bytes (dynamic, glibc) | 2,445,569 bytes (static, no libc) |
 
-Measured on 4 November at `4cf3de5` (after the eighth pass, reachability,
-the runtime linked by sections and regex phase R2; after the sixth pass the
-times were 407, 490, 242 and 267 ms on 2,500 fewer lines of compiler). The
-source is 23,437 lines of obx and 4,756 lines of C runtime (the C backend's
+Measured on 4 November at `fd6f747` (after the ninth pass; after the eighth
+the times were 493, 589, 274 and 310 ms on 270 fewer lines of compiler). The
+source is 23,710 lines of obx and 4,756 lines of C runtime (the C backend's
 `rt.h` and the native backend's freestanding `rt.c`, each with task stacks
 and switching, the event loop, timers, sockets and the SSE2 string
 searches), not counting `rt.obx` and `rtx.obx`, which are generated from
 them.
 
-- The native-built compiler is 1.1-1.2x slower than the gcc-built one
-  (1.55x before the fifth pass). It runs 1.48x the instructions (5,763M
-  against 3,905M for `--native`; 1.51x after the sixth pass, 1.89x before
-  the fifth) at a higher rate per cycle.
+- The native-built compiler is 1.05-1.12x slower than the gcc-built one
+  (1.1-1.2x before the ninth pass, 1.55x before the fifth). It runs 1.18x
+  the instructions (4,617M against 3,911M for `--native`; 1.48x before the
+  ninth, 1.89x before the fifth) at a higher rate per cycle. What is left
+  is spread thin: of the 347 functions that take longer native, the 20
+  worst hold 43% of the difference. It is in the mix (twice gcc's share of
+  register-to-register moves, three times its stores to the stack, half again as
+  many compares: spills, and loads and bounds checks repeated from one
+  statement to the next), not in a few functions.
   A compiler is call-heavy and branchy, which is gcc's strength; inlining
   in the IR closed much of the gap.
 - `--native` itself does more work since the fifth pass (inlining, and
@@ -247,6 +251,8 @@ itself, native eza `-T /usr/share` and native bench fib:
 | after it (the sieve: steps, lengths, counters, fills) | 4,815M | 633M | 5,630M |
 | before the eighth, on later sources | 5,665M | 632M | 5,629M |
 | after it (the regex engine: loads out of loops, memory operands, sites) | 5,388M | 632M | 5,629M |
+| before the ninth, on later sources | 5,800M | 632M | 5,629M |
+| after it (the compiler: operands in place, record literals in their slots, value records' fields, borrowed str parameters) | 4,617M | 594M | 5,629M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
@@ -262,7 +268,9 @@ The eighth (the regex engine) cut
 the self-build's instructions by 5% and its cycles by 6% (2,392M to
 2,246M), at 9% more instructions for the gcc-built compiler's `--native`
 (3,342M to 3,649M: the effects walks and summaries of `loops.obx`, the
-second register choice and the sites).
+second register choice and the sites). The ninth (the compiler itself) cut
+the self-build's instructions by 20% and its cycles by 9% (2,385M to
+2,176M), eza's instructions by 6%, and the native compiler's binary by 10%.
 
 The earlier steps and the per-commit figures are in
 [obx/design/native.md](obx/design/native.md) sections 4 and 8. What remains
@@ -276,11 +284,11 @@ reference counts, copies of large value records), not register use.
 | empty program | 53,680 bytes (dynamic, glibc) | 12,288 bytes (static) |
 | hello | 53,896 bytes | 16,416 bytes (static) |
 | `import "regex"`, one call (`regex.quote`) | 54,080 bytes | 20,512 bytes |
-| eza | 233,256 bytes (dynamic, glibc) | 270,824 bytes (static) |
+| eza | 233,256 bytes (dynamic, glibc) | 250,344 bytes (static) |
 | HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) |
-| compiler | 1,963,360 bytes (dynamic, glibc) | 2,711,761 bytes (static) |
+| compiler | 1,951,608 bytes (dynamic, glibc) | 2,445,569 bytes (static) |
 
-(4 November 2026, at `da520fe`.) The native backend generates only the functions and globals
+(4 November 2026, at `da520fe`; eza and the compiler at `fd6f747`.) The native backend generates only the functions and globals
 reachable from `main` (design/native.md section 5, "Reachability"), as gcc
 drops a C program's unused static functions: an imported module costs only
 what the program uses of it. The runtime is linked the same way, by

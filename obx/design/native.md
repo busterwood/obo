@@ -781,6 +781,58 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 
 (kept current; the next agent starts here)
 
+2026-11-04, the ninth performance step (branch `perf9`: the compiler
+itself, native toward gcc on the self-build). Measured as for the eighth:
+both columns build this branch's sources; "main" is the backend at
+`4d3de7a`. User-mode instructions; cycles the least of 5 runs:
+
+| commit | self-build | eza `-T` | fib |
+|---|---|---|---|
+| main | 5800M; 2385M | 632M; 244M | 5629M; 2037M |
+| `fd6f747` | 4617M; 2176M | 594M; 201M | 5629M; 2023M |
+
+The gcc-built compiler runs the self-build in 3,911M: native went from
+1.48 to 1.18 times its instructions, and from 1.1-1.2 to 1.05-1.12 times
+its wall clock (best of 9: 570 against 509 ms for `--native`, 300 against
+286 ms for `--emit-c`). The native compiler's binary went from 2,724,097
+to 2,445,569 bytes. The steps:
+
+- `029f0f2`: `||` chains forwarded through the operand evaluated first;
+  `p + i*size` folded into the address for loaded bases and any size;
+  loads straight into a local's register.
+- `0fd068f`: a record literal declared as a local is built in its slot,
+  zeroing only the words no field fills; constants and register locals
+  stored straight.
+- `96accd4`: a str read through a pointer in a register is indexed in
+  place; a simple index sum computed straight into `rcx`; no-op moves
+  dropped.
+- `253c49c`: opt's value records in fields also cover a record read
+  through members of its fields (`n.tag.name`): a scalar of a field is a
+  copy of its own, a field inside a record field is read from that field's
+  local.
+- `39b62f5`: a compare reads a register local, or a slot in place (`cmp
+  [m], reg`), after evaluating the other side; a string byte loads straight
+  into its local's register.
+- `fd6f747`: an inlined function taking a str by value, given a copy of a
+  place (`m.keys[e].eq(k)` in `Map.find`), reads the place itself when
+  nothing can change it meanwhile (the later arguments and the body write
+  no memory and call only the runtime's reading functions, and the body
+  only reads and drops the copy): the reference count's increment and
+  decrement go.
+
+What is left is spread thin: of the 347 functions that take longer native
+than gcc's, the 20 worst hold 43% of the difference, the 100 worst 80%. It
+is in the instruction mix: register-to-register moves 10% of native's
+instructions against 5.4% of gcc's, stores to the stack 8.7% against 2.5%,
+compares 15.8% against 10.4%. Those are spills and the same loads and
+bounds checks repeated from one statement to the next (`Emitter.fill`
+reads `(*p_e)->f_c->f_x->f_nodes` and checks `n` five times in a row).
+Peephole steps now gain 0.1 to 0.5% each. Next, in order: reuse within
+straight-line code of the loads and checked element addresses a run of
+statements repeats (cheaply, in one pass: hoisting them from the loop pass
+over all functions cost 10% of compile time for little); then live-range
+splitting and fewer callee-saved saves.
+
 2026-11-03, the eighth performance step (branch `perf8`, section 4: the
 regex engine's hot loops). The Pike VM's `add` and `step`
 (lib/regex.obx) are loops over the fields of a `mut &` record and the
