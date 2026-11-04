@@ -257,9 +257,7 @@ fn newGen(u: ir.Ir): Gen {
         append(mut &g.spillSlot, 0)
     }
     g.countUses()
-    g.simplify()
-    for i in 0..len(g.u.locals) { g.uses[i] = 0 }
-    g.countUses()
+    g.simplify()                // keeps uses exact: no second count
     for i in 0..len(g.u.nodes) {
         append(mut &g.posOf, -1)
         append(mut &g.posSeen, 0)
@@ -1042,7 +1040,9 @@ fn (g: mut &Gen) resetScan() {
 }
 
 // The uses of every local in its own function (inlined copies of a function name its locals
-// as often), for the fused declarations of stmt.
+// as often), for simplify and the fused declarations of stmt; and aTaken (scan). It runs once:
+// each rewrite of simplify adjusts the counts of the locals it touches, so they stay what a
+// count of the simplified bodies would find.
 fn (g: mut &Gen) countUses() {
     g.counting = true
     for f in 0..len(g.u.funcs) {
@@ -1054,6 +1054,7 @@ fn (g: mut &Gen) countUses() {
     }
     g.counting = false
     g.curFunc = -1
+    g.noCopy = -1
 }
 
 // ---------------------------------------------------------------- simplification of the IR
@@ -1169,13 +1170,16 @@ fn (g: mut &Gen) boolFold(d: int, s: int): int {
     let lhs = g.u.nodes[as1].a
     if g.u.nk(lhs) != ir.E_LOCAL || g.u.nodes[lhs].a != b { return -1 }
     var v = g.u.nodes[as1].b
+    var c = -1
     if len(xs) == 2 {
         let dn = g.u.nodes[xs[0]]
         if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 { return -1 }
         if g.u.nk(v) != ir.E_LOCAL || g.u.nodes[v].a != dn.a || g.u.locals[dn.a].ty != g.u.locals[b].ty { return -1 }
         v = dn.b
+        c = dn.a
     }
     if g.walk(v, 0, b, -1) > 0 { return -1 }
+    if c >= 0 { g.uses[c] = 0 }             // its declaration and `b = c` go with the if
     let a = g.u.nodes[d].b
     append(mut &g.u.nodes, ir.Node{k: if isAnd { ir.E_LAND } else { ir.E_LOR }, ty: g.u.locals[b].ty,
         line: g.u.nodes[a].line, a: a, b: v, c: -1, d: -1, v: 0})
