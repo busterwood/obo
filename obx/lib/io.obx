@@ -3,7 +3,8 @@
 // read/write/append work on whole files and return Result[_, IoError];
 // Writer is a buffered writer for stdout, stderr or a file, flushed (and a
 // file closed) when it is dropped. Errors carry the errno, the operation and
-// the path. Reading is whole-file: readStdin reads standard input to its end.
+// the path. read and readStdin read a whole file or standard input; Reader
+// reads one a chunk or a line at a time.
 
 pub type IoError = value record {
     pub errno: int   // the C errno, e.g. 2 for "no such file"
@@ -15,6 +16,7 @@ extern "c" fn strerror(e: i32): str
 extern "c" fn errno(): int as "obx_errno"
 extern "c" fn openFd(path: str, how: int): int as "obx_open"
 extern "c" fn close(fd: i32): i32
+extern "c" fn sysRead(fd: i32, buf: mut &[byte], n: int): int as "read"
 extern "c" fn flushOut(): int as "obxlib_flush_out"
 extern "c" fn cIsatty(fd: int): int as "obxlib_isatty"
 extern "c" fn termCols(fd: int): int as "obxlib_term_cols"
@@ -234,4 +236,112 @@ pub fn (w: mut &Writer) close(): Result[Unit, IoError] {
 fn (w: mut &Writer) drop() {
     w.flush()
     if w.ownsFd && w.fd >= 0 { close(i32(w.fd)) }
+}
+
+// ---------------------------------------------------------------- Reader
+
+// A buffered reader over standard input or a file. read fills the front of
+// the caller's byte array, from the bytes readLine has buffered and else
+// straight from the file; readLine reads through a 64 KiB buffer. The end of
+// the input is not remembered: a read after it tries again, so a growing file
+// or a terminal can give more. An interrupted read (EINTR) is retried. A file
+// reader closes its file when it is dropped.
+pub type Reader = record {
+    fd: int
+    path: str
+    buf: []byte     // allocated by the first readLine
+    pos: int        // the next unread byte of buf
+    end: int        // the end of the bytes read into buf
+    ownsFd: bool
+}
+
+const CHUNK = 65536
+
+pub fn stdin(): Reader { return Reader{fd: 0, path: "<stdin>", buf: [], pos: 0, end: 0, ownsFd: false} }
+
+// A reader of the file at path.
+pub fn open(path: str): Result[Reader, IoError] {
+    let fd = openFd(path, 0)
+    if fd < 0 { return Err(ioError(-fd, "open", path)) }
+    return Ok(Reader{fd: fd, path: path, buf: [], pos: 0, end: 0, ownsFd: true})
+}
+
+// Reads up to len(dst) bytes into the front of dst: how many, 0 at the end
+// of the input (and when dst is empty).
+pub fn (r: mut &Reader) read(dst: mut &[byte]): Result[int, IoError] {
+    let n = len(dst)
+    if n == 0 { return Ok(0) }
+    if r.pos < r.end {
+        var k = r.end - r.pos
+        if k > n { k = n }
+        for i in 0..k { dst[i] = r.buf[r.pos + i] }
+        r.pos += k
+        return Ok(k)
+    }
+    let k = readFd(r.fd, dst, n)
+    if k < 0 { return Err(ioError(-k, "read", r.path)) }
+    return Ok(k)
+}
+
+// The next line, without its "\n" (and a "\r" before it, as splitLines);
+// a last line without a "\n" too. None at the end of the input.
+pub fn (r: mut &Reader) readLine(): Result[Option[str], IoError] {
+    var line = ""
+    var any = false
+    while true {
+        if r.pos == r.end {
+            if len(r.buf) == 0 { r.buf = array(CHUNK, 0) }
+            let k = readFd(r.fd, mut &r.buf, CHUNK)
+            if k < 0 { return Err(ioError(-k, "read", r.path)) }
+            r.pos = 0
+            r.end = k
+            if k == 0 { break }
+        }
+        let from = r.pos
+        var i = from
+        while i < r.end && r.buf[i] != '\n' { i += 1 }
+        let part = strFromBytes(&r.buf[from..i])
+        line = if any { line + part } else { part }
+        any = true
+        if i < r.end {
+            r.pos = i + 1
+            return Ok(Some(dropCr(line)))
+        }
+        r.pos = i
+    }
+    return if any { Ok(Some(dropCr(line))) } else { Ok(None) }
+}
+
+fn dropCr(s: str): str {
+    let n = len(s)
+    return if n > 0 && strByte(s, n - 1) == '\r' { strSlice(s, 0, n - 1) } else { s }
+}
+
+// Reads from fd into the front of dst (at most n bytes): how many, 0 at the
+// end, or minus the errno.
+fn readFd(fd: int, dst: mut &[byte], n: int): int {
+    if fd < 0 { return -9 }
+    while true {
+        let k = sysRead(i32(fd), dst, n)
+        if k >= 0 { return k }
+        let e = errno()
+        if e != 4 { return -e }
+    }
+    return 0
+}
+
+// Closes a file reader; later reads fail with EBADF.
+pub fn (r: mut &Reader) close(): Result[Unit, IoError] {
+    r.pos = 0
+    r.end = 0
+    if r.ownsFd && r.fd >= 0 {
+        let fd = r.fd
+        r.fd = -1
+        if close(i32(fd)) != 0 { return Err(ioError(errno(), "close", r.path)) }
+    }
+    return Ok(Unit{})
+}
+
+fn (r: mut &Reader) drop() {
+    if r.ownsFd && r.fd >= 0 { close(i32(r.fd)) }
 }

@@ -1,0 +1,68 @@
+// io.Reader: lines from standard input ("\r\n" and a last line without "\n"),
+// raw reads after buffered lines, a line longer than the buffer, a file
+// reader, errors, and reads after close.
+// stdin: one
+// stdin: two
+// stdin: 
+// stdin: three
+// stdin: rest of it
+// expect: [one] [two] [] [three]
+// expect: raw 11 rest of it
+// expect: end 0 none true
+// expect: long 200001 true 3 [tail]
+// expect: file 7 abc|def
+// expect: open /no/such/file: No such file or directory
+// expect: closed read /no-path: Bad file descriptor
+// expect: closed again ok
+import "fs"
+import "io"
+import "os"
+
+fn line(r: mut &io.Reader): str {
+    match r.readLine().unwrap() {
+        Some(s) { return "[" + s + "]" }
+        None { return "none" }
+    }
+}
+
+fn main() {
+    var r = io.stdin()
+    println(line(mut &r) + " " + line(mut &r) + " " + line(mut &r) + " " + line(mut &r))
+    var b: []byte = array(64, 0)
+    let k = r.read(mut &b).unwrap()
+    println("raw " + k.toStr() + " " + strFromBytes(&b[0..k - 1]))
+    let z = r.read(mut &b).unwrap()
+    let last = r.readLine().unwrap()
+    println("end " + z.toStr() + " " + line(mut &r) + " " + last.isNone().toStr())
+
+    let path = "/tmp/obx_io_reader_" + os.pid().toStr()
+    var big = io.create(path).unwrap()
+    for i in 0..200001 { big.writeByte('x') }
+    big.write("\r\nab\ncd\r\n[tail]")
+    big.close().unwrap()
+    var f = io.open(path).unwrap()
+    let l1 = f.readLine().unwrap().unwrap()
+    let ok = strByte(l1, 0) == 'x' && strByte(l1, len(l1) - 1) == 'x'
+    let l2 = f.readLine().unwrap().unwrap()
+    f.readLine().unwrap()
+    println("long " + len(l1).toStr() + " " + ok.toStr() + " " + (len(l2) + 1).toStr() + " " + f.readLine().unwrap().unwrap())
+    f.close().unwrap()
+
+    io.write(path, "abc\ndef").unwrap()
+    var g = io.open(path).unwrap()
+    var buf: []byte = array(16, 0)
+    let n = g.read(mut &buf).unwrap()
+    println("file " + n.toStr() + " " + strFromBytes(&buf[0..3]) + "|" + strFromBytes(&buf[4..7]))
+    match io.open("/no/such/file") {
+        Ok(_) { println("opened?") }
+        Err(e) { println(e.toStr()) }
+    }
+    fs.remove(path).unwrap()
+    var h = io.open("/dev/null").unwrap()
+    h.close().unwrap()
+    match h.read(mut &buf) {
+        Ok(_) { println("read after close?") }
+        Err(e) { println("closed " + io.ioError(e.errno, e.op, "/no-path").toStr()) }
+    }
+    match h.close() { Ok(_) { println("closed again ok") } Err(e) { println(e.toStr()) } }
+}

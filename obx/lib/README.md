@@ -26,7 +26,7 @@ for leaks.
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
 | `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
 | `strings.obx` | 490 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
-| `io.obx` | 210 | IoError, whole-file read/write/append, readLines, readStdin, buffered Writer |
+| `io.obx` | 347 | IoError, whole-file read/write/append, readLines, readStdin, streaming Reader, buffered Writer |
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
 | `time.obx` | 160 | wall and monotonic clocks, sleep, UTC dates, ISO 8601 text |
@@ -193,7 +193,12 @@ first error of an implicit flush (buffer over 64 KiB) is kept for the next
 `flush` or `close`, and a stdout writer's `flush` also flushes the runtime's
 buffer behind `print`. `flushStdout(): Result` does that and reports the first
 failed write to stdout since the last call (so a program can see `ENOSPC` on a
-full disk). `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
+full disk). `Reader` (`stdin()`, `open(path): Result`): `read(dst: mut
+&[byte]): Result[int, IoError]` fills the front of `dst` (0 at the end),
+`readLine(): Result[Option[str], IoError]` (no `"\n"`, no `"\r"` before it,
+as `splitLines`), `close(): Result`; the end is not sticky (a later read tries
+again: a growing file, a terminal), `EINTR` is retried, a file reader is
+closed when dropped. `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
 - **fs**: `stat`/`lstat(path): Result[Stat, IoError]` (`size mode mtime
   mtimeNs nlink uid gid ino blocks`, `kind() isDir() isFile() isLink()
   perm()`), `Kind` (`File Dir Link Fifo Socket CharDev BlockDev Other`,
