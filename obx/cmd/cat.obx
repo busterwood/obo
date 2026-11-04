@@ -1,0 +1,251 @@
+// cat: concatenates operands to stdout, with -n, -b, -s, -E and -T. A port of
+// obo's cat (archive/obo/cmd/cat.obx), a GNU coreutils 9.x subset, with the
+// same behaviour:
+//
+//     obxc cmd/cat.obx --native -o cat
+//
+// The subset is deliberate: -v, -e, -t, -A, -u, long options, --help and
+// --version are unsupported (see cmd/README.md).
+//
+// The logical stream spans operands: the line number, the blank-line squeeze
+// state and a partially written line continue from one file to the next. A
+// blank line is a line with no bytes before the newline; spaces, a tab or a NUL
+// make a line nonblank. -b overrides -n regardless of order. With -E, a CR that
+// immediately precedes an emitted LF is held and written as ^M (GNU's rule): the
+// hold spans read chunks and operands, and a final unpaired CR is written
+// literally at stream EOF. A CR-only line is still nonblank for -n/-b/-s.
+//
+// Open and read errors print `cat: <operand>: <text>`, set failed, close the
+// operand and continue with the next one. A write error prints
+// `cat: write error: <text>` once, sets fatal, stops reading and never opens a
+// later operand. Both exit 1.
+
+import "io"
+
+const CHUNK = 65536
+
+type Opts = record {
+    numberEvery: bool      // -n
+    numberNonBlank: bool   // -b (overrides -n)
+    squeeze: bool          // -s
+    showEnds: bool         // -E
+    showTabs: bool         // -T
+}
+
+type State = record {
+    lineNo: int            // the number of the last numbered line
+    atLineStart: bool      // the next byte begins a line
+    lastBlank: bool        // the previous input line was blank (-s)
+    pendingCr: bool        // -E is holding a CR for a possible following LF
+    failed: bool           // an open/read error happened
+    fatal: bool            // a write error happened
+}
+
+// An io.Reader read in chunks: buf[pos..n] is what was read and not yet used.
+type Reader = record {
+    src: io.Reader
+    buf: []byte
+    n: int
+    pos: int
+}
+
+fn newReader(src: io.Reader): Reader {
+    return Reader{src: src, buf: array(CHUNK, 0), n: 0, pos: 0}
+}
+
+// Reads the next chunk: its length, 0 at the end of the input, or minus the
+// errno.
+fn (r: mut &Reader) fill(): int {
+    match r.src.read(mut &r.buf) {
+        Ok(k) {
+            r.n = k
+            r.pos = 0
+            return k
+        }
+        Err(e) { return -e.errno }
+    }
+}
+
+fn putNumber(w: mut &io.Writer, n: int) {
+    var s = n.toStr()
+    var pad = 6 - len(s)
+    while pad > 0 {
+        w.writeByte(' ')
+        pad -= 1
+    }
+    w.write(s)
+    w.writeByte('\t')
+}
+
+// Transforms one chunk and hands it to the writer, which flushes at 64 KiB.
+fn catChunk(w: mut &io.Writer, data: &[]byte, n: int, o: &Opts, st: mut &State) {
+    for k in 0..n {
+        let b = data[k]
+        var handled = false
+        if st.pendingCr {
+            // a CR held by -E: an LF turns it into ^M$, any other byte first
+            // releases the CR literally and is then processed normally (a second
+            // CR can become the new pending one)
+            st.pendingCr = false
+            if b == '\n' {
+                w.write("^M$\n")
+                st.atLineStart = true
+                st.lastBlank = false
+                handled = true
+            } else {
+                w.writeByte('\r')
+            }
+        }
+        if !handled {
+            if st.atLineStart {
+                if b == '\n' {
+                    if o.squeeze && st.lastBlank {
+                        // a squeezed blank line: emit nothing, not even its number
+                    } else {
+                        if o.numberEvery && !o.numberNonBlank {
+                            st.lineNo += 1
+                            putNumber(w, st.lineNo)
+                        }
+                        if o.showEnds { w.writeByte('$') }
+                        w.writeByte('\n')
+                    }
+                    st.lastBlank = true
+                } else {
+                    st.lineNo += 1
+                    if o.numberEvery || o.numberNonBlank { putNumber(w, st.lineNo) }
+                    st.atLineStart = false
+                    st.lastBlank = false
+                    if b == '\t' && o.showTabs {
+                        w.write("^I")
+                    } else if b == '\r' && o.showEnds {
+                        st.pendingCr = true
+                    } else {
+                        w.writeByte(b)
+                    }
+                }
+            } else {
+                if b == '\n' {
+                    if o.showEnds { w.writeByte('$') }
+                    w.writeByte('\n')
+                    st.atLineStart = true
+                    st.lastBlank = false
+                } else if b == '\t' && o.showTabs {
+                    w.write("^I")
+                } else if b == '\r' && o.showEnds {
+                    st.pendingCr = true
+                } else {
+                    w.writeByte(b)
+                }
+            }
+        }
+    }
+}
+
+fn writeFailed(st: mut &State, e: io.IoError) {
+    eprintln("cat: write error: " + io.errorText(e.errno))
+    st.fatal = true
+}
+
+// Streams one descriptor through the transform. false means a write error was
+// reported and the whole tool must stop; a read error is reported here and the
+// tool goes on with the next operand.
+fn catReader(r: mut &Reader, label: str, w: mut &io.Writer, o: &Opts, st: mut &State): bool {
+    while true {
+        let n = r.fill()
+        if n < 0 {
+            eprintln("cat: " + label + ": " + io.errorText(-n))
+            st.failed = true
+            return true
+        }
+        if n == 0 { return true }
+        catChunk(w, &r.buf, n, o, st)
+        match w.flush() {
+            Ok(_) {}
+            Err(e) {
+                writeFailed(st, e)
+                return false
+            }
+        }
+    }
+    return true
+}
+
+// Reads one operand. false only for a fatal write error. Stdin ("-" or no
+// operands) is never opened or closed.
+fn catOperand(path: str, w: mut &io.Writer, o: &Opts, st: mut &State): bool {
+    if path == "-" {
+        var r = newReader(io.stdin())
+        return catReader(mut &r, "-", w, o, st)
+    }
+    match io.open(path) {
+        Ok(src) {
+            var r = newReader(src)
+            return catReader(mut &r, path, w, o, st)
+        }
+        Err(e) {
+            eprintln("cat: " + path + ": " + io.errorText(e.errno))
+            st.failed = true
+            return true
+        }
+    }
+}
+
+// Applies one short-option character; false means it is not one of ours.
+fn setOpt(o: mut &Opts, c: byte): bool {
+    if c == 'n' { o.numberEvery = true; return true }
+    if c == 'b' { o.numberNonBlank = true; return true }
+    if c == 's' { o.squeeze = true; return true }
+    if c == 'E' { o.showEnds = true; return true }
+    if c == 'T' { o.showTabs = true; return true }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    var o = Opts{numberEvery: false, numberNonBlank: false, squeeze: false, showEnds: false, showTabs: false}
+    var operands: []str = []
+    var endOpts = false
+    for i in 1..len(argv) {
+        let a = argv[i]
+        if !endOpts && a == "--" {
+            endOpts = true
+        } else if !endOpts && len(a) > 1 && a[0] == '-' {
+            if len(a) > 2 && a[1] == '-' {
+                eprintln("cat: unrecognized option '" + a + "'")
+                exit(1)
+            }
+            for j in 1..len(a) {
+                if !setOpt(mut &o, a[j]) {
+                    eprintln("cat: invalid option -- '" + substr(a, j, j + 1) + "'")
+                    exit(1)
+                }
+            }
+        } else {
+            append(mut &operands, a)
+        }
+    }
+
+    var w = io.stdout()
+    var st = State{lineNo: 0, atLineStart: true, lastBlank: false, pendingCr: false, failed: false, fatal: false}
+    if len(operands) == 0 {
+        catOperand("-", mut &w, &o, mut &st)
+    } else {
+        for p in operands {
+            if !catOperand(p, mut &w, &o, mut &st) { break }
+        }
+    }
+    if !st.fatal && st.pendingCr {
+        st.pendingCr = false
+        w.writeByte('\r')
+    }
+    if !st.fatal {
+        match w.flush() {
+            Ok(_) {}
+            Err(e) {
+                eprintln("cat: write error: " + io.errorText(e.errno))
+                exit(1)
+            }
+        }
+    }
+    if st.fatal || st.failed { exit(1) }
+}

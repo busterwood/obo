@@ -6710,7 +6710,7 @@ struct S7_io_IoError { int64_t f_errno; obx_str f_op; obx_str f_path; };
 struct A126 { struct S7_io_IoError f_0; };
 union A124 { struct A125 V_Ok; struct A126 V_Err; char _e; };
 struct S5_std_Result { int64_t tag; union A124 u; };
-struct S9_fs_Stat { int64_t f_size; int64_t f_mode; int64_t f_mtime; int64_t f_mtimeNs; int64_t f_nlink; int64_t f_uid; int64_t f_gid; int64_t f_ino; int64_t f_blocks; };
+struct S9_fs_Stat { int64_t f_size; int64_t f_mode; int64_t f_mtime; int64_t f_mtimeNs; int64_t f_nlink; int64_t f_uid; int64_t f_gid; int64_t f_ino; int64_t f_dev; int64_t f_blocks; };
 struct A128 { struct S9_fs_Stat f_0; };
 struct A129 { struct S7_io_IoError f_0; };
 union A127 { struct A128 V_Ok; struct A129 V_Err; char _e; };
@@ -11439,6 +11439,7 @@ extern int64_t x_obx_errno(void) __asm__("obx_errno");
 extern char*x_strerror(int32_t) __asm__("strerror");
 extern int64_t x_obx_open(char*, int64_t) __asm__("obx_open");
 extern int32_t x_close(int32_t) __asm__("close");
+extern int64_t x_read(int32_t, void*, int64_t) __asm__("read");
 extern int64_t x_obxlib_flush_out(void) __asm__("obxlib_flush_out");
 extern int64_t x_obxlib_isatty(int64_t) __asm__("obxlib_isatty");
 extern int64_t x_obxlib_term_cols(int64_t) __asm__("obxlib_term_cols");
@@ -22699,7 +22700,7 @@ static obx_str f32_fs_join(obx_str p_a, obx_str p_b) {
   if (!b1) {
     bool b2 = (bool)((int64_t)p_b.len > 0LL);
     if (b2) {
-      uint8_t t3 = rt_str_byte(p_b, 0LL, "fs.obx:221");
+      uint8_t t3 = rt_str_byte(p_b, 0LL, "fs.obx:222");
       b2 = (bool)((int32_t)t3 == 47);
     }
     b1 = b2;
@@ -22712,7 +22713,7 @@ static obx_str f32_fs_join(obx_str p_a, obx_str p_b) {
     return r5;
   }
   obx_str t6 = rt_str_dup(p_a);
-  uint8_t t7 = rt_str_byte(t6, rt_sub_int((int64_t)p_a.len, 1LL, "fs.obx:222"), "fs.obx:222");
+  uint8_t t7 = rt_str_byte(t6, rt_sub_int((int64_t)p_a.len, 1LL, "fs.obx:223"), "fs.obx:223");
   bool c8 = (bool)((int32_t)t7 == 47);
   rt_str_drop(t6);
   if (c8) {
@@ -22732,7 +22733,7 @@ static obx_str f32_fs_join(obx_str p_a, obx_str p_b) {
 }
 static struct S10_std_Result f31_fs_list(obx_str p_path) {
   int64_t cm1 = rt_cmark();
-  void*t2 = x_opendir(rt_cstr(p_path, "fs.obx:116"));
+  void*t2 = x_opendir(rt_cstr(p_path, "fs.obx:117"));
   rt_cfree(cm1);
   void*v_d_3 = t2;
   bool c4 = (bool)((uint64_t)v_d_3 == (uint64_t)0);
@@ -22830,7 +22831,7 @@ static struct S12_fs_Kind f36_fs_kindOfMode(int64_t p_mode) {
   return r11;
 }
 static struct S12_fs_Kind f34_fs_kindOfDirent(int64_t p_t) {
-  struct S12_fs_Kind t1 = f36_fs_kindOfMode(rt_shl_int(p_t, 12LL, "fs.obx:145"));
+  struct S12_fs_Kind t1 = f36_fs_kindOfMode(rt_shl_int(p_t, 12LL, "fs.obx:146"));
   struct S12_fs_Kind r2 = t1;
   return r2;
 }
@@ -22853,7 +22854,7 @@ static struct S8_std_Result f29_fs_lstat(obx_str p_path) {
 }
 static struct S8_std_Result f37_fs_statHow(obx_str p_path, int64_t p_follow, obx_str p_op) {
   int64_t cm1 = rt_cmark();
-  int64_t t2 = x_obx_stat(rt_cstr(p_path, "fs.obx:81"), p_follow);
+  int64_t t2 = x_obx_stat(rt_cstr(p_path, "fs.obx:82"), p_follow);
   rt_cfree(cm1);
   int64_t v_e_3 = t2;
   bool c4 = (bool)(v_e_3 != 0LL);
@@ -22873,13 +22874,14 @@ static struct S8_std_Result f37_fs_statHow(obx_str p_path, int64_t p_follow, obx
   int64_t t13 = x_obx_stat_field(5LL);
   int64_t t14 = x_obx_stat_field(6LL);
   int64_t t15 = x_obx_stat_field(7LL);
-  int64_t t16 = x_obx_stat_field(11LL);
-  struct S9_fs_Stat t17 = (struct S9_fs_Stat){.f_size = t8, .f_mode = t9, .f_mtime = t10, .f_mtimeNs = t11, .f_nlink = t12, .f_uid = t13, .f_gid = t14, .f_ino = t15, .f_blocks = t16};
-  struct S8_std_Result t18 = (struct S8_std_Result){.tag = 0LL, .u = {.V_Ok = {.f_0 = t17}}};
-  struct S8_std_Result r19 = t18;
+  int64_t t16 = x_obx_stat_field(8LL);
+  int64_t t17 = x_obx_stat_field(11LL);
+  struct S9_fs_Stat t18 = (struct S9_fs_Stat){.f_size = t8, .f_mode = t9, .f_mtime = t10, .f_mtimeNs = t11, .f_nlink = t12, .f_uid = t13, .f_gid = t14, .f_ino = t15, .f_dev = t16, .f_blocks = t17};
+  struct S8_std_Result t19 = (struct S8_std_Result){.tag = 0LL, .u = {.V_Ok = {.f_0 = t18}}};
+  struct S8_std_Result r20 = t19;
   rt_str_drop(p_op);
   rt_str_drop(p_path);
-  return r19;
+  return r20;
 }
 static struct S5_std_Result f27_fs_remove(obx_str p_path) {
   struct S8_std_Result t1 = f29_fs_lstat(rt_str_dup(p_path));
@@ -22890,7 +22892,7 @@ static struct S5_std_Result f27_fs_remove(obx_str p_path) {
     bool c5 = t4;
     if (c5) {
       int64_t cm6 = rt_cmark();
-      int32_t t7 = x_rmdir(rt_cstr(p_path, "fs.obx:171"));
+      int32_t t7 = x_rmdir(rt_cstr(p_path, "fs.obx:172"));
       rt_cfree(cm6);
       bool c8 = (bool)(t7 != 0);
       if (c8) {
@@ -22916,7 +22918,7 @@ static struct S5_std_Result f27_fs_remove(obx_str p_path) {
     return r18;
   }
   int64_t cm19 = rt_cmark();
-  int32_t t20 = x_unlink(rt_cstr(p_path, "fs.obx:177"));
+  int32_t t20 = x_unlink(rt_cstr(p_path, "fs.obx:178"));
   rt_cfree(cm19);
   bool c21 = (bool)(t20 != 0);
   if (c21) {
@@ -23051,15 +23053,15 @@ static obx_str f23_io_IoError_toStr(struct S7_io_IoError p_e) {
 static obx_str f40_io_errorText(int64_t p_errno) {
   bool b1 = (bool)(p_errno > 100000LL);
   if (b1) {
-    b1 = (bool)(p_errno < rt_add_int(100000LL, 100LL, "io.obx:49"));
+    b1 = (bool)(p_errno < rt_add_int(100000LL, 100LL, "io.obx:51"));
   }
   bool c2 = b1;
   if (c2) {
-    obx_str t3 = f41_io_lookupText(rt_sub_int(p_errno, 100000LL, "io.obx:49"));
+    obx_str t3 = f41_io_lookupText(rt_sub_int(p_errno, 100000LL, "io.obx:51"));
     obx_str r4 = t3;
     return r4;
   }
-  obx_str t5 = rt_str_from_c((void*)x_strerror(rt_cvs_i32((__int128)p_errno, "io.obx:50")));
+  obx_str t5 = rt_str_from_c((void*)x_strerror(rt_cvs_i32((__int128)p_errno, "io.obx:52")));
   obx_str r6 = t5;
   return r6;
 }
@@ -23100,7 +23102,7 @@ static obx_str f41_io_lookupText(int64_t p_n) {
     return r12;
   } else {
     obx_str t13 = sl3568;
-    obx_str t14 = rt_int_to_str(rt_neg_int(p_n, "io.obx:66"));
+    obx_str t14 = rt_int_to_str(rt_neg_int(p_n, "io.obx:68"));
     obx_str t15 = rt_str_concat(t13, t14);
     obx_str r16 = t15;
     rt_str_drop(t14);
@@ -23117,12 +23119,12 @@ static struct S5_std_Result f22_io_write(obx_str p_path, obx_str p_data) {
 }
 static struct S5_std_Result f42_io_writeHow(obx_str p_path, obx_str p_data, int64_t p_how) {
   int64_t cm1 = rt_cmark();
-  int64_t t2 = x_obx_open(rt_cstr(p_path, "io.obx:118"), p_how);
+  int64_t t2 = x_obx_open(rt_cstr(p_path, "io.obx:120"), p_how);
   rt_cfree(cm1);
   int64_t v_fd_3 = t2;
   bool c4 = (bool)(v_fd_3 < 0LL);
   if (c4) {
-    struct S7_io_IoError t5 = f33_io_ioError(rt_neg_int(v_fd_3, "io.obx:119"), sl3569, rt_str_dup(p_path));
+    struct S7_io_IoError t5 = f33_io_ioError(rt_neg_int(v_fd_3, "io.obx:121"), sl3569, rt_str_dup(p_path));
     struct S5_std_Result t6 = (struct S5_std_Result){.tag = 1LL, .u = {.V_Err = {.f_0 = t5}}};
     struct S5_std_Result r7 = t6;
     rt_str_drop(p_data);
@@ -23134,7 +23136,7 @@ static struct S5_std_Result f42_io_writeHow(obx_str p_path, obx_str p_data, int6
   if (c9) {
     int64_t t10 = x_obx_errno();
     int64_t v_e_11 = t10;
-    int32_t t12 = x_close(rt_cvs_i32((__int128)v_fd_3, "io.obx:122"));
+    int32_t t12 = x_close(rt_cvs_i32((__int128)v_fd_3, "io.obx:124"));
     struct S7_io_IoError t13 = f33_io_ioError(v_e_11, sl3570, rt_str_dup(p_path));
     struct S5_std_Result t14 = (struct S5_std_Result){.tag = 1LL, .u = {.V_Err = {.f_0 = t13}}};
     struct S5_std_Result r15 = t14;
@@ -23142,7 +23144,7 @@ static struct S5_std_Result f42_io_writeHow(obx_str p_path, obx_str p_data, int6
     rt_str_drop(p_path);
     return r15;
   }
-  int32_t t16 = x_close(rt_cvs_i32((__int128)v_fd_3, "io.obx:125"));
+  int32_t t16 = x_close(rt_cvs_i32((__int128)v_fd_3, "io.obx:127"));
   bool c17 = (bool)(t16 != 0);
   if (c17) {
     int64_t t18 = x_obx_errno();
@@ -23394,7 +23396,7 @@ static struct S13_std_Result f45_fs_listNames(obx_str p_path) {
 }
 static bool f44_fs_exists(obx_str p_path) {
   int64_t cm1 = rt_cmark();
-  int64_t t2 = x_obx_stat(rt_cstr(p_path, "fs.obx:90"), 1LL);
+  int64_t t2 = x_obx_stat(rt_cstr(p_path, "fs.obx:91"), 1LL);
   rt_cfree(cm1);
   bool r3 = (bool)(t2 == 0LL);
   rt_str_drop(p_path);
@@ -26312,9 +26314,9 @@ static int64_t f13_main_buildNative(struct S3_ir_Ir*p_p, obx_arr*p_libs, obx_str
 }
 static struct S5_std_Result f128_fs_chmod(obx_str p_path, int64_t p_perm) {
   obx_str t1 = rt_str_dup(p_path);
-  uint32_t t2 = rt_cvs_u32((__int128)p_perm, "fs.obx:213");
+  uint32_t t2 = rt_cvs_u32((__int128)p_perm, "fs.obx:214");
   int64_t cm3 = rt_cmark();
-  int32_t t4 = x_chmod(rt_cstr(t1, "fs.obx:213"), t2);
+  int32_t t4 = x_chmod(rt_cstr(t1, "fs.obx:214"), t2);
   rt_cfree(cm3);
   bool c5 = (bool)(t4 != 0);
   rt_str_drop(t1);
