@@ -4862,7 +4862,7 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
                 ri = RCX
                 if g.simple(ix) {
                     g.genInto(ix, RCX)
-                } else {
+                } else if !g.arithInto(ix, RCX, true) {
                     g.gen(ix)
                     g.a.movRR(8, RCX, RAX)
                 }
@@ -4873,6 +4873,27 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.a.loadZX(4, RAX, at(m, 8))                // off
             g.a.aluRM(x64.ADD, 8, RAX, m)               // + the block
             g.a.loadZX(1, RAX, x64.memx(RAX, ri, 1, 8)) // data[off + i]
+            return true
+        }
+        let br = if g.u.nk(sx) == ir.E_DEREF { g.regOf(g.u.nodes[sx].a) } else { -1 }
+        if br >= 0 && !g.writesReg(ix, br) && g.quietTree(ix) {
+            // through a pointer in a register: the index first, the str read where it is
+            var ri = g.regOf(ix)
+            if ri < 0 {
+                ri = RCX
+                if g.simple(ix) {
+                    g.genInto(ix, RCX)
+                } else if !g.arithInto(ix, RCX, true) {
+                    g.gen(ix)
+                    g.a.movRR(8, RCX, RAX)
+                }
+            }
+            g.a.loadZX(4, RDX, x64.mem(br, 12))             // len
+            g.a.alu(x64.CMP, 8, ri, RDX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            g.a.loadZX(4, RAX, x64.mem(br, 8))              // off
+            g.a.aluRM(x64.ADD, 8, RAX, x64.mem(br, 0))      // + the block
+            g.a.loadZX(1, RAX, x64.memx(RAX, ri, 1, 8))     // data[off + i]
             return true
         }
         g.gen(sx)                                       // the address of the str

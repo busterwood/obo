@@ -247,6 +247,7 @@ fn pfxOf(size: int): int { return if size == 2 { 0x66 } else { 0 } }
 
 // mov dst, src (size 1, 2, 4 or 8; a 4-byte move zero-extends to 64 bits).
 pub fn (a: mut &Asm) movRR(size: int, dst: int, src: int) {
+    if a.peep && size == 8 && dst == src { return }     // peephole: a move that changes nothing
     a.rr(pfxOf(size), size == 8, if size == 1 { 0x88 } else { 0x89 }, src, dst, size == 1, size == 1)
 }
 
