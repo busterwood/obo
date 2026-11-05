@@ -234,8 +234,25 @@ closed when dropped. `isTerminal(fd)`, `terminalWidth(fd): Option[int]`.
   `addMillis`, `millisUntil`), `unixSeconds`, `unixMillis`, `monotonicNs`,
   `sleepMs` (blocks the thread, every task with it: in tasks use
   `task.sleep`); `Date {year, month, day}`: `dateOf(sec)`, `dateOfDays`,
-  `daysOfDate`, `weekday`, `isLeapYear`, `daysInMonth`, `parseDate`,
-  `isoDate`, `isoDateTime`.
+  `daysOfDate`, `weekday`, `isLeapYear`, `daysInMonth`, `valid`,
+  `parseDate`, `isoDate`, `isoDateTime`.
+  Civil date-times, the values of SQL `time`, `datetime2` and
+  `datetimeoffset` and Postgres `time`, `timestamp` and `timestamptz` (no
+  zone rules, no leap seconds):
+  - `TimeOfDay {nanos}`, nanoseconds since midnight: `timeOfDay(h, m, s,
+    ns): Option`, `hour`, `minute`, `second`, `nano`, `eq`, `cmp`,
+    `toStr` ("13:45:07.25"), `parseTimeOfDay` ("HH:MM[:SS[.f]]", 1 to 9
+    digits), `MIDNIGHT`.
+  - `LocalDateTime {date, time}`, no zone: `localDateTime(d, t)`, `eq`,
+    `cmp`, `toStr` ("2026-11-05T13:45:07.25"), `parseLocalDateTime` ('T',
+    't' or a space between), `atUtc(): Time`, `withOffset(minutes):
+    Option[OffsetDateTime]`, `localOf(t: Time)` (UTC).
+  - `OffsetDateTime {local, offset}`, the offset in minutes east of UTC
+    within ±23:59 (`MAX_OFFSET`): `instant(): Time`, `Time.atOffset(minutes):
+    Option[OffsetDateTime]`, `eq` (same local date-time and offset),
+    `sameInstant`, `cmp` (by instant, then offset), `toStr`
+    ("...+01:00"; 0 is "+00:00"), `parseOffsetDateTime` ("Z", "+HH:MM",
+    "+HHMM" or "+HH").
 
 ### ffi
 

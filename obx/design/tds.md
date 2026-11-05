@@ -258,6 +258,10 @@ server.
   `time.TimeOfDay` (nanoseconds since midnight), `time.LocalDateTime` (a
   `Date` and a `TimeOfDay`) and `time.OffsetDateTime` (a `LocalDateTime`
   and an offset in minutes) in T2. Postgres would then use them too.
+  Decided (the user, 2026-11-05) and built in time.obx: offsets are
+  minutes within ±23:59; `eq` on OffsetDateTime is the same local
+  date-time and offset, `sameInstant` the same instant. T2 maps the SQL
+  types onto them.
 - **D6. A Sybase ASE server for tests.** There is none on this machine (no
   Docker either). Without one, T4 is written from the specification and
   tested only by recorded exchanges.
