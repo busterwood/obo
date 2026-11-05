@@ -1533,12 +1533,19 @@ fn siftDown[T: Ord](xs: mut &[T], start: int, end: int) {
 // index (linear probing, at most half full). keyAt(i)/valAt(i) for i in
 // 0..size() walk the entries in insertion order; remove moves the last entry
 // into the hole, so it changes that order.
+//
+// A slot of the index is a u32: 0 when empty, else the entry number plus one
+// in its low b bits (len(index) = 2^b, and there are at most 2^(b-1) + 1
+// entries) and, above them, a tag: the 32 - b bits of the mixed hash right
+// below the b bits that pick the home slot. A probe that meets another key's
+// slot almost always sees a different tag and moves on without loading
+// anything else; a lookup loads the slot, then the key it names.
 
 pub type Map[K: Eq + Hash, V] = record {
     keys: []K
     vals: []V
     hashes: []u64
-    index: []int   // -1 or an entry number; the length is a power of two
+    index: []u32   // 0 or a tag and an entry number + 1; the length is a power of two, at most 2^32
     shift: int     // 64 - log2(len(index))
     seed: u64      // the process's hashSeed(): where a hash's slots are is not predictable
 }
@@ -1546,21 +1553,33 @@ pub type Map[K: Eq + Hash, V] = record {
 type Probe = value record { slot: int; entry: int }
 
 pub fn newMap[K: Eq + Hash, V](): Map[K, V] {
-    return Map{keys: [], vals: [], hashes: [], index: array(8, -1), shift: 61, seed: hashSeed()}
+    return Map{keys: [], vals: [], hashes: [], index: array(8, u32(0)), shift: 61, seed: hashSeed()}
 }
 
-// The first slot for hash h: the top bits of (h ^ seed) * GOLDEN (Fibonacci hashing). With
-// the seed, keys whose hashes are known (the integers') still land in unknown slots.
-fn (m: &Map[K, V]) home(h: u64): int { return int(((h ^ m.seed) *% GOLDEN) >> m.shift) }
+// The mixed hash: (h ^ seed) * GOLDEN (Fibonacci hashing). Its top bits are the first slot.
+// With the seed, keys whose hashes are known (the integers') still land in unknown slots.
+fn (m: &Map[K, V]) mix(h: u64): u64 { return (h ^ m.seed) *% GOLDEN }
+
+fn (m: &Map[K, V]) home(h: u64): int { return int(m.mix(h) >> m.shift) }
+
+// The tag of mixed hash x: its bits below the home bits, in the slot bits above the entry.
+fn (m: &Map[K, V]) tagOf(x: u64): u32 { return u32((x << (64 - m.shift)) >> 32) & ~u32(len(m.index) - 1) }
 
 // The slot holding k, or the empty slot where it would go (entry -1).
 fn (m: &Map[K, V]) find(k: &K, h: u64): Probe {
     let mask = len(m.index) - 1
-    var i = m.home(h)
+    let low = u32(mask)
+    let x = m.mix(h)
+    let tag = m.tagOf(x)
+    var i = int(x >> m.shift)
     while true {
-        let e = m.index[i]
-        if e < 0 { return Probe{slot: i, entry: -1} }
-        if m.hashes[e] == h && m.keys[e] == k { return Probe{slot: i, entry: e} }
+        let s = m.index[i]
+        if s == 0 { return Probe{slot: i, entry: -1} }
+        let d = s ^ tag   // the entry number + 1 when the tags match
+        if d <= low {
+            let e = int(d) - 1
+            if m.keys[e] == k { return Probe{slot: i, entry: e} }
+        }
         i = (i + 1) & mask
     }
 }
@@ -1663,7 +1682,7 @@ pub fn (m: mut &Map[K, V]) put(k: K, v: V) {
         replace(mut &m.vals[p.entry], v)
         return
     }
-    m.index[p.slot] = len(m.keys)
+    m.index[p.slot] = m.tagOf(m.mix(h)) | u32(len(m.keys) + 1)
     append(mut &m.keys, k)
     append(mut &m.vals, v)
     append(mut &m.hashes, h)
@@ -1679,7 +1698,7 @@ pub fn (m: mut &Map[K, V]) remove(k: &K): Option[V] {
     if p.entry != last {
         // the last entry moves into the hole: repoint its slot
         let s = m.slotOf(last)
-        m.index[s] = p.entry
+        m.index[s] = m.index[s] & ~u32(len(m.index) - 1) | u32(p.entry + 1)
         swap(mut &m.keys, p.entry, last)
         swap(mut &m.vals, p.entry, last)
         swap(mut &m.hashes, p.entry, last)
@@ -1693,43 +1712,48 @@ pub fn (m: mut &Map[K, V]) clear() {
     replace(mut &m.keys, [])
     replace(mut &m.vals, [])
     replace(mut &m.hashes, [])
-    replace(mut &m.index, array(8, -1))
+    replace(mut &m.index, array(8, u32(0)))
     m.shift = 61
 }
 
 // The slot that points at entry e.
 fn (m: &Map[K, V]) slotOf(e: int): int {
     let mask = len(m.index) - 1
+    let low = u32(mask)
+    let s = u32(e + 1)
     var i = m.home(m.hashes[e])
-    while m.index[i] != e { i = (i + 1) & mask }
+    while m.index[i] & low != s { i = (i + 1) & mask }
     return i
 }
 
 // Empties slot s, shifting later entries of its probe run back (no tombstones).
 fn (m: mut &Map[K, V]) unlink(s: int) {
     let mask = len(m.index) - 1
+    let low = u32(mask)
     var hole = s
     var j = (s + 1) & mask
-    while m.index[j] >= 0 {
-        let h = m.home(m.hashes[m.index[j]])
+    while m.index[j] != 0 {
+        let h = m.home(m.hashes[int(m.index[j] & low) - 1])
         if (j - h) & mask >= (j - hole) & mask {
             m.index[hole] = m.index[j]
             hole = j
         }
         j = (j + 1) & mask
     }
-    m.index[hole] = -1
+    m.index[hole] = 0
 }
 
 fn (m: mut &Map[K, V]) grow() {
     let n = len(m.index) * 2
-    replace(mut &m.index, array(n, -1))
+    if n > 4294967296 { panic("Map: more than 2^31 entries") }
+    replace(mut &m.index, array(n, u32(0)))
     m.shift -= 1
     let mask = n - 1
     for e in 0..len(m.keys) {
-        var i = m.home(m.hashes[e])
-        while m.index[i] >= 0 { i = (i + 1) & mask }
-        m.index[i] = e
+        let x = m.mix(m.hashes[e])
+        var i = int(x >> m.shift)
+        while m.index[i] != 0 { i = (i + 1) & mask }
+        m.index[i] = m.tagOf(x) | u32(e + 1)
     }
 }
 
