@@ -4,4 +4,5 @@ fn main() {
     var xs = [1, 2]
     let r = &xs[0]
     append(mut &xs, 3)
+    println(intToStr(r))
 }

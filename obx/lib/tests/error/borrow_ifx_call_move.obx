@@ -1,0 +1,9 @@
+// A joined borrow passed to a call holds every root while the later arguments run (rule 3).
+// error: 'a' cannot be moved here: it overlaps a borrow held by the call
+fn use2(v: &[]int, s: []int) { println(intToStr(len(v) + len(s))) }
+fn main() {
+    let a = [1, 2]
+    let c = [3]
+    let b = len(c) > 2
+    use2(if b { &a } else { &c }, move(a))
+}

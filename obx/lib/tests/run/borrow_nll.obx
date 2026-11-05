@@ -1,0 +1,90 @@
+// Freezes end at the borrow's last use (SPEC 10 rule 4, design/borrow-types.md 12.3): a root may
+// be assigned, moved or mutably borrowed once nothing later in the block (or in a loop around it)
+// names the borrow.
+// expect: ab
+// expect: x3
+// expect: 5aa!
+// expect: 9qzz
+// expect: 1 4 5
+// expect: 12 | ab | end cd
+// expect: 12 12
+// expect: 0a 1a 2a
+// expect: kept 2
+// expect: 7
+import "strings"
+
+type D = record { id: int }
+
+fn head(s: &str): &str { return s[0..2] }
+
+fn main() {
+    // a view of s, used up before s is assigned
+    var s = intToStr(12) + ",ab,cd"
+    let parts = strings.split(&s, ",")
+    println(parts[1])
+    s = "x" + intToStr(3)
+    println(s)
+
+    // a text replaced by a piece of itself: the right side is made before the old text is dropped
+    var out = intToStr(5) + "aa;bb"
+    match strings.cut(&out, ";") {
+        Some(c) { out = c.before + "!" }
+        None {}
+    }
+    println(out)
+    var t = intToStr(9) + "qq"
+    let v = head(&t)
+    t = v + "zz"
+    println(t)
+
+    // a borrow and a mut borrow of an array, each used up before the next
+    var xs = [1, 2, 3]
+    let r = &xs[0]
+    let r0 = r + 0
+    append(mut &xs, 4)
+    let m = mut &xs
+    append(m, 5)
+    println(intToStr(r0) + " " + intToStr(len(xs) - 1) + " " + intToStr(xs[4]))
+
+    // pieces made in a loop body, used up before the text moves on
+    var u = intToStr(12) + ",ab,cd"
+    var line = newStrBuf()
+    while len(u) > 0 {
+        let i = indexOf(u, ",", 0)
+        if i < 0 { break }
+        let ps = strings.split(u[0..i + 1], ",")
+        line.add(ps[0] + " | ")
+        u = u[i + 1..]
+    }
+    println(line.toStr() + "end " + u)
+
+    // an if statement: the branch that assigns does not run before the one that reads
+    var w = intToStr(12) + "abc"
+    let wv = head(&w)
+    if len(w) > 100 { w = "x" } else { println(wv + " " + wv) }
+
+    // a borrow made inside a loop body, used up before the root changes
+    var acc = intToStr(0) + "a"
+    var seen = newStrBuf()
+    for k in 0..3 {
+        let first = head(&acc)
+        seen.add(first[0..1] + "a ")
+        acc = intToStr(k + 1) + "a"
+    }
+    println(trim(seen.toStr()))
+
+    // a holder of views, used up before the text is assigned
+    var txt = intToStr(77) + ",x,y"
+    var keep = strings.split(&txt, ",")
+    append(mut &keep, keep[0])
+    let last = pop(mut &keep)
+    println("kept " + intToStr(len(keep) - 1))
+    txt = "done"
+
+    // a let borrow of a record, then a move of it
+    let d = D{id: 7}
+    let dr = &d
+    let id = dr.id
+    let d2 = move(d)
+    println(intToStr(id + d2.id - 7))
+}

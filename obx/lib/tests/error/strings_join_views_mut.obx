@@ -1,0 +1,9 @@
+// Only a shared borrow reads str as &str: a mut one could store a view in an owned array.
+// error: argument 1 of put is mut &[]&str, not
+fn put(xs: mut &[]&str, v: &str) { println(intToStr(len(xs)) + v) }
+fn main() {
+    var names: []str = ["a"]
+    let t = "b"
+    put(mut &names, &t)
+    println(names[1])
+}

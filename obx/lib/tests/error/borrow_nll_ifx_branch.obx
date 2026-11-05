@@ -1,0 +1,11 @@
+// A branch of a match expression that changes the root, with the borrow named later in the
+// same call.
+// error: 's' is borrowed by 'v' and cannot be mutably borrowed
+fn pr(a: str, b: &str) { println(a + b) }
+fn set(s: mut &str): str { s = "x"; return "a" }
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var s = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    let v = head(&s)
+    pr(match 1 { 1 { set(mut &s) } else { "b" } }, v)
+}

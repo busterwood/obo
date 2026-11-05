@@ -1,4 +1,4 @@
-// moving the scrutinee in an arm that binds a field (by borrow) but does not use it after
+// moving the scrutinee in an arm that binds a field (by borrow) and uses it after
 // error: borrow|moved
 type D = record { v: int }
 fn (d: mut &D) drop() { println("drop " + intToStr(d.v)) }
@@ -7,7 +7,7 @@ fn take(e: E): int { return 0 }
 fn main() {
     let e = E.A(D{v: 1})
     match e {
-        E.A(d) { take(e) }
+        E.A(d) { take(e); println(intToStr(d.v)) }
         E.B { }
     }
 }

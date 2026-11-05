@@ -1,0 +1,12 @@
+// The same for a view derived from the loop's item.
+// error: 'keep' cannot hold borrows of the temporary in the header of the for loop at line 7
+import "strings"
+fn mk(): str { return "a,b," + intToStr(12) }
+fn main() {
+    var keep: []&str = []
+    for p in strings.split(&mk(), ",") {
+        let parts = strings.split(p, "x")
+        append(mut &keep, parts[0])
+    }
+    println(keep[0])
+}

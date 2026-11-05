@@ -1,0 +1,10 @@
+// A view of a for loop's header temporary cannot outlive the loop: the temporary is dropped when
+// the for statement ends.
+// error: 'keep' cannot hold borrows of the temporary in the header of the for loop at line 8
+import "strings"
+fn mk(): str { return "a,b," + intToStr(12) }
+fn main() {
+    var keep: []&str = []
+    for p in strings.split(&mk(), ",") { append(mut &keep, p) }
+    println(keep[0])
+}

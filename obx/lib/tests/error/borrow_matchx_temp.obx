@@ -1,0 +1,11 @@
+// A match expression's value outlives its arms: it cannot give views of its scrutinee temporary.
+// error: a match arm cannot give a borrow of a temporary
+import "strings"
+fn mk(): str { return "a,b," + intToStr(12) }
+fn main() {
+    let w: Option[strings.Cut] = match strings.cut(&mk(), ",") {
+        Some(c) { Some(c) }
+        None { None }
+    }
+    match w { Some(c) { println(c.before) } None {} }
+}

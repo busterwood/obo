@@ -1,0 +1,9 @@
+// A view read from an array of owned strings is rooted at the array.
+// error: 'names' is borrowed by 'f' and cannot be assigned
+fn firstOf(xs: &[&str]): &str { return xs[0] }
+fn main() {
+    var names: []str = [intToStr(1) + "aaaaaaaaaaaaaaaaaaaaaaaa", "b"]
+    let f = firstOf(&names)
+    names = []
+    println(f)
+}

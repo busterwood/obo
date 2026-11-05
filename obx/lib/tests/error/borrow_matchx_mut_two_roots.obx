@@ -1,0 +1,12 @@
+// A mut borrow has one root: a match expression cannot give one from two variables (SPEC 7.8).
+// error: must borrow the same variable in every branch
+type Box = record { v: int }
+fn main() {
+    var x = Box{v: 1}
+    var y = Box{v: 2}
+    let r = match x.v {
+        1 { mut &x }
+        else { mut &y }
+    }
+    r.v = 3
+}

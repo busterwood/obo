@@ -1,0 +1,12 @@
+// A join with a temporary keeps its other roots: the loop's items borrow 'a' as well (before, the
+// temporary won the join and 'a' could be assigned while a view of it was in use).
+// error: 'a' is borrowed by 'p' and cannot be assigned
+fn both(x: &str, y: &str): []&str { return [x, y] }
+fn mk(): str { return intToStr(42) + "tttttttttttttttttttttttttttt" }
+fn main() {
+    var a = intToStr(7) + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    for p in both(&a, &mk()) {
+        a = intToStr(9) + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        println(p)
+    }
+}

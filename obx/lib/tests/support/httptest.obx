@@ -229,8 +229,10 @@ fn handle(p: Peer): int {
             out = reply(404, tag, "not found")
         }
         if rq.head.method == "HEAD" {
-            let e = indexOf(out, "\r\n\r\n", 0)
-            if e >= 0 { out = out[0..e + 4] }
+            match strings.cut(&out, "\r\n\r\n") {
+                Some(x) { out = x.before + "\r\n\r\n" }
+                None {}
+            }
         }
         match rd.c.writeStr(out) {
             Ok(_) {}

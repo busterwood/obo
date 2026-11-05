@@ -1,0 +1,10 @@
+// Views are not read as owned strings.
+// error: argument 1 of own is &[]str, not
+fn own(xs: &[]str): int { return len(xs) }
+fn main() {
+    let s = "a,b"
+    let ps = [s[0..1]]
+    var vs: []&str = []
+    append(mut &vs, &s)
+    println(intToStr(own(&vs)))
+}

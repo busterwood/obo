@@ -1,7 +1,8 @@
-// error: borrow
+// error: borrow of a temporary
 fn f(r: &[]int) { }
+fn mk(): []int { return [2] }
 fn main() {
     let xs = [1]
     let c = true
-    f(if c { &xs } else { &xs })
+    f(if c { &xs } else { &mk() })
 }

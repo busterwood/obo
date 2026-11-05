@@ -1,0 +1,14 @@
+// A borrow declared before a loop and used in it: the next iteration reads it after the loop
+// body reassigns its root.
+// error: 's' is borrowed by 'v' and cannot be assigned
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var s = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    let v = head(&s)
+    var i = 0
+    while i < 3 {
+        println(v)
+        s = intToStr(i) + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        i += 1
+    }
+}

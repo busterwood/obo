@@ -1,0 +1,12 @@
+// error: 's' is borrowed by 'v' and cannot be assigned
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var s = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    let v = head(&s)
+    if len(s) > 3 {
+        s = "x"
+    } else if len(v) > 0 {
+        println("y")
+    }
+    println(v)
+}

@@ -1,0 +1,8 @@
+// A mut borrow used after a read of its root.
+// error: 'xs' is borrowed by 'm' and cannot be used
+fn main() {
+    var xs = [1, 2, 3]
+    let m = mut &xs
+    println(intToStr(xs[0]))
+    append(m, 5)
+}

@@ -1,0 +1,69 @@
+// A for loop's header temporaries, and a match statement's scrutinee, live until the statement
+// ends (SPEC 7.7, 8): what the loop or an arm binds is rooted at a hidden local there, so the body
+// may keep views of them in its own variables.
+// expect: a0
+// expect: b1
+// expect: 32
+// expect: 2a
+// expect: 13
+// expect: a|3
+// expect: k=1
+// expect: 7a
+// expect: 42
+// expect: w
+import "strings"
+
+type Tok = value record {
+    text: &str
+    n: int
+}
+
+type Toks = value record {
+    src: &str
+    pos: int
+}
+
+fn (t: mut &Toks) next(): Option[Tok] {
+    if t.pos >= len(t.src) { return None }
+    let p = t.pos
+    t.pos += 1
+    return Some(Tok{text: t.src[p..p + 1], n: p})
+}
+
+fn mk(): str { return "ab" + intToStr(3) }
+
+fn both(x: &str, y: &str): []&str { return [x, y] }
+
+fn main() {
+    for tk in Toks{src: &mk(), pos: 0} {
+        let keep = tk
+        let w = keep.text
+        println(w + intToStr(keep.n))
+    }
+    for p in strings.split(&mk(), "b") {
+        let parts = strings.split(p, "a")
+        let first: &str = p
+        println(intToStr(len(parts)) + first)
+    }
+    match strings.cut(&mk(), "b") {
+        Some(c) {
+            let cc = c
+            let before: &str = cc.before
+            println(before + "|" + cc.after)
+        }
+        None {}
+    }
+    var m: Map[str, int] = newMap()
+    m.put("k", 1)
+    for e in m.iter() {
+        let ent = e
+        println(ent.key + "=1")
+    }
+    var t = intToStr(7) + "a"
+    for p in both(&t, &intToStr(42)) {
+        let q = p
+        println(q)
+    }
+    t = "w"          // the loop's join of t and the temporary ended with the loop
+    println(t)
+}

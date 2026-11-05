@@ -216,8 +216,9 @@ Semantics
     value is built first, then the old is dropped, then the store).
 24. **A moved-from path that ends in `return`** does not take part in the join
     (`s09_move_branch_returns` is accepted).
-25. **Rule 4 is lexical** exactly as stated: `s10_frozen_lexical_after_last_use`
-    is an error even though `r` is not used afterwards.
+25. **Rule 4 ends at the last use**: `s10_frozen_ends_at_last_use` (a run
+    test; it was the error test `s10_frozen_lexical_after_last_use` while rule
+    4 was lexical) assigns the root once `r` is no longer used.
 26. **Neg of MIN** (`-MIN`) traps with exit 10 (it is overflow).
 27. **Float division by zero / NaN** do not trap; only `int(f)` of NaN/huge does.
 28. **A `str` containing NUL passed to extern**, `exit(code)` with live owned

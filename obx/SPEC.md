@@ -188,7 +188,10 @@ length) by value, with no count taken. `&s[a..b]` borrows the bytes `a` to
 is a borrow (sections 4.5 and 10): its root is the root of `s`. A `&str`
 converts to `str` where a `str` is expected (an argument, a stored value),
 which takes a count of the same bytes. `mut &str` borrows a `str` variable or
-field for writing, as for any `T`.
+field for writing, as for any `T`. A shared borrow or slice of an array of
+`str` may be used as one of views (`&[]str` as `&[]&str`, `&[str]` as
+`&[&str]`): the elements are read as views rooted where the array is
+(`strings.join(&names, ",")`). Not the other way, and not through `mut`.
 
 A string literal, or a `str` constant (section 5.2), where a shared `&str` is
 expected (an argument, a typed `let`, a field of a record literal, an
@@ -623,6 +626,13 @@ values already built for the statement are dropped before the return.
 
 A value produced inside a statement and not stored lives until the end of
 that statement and is then dropped: `println(makeBox(3).v)` is allowed.
+For a `for` loop the statement is the whole loop, and for a `match`
+statement the whole match: the temporaries of the header or scrutinee live
+until the loop or match ends, so the body may keep views of them in its own
+variables (`for p in strings.split(&io.read(f).unwrap(), "\n") { let kv =
+strings.cut(p, "=") ... }`), but nowhere that outlives the statement
+(section 10, rule 2). A `match` expression's arms cannot give views of its
+scrutinee temporary, since its value outlives the arms.
 
 ### 7.8 Conditional and match expressions
 
@@ -661,12 +671,24 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   loop around the statement and cannot appear in a `while` condition; in a
   closure, `return` leaves the closure. A move on such a path is allowed even
   inside `&&`, `||` or a `while` condition, since the path leaves.
-- The result is a value, copy or owned; it may not be a borrow, a slice or a
-  closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
-  is an `int`, and a field bound as a borrow by a match arm can be read but
-  not be the result when it is owned (moving out of a borrow). The result may
-  hold borrows (`if c { Some(&a) } else { None }` as an `Option[&str]`): it
-  then has the roots of all branches (section 10, rule 2).
+- The result is a value, copy or owned, or a borrow; it may not be a closure.
+  It is a **borrow** (or a slice) when the expected type is one, or, with no
+  expected type, when a branch is written `&p` or `mut &p` (or is itself such
+  an if or match expression): `let v: &str = if c { "none" } else { &s }`,
+  `if c { &a } else { &b }`. Every branch must then be a borrow of that type;
+  a string literal branch is a view of static bytes (section 4.1). The result
+  has the roots of all branches (a literal adds none; section 10, rule 2),
+  which it freezes while it is used (rule 4) and which a call holds while its
+  later arguments run (rule 3). A `mut &` result must borrow the same variable
+  in every branch. Otherwise a borrow branch is read: `if c { r } else { 0 }`
+  with `r: &int` is an `int`, and a field bound as a borrow by a match arm can
+  be read but not be the result when it is owned (moving out of a borrow).
+  The result may also hold borrows (`if c { Some(&a) } else { None }` as an
+  `Option[&str]`), with the roots of all branches in the same way.
+- A branch or arm cannot give a borrow of a temporary (the branch drops its
+  temporaries when it ends: bind it to a variable before the expression), and
+  an arm cannot give a borrow of a variable it binds (dropped when the arm
+  ends), whether as the borrow itself or held in a value.
 
 ## 8. Statements
 
@@ -813,6 +835,9 @@ borrows, or a type parameter declared `borrow` (section 6.1).
 2. **Roots.** Every borrow expression `&p` or `mut &p` has a root: the local
    variable or parameter that the place `p` starts from. Borrowing a global or
    a temporary that does not outlive the statement into a `let` is an error.
+   What a `for` loop or a `match` statement binds from its own temporaries is
+   rooted at the loop or match (section 7.7). A value built from both a
+   temporary and variables keeps the variables as roots.
    A value that holds borrows has the roots of the borrows it holds: a value
    built from parts (a literal, an `append`, the branches of an `if` or
    `match` expression) has the roots of all of them; a borrow read from a
@@ -834,12 +859,21 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    other; any two indexes into the same array overlap. The same holding covers
    an operator's left operand and an index expression's array.
 4. **Frozen roots.** While a `let` borrow, or a variable, parameter, `for`
-   or `match` binding of a type that holds borrows, is in scope, its roots are
+   or `match` binding of a type that holds borrows, is live, its roots are
    frozen: they may not be assigned, moved, or mutably borrowed, and nothing
    under them may be assigned. A `let r = mut &p`, or a value holding a
    `mut &`, freezes its roots against any other use as well, except through
    it. A `for x in xs` loop freezes `xs` the same way for the loop body, and
    an iterating `for` freezes the iterator's roots.
+   A local variable is live from its declaration to its last use: while its
+   name occurs later in its block (in a statement after the current one, or
+   in the rest of the current statement; the right side of a plain
+   assignment `p = e` no longer counts once `e` is evaluated), anywhere in a
+   loop around the current point that it is declared outside of, or while
+   something live borrows it (a `let q = &x`, a closure capturing it, a `for`
+   loop over it). The other branches of an `if` or `match` statement do not
+   count. Parameters, closures, `for` loops and their iterators freeze until
+   the end of their scope.
 5. **Results.** A function whose result holds borrows has as its *sources*
    the parameters (and receiver) that are or hold borrows. A result that is a
    plain borrow has at most one, and a `mut &` result exactly one, a `mut &`
@@ -864,10 +898,13 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    `var` as a root. A `var` of a plain borrow type is an error.
 
 A `match` on a place of an owned type whose arm binds a field as a borrow
-freezes the place's root (rule 4) for the body of that arm.
+freezes the place's root (rule 4) while the binding is live.
 
-Rule 4 is lexical: a borrow freezes its root until the end of its block, not
-until its last use. Use an inner block to end it sooner.
+Rule 4 is not lexical: a borrow freezes its root until its last use, not
+until the end of its block (`let parts = strings.split(&s, ","); use(parts);
+s = next()` is allowed). Liveness is by name and statement, so it is
+conservative: a later use in a branch that cannot run, or of another variable
+of the same name, still counts.
 
 ## 11. Built-in functions
 

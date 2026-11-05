@@ -1,0 +1,10 @@
+// A closure that captures a borrow keeps it live while the closure is in scope.
+// error: 's' is borrowed by 'v' and cannot be assigned
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var s = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    let v = head(&s)
+    let f = fn() { println(v) }
+    s = "x"
+    f()
+}

@@ -1,0 +1,8 @@
+// An if expression giving a borrow has the roots of both branches; returning it needs all of them
+// to be the function's sources (SPEC 10 rule 5).
+// error: cannot return a borrow of 's' and 'loc'
+fn f(s: &str, b: bool): &str {
+    let loc = "x" + s
+    return if b { s } else { &loc }
+}
+fn main() { println(f("a", true)) }

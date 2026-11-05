@@ -1,0 +1,10 @@
+// A mut borrow has one root: an if expression cannot give one from two variables (SPEC 7.8).
+// error: must borrow the same variable in every branch, not 'x' and 'y'
+type Box = record { v: int }
+fn main() {
+    var x = Box{v: 1}
+    var y = Box{v: 2}
+    let b = x.v > 0
+    let r = if b { mut &x } else { mut &y }
+    r.v = 3
+}

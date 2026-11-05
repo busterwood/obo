@@ -747,6 +747,10 @@ pub type Ast = record {
     pub items: []int
     pub imports: int   // list of N_IMPORT
     pub decls: int     // list of declarations
+    // per statement node: the first and last node made while parsing it (its subtree lies between;
+    // -1 for other nodes): the checker scans them for uses of a name (non-lexical freezes)
+    pub slo: []int
+    pub shi: []int
 }
 
 pub fn (a: &Ast) has(n: int, flag: int): bool { return a.nodes[n].flags & flag != 0 }
@@ -768,7 +772,7 @@ pub type Parser = record {
 // The tree of a module, or the first syntax error (which stops the program).
 pub fn parse(src: str, fname: str): Ast {
     var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, forIn: -1, depth: 0, dots: false,
-                   ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1}}
+                   ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1, slo: [], shi: []}}
     p.module()
     let Parser{ast} = move(p)
     return ast
@@ -1357,9 +1361,21 @@ fn (p: mut &Parser) cond(): int {
 
 fn (p: mut &Parser) stmt(): int {
     p.enter()
+    let lo = len(p.ast.nodes)
     let s = p.stmt1()
+    p.span(lo, s)
     p.depth -= 1
     return s
+}
+
+// Record statement s as made of the nodes from lo to the last one made.
+fn (p: mut &Parser) span(lo: int, s: int) {
+    while len(p.ast.slo) < len(p.ast.nodes) {
+        append(mut &p.ast.slo, -1)
+        append(mut &p.ast.shi, -1)
+    }
+    p.ast.slo[s] = lo
+    p.ast.shi[s] = len(p.ast.nodes) - 1
 }
 
 fn (p: mut &Parser) stmt1(): int {
@@ -1561,7 +1577,15 @@ fn (p: mut &Parser) ifstmt(): int {
     if p.atSym(S_SEMI) && p.isKw(1, K_ELSE) { p.next() }
     if p.atKw(K_ELSE) {
         p.next()
-        els = if p.atKw(K_IF) { p.node(N_BLOCK, p.line(), "", p.list(&[p.ifstmt()]), -1, -1) } else { p.block() }
+        if p.atKw(K_IF) {
+            let bl = p.line()
+            let lo = len(p.ast.nodes)
+            let inner = p.ifstmt()
+            p.span(lo, inner)
+            els = p.node(N_BLOCK, bl, "", p.list(&[inner]), -1, -1)
+        } else {
+            els = p.block()
+        }
     }
     return p.node(N_IF, w, "", c, then, els)
 }

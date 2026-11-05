@@ -1,0 +1,8 @@
+// A branch's temporaries are dropped when the branch ends: it cannot give a borrow of one.
+// error: an if branch cannot give a borrow of a temporary
+fn mk(): str { return intToStr(123456) + "abcdefghijklmnopqrstuvwxyz" }
+fn show(v: &str) { println(v) }
+fn main() {
+    let s = "s"
+    show(if len(s) > 0 { &mk() } else { &s })
+}
