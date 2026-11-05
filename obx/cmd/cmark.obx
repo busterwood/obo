@@ -1,0 +1,107 @@
+// cmark: renders CommonMark to HTML, like the reference implementation's
+// command line tool, on top of lib/markdown.obx:
+//
+//     obxc cmd/cmark.obx --native -o cmark
+//     cmark [options] [file ...]
+//
+// The files (or standard input, or "-") are read in order and parsed as one
+// document, as cmark does, and the HTML is written to standard output.
+//
+// Options (cmark's): --unsafe (raw HTML and every URL pass through; the default
+// is the safe mode), --smart, --sourcepos, --hardbreaks, --nobreaks,
+// --validate-utf8, -t html / --to html (the only output format), --version,
+// -h / --help. The XML, man, LaTeX and CommonMark writers of cmark are not
+// ported.
+//
+// The program is named after the tool it follows, so that the differential
+// tests (tests/markdown.py) can run it in place of cmark; the library module is
+// `markdown`, which other renderers (a terminal one, say) use as well.
+
+import "io"
+import "markdown"
+
+const USAGE = `Usage:   cmark [FILE*]
+Options:
+  --to, -t FORMAT  Specify output format (html)
+  --width WIDTH    Specify wrap width (default 0 = nowrap)
+  --sourcepos      Include source position attribute
+  --hardbreaks     Treat newlines as hard line breaks
+  --nobreaks       Render soft line breaks as spaces
+  --unsafe         Render raw HTML and dangerous URLs
+  --smart          Use smart punctuation
+  --validate-utf8  Replace invalid UTF-8 sequences with U+FFFD
+  --help, -h       Print usage information
+  --version        Print version
+`
+
+fn fail(msg: str): never {
+    eprintln(msg)
+    exit(1)
+}
+
+fn main() {
+    let argv = args()
+    var o = markdown.defaults()
+    var files: []str = []
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if a == "--unsafe" {
+            o.unsafe = true
+        } else if a == "--smart" {
+            o.smart = true
+        } else if a == "--sourcepos" {
+            o.sourcepos = true
+        } else if a == "--hardbreaks" {
+            o.hardbreaks = true
+        } else if a == "--nobreaks" {
+            o.nobreaks = true
+        } else if a == "--validate-utf8" {
+            o.validateUtf8 = true
+        } else if a == "--version" {
+            println("cmark (obx markdown) 0.31.2")
+            return
+        } else if a == "-h" || a == "--help" {
+            print(USAGE)
+            return
+        } else if a == "-t" || a == "--to" || a == "--width" {
+            i += 1
+            if i >= len(argv) { fail("missing argument for " + a) }
+            if a != "--width" && argv[i] != "html" { fail("Unknown format " + argv[i]) }
+        } else if len(a) > 1 && a[0] == '-' {
+            eprint("Unknown option " + a + "\n" + USAGE)
+            exit(1)
+        } else {
+            append(mut &files, a)
+        }
+        i += 1
+    }
+    var src = ""
+    if len(files) == 0 {
+        match io.readStdin() {
+            Ok(s) { src = s }
+            Err(e) { fail("error reading stdin: " + io.errorText(e.errno)) }
+        }
+    } else {
+        for f in files {
+            if f == "-" {
+                match io.readStdin() {
+                    Ok(s) { src += s }
+                    Err(e) { fail("error reading stdin: " + io.errorText(e.errno)) }
+                }
+            } else {
+                match io.read(f) {
+                    Ok(s) { src += s }
+                    Err(e) { fail("error reading " + f + ": " + io.errorText(e.errno)) }
+                }
+            }
+        }
+    }
+    let html = markdown.toHtml(src, o)
+    var w = io.stdout()
+    w.write(html)
+    match w.flush() {
+        Ok(_) {}
+        Err(e) { fail("write error: " + io.errorText(e.errno)) }
+    }
+}

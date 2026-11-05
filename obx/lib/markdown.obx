@@ -1,0 +1,2630 @@
+// markdown: CommonMark 0.31.2 parsing and HTML rendering.
+//
+//     let html = markdown.toHtml("# Hello\n\n*world*\n", markdown.defaults())
+//
+//     let doc = markdown.parse(src, markdown.defaults())   // the tree
+//     var w = doc.walker(doc.root())                       // enter and exit events
+//     while w.next(&doc) {
+//         if w.entering && doc.kind(w.node) == markdown.Kind.Heading { ... }
+//     }
+//     let html2 = doc.html(opts)                           // render a parsed tree
+//
+// The output is the HTML that cmark (the reference implementation) writes, byte
+// for byte, for the same options: `unsafe` lets raw HTML and every link through
+// (cmark's default is the safe mode, which replaces raw HTML by
+// `<!-- raw HTML omitted -->` and empties the URL of a link with a dangerous
+// scheme), `smart` is smart punctuation, `sourcepos` adds data-sourcepos
+// attributes, `hardbreaks` and `nobreaks` change the soft line breaks.
+//
+// The parser follows the spec's own strategy (appendix "A parsing strategy"):
+// a first pass over the lines builds the block structure with a stack of open
+// containers, link reference definitions are taken from the start of each
+// paragraph when it closes, and a second pass parses the inlines of every
+// paragraph and heading with a delimiter stack for emphasis and a bracket
+// stack for links and images. No step recurses, so nesting 100,000 deep is
+// fine, and every step is linear in the input except where the spec makes it
+// quadratic (the work per line is bounded by the open containers).
+//
+// The tree. A Doc owns its nodes in one array, and a node is an index into it:
+// the document is node 0 (root()). A node has a kind, links to its parent,
+// first and last child and previous and next sibling (-1 when there is none),
+// and the data of its kind:
+//
+//   Text, Code, HtmlInline   text: the literal
+//   CodeBlock, HtmlBlock     text: the content (a code block ends in a newline)
+//   CodeBlock                info(): the info string (text after the opening fence)
+//   Link, Image              dest and title (both "" when absent); children are the text
+//   Heading                  level 1 to 6
+//   List                     ordered, start (the first number), tight, and delim:
+//                            '.' or ')' for an ordered list, '*', '+' or '-' for a bullet one
+//   other kinds              no data; Paragraph and Heading have inline children
+//
+// The text of a node that is unescaped or decoded (a destination, an entity) is a
+// new string, the rest are slices of the input. Nodes that the parser removes
+// (a paragraph that was only link reference definitions) stay in the array but
+// are not linked in the tree, so iterate by walking (walker) or by the child
+// links, not by index.
+
+import "strings"
+import "markdown_entities" as ents
+import "markdown_unicode" as uni
+
+pub type Kind = value closed {
+    Document
+    BlockQuote
+    List
+    Item
+    CodeBlock
+    HtmlBlock
+    Paragraph
+    Heading
+    ThematicBreak
+    Text
+    SoftBreak
+    LineBreak
+    Code
+    HtmlInline
+    Emph
+    Strong
+    Link
+    Image
+}
+
+// What parse and html do. All false is what cmark does by default except that
+// cmark's default is safe mode: unsafe false is the safe mode.
+pub type Options = value record {
+    pub unsafe: bool        // raw HTML and dangerous URLs pass through
+    pub smart: bool         // curly quotes, en and em dashes, ellipses
+    pub sourcepos: bool     // data-sourcepos attributes on block elements
+    pub hardbreaks: bool    // render soft line breaks as <br />
+    pub nobreaks: bool      // render soft line breaks as spaces
+    pub validateUtf8: bool  // replace invalid UTF-8 by U+FFFD
+}
+
+pub fn defaults(): Options {
+    return Options{unsafe: false, smart: false, sourcepos: false, hardbreaks: false, nobreaks: false, validateUtf8: false}
+}
+
+pub type Node = value record {
+    pub kind: Kind
+    pub parent: int
+    pub firstChild: int
+    pub lastChild: int
+    pub prev: int
+    pub next: int
+    pub text: str
+    pub dest: str
+    pub title: str
+    pub level: int          // Heading: 1 to 6
+    pub start: int          // List: the number of the first item
+    pub ordered: bool       // List
+    pub tight: bool         // List
+    pub delim: byte         // List: the marker character
+    pub startLine: int      // source position: lines and columns count from 1, columns in bytes
+    pub startCol: int
+    pub endLine: int
+    pub endCol: int
+    open: bool              // block parsing state
+    lastBlank: bool
+    checked: bool
+    lbl: bool               // a List: the last line that reached it was blank
+    pa: int                 // fence length, marker offset or HTML block type
+    pb: int                 // fence offset or item padding
+    pc: byte                // fence character
+}
+
+pub type Doc = record {
+    pub nodes: []Node
+}
+
+const NONE = -1
+
+pub fn (d: &Doc) root(): int { return 0 }
+pub fn (d: &Doc) count(): int { return len(d.nodes) }
+pub fn (d: &Doc) at(id: int): &Node { return &d.nodes[id] }
+pub fn (d: &Doc) kind(id: int): Kind { return d.nodes[id].kind }
+pub fn (d: &Doc) parent(id: int): int { return d.nodes[id].parent }
+pub fn (d: &Doc) firstChild(id: int): int { return d.nodes[id].firstChild }
+pub fn (d: &Doc) lastChild(id: int): int { return d.nodes[id].lastChild }
+pub fn (d: &Doc) next(id: int): int { return d.nodes[id].next }
+pub fn (d: &Doc) prev(id: int): int { return d.nodes[id].prev }
+pub fn (d: &Doc) text(id: int): str { return d.nodes[id].text }
+pub fn (d: &Doc) dest(id: int): str { return d.nodes[id].dest }
+pub fn (d: &Doc) title(id: int): str { return d.nodes[id].title }
+// The info string of a fenced code block ("" for an indented one).
+pub fn (d: &Doc) info(id: int): str { return d.nodes[id].dest }
+pub fn (d: &Doc) level(id: int): int { return d.nodes[id].level }
+
+// Whether a node of this kind has no children.
+pub fn (k: Kind) isLeaf(): bool {
+    match k {
+        Kind.ThematicBreak, Kind.CodeBlock, Kind.HtmlBlock, Kind.Text, Kind.SoftBreak, Kind.LineBreak,
+        Kind.Code, Kind.HtmlInline { return true }
+        else { return false }
+    }
+}
+
+pub fn (k: Kind) isBlock(): bool {
+    match k {
+        Kind.Document, Kind.BlockQuote, Kind.List, Kind.Item, Kind.CodeBlock, Kind.HtmlBlock,
+        Kind.Paragraph, Kind.Heading, Kind.ThematicBreak { return true }
+        else { return false }
+    }
+}
+
+// The name cmark gives the kind ("paragraph", "html_block", "thematic_break").
+pub fn (k: Kind) name(): str {
+    return match k {
+        Kind.Document { "document" }
+        Kind.BlockQuote { "block_quote" }
+        Kind.List { "list" }
+        Kind.Item { "item" }
+        Kind.CodeBlock { "code_block" }
+        Kind.HtmlBlock { "html_block" }
+        Kind.Paragraph { "paragraph" }
+        Kind.Heading { "heading" }
+        Kind.ThematicBreak { "thematic_break" }
+        Kind.Text { "text" }
+        Kind.SoftBreak { "softbreak" }
+        Kind.LineBreak { "linebreak" }
+        Kind.Code { "code" }
+        Kind.HtmlInline { "html_inline" }
+        Kind.Emph { "emph" }
+        Kind.Strong { "strong" }
+        Kind.Link { "link" }
+        Kind.Image { "image" }
+    }
+}
+
+// A walk over the tree below a node as a sequence of events: every node is
+// entered, then its children are walked, then it is exited (a leaf is entered
+// and exited too).
+//
+//     var w = doc.walker(doc.root())
+//     while w.next(&doc) { ... w.node, w.entering ... }
+pub type Walker = value record {
+    pub node: int
+    pub entering: bool
+    root: int
+    state: int      // 0 not started, 1 walking, 2 done
+}
+
+pub fn (d: &Doc) walker(root: int): Walker {
+    return Walker{node: root, entering: false, root: root, state: 0}
+}
+
+// Moves to the next event; false at the end of the walk.
+pub fn (w: mut &Walker) next(d: &Doc): bool {
+    if w.state == 2 { return false }
+    if w.state == 0 {
+        w.state = 1
+        w.entering = true
+        return true
+    }
+    if w.entering && !d.nodes[w.node].kind.isLeaf() {
+        let c = d.nodes[w.node].firstChild
+        if c >= 0 {
+            w.node = c
+        } else {
+            w.entering = false
+        }
+        return true
+    }
+    if w.node == w.root {
+        w.state = 2
+        return false
+    }
+    let nx = d.nodes[w.node].next
+    if nx >= 0 {
+        w.node = nx
+        w.entering = true
+    } else {
+        w.node = d.nodes[w.node].parent
+        w.entering = false
+    }
+    return true
+}
+
+// ------------------------------------------------------------ characters
+
+fn isSpaceOrTab(c: byte): bool { return c == 32 || c == 9 }
+
+fn isAsciiPunct(c: byte): bool {
+    return (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)
+}
+
+fn isAlpha(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+fn isDigitC(c: byte): bool { return c >= '0' && c <= '9' }
+fn isAlnumC(c: byte): bool { return isAlpha(c) || isDigitC(c) }
+fn isHexC(c: byte): bool { return isDigitC(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') }
+
+// The spec's whitespace: space, tab, newline, line tabulation, form feed, carriage return.
+fn isWs(c: byte): bool { return c == 32 || (c >= 9 && c <= 13) }
+
+fn lowerAscii(c: byte): byte {
+    if c >= 'A' && c <= 'Z' { return c + 32 }
+    return c
+}
+
+// Whether the pairs (lo, hi) in table contain cp (binary search).
+fn inRanges(table: &[int], cp: int): bool {
+    var a = 0
+    var b = len(table) / 2
+    while a < b {
+        let m = (a + b) / 2
+        if table[2 * m + 1] < cp {
+            a = m + 1
+        } else if table[2 * m] > cp {
+            b = m
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+// Unicode punctuation as CommonMark means it: the categories P and S.
+fn isUniPunct(cp: int): bool {
+    if cp < 128 { return isAsciiPunct(byte(cp)) }
+    return inRanges(uni.PUNCT, cp)
+}
+
+// Unicode whitespace: Zs, tab, line feed, form feed, carriage return.
+fn isUniSpace(cp: int): bool {
+    if cp < 128 { return cp == 32 || cp == 9 || cp == 10 || cp == 12 || cp == 13 }
+    return inRanges(uni.SPACE, cp)
+}
+
+// The code point that ends just before byte i of s (i > 0).
+fn runeBefore(s: str, i: int): int {
+    var j = i - 1
+    while j > 0 && i - j < 4 && (s[j] & 0xC0) == 0x80 { j -= 1 }
+    let d = strings.decodeAt(s, j)
+    if j + d.size != i { return strings.REPLACEMENT }
+    return d.rune
+}
+
+fn runeAt(s: str, i: int): int {
+    let c = s[i]
+    if c < 0x80 { return int(c) }
+    return strings.decodeAt(s, i).rune
+}
+
+// ------------------------------------------------------------ strings
+
+fn trimSpaces(s: str): str {
+    var a = 0
+    var b = len(s)
+    while a < b && isWs(s[a]) { a += 1 }
+    while b > a && isWs(s[b - 1]) { b -= 1 }
+    return s[a..b]
+}
+
+fn addCodePoint(b: mut &StrBuf, cp: int) {
+    if cp == 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) {
+        strings.addRune(b, 0xFFFD)
+    } else {
+        strings.addRune(b, cp)
+    }
+}
+
+// A character reference at s[i] (which is '&'): its length in bytes (0 when
+// there is none) and the one or two code points it stands for.
+type EntityRef = value record {
+    len: int
+    cp1: int
+    cp2: int
+}
+
+fn entityAt(s: str, i: int): EntityRef {
+    let n = len(s)
+    var j = i + 1
+    if j >= n { return EntityRef{len: 0, cp1: 0, cp2: 0} }
+    if s[j] == '#' {
+        j += 1
+        var v = 0
+        var digits = 0
+        if j < n && (s[j] == 'x' || s[j] == 'X') {
+            j += 1
+            while j < n && isHexC(s[j]) && digits < 7 {
+                let c = s[j]
+                v = v * 16 + int(if c <= '9' { c - '0' } else if c >= 'a' { c - 'a' + 10 } else { c - 'A' + 10 })
+                digits += 1
+                j += 1
+            }
+            if digits < 1 || digits > 6 { return EntityRef{len: 0, cp1: 0, cp2: 0} }
+        } else {
+            while j < n && isDigitC(s[j]) && digits < 8 {
+                v = v * 10 + int(s[j] - '0')
+                digits += 1
+                j += 1
+            }
+            if digits < 1 || digits > 7 { return EntityRef{len: 0, cp1: 0, cp2: 0} }
+        }
+        if j >= n || s[j] != ';' { return EntityRef{len: 0, cp1: 0, cp2: 0} }
+        return EntityRef{len: j + 1 - i, cp1: v, cp2: 0}
+    }
+    let a = j
+    while j < n && isAlnumC(s[j]) && j - a < 32 { j += 1 }
+    if j == a || j >= n || s[j] != ';' { return EntityRef{len: 0, cp1: 0, cp2: 0} }
+    let name = s[a..j]
+    var lo = 0
+    var hi = ents.COUNT
+    while lo < hi {
+        let m = (lo + hi) / 2
+        let e = ents.NAMES[m]
+        if e == name { return EntityRef{len: j + 1 - i, cp1: ents.CP1[m], cp2: ents.CP2[m]} }
+        if e < name { lo = m + 1 } else { hi = m }
+    }
+    return EntityRef{len: 0, cp1: 0, cp2: 0}
+}
+
+// s with character references replaced by what they stand for.
+fn unescapeEntities(s: str): str {
+    var need = false
+    for k in 0..len(s) {
+        if s[k] == '&' {
+            need = true
+            break
+        }
+    }
+    if !need { return s }
+    var b = newStrBuf()
+    var i = 0
+    let n = len(s)
+    while i < n {
+        let c = s[i]
+        if c == '&' {
+            let e = entityAt(s, i)
+            if e.len > 0 {
+                addCodePoint(mut &b, e.cp1)
+                if e.cp2 != 0 { addCodePoint(mut &b, e.cp2) }
+                i += e.len
+            } else {
+                b.addByte(c)
+                i += 1
+            }
+        } else {
+            b.addByte(c)
+            i += 1
+        }
+    }
+    return b.toStr()
+}
+
+// s without the backslashes of backslash escapes.
+fn unescapeBackslashes(s: str): str {
+    var need = false
+    for k in 0..len(s) {
+        if s[k] == '\\' {
+            need = true
+            break
+        }
+    }
+    if !need { return s }
+    var b = newStrBuf()
+    var i = 0
+    let n = len(s)
+    while i < n {
+        if s[i] == '\\' && i + 1 < n && isAsciiPunct(s[i + 1]) {
+            b.addByte(s[i + 1])
+            i += 2
+        } else {
+            b.addByte(s[i])
+            i += 1
+        }
+    }
+    return b.toStr()
+}
+
+// What cmark makes of a destination, title or info string: references first, then escapes.
+fn unescape(s: str): str { return unescapeBackslashes(unescapeEntities(s)) }
+
+// The case folded text of a link label: leading and trailing white space gone,
+// runs of white space one space, Unicode full case folding.
+fn normalizeLabel(s: str): str {
+    var b = newStrBuf()
+    var i = 0
+    let n = len(s)
+    var pendingSpace = false
+    while i < n {
+        let c = s[i]
+        if isWs(c) {
+            if b.size() > 0 { pendingSpace = true }
+            i += 1
+        } else {
+            if pendingSpace {
+                b.addByte(' ')
+                pendingSpace = false
+            }
+            if c < 0x80 {
+                b.addByte(lowerAscii(c))
+                i += 1
+            } else {
+                let d = strings.decodeAt(s, i)
+                if !d.ok {
+                    strings.addRune(mut &b, 0xFFFD)
+                } else {
+                    foldInto(mut &b, d.rune)
+                }
+                i += d.size
+            }
+        }
+    }
+    return b.toStr()
+}
+
+fn foldInto(b: mut &StrBuf, cp: int) {
+    var lo = 0
+    var hi = len(uni.FOLD_FROM)
+    while lo < hi {
+        let m = (lo + hi) / 2
+        let f = uni.FOLD_FROM[m]
+        if f == cp {
+            for k in uni.FOLD_START[m]..uni.FOLD_START[m + 1] { strings.addRune(b, uni.FOLD_DATA[k]) }
+            return
+        }
+        if f < cp { lo = m + 1 } else { hi = m }
+    }
+    strings.addRune(b, cp)
+}
+
+// ------------------------------------------------------------ raw HTML scanners
+
+// The end (after the '>') of an open tag that starts at s[i] == '<', or -1.
+fn scanOpenTag(s: str, i: int): int {
+    let n = len(s)
+    var j = i + 1
+    if j >= n || !isAlpha(s[j]) { return -1 }
+    while j < n && (isAlnumC(s[j]) || s[j] == '-') { j += 1 }
+    while true {
+        // whitespace, then an attribute name
+        var k = j
+        while k < n && isWs(s[k]) { k += 1 }
+        if k == j || k >= n { break }
+        let c = s[k]
+        if !(isAlpha(c) || c == '_' || c == ':') { break }
+        k += 1
+        while k < n && (isAlnumC(s[k]) || s[k] == '_' || s[k] == '.' || s[k] == ':' || s[k] == '-') { k += 1 }
+        j = k
+        // an optional value
+        var m = k
+        while m < n && isWs(s[m]) { m += 1 }
+        if m < n && s[m] == '=' {
+            m += 1
+            while m < n && isWs(s[m]) { m += 1 }
+            if m < n {
+                let q = s[m]
+                if q == '"' || q == '\'' {
+                    var e = m + 1
+                    while e < n && s[e] != q { e += 1 }
+                    if e < n { j = e + 1 }
+                } else {
+                    var e = m
+                    while e < n && !isWs(s[e]) && s[e] != '"' && s[e] != '\'' && s[e] != '=' && s[e] != '<' && s[e] != '>' && s[e] != '`' { e += 1 }
+                    if e > m { j = e }
+                }
+            }
+        }
+    }
+    var k = j
+    while k < n && isWs(s[k]) { k += 1 }
+    if k < n && s[k] == '/' { k += 1 }
+    if k < n && s[k] == '>' { return k + 1 }
+    return -1
+}
+
+// The end of a closing tag that starts at s[i] == '<', or -1.
+fn scanCloseTag(s: str, i: int): int {
+    let n = len(s)
+    var j = i + 2
+    if j >= n || s[i + 1] != '/' || !isAlpha(s[j]) { return -1 }
+    while j < n && (isAlnumC(s[j]) || s[j] == '-') { j += 1 }
+    while j < n && isWs(s[j]) { j += 1 }
+    if j < n && s[j] == '>' { return j + 1 }
+    return -1
+}
+
+// The index of the first occurrence of pat (lower case) in s from i, comparing
+// without regard to ASCII case; -1 when there is none.
+fn findCI(s: str, from: int, pat: str): int {
+    let n = len(s)
+    let m = len(pat)
+    var i = from
+    while i + m <= n {
+        var k = 0
+        while k < m && lowerAscii(s[i + k]) == pat[k] { k += 1 }
+        if k == m { return i }
+        i += 1
+    }
+    return -1
+}
+
+// Whether s[i..] starts with pat (lower case), ignoring ASCII case.
+fn startsCI(s: str, i: int, pat: str): bool {
+    if i + len(pat) > len(s) { return false }
+    for k in 0..len(pat) {
+        if lowerAscii(s[i + k]) != pat[k] { return false }
+    }
+    return true
+}
+
+const BLOCK_TAGS: []str = [
+    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
+    "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure",
+    "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr",
+    "html", "iframe", "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes", "ol",
+    "optgroup", "option", "p", "param", "search", "section", "summary", "table", "tbody", "td", "tfoot",
+    "th", "thead", "title", "tr", "track", "ul"]
+
+fn isBlockTag(name: str): bool {
+    var lo = 0
+    var hi = len(BLOCK_TAGS)
+    while lo < hi {
+        let m = (lo + hi) / 2
+        let e = BLOCK_TAGS[m]
+        if e == name { return true }
+        if e < name { lo = m + 1 } else { hi = m }
+    }
+    return false
+}
+
+// Type 1 start: <script, <pre, <textarea or <style, then white space, '>' or the end.
+fn isRawTextStart(s: str, i: int): bool {
+    let n = len(s)
+    var e = -1
+    if startsCI(s, i + 1, "script") { e = i + 7 }
+    else if startsCI(s, i + 1, "pre") { e = i + 4 }
+    else if startsCI(s, i + 1, "textarea") { e = i + 9 }
+    else if startsCI(s, i + 1, "style") { e = i + 6 }
+    if e < 0 { return false }
+    return e >= n || isWs(s[e]) || s[e] == '>'
+}
+
+// The HTML block start condition (1 to 7) that the line s matches at s[i] == '<', or 0.
+// allow7 says whether condition 7 may start here (it cannot interrupt a paragraph).
+fn htmlBlockStart(s: str, i: int, allow7: bool): int {
+    let n = len(s)
+    if isRawTextStart(s, i) { return 1 }
+    if startsCI(s, i, "<!--") { return 2 }
+    if i + 1 < n && s[i + 1] == '?' { return 3 }
+    if i + 2 < n && s[i + 1] == '!' && isAlpha(s[i + 2]) { return 4 }
+    if startsCI(s, i, "<![cdata[") { return 5 }
+    // 6: a block level tag name
+    var j = i + 1
+    if j < n && s[j] == '/' { j += 1 }
+    let a = j
+    while j < n && isAlnumC(s[j]) { j += 1 }
+    if j > a && j - a <= 10 {
+        var low = newStrBuf()
+        for k in a..j { low.addByte(lowerAscii(s[k])) }
+        if isBlockTag(low.toStr()) {
+            if j >= n || isWs(s[j]) || s[j] == '>' || (s[j] == '/' && j + 1 < n && s[j + 1] == '>') { return 6 }
+        }
+    }
+    if allow7 {
+        var e = scanOpenTag(s, i)
+        if e < 0 { e = scanCloseTag(s, i) }
+        if e >= 0 {
+            while e < n && isSpaceOrTab(s[e]) { e += 1 }
+            if e >= n { return 7 }
+        }
+    }
+    return 0
+}
+
+// Whether the rest of an HTML block line closes a block of type 1 to 5.
+fn htmlBlockEnds(t: int, s: str): bool {
+    if t == 1 {
+        return findCI(s, 0, "</script>") >= 0 || findCI(s, 0, "</pre>") >= 0 ||
+               findCI(s, 0, "</textarea>") >= 0 || findCI(s, 0, "</style>") >= 0
+    }
+    if t == 2 { return indexOf(s, "-->", 0) >= 0 }
+    if t == 3 { return indexOf(s, "?>", 0) >= 0 }
+    if t == 4 { return indexOf(s, ">", 0) >= 0 }
+    return indexOf(s, "]]>", 0) >= 0
+}
+
+// ------------------------------------------------------------ block parser
+
+type RefDef = value record {
+    dest: str
+    title: str
+}
+
+type Marker = value record {
+    ok: bool
+    ordered: bool
+    delim: byte
+    start: int
+    padding: int
+    markerOff: int
+}
+
+type Delim = value record {
+    cc: byte
+    node: int
+    num: int
+    orig: int
+    canOpen: bool
+    canClose: bool
+    prev: int
+    next: int
+}
+
+type Bracket = value record {
+    node: int
+    prevDelim: int
+    index: int
+    image: bool
+    active: bool
+    bracketAfter: bool
+}
+
+type Parser = record {
+    o: Options
+    d: Doc
+    refs: Map[str, RefDef]
+    tip: int
+    oldtip: int
+    lastMatched: int
+    allClosed: bool
+    ln: str
+    lineNo: int
+    offset: int
+    column: int
+    nextNon: int
+    nextNonCol: int
+    indent: int
+    indented: bool
+    blank: bool
+    partialTab: bool
+    lastLineLen: int
+    content: StrBuf
+    // inline state
+    subj: str
+    pos: int
+    delims: []Delim
+    dTop: int
+    brs: []Bracket
+    bt: []int
+    btScanned: bool
+    noComment: bool
+    noPi: bool
+    noDecl: bool
+    noCdata: bool
+    special: []bool
+    refSize: int
+    refBudget: int
+    deact: int
+    btDirty: bool
+    inLine: bool
+    chopLen: int
+}
+
+fn newParser(o: Options): Parser {
+    var special = array(256, false)
+    let sp: []byte = ['\n', '`', '[', ']', '\\', '!', '<', '&', '*', '_']
+    for c in sp { special[int(c)] = true }
+    if o.smart {
+        special[int('.')] = true
+        special[int('-')] = true
+        special[int('\'')] = true
+        special[int('"')] = true
+    }
+    var p = Parser{o: o, d: Doc{nodes: []}, refs: newMap[str, RefDef](), tip: 0, oldtip: 0, lastMatched: 0,
+        allClosed: true, ln: "", lineNo: 0, offset: 0, column: 0, nextNon: 0, nextNonCol: 0, indent: 0,
+        indented: false, blank: false, partialTab: false, lastLineLen: 0, content: newStrBuf(),
+        subj: "", pos: 0, delims: [], dTop: -1, brs: [], bt: array(1001, 0), btScanned: false,
+        noComment: false, noPi: false, noDecl: false, noCdata: false, special: special, refSize: 0, refBudget: 0, deact: 0, btDirty: false, inLine: false, chopLen: -1}
+    let root = p.newNode(Kind.Document)
+    p.d.nodes[root].open = true
+    p.d.nodes[root].startLine = 1
+    p.d.nodes[root].startCol = 1
+    return p
+}
+
+fn blankNode(kind: Kind): Node {
+    return Node{kind: kind, parent: NONE, firstChild: NONE, lastChild: NONE, prev: NONE, next: NONE,
+        text: "", dest: "", title: "", level: 0, start: 0, ordered: false, tight: false, delim: 0,
+        startLine: 0, startCol: 0, endLine: 0, endCol: 0, open: false, lastBlank: false, checked: false, lbl: false,
+        pa: 0, pb: 0, pc: 0}
+}
+
+fn (p: mut &Parser) newNode(kind: Kind): int {
+    append(mut &p.d.nodes, blankNode(kind))
+    return len(p.d.nodes) - 1
+}
+
+fn (p: mut &Parser) unlink(i: int) {
+    let pr = p.d.nodes[i].prev
+    let nx = p.d.nodes[i].next
+    let par = p.d.nodes[i].parent
+    if pr >= 0 {
+        p.d.nodes[pr].next = nx
+    } else if par >= 0 {
+        p.d.nodes[par].firstChild = nx
+    }
+    if nx >= 0 {
+        p.d.nodes[nx].prev = pr
+    } else if par >= 0 {
+        p.d.nodes[par].lastChild = pr
+    }
+    p.d.nodes[i].parent = NONE
+    p.d.nodes[i].prev = NONE
+    p.d.nodes[i].next = NONE
+}
+
+// Adds the unlinked node c as the last child of par.
+fn (p: mut &Parser) append(par: int, c: int) {
+    let last = p.d.nodes[par].lastChild
+    p.d.nodes[c].parent = par
+    p.d.nodes[c].prev = last
+    p.d.nodes[c].next = NONE
+    if last >= 0 {
+        p.d.nodes[last].next = c
+    } else {
+        p.d.nodes[par].firstChild = c
+    }
+    p.d.nodes[par].lastChild = c
+}
+
+// Puts the unlinked node c after a.
+fn (p: mut &Parser) insertAfter(a: int, c: int) {
+    let nx = p.d.nodes[a].next
+    let par = p.d.nodes[a].parent
+    p.d.nodes[c].parent = par
+    p.d.nodes[c].prev = a
+    p.d.nodes[c].next = nx
+    p.d.nodes[a].next = c
+    if nx >= 0 {
+        p.d.nodes[nx].prev = c
+    } else if par >= 0 {
+        p.d.nodes[par].lastChild = c
+    }
+}
+
+fn (p: &Parser) kindOf(i: int): Kind { return p.d.nodes[i].kind }
+
+fn (p: &Parser) peekAt(i: int): byte {
+    if i < len(p.ln) { return p.ln[i] }
+    return 0
+}
+
+fn (p: mut &Parser) findNextNonspace() {
+    var i = p.offset
+    var cols = p.column
+    let n = len(p.ln)
+    while i < n {
+        let c = p.ln[i]
+        if c == ' ' {
+            i += 1
+            cols += 1
+        } else if c == '\t' {
+            i += 1
+            cols += 4 - cols % 4
+        } else {
+            break
+        }
+    }
+    p.blank = i >= n
+    p.nextNon = i
+    p.nextNonCol = cols
+    p.indent = cols - p.column
+    p.indented = p.indent >= 4
+}
+
+fn (p: mut &Parser) advanceNextNonspace() {
+    p.offset = p.nextNon
+    p.column = p.nextNonCol
+    p.partialTab = false
+}
+
+fn (p: mut &Parser) advanceOffset(count: int, columns: bool) {
+    var left = count
+    let n = len(p.ln)
+    while left > 0 && p.offset < n {
+        if p.ln[p.offset] == '\t' {
+            let toTab = 4 - p.column % 4
+            if columns {
+                p.partialTab = toTab > left
+                let adv = if toTab < left { toTab } else { left }
+                p.column += adv
+                if !p.partialTab { p.offset += 1 }
+                left -= adv
+            } else {
+                p.partialTab = false
+                p.column += toTab
+                p.offset += 1
+                left -= 1
+            }
+        } else {
+            p.partialTab = false
+            p.offset += 1
+            p.column += 1
+            left -= 1
+        }
+    }
+}
+
+// Adds the rest of the line to the content of the open leaf block.
+fn (p: mut &Parser) addLine() {
+    if p.partialTab {
+        // a tab that was only partly consumed: its remaining columns are spaces
+        p.offset += 1
+        var k = 4 - p.column % 4
+        while k > 0 {
+            p.content.addByte(' ')
+            k -= 1
+        }
+    }
+    p.content.add(p.ln[p.offset..])
+    p.content.addByte('\n')
+}
+
+fn acceptsLines(k: Kind): bool {
+    return k == Kind.Paragraph || k == Kind.CodeBlock || k == Kind.HtmlBlock
+}
+
+fn canContain(t: Kind, c: Kind): bool {
+    match t {
+        Kind.Document, Kind.BlockQuote, Kind.Item { return c != Kind.Item }
+        Kind.List { return c == Kind.Item }
+        else { return false }
+    }
+}
+
+// Opens a new block as a child of the tip (closing the tip and its ancestors until one can contain it).
+fn (p: mut &Parser) addChild(kind: Kind, off: int): int {
+    while !canContain(p.d.nodes[p.tip].kind, kind) { p.finalize(p.tip, p.lineNo - 1) }
+    let id = p.newNode(kind)
+    p.d.nodes[id].open = true
+    p.d.nodes[id].startLine = p.lineNo
+    p.d.nodes[id].startCol = off + 1
+    p.append(p.tip, id)
+    p.tip = id
+    return id
+}
+
+fn (p: mut &Parser) closeUnmatchedBlocks() {
+    if !p.allClosed {
+        while p.oldtip != p.lastMatched {
+            let par = p.d.nodes[p.oldtip].parent
+            p.finalize(p.oldtip, p.lineNo - 1)
+            p.oldtip = par
+        }
+        p.allClosed = true
+    }
+}
+
+fn (p: mut &Parser) blankEnd(start: int): bool {
+    var b = start
+    while true {
+        if p.d.nodes[b].checked { return p.d.nodes[b].lastBlank }
+        p.d.nodes[b].checked = true
+        let t = p.d.nodes[b].kind
+        let lc = p.d.nodes[b].lastChild
+        if (t == Kind.List || t == Kind.Item) && lc >= 0 {
+            b = lc
+        } else {
+            return p.d.nodes[b].lastBlank
+        }
+    }
+    return false
+}
+
+// Drops trailing lines that hold only spaces and tabs from text whose lines all
+// end in a newline; keepNl says whether the last newline stays.
+fn stripBlankTail(s: str, keepNl: bool): str {
+    var e = len(s)
+    while e > 0 {
+        var ls = e - 1
+        while ls > 0 && s[ls - 1] != '\n' { ls -= 1 }
+        var allBlank = true
+        for k in ls..e - 1 {
+            if !isSpaceOrTab(s[k]) {
+                allBlank = false
+                break
+            }
+        }
+        if !allBlank { break }
+        e = ls
+    }
+    if e == 0 { return "" }
+    if keepNl { return s[0..e] }
+    return s[0..e - 1]
+}
+
+fn (p: mut &Parser) finalize(id: int, lineNo: int) {
+    let above = p.d.nodes[id].parent
+    p.d.nodes[id].open = false
+    let kind = p.d.nodes[id].kind
+    // the end position as cmark computes it: from the line being processed for a
+    // fenced code block, a setext heading and the document, else from the line before
+    if !p.inLine {
+        p.d.nodes[id].endLine = p.lineNo
+        p.d.nodes[id].endCol = p.lastLineLen
+    } else if kind == Kind.Document || (kind == Kind.CodeBlock && p.d.nodes[id].pa > 0) ||
+              (kind == Kind.Heading && p.d.nodes[id].pa == 1) {
+        p.d.nodes[id].endLine = p.lineNo
+        p.d.nodes[id].endCol = len(p.ln)
+    } else {
+        p.d.nodes[id].endLine = p.lineNo - 1
+        p.d.nodes[id].endCol = p.lastLineLen
+    }
+    match kind {
+        Kind.Paragraph {
+            var s = p.content.toStr()
+            p.content.clear()
+            var hadRefs = false
+            while len(s) > 0 && s[0] == '[' {
+                let used = p.parseReference(s)
+                if used <= 0 { break }
+                s = s[used..]
+                hadRefs = true
+            }
+            if len(trimSpaces(s)) == 0 {
+                p.unlink(id)
+            } else {
+                p.d.nodes[id].text = s
+            }
+        }
+        Kind.CodeBlock {
+            let s = p.content.toStr()
+            p.content.clear()
+            if p.d.nodes[id].pa > 0 {
+                // fenced: the first line is the info string
+                let nl = indexOf(s, "\n", 0)
+                let first = if nl < 0 { s } else { s[0..nl] }
+                p.d.nodes[id].dest = unescapeBackslashes(trimSpaces(unescapeEntities(first)))
+                p.d.nodes[id].text = if nl < 0 { "" } else { s[nl + 1..] }
+            } else {
+                p.d.nodes[id].text = stripBlankTail(s, true)
+            }
+        }
+        Kind.HtmlBlock {
+            let s = p.content.toStr()
+            p.content.clear()
+            p.d.nodes[id].text = s
+        }
+        Kind.List {
+            var tight = true
+            var item = p.d.nodes[id].firstChild
+            while item >= 0 && tight {
+                let itemNext = p.d.nodes[item].next
+                if p.d.nodes[item].lastBlank && itemNext >= 0 {
+                    tight = false
+                } else {
+                    var sub = p.d.nodes[item].firstChild
+                    while sub >= 0 {
+                        if (itemNext >= 0 || p.d.nodes[sub].next >= 0) && p.blankEnd(sub) {
+                            tight = false
+                            break
+                        }
+                        sub = p.d.nodes[sub].next
+                    }
+                }
+                item = itemNext
+            }
+            p.d.nodes[id].tight = tight
+        }
+        else {}
+    }
+    p.tip = above
+}
+
+// 0: the block continues on this line (the prefix is consumed); 1: it does not; 2: the line is fully consumed.
+fn (p: mut &Parser) continueBlock(id: int): int {
+    let kind = p.d.nodes[id].kind
+    match kind {
+        Kind.BlockQuote {
+            if !p.indented && p.peekAt(p.nextNon) == '>' {
+                p.advanceNextNonspace()
+                p.advanceOffset(1, false)
+                if isSpaceOrTab(p.peekAt(p.offset)) { p.advanceOffset(1, true) }
+                return 0
+            }
+            return 1
+        }
+        Kind.Item {
+            if p.indent >= p.d.nodes[id].pa + p.d.nodes[id].pb {
+                p.advanceOffset(p.d.nodes[id].pa + p.d.nodes[id].pb, true)
+            } else if p.blank && p.d.nodes[id].firstChild >= 0 {
+                p.advanceNextNonspace()
+            } else {
+                return 1
+            }
+            return 0
+        }
+        Kind.Heading { return 1 }
+        Kind.CodeBlock {
+            let fence = p.d.nodes[id].pa
+            if fence > 0 {
+                let ch = p.d.nodes[id].pc
+                if p.indent <= 3 && p.peekAt(p.nextNon) == ch {
+                    var j = p.nextNon
+                    while j < len(p.ln) && p.ln[j] == ch { j += 1 }
+                    if j - p.nextNon >= fence {
+                        while j < len(p.ln) && isSpaceOrTab(p.ln[j]) { j += 1 }
+                        if j >= len(p.ln) {
+                            p.finalize(id, p.lineNo)
+                            return 2
+                        }
+                    }
+                }
+                var i = p.d.nodes[id].pb
+                while i > 0 && isSpaceOrTab(p.peekAt(p.offset)) {
+                    p.advanceOffset(1, true)
+                    i -= 1
+                }
+            } else {
+                if p.indent >= 4 {
+                    p.advanceOffset(4, true)
+                } else if p.blank {
+                    p.advanceNextNonspace()
+                } else {
+                    return 1
+                }
+            }
+            return 0
+        }
+        Kind.HtmlBlock {
+            let t = p.d.nodes[id].pa
+            if p.blank && (t == 6 || t == 7) { return 1 }
+            return 0
+        }
+        Kind.Paragraph {
+            if p.blank { return 1 }
+            return 0
+        }
+        else { return 0 }
+    }
+}
+
+fn isThematicBreak(s: str, i: int): bool {
+    let c = s[i]
+    var count = 0
+    for j in i..len(s) {
+        let x = s[j]
+        if x == c {
+            count += 1
+        } else if !isSpaceOrTab(x) {
+            return false
+        }
+    }
+    return count >= 3
+}
+
+// cmark's length of an ATX heading line once trailing white space and a closing
+// sequence of '#' are cut off (it becomes the heading's end column).
+fn chopHashes(s: str): int {
+    var e = len(s)
+    while e > 0 && isWs(s[e - 1]) { e -= 1 }
+    var n = e - 1
+    let orig = n
+    while n >= 0 && s[n] == '#' { n -= 1 }
+    if n != orig && n >= 0 && isSpaceOrTab(s[n]) {
+        e = n
+        while e > 0 && isWs(s[e - 1]) { e -= 1 }
+    }
+    return e
+}
+
+// ATX heading content without its closing sequence of '#'.
+fn stripClosing(s: str): str {
+    var e = len(s)
+    while e > 0 && isSpaceOrTab(s[e - 1]) { e -= 1 }
+    if e == 0 || s[e - 1] != '#' { return s }
+    var r = e
+    while r > 0 && s[r - 1] == '#' { r -= 1 }
+    // the closing sequence must be preceded by a space or tab, or be all there is
+    var b = r
+    while b > 0 && isSpaceOrTab(s[b - 1]) { b -= 1 }
+    if b == 0 { return "" }
+    if b < r { return s[0..b] }
+    return s
+}
+
+fn (p: mut &Parser) parseMarker(container: int): Marker {
+    let none = Marker{ok: false, ordered: false, delim: 0, start: 0, padding: 0, markerOff: 0}
+    if p.indent >= 4 { return none }
+    let n = len(p.ln)
+    var j = p.nextNon
+    let c = p.ln[j]
+    var ordered = false
+    var delim = c
+    var start = 0
+    if c == '*' || c == '+' || c == '-' {
+        j += 1
+    } else if isDigitC(c) {
+        var digits = 0
+        while j < n && isDigitC(p.ln[j]) && digits < 10 {
+            start = start * 10 + int(p.ln[j] - '0')
+            digits += 1
+            j += 1
+        }
+        if digits > 9 || j >= n || (p.ln[j] != '.' && p.ln[j] != ')') { return none }
+        if p.d.nodes[container].kind == Kind.Paragraph && start != 1 { return none }
+        ordered = true
+        delim = p.ln[j]
+        j += 1
+    } else {
+        return none
+    }
+    let markerLen = j - p.nextNon
+    // a space, tab or the end of the line must follow
+    if j < n && !isSpaceOrTab(p.ln[j]) { return none }
+    // a list item that interrupts a paragraph may not start with a blank line
+    if p.d.nodes[container].kind == Kind.Paragraph {
+        var k = j
+        while k < n && isSpaceOrTab(p.ln[k]) { k += 1 }
+        if k >= n { return none }
+    }
+    let markerOff = p.indent
+    p.advanceNextNonspace()
+    p.advanceOffset(markerLen, true)
+    let spacesStartCol = p.column
+    let spacesStartOffset = p.offset
+    p.advanceOffset(1, true)
+    while p.column - spacesStartCol < 5 && isSpaceOrTab(p.peekAt(p.offset)) { p.advanceOffset(1, true) }
+    let blankItem = p.peekAt(p.offset) == 0
+    let spaces = p.column - spacesStartCol
+    var padding = 0
+    if spaces >= 5 || spaces < 1 || blankItem {
+        padding = markerLen + 1
+        p.column = spacesStartCol
+        p.offset = spacesStartOffset
+        if isSpaceOrTab(p.peekAt(p.offset)) { p.advanceOffset(1, true) }
+    } else {
+        padding = markerLen + spaces
+    }
+    return Marker{ok: true, ordered: ordered, delim: delim, start: start, padding: padding, markerOff: markerOff}
+}
+
+// Tries the block starts in order. 0: none; 1: a container started; 2: a leaf started.
+fn (p: mut &Parser) blockStart(container: int): int {
+    let c0 = p.peekAt(p.nextNon)
+    let ckind = p.d.nodes[container].kind
+    let n = len(p.ln)
+    if !p.indented {
+        // block quote
+        if c0 == '>' {
+            p.advanceNextNonspace()
+            p.advanceOffset(1, false)
+            if isSpaceOrTab(p.peekAt(p.offset)) { p.advanceOffset(1, true) }
+            p.closeUnmatchedBlocks()
+            p.addChild(Kind.BlockQuote, p.nextNon)
+            return 1
+        }
+        // ATX heading
+        if c0 == '#' {
+            var j = p.nextNon
+            while j < n && p.ln[j] == '#' { j += 1 }
+            let cnt = j - p.nextNon
+            if cnt <= 6 && (j >= n || isSpaceOrTab(p.ln[j])) {
+                p.advanceNextNonspace()
+                p.advanceOffset(cnt, false)
+                p.closeUnmatchedBlocks()
+                let h = p.addChild(Kind.Heading, p.nextNon)
+                p.d.nodes[h].level = cnt
+                p.d.nodes[h].text = stripClosing(p.ln[p.offset..])
+                if p.offset >= n || len(trimSpaces(p.ln[p.offset..])) > 0 { p.chopLen = chopHashes(p.ln) }
+                p.advanceOffset(n - p.offset, false)
+                return 2
+            }
+        }
+        // fenced code block
+        if c0 == '`' || c0 == '~' {
+            var j = p.nextNon
+            while j < n && p.ln[j] == c0 { j += 1 }
+            let cnt = j - p.nextNon
+            var ok = cnt >= 3
+            if ok && c0 == '`' {
+                for k in j..n {
+                    if p.ln[k] == '`' {
+                        ok = false
+                        break
+                    }
+                }
+            }
+            if ok {
+                p.closeUnmatchedBlocks()
+                let cb = p.addChild(Kind.CodeBlock, p.nextNon)
+                p.d.nodes[cb].pa = cnt
+                p.d.nodes[cb].pb = p.indent
+                p.d.nodes[cb].pc = byte(c0)
+                p.advanceNextNonspace()
+                p.advanceOffset(cnt, false)
+                return 2
+            }
+        }
+        // HTML block
+        if c0 == '<' {
+            let allow7 = ckind != Kind.Paragraph && !(!p.allClosed && !p.blank && p.d.nodes[p.tip].kind == Kind.Paragraph)
+            let t = htmlBlockStart(p.ln, p.nextNon, allow7)
+            if t > 0 {
+                p.closeUnmatchedBlocks()
+                let b = p.addChild(Kind.HtmlBlock, p.offset)
+                p.d.nodes[b].pa = t
+                return 2
+            }
+        }
+        // setext heading
+        if ckind == Kind.Paragraph && (c0 == '=' || c0 == '-') {
+            var j = p.nextNon
+            while j < n && p.ln[j] == c0 { j += 1 }
+            var k = j
+            while k < n && isSpaceOrTab(p.ln[k]) { k += 1 }
+            if k >= n {
+                p.closeUnmatchedBlocks()
+                var s = p.content.toStr()
+                p.content.clear()
+                while len(s) > 0 && s[0] == '[' {
+                    let used = p.parseReference(s)
+                    if used <= 0 { break }
+                    s = s[used..]
+                }
+                if len(trimSpaces(s)) > 0 {
+                    let h = p.newNode(Kind.Heading)
+                    p.d.nodes[h].level = if c0 == '=' { 1 } else { 2 }
+                    p.d.nodes[h].pa = 1
+                    p.d.nodes[h].text = s
+                    p.d.nodes[h].open = true
+                    p.d.nodes[h].startLine = p.d.nodes[container].startLine
+                    p.d.nodes[h].startCol = p.d.nodes[container].startCol
+                    p.insertAfter(container, h)
+                    p.unlink(container)
+                    p.tip = h
+                    p.advanceOffset(n - p.offset, false)
+                    return 2
+                }
+                // only definitions: the paragraph has no content left
+                p.content.add(s)
+                return 0
+            }
+        }
+        // thematic break
+        if (c0 == '*' || c0 == '_' || c0 == '-') && isThematicBreak(p.ln, p.nextNon) {
+            p.closeUnmatchedBlocks()
+            p.addChild(Kind.ThematicBreak, p.nextNon)
+            p.advanceOffset(n - p.offset, false)
+            return 2
+        }
+    }
+    // list item
+    if !p.indented || ckind == Kind.List {
+        if c0 != 0 {
+            let m = p.parseMarker(container)
+            if m.ok {
+                p.closeUnmatchedBlocks()
+                var need = true
+                if p.d.nodes[p.tip].kind == Kind.List {
+                    let t = p.tip
+                    if p.d.nodes[t].ordered == m.ordered && p.d.nodes[t].delim == m.delim { need = false }
+                }
+                if need {
+                    let l = p.addChild(Kind.List, p.nextNon)
+                    p.d.nodes[l].ordered = m.ordered
+                    p.d.nodes[l].delim = m.delim
+                    p.d.nodes[l].start = m.start
+                    p.d.nodes[l].tight = true
+                }
+                let it = p.addChild(Kind.Item, p.nextNon)
+                p.d.nodes[it].pa = m.markerOff
+                p.d.nodes[it].pb = m.padding
+                return 1
+            }
+        }
+    }
+    // indented code block
+    if p.indented && p.d.nodes[p.tip].kind != Kind.Paragraph && !p.blank {
+        p.advanceOffset(4, true)
+        p.closeUnmatchedBlocks()
+        p.addChild(Kind.CodeBlock, p.offset)
+        return 2
+    }
+    return 0
+}
+
+// Whether the line, so far, can only be a lazy continuation of the open paragraph
+// (then cmark keeps its leading white space).
+fn (p: &Parser) lazyLine(): bool {
+    return !p.allClosed && !p.blank && p.d.nodes[p.tip].kind == Kind.Paragraph
+}
+
+fn maybeSpecial(c: byte): bool {
+    return c == '#' || c == '`' || c == '~' || c == '*' || c == '+' || c == '_' || c == '=' || c == '<' ||
+           c == '>' || c == '-' || (c >= '0' && c <= '9')
+}
+
+fn (p: mut &Parser) line(ln: str) {
+    var container = 0
+    p.oldtip = p.tip
+    p.offset = 0
+    p.column = 0
+    p.blank = false
+    p.partialTab = false
+    p.lineNo += 1
+    p.ln = ln
+    p.inLine = true
+    p.chopLen = -1
+    // match the open containers that continue on this line
+    while true {
+        let lc = p.d.nodes[container].lastChild
+        if lc < 0 || !p.d.nodes[lc].open { break }
+        container = lc
+        p.findNextNonspace()
+        if p.d.nodes[container].kind == Kind.List {
+            // a second blank line in a row changes nothing below the outermost list
+            // (the first one has closed what it closes); skipping the walk keeps a
+            // run of blank lines in deeply nested lists linear
+            if p.blank {
+                if p.d.nodes[container].lbl && p.indent == 0 {
+                    let tk = p.d.nodes[p.tip].kind
+                    if tk == Kind.CodeBlock || tk == Kind.HtmlBlock { p.addLine() }
+                    p.lastLineLen = len(ln)
+                    return
+                }
+                p.d.nodes[container].lbl = true
+            } else {
+                p.d.nodes[container].lbl = false
+            }
+        }
+        let r = p.continueBlock(container)
+        if r == 1 {
+            container = p.d.nodes[container].parent
+            break
+        }
+        if r == 2 {
+            p.lastLineLen = len(ln)
+            return
+        }
+    }
+    p.allClosed = container == p.oldtip
+    p.lastMatched = container
+    var matchedLeaf = p.d.nodes[container].kind != Kind.Paragraph && acceptsLines(p.d.nodes[container].kind)
+    while !matchedLeaf {
+        p.findNextNonspace()
+        if !p.indented && !maybeSpecial(p.peekAt(p.nextNon)) {
+            if !p.lazyLine() { p.advanceNextNonspace() }
+            break
+        }
+        let r = p.blockStart(container)
+        if r == 0 {
+            if !p.lazyLine() { p.advanceNextNonspace() }
+            break
+        }
+        container = p.tip
+        if r == 2 { matchedLeaf = true }
+    }
+    // what remains of the line is text
+    if !p.allClosed && !p.blank && p.d.nodes[p.tip].kind == Kind.Paragraph {
+        p.addLine()   // a lazy continuation line
+    } else {
+        p.closeUnmatchedBlocks()
+        let lc = p.d.nodes[container].lastChild
+        if p.blank && lc >= 0 { p.d.nodes[lc].lastBlank = true }
+        let t = p.d.nodes[container].kind
+        let lastLineBlank = p.blank && t != Kind.BlockQuote && t != Kind.Heading && t != Kind.ThematicBreak &&
+            !(t == Kind.CodeBlock && p.d.nodes[container].pa > 0) &&
+            !(t == Kind.Item && p.d.nodes[container].firstChild < 0 && p.d.nodes[container].startLine == p.lineNo)
+        p.d.nodes[container].lastBlank = lastLineBlank
+        var cont = p.d.nodes[container].parent
+        while cont >= 0 {
+            p.d.nodes[cont].lastBlank = false
+            cont = p.d.nodes[cont].parent
+        }
+        if acceptsLines(t) {
+            p.addLine()
+            if t == Kind.HtmlBlock {
+                let ht = p.d.nodes[container].pa
+                if ht >= 1 && ht <= 5 && htmlBlockEnds(ht, p.ln[p.offset..]) {
+                    p.finalize(container, p.lineNo)
+                }
+            }
+        } else if p.offset < len(ln) && !p.blank {
+            p.addChild(Kind.Paragraph, p.offset)
+            p.advanceNextNonspace()
+            p.addLine()
+        }
+    }
+    p.lastLineLen = if p.chopLen >= 0 { p.chopLen } else { len(ln) }
+}
+
+// Feeds the whole input: splits it into lines (LF, CRLF or a lone CR end a line).
+fn (p: mut &Parser) feed(src: str) {
+    var s = src
+    if len(s) >= 3 && s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF { s = s[3..] }
+    var hasNul = false
+    for k in 0..len(s) {
+        if s[k] == 0 {
+            hasNul = true
+            break
+        }
+    }
+    if hasNul {
+        var b = newStrBuf()
+        for k in 0..len(s) {
+            if s[k] == 0 { strings.addRune(mut &b, 0xFFFD) } else { b.addByte(s[k]) }
+        }
+        s = b.toStr()
+    }
+    if p.o.validateUtf8 { s = strings.lossy(s) }
+    let n = len(s)
+    var a = 0
+    var i = 0
+    while i < n {
+        let c = s[i]
+        if c == '\n' || c == '\r' {
+            p.line(s[a..i])
+            if c == '\r' && i + 1 < n && s[i + 1] == '\n' { i += 1 }
+            i += 1
+            a = i
+        } else {
+            i += 1
+        }
+    }
+    if a < n { p.line(s[a..n]) }
+    p.inLine = false
+    while p.tip >= 0 { p.finalize(p.tip, p.lineNo) }
+}
+
+// ------------------------------------------------------------ links: destinations, titles, labels
+
+type Scan = value record {
+    ok: bool
+    text: str
+    end: int
+}
+
+fn scanFail(): Scan { return Scan{ok: false, text: "", end: 0} }
+
+// Spaces and tabs, at most one line ending, and spaces and tabs after it.
+fn skipSpnl(s: str, from: int): int {
+    let n = len(s)
+    var i = from
+    while i < n && isSpaceOrTab(s[i]) { i += 1 }
+    if i < n && s[i] == '\n' {
+        i += 1
+        while i < n && isSpaceOrTab(s[i]) { i += 1 }
+    }
+    return i
+}
+
+// The end (after the ']') of a link label that starts at s[pos] == '[', or -1.
+fn labelEnd(s: str, pos: int): int {
+    let n = len(s)
+    var j = pos + 1
+    while j < n {
+        let c = s[j]
+        if c == '\\' {
+            j += 2
+        } else if c == '[' {
+            return -1
+        } else if c == ']' {
+            return j + 1
+        } else {
+            j += 1
+        }
+        if j - pos > 1000 { return -1 }
+    }
+    return -1
+}
+
+// A link destination at s[pos]: in pointy brackets, or a run without spaces and
+// control characters with balanced parentheses. An empty plain destination is
+// ok only before a ')'.
+fn scanDest(s: str, pos: int): Scan {
+    let n = len(s)
+    if pos < n && s[pos] == '<' {
+        var j = pos + 1
+        while j < n {
+            let c = s[j]
+            if c == '>' { return Scan{ok: true, text: unescape(s[pos + 1..j]), end: j + 1} }
+            if c == '\n' || c == '<' { return scanFail() }
+            if c == '\\' && j + 1 < n && isAsciiPunct(s[j + 1]) { j += 2 } else { j += 1 }
+        }
+        return scanFail()
+    }
+    var j = pos
+    var depth = 0
+    while j < n {
+        let c = s[j]
+        if c == '\\' && j + 1 < n && isAsciiPunct(s[j + 1]) {
+            j += 2
+        } else if c == '(' {
+            depth += 1
+            if depth > 32 { return scanFail() }
+            j += 1
+        } else if c == ')' {
+            if depth == 0 { break }
+            depth -= 1
+            j += 1
+        } else if c <= 32 || c == 127 {
+            break
+        } else {
+            j += 1
+        }
+    }
+    if depth != 0 { return scanFail() }
+    if j == pos && !(j < n && s[j] == ')') { return scanFail() }
+    return Scan{ok: true, text: unescape(s[pos..j]), end: j}
+}
+
+// A link title at s[pos]: "..." or '...' or (...).
+fn scanTitle(s: str, pos: int): Scan {
+    let n = len(s)
+    if pos >= n { return scanFail() }
+    let open = s[pos]
+    var close = open
+    if open == '(' {
+        close = ')'
+    } else if open != '"' && open != '\'' {
+        return scanFail()
+    }
+    // as for destinations: a closing character after a backslash may end the title
+    var j = pos + 1
+    var cand = -1
+    while j < n {
+        let c = s[j]
+        if c == '\\' && j + 1 < n && isAsciiPunct(s[j + 1]) {
+            if s[j + 1] == close { cand = j + 1 }
+            j += 2
+        } else if c == close {
+            return Scan{ok: true, text: unescape(s[pos + 1..j]), end: j + 1}
+        } else if open == '(' && c == '(' {
+            break
+        } else {
+            j += 1
+        }
+    }
+    if cand >= 0 { return Scan{ok: true, text: unescape(s[pos + 1..cand]), end: cand + 1} }
+    return scanFail()
+}
+
+// A link reference definition at the start of s: the number of bytes it uses
+// (with its line ending), or 0. A new label is added to the reference map.
+fn (p: mut &Parser) parseReference(s: str): int {
+    let n = len(s)
+    let le = labelEnd(s, 0)
+    if le < 0 { return 0 }
+    let raw = s[1..le - 1]
+    if le >= n || s[le] != ':' { return 0 }
+    var pos = skipSpnl(s, le + 1)
+    let ds = scanDest(s, pos)
+    if !ds.ok || ds.end == pos { return 0 }
+    pos = ds.end
+    let before = pos
+    let q = skipSpnl(s, pos)
+    var title = ""
+    var haveTitle = false
+    if q != pos {
+        let ts = scanTitle(s, q)
+        if ts.ok {
+            title = ts.text
+            haveTitle = true
+            pos = ts.end
+        }
+    }
+    var e = pos
+    while e < n && isSpaceOrTab(s[e]) { e += 1 }
+    var atEnd = e >= n || s[e] == '\n'
+    if !atEnd && haveTitle {
+        // the title is not alone on its line: drop it and see whether the destination is
+        title = ""
+        e = before
+        while e < n && isSpaceOrTab(s[e]) { e += 1 }
+        atEnd = e >= n || s[e] == '\n'
+    }
+    if !atEnd { return 0 }
+    if e < n { e += 1 }
+    let norm = normalizeLabel(raw)
+    if len(norm) == 0 { return 0 }
+    if !p.refs.has(&norm) { p.refs.put(norm, RefDef{dest: ds.text, title: title}) }
+    return e
+}
+
+// ------------------------------------------------------------ autolinks and raw HTML
+
+// <scheme:...> at s[a]: the end after '>', or -1.
+fn scanUriAutolink(s: str, a: int): int {
+    let n = len(s)
+    var j = a + 1
+    if j >= n || !isAlpha(s[j]) { return -1 }
+    j += 1
+    while j < n && j - a <= 32 && (isAlnumC(s[j]) || s[j] == '+' || s[j] == '.' || s[j] == '-') { j += 1 }
+    if j - a - 1 < 2 || j >= n || s[j] != ':' { return -1 }
+    j += 1
+    while j < n {
+        let c = s[j]
+        if c == '>' { return j + 1 }
+        if c <= 32 || c == '<' || c == 127 { return -1 }
+        j += 1
+    }
+    return -1
+}
+
+fn isEmailLocal(c: byte): bool {
+    if isAlnumC(c) { return true }
+    return c == '.' || c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' ||
+           c == '+' || c == '/' || c == '=' || c == '?' || c == '^' || c == '_' || c == '`' || c == '{' ||
+           c == '|' || c == '}' || c == '~' || c == '-'
+}
+
+// <local@domain> at s[a]: the end after '>', or -1.
+fn scanEmailAutolink(s: str, a: int): int {
+    let n = len(s)
+    var j = a + 1
+    while j < n && isEmailLocal(s[j]) { j += 1 }
+    if j == a + 1 || j >= n || s[j] != '@' { return -1 }
+    j += 1
+    while true {
+        let st = j
+        if st >= n || !isAlnumC(s[st]) { return -1 }
+        var k = st
+        while k < n && k - st < 63 && (isAlnumC(s[k]) || s[k] == '-') { k += 1 }
+        while k > st && s[k - 1] == '-' { k -= 1 }
+        if k >= n { return -1 }
+        if s[k] == '>' { return k + 1 }
+        if s[k] != '.' { return -1 }
+        j = k + 1
+    }
+    return -1
+}
+
+// The end of an HTML comment whose text starts at s[i] (after "<!--"), or -1. The
+// text follows cmark's pattern: no "-->" inside, and "--" must be followed by
+// a character that is not '>'.
+fn scanComment(s: str, i: int): int {
+    let n = len(s)
+    var j = i
+    while j < n {
+        if s[j] == '-' {
+            if j + 2 < n && s[j + 1] == '-' && s[j + 2] == '>' { return j + 3 }
+            if j + 1 < n && s[j + 1] != '-' {
+                j += 2
+            } else if j + 2 < n && s[j + 1] == '-' {
+                j += 3
+            } else {
+                return -1
+            }
+        } else {
+            j += 1
+        }
+    }
+    return -1
+}
+
+// The end of a processing instruction whose text starts at s[i] (after "<?"), or -1.
+fn scanPi(s: str, i: int): int {
+    let n = len(s)
+    var j = i
+    while j < n {
+        if s[j] == '?' {
+            if j + 1 < n && s[j + 1] == '>' { return j + 2 }
+            if j + 1 < n { j += 2 } else { return -1 }
+        } else {
+            j += 1
+        }
+    }
+    return -1
+}
+
+// The end of a CDATA section whose text starts at s[i] (after "<![CDATA["), or -1.
+fn scanCdata(s: str, i: int): int {
+    let n = len(s)
+    var j = i
+    while j < n {
+        if s[j] == ']' {
+            if j + 2 < n && s[j + 1] == ']' && s[j + 2] == '>' { return j + 3 }
+            if j + 1 < n && s[j + 1] != ']' {
+                j += 2
+            } else if j + 2 < n && s[j + 1] == ']' {
+                j += 3
+            } else {
+                return -1
+            }
+        } else {
+            j += 1
+        }
+    }
+    return -1
+}
+
+// A raw HTML construct at p.pos == '<': the end, or -1.
+fn (p: mut &Parser) scanHtml(a: int): int {
+    let s = p.subj
+    let n = len(s)
+    if a + 1 >= n { return -1 }
+    let c = s[a + 1]
+    if c == '/' { return scanCloseTag(s, a) }
+    if c == '?' {
+        if p.noPi { return -1 }
+        let e = scanPi(s, a + 2)
+        if e < 0 { p.noPi = true }
+        return e
+    }
+    if c == '!' {
+        if startsCI(s, a, "<!--") {
+            if p.noComment { return -1 }
+            if startsCI(s, a, "<!-->") { return a + 5 }
+            if startsCI(s, a, "<!--->") { return a + 6 }
+            let e = scanComment(s, a + 4)
+            if e < 0 { p.noComment = true }
+            return e
+        }
+        if startsCI(s, a, "<![cdata[") {
+            if p.noCdata { return -1 }
+            let e = scanCdata(s, a + 9)
+            if e < 0 { p.noCdata = true }
+            return e
+        }
+        if a + 2 < n && isAlpha(s[a + 2]) {
+            if p.noDecl { return -1 }
+            let e = indexOf(s, ">", a + 3)
+            if e < 0 {
+                p.noDecl = true
+                return -1
+            }
+            return e + 1
+        }
+        return -1
+    }
+    return scanOpenTag(s, a)
+}
+
+// ------------------------------------------------------------ inline parser
+
+fn (p: mut &Parser) textNode(s: str): int {
+    let id = p.newNode(Kind.Text)
+    p.d.nodes[id].text = s
+    return id
+}
+
+fn (p: mut &Parser) addText(blk: int, s: str) {
+    let id = p.textNode(s)
+    p.append(blk, id)
+}
+
+fn (p: mut &Parser) addLeaf(blk: int, kind: Kind, s: str) {
+    let id = p.newNode(kind)
+    p.d.nodes[id].text = s
+    p.append(blk, id)
+}
+
+fn (p: mut &Parser) inlines(blk: int) {
+    let first = len(p.d.nodes)
+    p.subj = trimSpaces(p.d.nodes[blk].text)
+    p.pos = 0
+    while len(p.delims) > 0 { pop(mut &p.delims) }
+    p.dTop = -1
+    while len(p.brs) > 0 { pop(mut &p.brs) }
+    p.deact = 0
+    if p.btDirty {
+        for i in 0..len(p.bt) { p.bt[i] = 0 }
+        p.btDirty = false
+    }
+    p.btScanned = false
+    p.noComment = false
+    p.noPi = false
+    p.noDecl = false
+    p.noCdata = false
+    let n = len(p.subj)
+    while p.pos < n { p.parseInline(blk) }
+    p.processEmphasis(NONE)
+    p.mergeText(first)
+    p.d.nodes[blk].text = ""
+}
+
+fn (p: mut &Parser) parseInline(blk: int) {
+    let c = p.subj[p.pos]
+    if c == '\n' {
+        p.newline(blk)
+    } else if c == '\\' {
+        p.backslash(blk)
+    } else if c == '`' {
+        p.backticks(blk)
+    } else if c == '*' || c == '_' {
+        p.handleDelim(blk, c)
+    } else if c == '[' {
+        p.openBracket(blk, false)
+    } else if c == '!' {
+        if p.pos + 1 < len(p.subj) && p.subj[p.pos + 1] == '[' {
+            p.openBracket(blk, true)
+        } else {
+            p.addText(blk, p.subj[p.pos..p.pos + 1])
+            p.pos += 1
+        }
+    } else if c == ']' {
+        p.closeBracket(blk)
+    } else if c == '<' {
+        p.pointy(blk)
+    } else if c == '&' {
+        p.entity(blk)
+    } else if p.o.smart && (c == '\'' || c == '"') {
+        p.handleDelim(blk, c)
+    } else if p.o.smart && c == '.' {
+        if p.pos + 2 < len(p.subj) + 0 && p.subj[p.pos + 1] == '.' && p.subj[p.pos + 2] == '.' {
+            p.addText(blk, "…")
+            p.pos += 3
+        } else {
+            p.addText(blk, ".")
+            p.pos += 1
+        }
+    } else if p.o.smart && c == '-' {
+        p.hyphens(blk)
+    } else {
+        let a = p.pos
+        let n = len(p.subj)
+        p.pos += 1
+        while p.pos < n && !p.special[int(p.subj[p.pos])] { p.pos += 1 }
+        p.addText(blk, p.subj[a..p.pos])
+    }
+}
+
+fn (p: mut &Parser) hyphens(blk: int) {
+    let n = len(p.subj)
+    var j = p.pos
+    while j < n && p.subj[j] == '-' { j += 1 }
+    let cnt = j - p.pos
+    p.pos = j
+    if cnt == 1 {
+        p.addText(blk, "-")
+        return
+    }
+    var en = 0
+    var em = 0
+    if cnt % 3 == 0 {
+        em = cnt / 3
+    } else if cnt % 2 == 0 {
+        en = cnt / 2
+    } else if cnt % 3 == 2 {
+        en = 1
+        em = (cnt - 2) / 3
+    } else {
+        en = 2
+        em = (cnt - 4) / 3
+    }
+    var b = newStrBuf()
+    for k in 0..em { b.add("—") }
+    for k in 0..en { b.add("–") }
+    p.addText(blk, b.toStr())
+}
+
+fn (p: mut &Parser) newline(blk: int) {
+    p.pos += 1
+    let lc = p.d.nodes[blk].lastChild
+    var made = false
+    if lc >= 0 && p.d.nodes[lc].kind == Kind.Text {
+        let t = p.d.nodes[lc].text
+        let tl = len(t)
+        if tl > 0 && isSpaceOrTab(t[tl - 1]) {
+            let hard = tl > 1 && t[tl - 1] == ' ' && t[tl - 2] == ' '
+            var e = tl
+            while e > 0 && isSpaceOrTab(t[e - 1]) { e -= 1 }
+            p.d.nodes[lc].text = t[0..e]
+            let k = p.newNode(if hard { Kind.LineBreak } else { Kind.SoftBreak })
+            p.append(blk, k)
+            made = true
+        }
+    }
+    if !made {
+        let k = p.newNode(Kind.SoftBreak)
+        p.append(blk, k)
+    }
+    let n = len(p.subj)
+    while p.pos < n && isSpaceOrTab(p.subj[p.pos]) { p.pos += 1 }
+}
+
+fn (p: mut &Parser) backslash(blk: int) {
+    let n = len(p.subj)
+    p.pos += 1
+    if p.pos < n && p.subj[p.pos] == '\n' {
+        p.pos += 1
+        let k = p.newNode(Kind.LineBreak)
+        p.append(blk, k)
+    } else if p.pos < n && isAsciiPunct(p.subj[p.pos]) {
+        p.addText(blk, p.subj[p.pos..p.pos + 1])
+        p.pos += 1
+    } else {
+        p.addText(blk, "\\")
+    }
+}
+
+// The start of the next run of exactly ticks backticks at or after from, or -1.
+fn (p: mut &Parser) findClose(ticks: int, from: int): int {
+    if ticks > 1000 { return -1 }
+    if p.btScanned && p.bt[ticks] <= from { return -1 }
+    let n = len(p.subj)
+    var i = from
+    while i < n {
+        if p.subj[i] != '`' {
+            i += 1
+        } else {
+            let st = i
+            while i < n && p.subj[i] == '`' { i += 1 }
+            let m = i - st
+            if m <= 1000 {
+                p.bt[m] = st
+                p.btDirty = true
+            }
+            if m == ticks { return st }
+        }
+    }
+    p.btScanned = true
+    return -1
+}
+
+fn (p: mut &Parser) backticks(blk: int) {
+    let n = len(p.subj)
+    let a = p.pos
+    var j = a
+    while j < n && p.subj[j] == '`' { j += 1 }
+    let ticks = j - a
+    let close = p.findClose(ticks, j)
+    if close < 0 {
+        p.pos = j
+        p.addText(blk, p.subj[a..j])
+        return
+    }
+    var content = p.subj[j..close]
+    p.pos = close + ticks
+    var hasNl = false
+    for k in 0..len(content) {
+        if content[k] == '\n' {
+            hasNl = true
+            break
+        }
+    }
+    if hasNl {
+        var b = newStrBuf()
+        for k in 0..len(content) {
+            if content[k] == '\n' { b.addByte(' ') } else { b.addByte(content[k]) }
+        }
+        content = b.toStr()
+    }
+    let cl = len(content)
+    if cl >= 2 && content[0] == ' ' && content[cl - 1] == ' ' {
+        var allSpace = true
+        for k in 0..cl {
+            if content[k] != ' ' {
+                allSpace = false
+                break
+            }
+        }
+        if !allSpace { content = content[1..cl - 1] }
+    }
+    p.addLeaf(blk, Kind.Code, content)
+}
+
+fn (p: mut &Parser) entity(blk: int) {
+    let e = entityAt(p.subj, p.pos)
+    if e.len > 0 {
+        var b = newStrBuf()
+        addCodePoint(mut &b, e.cp1)
+        if e.cp2 != 0 { addCodePoint(mut &b, e.cp2) }
+        p.addText(blk, b.toStr())
+        p.pos += e.len
+    } else {
+        p.addText(blk, "&")
+        p.pos += 1
+    }
+}
+
+fn (p: mut &Parser) pointy(blk: int) {
+    let a = p.pos
+    var e = scanUriAutolink(p.subj, a)
+    if e > 0 {
+        let u = p.subj[a + 1..e - 1]
+        p.autolink(blk, u, u)
+        p.pos = e
+        return
+    }
+    e = scanEmailAutolink(p.subj, a)
+    if e > 0 {
+        let u = p.subj[a + 1..e - 1]
+        p.autolink(blk, "mailto:" + u, u)
+        p.pos = e
+        return
+    }
+    e = p.scanHtml(a)
+    if e > 0 {
+        p.addLeaf(blk, Kind.HtmlInline, p.subj[a..e])
+        p.pos = e
+        return
+    }
+    p.addText(blk, "<")
+    p.pos += 1
+}
+
+fn (p: mut &Parser) autolink(blk: int, dest: str, text: str) {
+    let l = p.newNode(Kind.Link)
+    p.d.nodes[l].dest = dest
+    let t = p.textNode(text)
+    p.append(l, t)
+    p.append(blk, l)
+}
+
+fn (p: mut &Parser) handleDelim(blk: int, c: byte) {
+    let n = len(p.subj)
+    let start = p.pos
+    var num = 1
+    if c == '*' || c == '_' {
+        var j = start
+        while j < n && p.subj[j] == c { j += 1 }
+        num = j - start
+    }
+    let before = if start == 0 { 10 } else { runeBefore(p.subj, start) }
+    let after = if start + num >= n { 10 } else { runeAt(p.subj, start + num) }
+    let afterWs = isUniSpace(after)
+    let afterP = isUniPunct(after)
+    let beforeWs = isUniSpace(before)
+    let beforeP = isUniPunct(before)
+    let left = !afterWs && (!afterP || beforeWs || beforeP)
+    let right = !beforeWs && (!beforeP || afterWs || afterP)
+    var canOpen = left
+    var canClose = right
+    if c == '_' {
+        canOpen = left && (!right || beforeP)
+        canClose = right && (!left || afterP)
+    } else if c == '\'' || c == '"' {
+        canOpen = left && (!right || before == 40 || before == 91) && before != 93 && before != 41
+        canClose = right
+    }
+    p.pos = start + num
+    var lit = p.subj[start..p.pos]
+    if c == '\'' {
+        lit = "’"
+    } else if c == '"' {
+        lit = if canClose { "”" } else { "“" }
+    }
+    let id = p.textNode(lit)
+    p.append(blk, id)
+    if canOpen || canClose {
+        append(mut &p.delims, Delim{cc: c, node: id, num: num, orig: num, canOpen: canOpen, canClose: canClose, prev: p.dTop, next: NONE})
+        let idx = len(p.delims) - 1
+        if p.dTop >= 0 { p.delims[p.dTop].next = idx }
+        p.dTop = idx
+    }
+}
+
+fn (p: mut &Parser) removeDelimiter(i: int) {
+    let pv = p.delims[i].prev
+    let nx = p.delims[i].next
+    if pv >= 0 { p.delims[pv].next = nx }
+    if nx >= 0 {
+        p.delims[nx].prev = pv
+    } else {
+        p.dTop = pv
+    }
+}
+
+fn delimIndex(c: byte): int {
+    if c == '*' { return 0 }
+    if c == '_' { return 1 }
+    if c == '\'' { return 2 }
+    return 3
+}
+
+fn (p: mut &Parser) processEmphasis(stackBottom: int) {
+    var bottoms = array(24, stackBottom)
+    var closer = p.dTop
+    while closer >= 0 && p.delims[closer].prev != stackBottom { closer = p.delims[closer].prev }
+    while closer >= 0 {
+        if !p.delims[closer].canClose {
+            closer = p.delims[closer].next
+        } else {
+            let cc = p.delims[closer].cc
+            let corig = p.delims[closer].orig
+            let cOpen = p.delims[closer].canOpen
+            let bidx = delimIndex(cc) * 6 + (if cOpen { 3 } else { 0 }) + corig % 3
+            var opener = p.delims[closer].prev
+            var found = false
+            while opener >= 0 && opener != stackBottom && opener != bottoms[bidx] {
+                let odd = (cOpen || p.delims[opener].canClose) && corig % 3 != 0 && (p.delims[opener].orig + corig) % 3 == 0
+                if p.delims[opener].cc == cc && p.delims[opener].canOpen && !odd {
+                    found = true
+                    break
+                }
+                opener = p.delims[opener].prev
+            }
+            let oldCloser = closer
+            if cc == '*' || cc == '_' {
+                if !found {
+                    closer = p.delims[closer].next
+                } else {
+                    var use = 1
+                    if p.delims[closer].num >= 2 && p.delims[opener].num >= 2 { use = 2 }
+                    let on = p.delims[opener].node
+                    let cn = p.delims[closer].node
+                    p.delims[opener].num -= use
+                    p.delims[closer].num -= use
+                    let ot = p.d.nodes[on].text
+                    p.d.nodes[on].text = ot[0..len(ot) - use]
+                    let ct = p.d.nodes[cn].text
+                    p.d.nodes[cn].text = ct[0..len(ct) - use]
+                    let em = p.newNode(if use == 1 { Kind.Emph } else { Kind.Strong })
+                    var tmp = p.d.nodes[on].next
+                    while tmp != cn {
+                        let nx = p.d.nodes[tmp].next
+                        p.unlink(tmp)
+                        p.append(em, tmp)
+                        tmp = nx
+                    }
+                    p.insertAfter(on, em)
+                    var dd = p.delims[closer].prev
+                    while dd != opener && dd >= 0 {
+                        let pv = p.delims[dd].prev
+                        p.removeDelimiter(dd)
+                        dd = pv
+                    }
+                    if p.delims[opener].num == 0 {
+                        p.unlink(on)
+                        p.removeDelimiter(opener)
+                    }
+                    if p.delims[closer].num == 0 {
+                        p.unlink(cn)
+                        let after = p.delims[closer].next
+                        p.removeDelimiter(closer)
+                        closer = after
+                    }
+                }
+            } else if cc == '\'' {
+                p.d.nodes[p.delims[closer].node].text = "’"
+                closer = p.delims[closer].next
+                if found {
+                    p.d.nodes[p.delims[opener].node].text = "‘"
+                    p.removeDelimiter(opener)
+                    p.removeDelimiter(oldCloser)
+                }
+            } else {
+                p.d.nodes[p.delims[closer].node].text = "”"
+                closer = p.delims[closer].next
+                if found {
+                    p.d.nodes[p.delims[opener].node].text = "“"
+                    p.removeDelimiter(opener)
+                    p.removeDelimiter(oldCloser)
+                }
+            }
+            if !found {
+                bottoms[bidx] = p.delims[oldCloser].prev
+                if !p.delims[oldCloser].canOpen { p.removeDelimiter(oldCloser) }
+            }
+        }
+    }
+    while p.dTop >= 0 && p.dTop != stackBottom { p.removeDelimiter(p.dTop) }
+}
+
+fn (p: mut &Parser) openBracket(blk: int, image: bool) {
+    let start = p.pos
+    var lit = "["
+    if image {
+        lit = "!["
+        p.pos += 2
+    } else {
+        p.pos += 1
+    }
+    let id = p.textNode(lit)
+    p.append(blk, id)
+    if len(p.brs) > 0 { p.brs[len(p.brs) - 1].bracketAfter = true }
+    append(mut &p.brs, Bracket{node: id, prevDelim: p.dTop, index: if image { start + 1 } else { start }, image: image, active: true, bracketAfter: false})
+}
+
+fn (p: mut &Parser) popBracket() {
+    pop(mut &p.brs)
+    if p.deact > len(p.brs) { p.deact = len(p.brs) }
+}
+
+fn (p: mut &Parser) closeBracket(blk: int) {
+    let n = len(p.subj)
+    p.pos += 1
+    let startpos = p.pos
+    if len(p.brs) == 0 {
+        p.addText(blk, "]")
+        return
+    }
+    let top = len(p.brs) - 1
+    if !p.brs[top].active {
+        p.addText(blk, "]")
+        p.popBracket()
+        return
+    }
+    let opener = p.brs[top]
+    var matched = false
+    var dest = ""
+    var title = ""
+    // an inline link
+    if p.pos < n && p.subj[p.pos] == '(' {
+        let q = skipSpnl(p.subj, p.pos + 1)
+        let ds = scanDest(p.subj, q)
+        if ds.ok {
+            var r = skipSpnl(p.subj, ds.end)
+            var t = ""
+            if r > ds.end {
+                let ts = scanTitle(p.subj, r)
+                if ts.ok {
+                    t = ts.text
+                    r = skipSpnl(p.subj, ts.end)
+                }
+            }
+            if r < n && p.subj[r] == ')' {
+                matched = true
+                dest = ds.text
+                title = t
+                p.pos = r + 1
+            }
+        }
+    }
+    if !matched {
+        // a reference link
+        var label = ""
+        var have = false
+        let le = if p.pos < n && p.subj[p.pos] == '[' { labelEnd(p.subj, p.pos) } else { 0 }
+        if le > 0 {
+            if le - p.pos > 2 {
+                label = p.subj[p.pos + 1..le - 1]
+                have = true
+            } else if !opener.bracketAfter {
+                label = p.subj[opener.index + 1..startpos - 1]
+                have = true
+            }
+            p.pos = le
+        } else if !opener.bracketAfter {
+            label = p.subj[opener.index + 1..startpos - 1]
+            have = true
+        }
+        if have {
+            let key = normalizeLabel(label)
+            if len(key) > 0 {
+                match p.refs.get(&key) {
+                    Some(r) {
+                        matched = true
+                        dest = r.dest
+                        title = r.title
+                    }
+                    None {}
+                }
+            }
+        }
+        if !matched { p.pos = startpos }
+    }
+    if matched {
+        let l = p.newNode(if opener.image { Kind.Image } else { Kind.Link })
+        p.d.nodes[l].dest = dest
+        p.d.nodes[l].title = title
+        var tmp = p.d.nodes[opener.node].next
+        while tmp >= 0 {
+            let nx = p.d.nodes[tmp].next
+            p.unlink(tmp)
+            p.append(l, tmp)
+            tmp = nx
+        }
+        p.append(blk, l)
+        p.processEmphasis(opener.prevDelim)
+        p.popBracket()
+        p.unlink(opener.node)
+        if !opener.image {
+            for i in p.deact..len(p.brs) {
+                if !p.brs[i].image { p.brs[i].active = false }
+            }
+            p.deact = len(p.brs)
+        }
+    } else {
+        p.popBracket()
+        p.pos = startpos
+        p.addText(blk, "]")
+    }
+}
+
+// Joins runs of adjacent text nodes among the nodes made since first.
+fn (p: mut &Parser) mergeText(first: int) {
+    for i in first..len(p.d.nodes) {
+        if p.d.nodes[i].kind == Kind.Text && p.d.nodes[i].parent >= 0 {
+            let nx = p.d.nodes[i].next
+            let pv = p.d.nodes[i].prev
+            if nx >= 0 && p.d.nodes[nx].kind == Kind.Text && (pv < 0 || p.d.nodes[pv].kind != Kind.Text) {
+                var b = newStrBuf()
+                b.add(p.d.nodes[i].text)
+                var m = nx
+                while m >= 0 && p.d.nodes[m].kind == Kind.Text {
+                    b.add(p.d.nodes[m].text)
+                    let mn = p.d.nodes[m].next
+                    p.unlink(m)
+                    m = mn
+                }
+                p.d.nodes[i].text = b.toStr()
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ the tree
+
+// Parses a document.
+pub fn parse(src: str, o: Options): Doc {
+    var p = newParser(o)
+    p.feed(src)
+    let n0 = len(p.d.nodes)
+    for i in 0..n0 {
+        let k = p.d.nodes[i].kind
+        if (k == Kind.Paragraph || k == Kind.Heading) && p.d.nodes[i].parent >= 0 { p.inlines(i) }
+    }
+    p.finishPositions()
+    return Doc{nodes: replace(mut &p.d.nodes, [])}
+}
+
+// cmark gives a list and an item the end of their last child.
+fn (p: mut &Parser) finishPositions() {
+}
+
+// ------------------------------------------------------------ HTML
+
+type Out = record {
+    b: StrBuf
+    atNl: bool
+}
+
+fn (w: mut &Out) put(s: str) {
+    if len(s) > 0 {
+        w.b.add(s)
+        w.atNl = s[len(s) - 1] == '\n'
+    }
+}
+
+fn (w: mut &Out) cr() {
+    if !w.atNl {
+        w.b.addByte('\n')
+        w.atNl = true
+    }
+}
+
+fn (w: mut &Out) escape(s: str) {
+    var a = 0
+    let n = len(s)
+    for i in 0..n {
+        let c = s[i]
+        if c == '&' || c == '<' || c == '>' || c == '"' {
+            if i > a { w.b.add(s[a..i]) }
+            if c == '&' { w.b.add("&amp;") }
+            else if c == '<' { w.b.add("&lt;") }
+            else if c == '>' { w.b.add("&gt;") }
+            else { w.b.add("&quot;") }
+            a = i + 1
+        }
+    }
+    if a < n { w.b.add(s[a..n]) }
+    if n > 0 { w.atNl = s[n - 1] == '\n' }
+}
+
+fn hrefSafe(c: byte): bool {
+    if isAlnumC(c) { return true }
+    return c == '!' || c == '#' || c == '$' || c == '%' || c == '(' || c == ')' || c == '*' || c == '+' ||
+           c == ',' || c == '-' || c == '.' || c == '/' || c == ':' || c == ';' || c == '=' || c == '?' ||
+           c == '@' || c == '_' || c == '~'
+}
+
+fn (w: mut &Out) escapeHref(s: str) {
+    var a = 0
+    let n = len(s)
+    for i in 0..n {
+        let c = s[i]
+        if !hrefSafe(c) {
+            if i > a { w.b.add(s[a..i]) }
+            if c == '&' {
+                w.b.add("&amp;")
+            } else if c == '\'' {
+                w.b.add("&#x27;")
+            } else {
+                w.b.addByte('%')
+                let hex = "0123456789ABCDEF"
+                w.b.addByte(hex[int(c >> 4)])
+                w.b.addByte(hex[int(c & 15)])
+            }
+            a = i + 1
+        }
+    }
+    if a < n { w.b.add(s[a..n]) }
+    if n > 0 { w.atNl = false }
+}
+
+// Whether a link destination is allowed in safe mode.
+fn safeUrl(u: str): bool {
+    if startsCI(u, 0, "javascript:") || startsCI(u, 0, "vbscript:") || startsCI(u, 0, "file:") { return false }
+    if startsCI(u, 0, "data:") {
+        return startsCI(u, 5, "image/png") || startsCI(u, 5, "image/gif") ||
+               startsCI(u, 5, "image/jpeg") || startsCI(u, 5, "image/webp")
+    }
+    return true
+}
+
+fn (d: &Doc) posAttr(w: mut &Out, id: int, o: Options) {
+    if o.sourcepos {
+        let n = &d.nodes[id]
+        w.put(" data-sourcepos=\"" + n.startLine.toStr() + ":" + n.startCol.toStr() + "-" + n.endLine.toStr() + ":" + n.endCol.toStr() + "\"")
+    }
+}
+
+// The HTML of the tree, as cmark writes it.
+pub fn (d: &Doc) html(o: Options): str {
+    var w = Out{b: newStrBuf(), atNl: true}
+    var wk = d.walker(0)
+    var plain = -1
+    while wk.next(d) {
+        let id = wk.node
+        let enter = wk.entering
+        let kind = d.nodes[id].kind
+        if plain >= 0 {
+            if !enter && id == plain {
+                plain = -1
+                w.put("\"")
+                let t = d.nodes[id].title
+                if len(t) > 0 {
+                    w.put(" title=\"")
+                    w.escape(t)
+                    w.put("\"")
+                }
+                w.put(" />")
+            } else if enter {
+                if kind == Kind.Text || kind == Kind.Code || kind == Kind.HtmlInline {
+                    w.escape(d.nodes[id].text)
+                } else if kind == Kind.SoftBreak || kind == Kind.LineBreak {
+                    w.put(" ")
+                }
+            }
+        } else {
+            match kind {
+                Kind.Document {}
+                Kind.BlockQuote {
+                    if enter {
+                        w.cr()
+                        w.put("<blockquote")
+                        d.posAttr(mut &w, id, o)
+                        w.put(">\n")
+                    } else {
+                        w.cr()
+                        w.put("</blockquote>\n")
+                    }
+                }
+                Kind.List {
+                    if enter {
+                        w.cr()
+                        if d.nodes[id].ordered {
+                            w.put("<ol")
+                            if d.nodes[id].start != 1 { w.put(" start=\"" + d.nodes[id].start.toStr() + "\"") }
+                            d.posAttr(mut &w, id, o)
+                            w.put(">\n")
+                        } else {
+                            w.put("<ul")
+                            d.posAttr(mut &w, id, o)
+                            w.put(">\n")
+                        }
+                    } else {
+                        w.cr()
+                        w.put(if d.nodes[id].ordered { "</ol>\n" } else { "</ul>\n" })
+                    }
+                }
+                Kind.Item {
+                    if enter {
+                        w.cr()
+                        w.put("<li")
+                        d.posAttr(mut &w, id, o)
+                        w.put(">")
+                    } else {
+                        w.put("</li>\n")
+                    }
+                }
+                Kind.Heading {
+                    let tag = "h" + d.nodes[id].level.toStr()
+                    if enter {
+                        w.cr()
+                        w.put("<" + tag)
+                        d.posAttr(mut &w, id, o)
+                        w.put(">")
+                    } else {
+                        w.put("</" + tag + ">\n")
+                    }
+                }
+                Kind.CodeBlock {
+                    w.cr()
+                    w.put("<pre")
+                    d.posAttr(mut &w, id, o)
+                    w.put("><code")
+                    let info = d.nodes[id].dest
+                    if len(info) > 0 {
+                        var e = 0
+                        while e < len(info) && !isWs(info[e]) { e += 1 }
+                        w.put(if startsWith(info, "language-") { " class=\"" } else { " class=\"language-" })
+                        w.escape(info[0..e])
+                        w.put("\"")
+                    }
+                    w.put(">")
+                    w.escape(d.nodes[id].text)
+                    w.put("</code></pre>\n")
+                }
+                Kind.HtmlBlock {
+                    w.cr()
+                    if o.unsafe { w.put(d.nodes[id].text) } else { w.put("<!-- raw HTML omitted -->") }
+                    w.cr()
+                }
+                Kind.ThematicBreak {
+                    w.cr()
+                    w.put("<hr")
+                    d.posAttr(mut &w, id, o)
+                    w.put(" />\n")
+                }
+                Kind.Paragraph {
+                    var tight = false
+                    let par = d.nodes[id].parent
+                    if par >= 0 {
+                        let gp = d.nodes[par].parent
+                        if gp >= 0 && d.nodes[gp].kind == Kind.List { tight = d.nodes[gp].tight }
+                    }
+                    if !tight {
+                        if enter {
+                            w.cr()
+                            w.put("<p")
+                            d.posAttr(mut &w, id, o)
+                            w.put(">")
+                        } else {
+                            w.put("</p>\n")
+                        }
+                    }
+                }
+                Kind.Text { w.escape(d.nodes[id].text) }
+                Kind.SoftBreak {
+                    if o.hardbreaks {
+                        w.put("<br />\n")
+                    } else if o.nobreaks {
+                        w.put(" ")
+                    } else {
+                        w.put("\n")
+                    }
+                }
+                Kind.LineBreak { w.put("<br />\n") }
+                Kind.Code {
+                    w.put("<code>")
+                    w.escape(d.nodes[id].text)
+                    w.put("</code>")
+                }
+                Kind.HtmlInline {
+                    if o.unsafe { w.put(d.nodes[id].text) } else { w.put("<!-- raw HTML omitted -->") }
+                }
+                Kind.Emph { w.put(if enter { "<em>" } else { "</em>" }) }
+                Kind.Strong { w.put(if enter { "<strong>" } else { "</strong>" }) }
+                Kind.Link {
+                    if enter {
+                        w.put("<a href=\"")
+                        let u = d.nodes[id].dest
+                        if o.unsafe || safeUrl(u) { w.escapeHref(u) }
+                        w.put("\"")
+                        let t = d.nodes[id].title
+                        if len(t) > 0 {
+                            w.put(" title=\"")
+                            w.escape(t)
+                            w.put("\"")
+                        }
+                        w.put(">")
+                    } else {
+                        w.put("</a>")
+                    }
+                }
+                Kind.Image {
+                    if enter {
+                        w.put("<img src=\"")
+                        let u = d.nodes[id].dest
+                        if o.unsafe || safeUrl(u) { w.escapeHref(u) }
+                        w.put("\" alt=\"")
+                        plain = id
+                    }
+                }
+            }
+        }
+    }
+    return w.b.toStr()
+}
+
+// Parses src and renders it.
+pub fn toHtml(src: str, o: Options): str {
+    let d = parse(src, o)
+    return d.html(o)
+}
