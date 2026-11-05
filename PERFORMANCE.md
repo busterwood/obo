@@ -1007,3 +1007,19 @@ and long eza listings:
 The fib row's obx figures are from `2ce4860`; the rest are from the day of
 the comparison. `python3 obx/bench/bench.py --obo` adds obo's column to the benchmarks
 (build `archive/obo/obo` first with `make -C archive/obo`).
+
+## Math (2026-11-05)
+
+The float math functions are the runtime's own (musl 1.2.5, one C text for both
+backends, `obx/compiler/obxmath.inc`), not libm's. sqrt, floor, ceil, trunc,
+round, rint, fabs, copysign and fma are single instructions (sqrtsd, roundsd,
+masks, vfmadd213sd). On a loop of sqrt, floor, ceil, trunc and round: native
+393 ms to 340 ms, C backend 200 ms to 100 ms. A native program that uses math
+is a static ELF, 1.12 ms to start instead of 1.38 ms with libm and libc loaded.
+Per call (ns, plain build, glibc 2.39 in the same loop): exp 2.1 (3.9), log 2.4
+(3.5), sin 5.3 (7.1), pow 8.4 (8.1), atan 4.4 (6.4), tan 8.5 (7.8). Compiled
+with FMA contraction the same text is 10 to 35% faster again (exp 1.4, log 1.9,
+pow 6.6, atan 3.1, tan 6.5) but its bits would depend on the gcc, so the
+shipped text is built without contraction; explicit fma calls in the hot
+polynomials are the deterministic way to get that later.
+
