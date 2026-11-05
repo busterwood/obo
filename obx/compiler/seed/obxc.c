@@ -25278,14 +25278,12 @@ static struct S21_std_Result f51_proc_spawn(struct S15_proc_Command**p_cmd, stru
 static obx_str f55_proc_path(struct S16_proc_Stdio*p_s) {
   struct S16_proc_Stdio*sp1 = p_s;
   if (sp1->tag == 3LL) {
-    obx_str v_p_2 = rt_str_dup(sp1->u.V_File.f_0);
+    obx_str v_p_2 = sp1->u.V_File.f_0;
     obx_str r3 = rt_str_dup(v_p_2);
-    rt_str_drop(v_p_2);
     return r3;
   } else if (sp1->tag == 4LL) {
-    obx_str v_p_4 = rt_str_dup(sp1->u.V_Append.f_0);
+    obx_str v_p_4 = sp1->u.V_Append.f_0;
     obx_str r5 = rt_str_dup(v_p_4);
-    rt_str_drop(v_p_4);
     return r5;
   } else {
     obx_str r6 = sl1794;
@@ -25323,14 +25321,12 @@ static int64_t f52_proc_mode(struct S16_proc_Stdio*p_s, int64_t p_which) {
     int64_t r4 = 2LL;
     return r4;
   } else if (sp1->tag == 3LL) {
-    obx_str v_p_5 = rt_str_dup(sp1->u.V_File.f_0);
+    obx_str v_p_5 = sp1->u.V_File.f_0;
     int64_t r6 = 3LL;
-    rt_str_drop(v_p_5);
     return r6;
   } else if (sp1->tag == 4LL) {
-    obx_str v_p_7 = rt_str_dup(sp1->u.V_Append.f_0);
+    obx_str v_p_7 = sp1->u.V_Append.f_0;
     int64_t r9 = p_which == 0LL ? -1LL : 4LL;
-    rt_str_drop(v_p_7);
     return r9;
   } else if (sp1->tag == 5LL) {
     int64_t r11 = p_which == 2LL ? 5LL : -1LL;
@@ -66200,13 +66196,13 @@ static void f698_check_Checker_checkAll(struct S70_check_Checker**p_c) {
   int64_t end1 = (*p_c)->f_pg->f_mods.len;
   for (int64_t v_m_2 = 0LL; v_m_2 < end1; v_m_2++) {
     int64_t ix3 = v_m_2;
-    obx_arr t4 = f886_check_copyInts(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix3, (*p_c)->f_pg->f_mods.len, "check.obx:5330"))->f_fns);
+    obx_arr t4 = f886_check_copyInts(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix3, (*p_c)->f_pg->f_mods.len, "check.obx:5334"))->f_fns);
     obx_arr v_fs_5 = t4;
     obx_slice ap6 = rt_as_slice(&v_fs_5);
     for (int64_t i7 = 0LL; i7 < ap6.len; i7++) {
       int64_t v_f_8 = *((int64_t*)ap6.data + i7);
       int64_t ix9 = v_f_8;
-      bool c10 = (bool)!((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix9, (*p_c)->f_pg->f_fns.len, "check.obx:5332"))->f_isExtern;
+      bool c10 = (bool)!((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix9, (*p_c)->f_pg->f_fns.len, "check.obx:5336"))->f_isExtern;
       if (c10) {
         f887_check_Checker_checkFn(p_c, v_f_8);
       }
@@ -66214,7 +66210,7 @@ static void f698_check_Checker_checkAll(struct S70_check_Checker**p_c) {
     obx_arr a11 = rt_arr_new(0LL, 16ULL);
     obx_arr v_names_12 = a11;
     int64_t ix13 = v_m_2;
-    obx_slice ap14 = rt_as_slice(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix13, (*p_c)->f_pg->f_mods.len, "check.obx:5335"))->f_scopeNames);
+    obx_slice ap14 = rt_as_slice(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix13, (*p_c)->f_pg->f_mods.len, "check.obx:5339"))->f_scopeNames);
     for (int64_t i15 = 0LL; i15 < ap14.len; i15++) {
       obx_str v_n_16 = rt_str_dup(*((obx_str*)ap14.data + i15));
       obx_str ap17 = rt_str_dup(v_n_16);
@@ -66226,7 +66222,7 @@ static void f698_check_Checker_checkAll(struct S70_check_Checker**p_c) {
       obx_str v_n_20 = rt_str_dup(*((obx_str*)ap18.data + i19));
       int64_t ix21 = v_m_2;
       struct S2_sema_Sym t22 = (struct S2_sema_Sym){.f_k = -1LL, .f_i = -1LL};
-      struct S2_sema_Sym t23 = f699_std_Map_getOr(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix21, (*p_c)->f_pg->f_mods.len, "check.obx:5337"))->f_scope, v_n_20, t22);
+      struct S2_sema_Sym t23 = f699_std_Map_getOr(&((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix21, (*p_c)->f_pg->f_mods.len, "check.obx:5341"))->f_scope, v_n_20, t22);
       struct S2_sema_Sym v_s_24 = t23;
       bool c25 = (bool)(v_s_24.f_k == 3LL);
       if (c25) {
@@ -69938,37 +69934,37 @@ static void f888_check_Checker_globalInit(struct S70_check_Checker**p_c, int64_t
   int64_t ifx2;
   if (v_isG_1) {
     int64_t ix3 = p_g;
-    ifx2 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix3, (*p_c)->f_pg->f_globals.len, "check.obx:5349"))->f_mod;
+    ifx2 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix3, (*p_c)->f_pg->f_globals.len, "check.obx:5353"))->f_mod;
   } else {
     int64_t ix4 = p_g;
-    ifx2 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix4, (*p_c)->f_pg->f_consts.len, "check.obx:5349"))->f_mod;
+    ifx2 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix4, (*p_c)->f_pg->f_consts.len, "check.obx:5353"))->f_mod;
   }
   int64_t v_m_5 = ifx2;
   obx_str ifx6;
   if (v_isG_1) {
     int64_t ix7 = p_g;
-    ifx6 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix7, (*p_c)->f_pg->f_globals.len, "check.obx:5350"))->f_name);
+    ifx6 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix7, (*p_c)->f_pg->f_globals.len, "check.obx:5354"))->f_name);
   } else {
     int64_t ix8 = p_g;
-    ifx6 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix8, (*p_c)->f_pg->f_consts.len, "check.obx:5350"))->f_name);
+    ifx6 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix8, (*p_c)->f_pg->f_consts.len, "check.obx:5354"))->f_name);
   }
   obx_str v_name_9 = ifx6;
   int64_t ifx10;
   if (v_isG_1) {
     int64_t ix11 = p_g;
-    ifx10 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix11, (*p_c)->f_pg->f_globals.len, "check.obx:5351"))->f_node;
+    ifx10 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix11, (*p_c)->f_pg->f_globals.len, "check.obx:5355"))->f_node;
   } else {
     int64_t ix12 = p_g;
-    ifx10 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix12, (*p_c)->f_pg->f_consts.len, "check.obx:5351"))->f_node;
+    ifx10 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix12, (*p_c)->f_pg->f_consts.len, "check.obx:5355"))->f_node;
   }
   int64_t v_node_13 = ifx10;
   int64_t ifx14;
   if (v_isG_1) {
     int64_t ix15 = p_g;
-    ifx14 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix15, (*p_c)->f_pg->f_globals.len, "check.obx:5352"))->f_ty;
+    ifx14 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix15, (*p_c)->f_pg->f_globals.len, "check.obx:5356"))->f_ty;
   } else {
     int64_t ix16 = p_g;
-    ifx14 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix16, (*p_c)->f_pg->f_consts.len, "check.obx:5352"))->f_table;
+    ifx14 = ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix16, (*p_c)->f_pg->f_consts.len, "check.obx:5356"))->f_table;
   }
   int64_t v_t_17 = ifx14;
   obx_arr a18 = rt_arr_new(0LL, 8ULL);
@@ -70056,15 +70052,15 @@ static void f888_check_Checker_globalInit(struct S70_check_Checker**p_c, int64_t
     int64_t ix57 = p_g;
     {
       struct S77_check_GInit*nw58 = v_r_26;
-      gl45_drop(*((struct S77_check_GInit**)(*p_c)->f_ginits.data + rt_idx(ix57, (*p_c)->f_ginits.len, "check.obx:5370")));
-      *((struct S77_check_GInit**)(*p_c)->f_ginits.data + rt_idx(ix57, (*p_c)->f_ginits.len, "check.obx:5370")) = nw58;
+      gl45_drop(*((struct S77_check_GInit**)(*p_c)->f_ginits.data + rt_idx(ix57, (*p_c)->f_ginits.len, "check.obx:5374")));
+      *((struct S77_check_GInit**)(*p_c)->f_ginits.data + rt_idx(ix57, (*p_c)->f_ginits.len, "check.obx:5374")) = nw58;
     }
   } else {
     int64_t ix59 = p_g;
     {
       struct S77_check_GInit*nw60 = v_r_26;
-      gl45_drop(*((struct S77_check_GInit**)(*p_c)->f_cinits.data + rt_idx(ix59, (*p_c)->f_cinits.len, "check.obx:5370")));
-      *((struct S77_check_GInit**)(*p_c)->f_cinits.data + rt_idx(ix59, (*p_c)->f_cinits.len, "check.obx:5370")) = nw60;
+      gl45_drop(*((struct S77_check_GInit**)(*p_c)->f_cinits.data + rt_idx(ix59, (*p_c)->f_cinits.len, "check.obx:5374")));
+      *((struct S77_check_GInit**)(*p_c)->f_cinits.data + rt_idx(ix59, (*p_c)->f_cinits.len, "check.obx:5374")) = nw60;
     }
   }
   gl62_drop(v_n_20);
@@ -70120,7 +70116,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
   int64_t t29 = f974_check_Checker_kind(p_c, p_e);
   int64_t v_k_30 = t29;
   int64_t ix31 = v_d_26;
-  int64_t v_form_32 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix31, (*p_c)->f_pg->f_types.len, "check.obx:5386"))->f_form;
+  int64_t v_form_32 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix31, (*p_c)->f_pg->f_types.len, "check.obx:5390"))->f_form;
   bool b33 = (bool)(v_k_30 == 53LL);
   if (b33) {
     b33 = (bool)(v_form_32 == 0LL);
@@ -70130,7 +70126,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
     obx_arr a35 = rt_arr_new(0LL, 16ULL);
     obx_arr v_names_36 = a35;
     int64_t ix37 = v_d_26;
-    obx_slice ap38 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix37, (*p_c)->f_pg->f_types.len, "check.obx:5389"))->f_fields);
+    obx_slice ap38 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix37, (*p_c)->f_pg->f_types.len, "check.obx:5393"))->f_fields);
     for (int64_t i39 = 0LL; i39 < ap38.len; i39++) {
       struct S90_sema_Field v_f_40 = gl54_dup(*((struct S90_sema_Field*)ap38.data + i39));
       obx_str ap41 = rt_str_dup(v_f_40.f_name);
@@ -70139,7 +70135,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
     }
     struct S99_syntax_Node t42 = f977_check_Checker_nd(p_c, p_e);
     int64_t ix43 = v_d_26;
-    obx_arr t44 = f984_check_Checker_orderInits(p_c, &v_names_36, t42.f_b, rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:5390"))->f_name), v_line_2);
+    obx_arr t44 = f984_check_Checker_orderInits(p_c, &v_names_36, t42.f_b, rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:5394"))->f_name), v_line_2);
     obx_arr v_args_45 = t44;
     gl62_drop(t42);
     obx_arr a46 = rt_arr_new(0LL, 8ULL);
@@ -70148,13 +70144,13 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
     for (int64_t v_i_49 = 0LL; v_i_49 < end48; v_i_49++) {
       int64_t ix50 = v_d_26;
       int64_t ix51 = v_i_49;
-      int64_t t52 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix50, (*p_c)->f_pg->f_types.len, "check.obx:5393"))->f_fields.data + rt_idx(ix51, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix50, (*p_c)->f_pg->f_types.len, "check.obx:5393"))->f_fields.len, "check.obx:5393"))->f_ty, &v_env_28);
+      int64_t t52 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix50, (*p_c)->f_pg->f_types.len, "check.obx:5397"))->f_fields.data + rt_idx(ix51, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix50, (*p_c)->f_pg->f_types.len, "check.obx:5397"))->f_fields.len, "check.obx:5397"))->f_ty, &v_env_28);
       int64_t v_ft_53 = t52;
       int64_t ix54 = v_i_49;
-      int64_t t55 = f979_check_Checker_constInit(p_c, ((struct S106_check_Arg*)v_args_45.data + rt_idx(ix54, v_args_45.len, "check.obx:5394"))->f_n, v_ft_53);
+      int64_t t55 = f979_check_Checker_constInit(p_c, ((struct S106_check_Arg*)v_args_45.data + rt_idx(ix54, v_args_45.len, "check.obx:5398"))->f_n, v_ft_53);
       int64_t v_cc_56 = t55;
       int64_t ix57 = v_i_49;
-      obx_str t58 = rt_str_concat(sl4258, *((obx_str*)v_names_36.data + rt_idx(ix57, v_names_36.len, "check.obx:5395")));
+      obx_str t58 = rt_str_concat(sl4258, *((obx_str*)v_names_36.data + rt_idx(ix57, v_names_36.len, "check.obx:5399")));
       int64_t t59 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t58, v_cc_56);
       int64_t ap60 = t59;
       *(int64_t*)rt_arr_push(&v_its_47, 8ULL) = ap60;
@@ -70194,7 +70190,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
     bool b72 = b71;
     if (b72) {
       int64_t ix73 = v_st_70.f_di;
-      b72 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix73, (*p_c)->f_pg->f_variants.len, "check.obx:5402"))->f_decl == v_d_26);
+      b72 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix73, (*p_c)->f_pg->f_variants.len, "check.obx:5406"))->f_decl == v_d_26);
     }
     bool c74 = b72;
     if (c74) {
@@ -70202,7 +70198,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
       obx_arr a76 = rt_arr_new(0LL, 16ULL);
       obx_arr v_names_77 = a76;
       int64_t ix78 = v_vr_75;
-      obx_slice ap79 = rt_as_slice(&((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix78, (*p_c)->f_pg->f_variants.len, "check.obx:5405"))->f_fields);
+      obx_slice ap79 = rt_as_slice(&((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix78, (*p_c)->f_pg->f_variants.len, "check.obx:5409"))->f_fields);
       for (int64_t i80 = 0LL; i80 < ap79.len; i80++) {
         struct S90_sema_Field v_f_81 = gl54_dup(*((struct S90_sema_Field*)ap79.data + i80));
         obx_str ap82 = rt_str_dup(v_f_81.f_name);
@@ -70215,7 +70211,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
       if (c85) {
         struct S99_syntax_Node t86 = f977_check_Checker_nd(p_c, p_e);
         int64_t ix87 = v_vr_75;
-        obx_arr t88 = f984_check_Checker_orderInits(p_c, &v_names_77, t86.f_b, rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix87, (*p_c)->f_pg->f_variants.len, "check.obx:5408"))->f_name), v_line_2);
+        obx_arr t88 = f984_check_Checker_orderInits(p_c, &v_names_77, t86.f_b, rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix87, (*p_c)->f_pg->f_variants.len, "check.obx:5412"))->f_name), v_line_2);
         obx_arr v_ias_89 = t88;
         gl62_drop(t86);
         obx_slice ap90 = rt_as_slice(&v_ias_89);
@@ -70244,7 +70240,7 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
       if (c99) {
         int64_t t100 = v_line_2;
         int64_t ix101 = v_vr_75;
-        obx_str t102 = rt_str_concat(sl4259, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix101, (*p_c)->f_pg->f_variants.len, "check.obx:5414"))->f_name);
+        obx_str t102 = rt_str_concat(sl4259, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix101, (*p_c)->f_pg->f_variants.len, "check.obx:5418"))->f_name);
         obx_str t103 = rt_str_concat(t102, sl4217);
         obx_str t104 = rt_int_to_str(v_names_77.len);
         obx_str t105 = rt_str_concat(t103, t104);
@@ -70257,25 +70253,25 @@ static int64_t f979_check_Checker_constInit(struct S70_check_Checker**p_c, int64
       for (int64_t v_i_110 = 0LL; v_i_110 < end109; v_i_110++) {
         int64_t ix111 = v_vr_75;
         int64_t ix112 = v_i_110;
-        int64_t t113 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix111, (*p_c)->f_pg->f_variants.len, "check.obx:5418"))->f_fields.data + rt_idx(ix112, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix111, (*p_c)->f_pg->f_variants.len, "check.obx:5418"))->f_fields.len, "check.obx:5418"))->f_ty, &v_env_28);
+        int64_t t113 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix111, (*p_c)->f_pg->f_variants.len, "check.obx:5422"))->f_fields.data + rt_idx(ix112, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix111, (*p_c)->f_pg->f_variants.len, "check.obx:5422"))->f_fields.len, "check.obx:5422"))->f_ty, &v_env_28);
         int64_t v_ft_114 = t113;
         int64_t ix115 = v_i_110;
-        int64_t t116 = f979_check_Checker_constInit(p_c, *((int64_t*)v_args_84.data + rt_idx(ix115, v_args_84.len, "check.obx:5419")), v_ft_114);
+        int64_t t116 = f979_check_Checker_constInit(p_c, *((int64_t*)v_args_84.data + rt_idx(ix115, v_args_84.len, "check.obx:5423")), v_ft_114);
         int64_t v_cc_117 = t116;
         int64_t ix118 = v_i_110;
-        obx_str t119 = rt_str_concat(sl4258, *((obx_str*)v_names_77.data + rt_idx(ix118, v_names_77.len, "check.obx:5420")));
+        obx_str t119 = rt_str_concat(sl4258, *((obx_str*)v_names_77.data + rt_idx(ix118, v_names_77.len, "check.obx:5424")));
         int64_t t120 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t119, v_cc_117);
         int64_t ap121 = t120;
         *(int64_t*)rt_arr_push(&v_its_108, 8ULL) = ap121;
       }
       obx_str t122 = sl4261;
       int64_t ix123 = v_vr_75;
-      int64_t t124 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix123, (*p_c)->f_pg->f_variants.len, "check.obx:5422"))->f_index);
+      int64_t t124 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix123, (*p_c)->f_pg->f_variants.len, "check.obx:5426"))->f_index);
       int64_t t125 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t122, t124);
       int64_t v_tag_126 = t125;
       int64_t t127 = v_tag_126;
       int64_t ix128 = v_vr_75;
-      obx_str t129 = rt_str_concat(sl4262, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix128, (*p_c)->f_pg->f_variants.len, "check.obx:5423"))->f_name);
+      obx_str t129 = rt_str_concat(sl4262, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix128, (*p_c)->f_pg->f_variants.len, "check.obx:5427"))->f_name);
       int64_t t130 = f723_tmpl_Arena_init(&(*p_c)->f_x, v_its_108);
       int64_t t131 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t129, t130);
       obx_arr a132 = rt_arr_new(2LL, 8ULL);
@@ -70378,10 +70374,10 @@ static struct S3_check_St f986_check_Checker_static(struct S70_check_Checker**p_
     bool b43 = b42;
     if (b43) {
       int64_t ix44 = v_b_37.f_di;
-      bool b45 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix44, (*p_c)->f_pg->f_types.len, "check.obx:2819"))->f_form == 1LL);
+      bool b45 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix44, (*p_c)->f_pg->f_types.len, "check.obx:2823"))->f_form == 1LL);
       if (!b45) {
         int64_t ix46 = v_b_37.f_di;
-        b45 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix46, (*p_c)->f_pg->f_types.len, "check.obx:2819"))->f_form == 3LL);
+        b45 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix46, (*p_c)->f_pg->f_types.len, "check.obx:2823"))->f_form == 3LL);
       }
       b43 = b45;
     }
@@ -70610,12 +70606,12 @@ static struct S3_check_St f992_check_Checker_variantOf(struct S70_check_Checker*
   bool b2 = (bool)(p_b.f_n == 2LL);
   if (b2) {
     int64_t ix3 = v_d_1;
-    b2 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix3, (*p_c)->f_pg->f_types.len, "check.obx:2847"))->f_form == 3LL);
+    b2 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix3, (*p_c)->f_pg->f_types.len, "check.obx:2851"))->f_form == 3LL);
   }
   bool b4 = b2;
   if (b4) {
     int64_t ix5 = v_d_1;
-    b4 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix5, (*p_c)->f_pg->f_types.len, "check.obx:2847"))->f_tparams.len > 0LL);
+    b4 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix5, (*p_c)->f_pg->f_types.len, "check.obx:2851"))->f_tparams.len > 0LL);
   }
   bool v_free_6 = b4;
   int64_t ifx7;
@@ -70636,19 +70632,19 @@ static struct S3_check_St f992_check_Checker_variantOf(struct S70_check_Checker*
   if (b13) {
     int64_t t14 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_10);
     int64_t ix15 = t14;
-    b13 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix15, (*p_c)->f_pg->f_types.len, "check.obx:2849"))->f_form == 1LL);
+    b13 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix15, (*p_c)->f_pg->f_types.len, "check.obx:2853"))->f_form == 1LL);
   }
   bool c16 = b13;
   if (c16) {
     int64_t t17 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_10);
     int64_t ix18 = t17;
-    obx_arr t19 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix18, (*p_c)->f_pg->f_types.len, "check.obx:2850"))->f_variants);
+    obx_arr t19 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix18, (*p_c)->f_pg->f_types.len, "check.obx:2854"))->f_variants);
     obx_arr v_vs_20 = t19;
     obx_slice ap21 = rt_as_slice(&v_vs_20);
     for (int64_t i22 = 0LL; i22 < ap21.len; i22++) {
       int64_t v_vr_23 = *((int64_t*)ap21.data + i22);
       int64_t ix24 = v_vr_23;
-      bool c25 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix24, (*p_c)->f_pg->f_variants.len, "check.obx:2852"))->f_name, p_name);
+      bool c25 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix24, (*p_c)->f_pg->f_variants.len, "check.obx:2856"))->f_name, p_name);
       if (c25) {
         bool t26 = f1001_sema_Program_isBare(&(*p_c)->f_pg, v_t_10);
         bool c27 = t26;
@@ -70711,12 +70707,12 @@ static int64_t f1000_check_Checker_staticType(struct S70_check_Checker**p_c, str
   bool b6 = (bool)(p_st.f_n == 2LL);
   if (b6) {
     int64_t ix7 = v_d_5;
-    b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix7, (*p_c)->f_pg->f_types.len, "check.obx:2895"))->f_tparams.len > 0LL);
+    b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix7, (*p_c)->f_pg->f_types.len, "check.obx:2899"))->f_tparams.len > 0LL);
   }
   bool b8 = b6;
   if (b8) {
     int64_t ix9 = v_d_5;
-    b8 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix9, (*p_c)->f_pg->f_types.len, "check.obx:2895"))->f_form != 3LL);
+    b8 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix9, (*p_c)->f_pg->f_types.len, "check.obx:2899"))->f_form != 3LL);
   }
   bool c10 = b8;
   if (c10) {
@@ -70737,7 +70733,7 @@ static int64_t f1000_check_Checker_staticType(struct S70_check_Checker**p_c, str
   }
   int64_t ix18 = v_d_5;
   obx_arr a19 = rt_arr_new(1LL, 16ULL);
-  *((obx_str*)a19.data + 0LL) = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix18, (*p_c)->f_pg->f_types.len, "check.obx:2898"))->f_name);
+  *((obx_str*)a19.data + 0LL) = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix18, (*p_c)->f_pg->f_types.len, "check.obx:2902"))->f_name);
   int64_t t20 = f998_check_Checker_synthTname(p_c, &a19, &v_args_14, p_line);
   int64_t v_a_21 = t20;
   gl0_drop(a19);
@@ -70749,10 +70745,10 @@ static int64_t f1000_check_Checker_staticType(struct S70_check_Checker**p_c, str
 static int64_t f1004_check_Checker_resolveNamed(struct S70_check_Checker**p_c, int64_t p_d, int64_t p_a, int64_t p_line) {
   int64_t v_mod_1 = (*p_c)->f_cx->f_mod;
   int64_t ix2 = p_d;
-  struct S2_sema_Sym t3 = f926_sema_Program_lookup(&(*p_c)->f_pg, v_mod_1, rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix2, (*p_c)->f_pg->f_types.len, "check.obx:2904"))->f_name));
+  struct S2_sema_Sym t3 = f926_sema_Program_lookup(&(*p_c)->f_pg, v_mod_1, rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix2, (*p_c)->f_pg->f_types.len, "check.obx:2908"))->f_name));
   struct S2_sema_Sym v_l_4 = t3;
   int64_t ix5 = p_d;
-  bool b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix5, (*p_c)->f_pg->f_types.len, "check.obx:2905"))->f_mod != v_mod_1);
+  bool b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix5, (*p_c)->f_pg->f_types.len, "check.obx:2909"))->f_mod != v_mod_1);
   if (b6) {
     bool b7 = (bool)(v_l_4.f_k == 0LL);
     if (b7) {
@@ -70776,12 +70772,12 @@ static int64_t f1004_check_Checker_resolveNamed(struct S70_check_Checker**p_c, i
       *(int64_t*)rt_arr_push(&v_args_10, 8ULL) = ap18;
     }
     int64_t ix19 = p_d;
-    int64_t v_ntp_20 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix19, (*p_c)->f_pg->f_types.len, "check.obx:2910"))->f_tparams.len;
+    int64_t v_ntp_20 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix19, (*p_c)->f_pg->f_types.len, "check.obx:2914"))->f_tparams.len;
     bool c21 = (bool)(v_args_10.len != v_ntp_20);
     if (c21) {
       int64_t t22 = p_line;
       int64_t ix23 = p_d;
-      obx_str t24 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix23, (*p_c)->f_pg->f_types.len, "check.obx:2912"))->f_name, sl4217);
+      obx_str t24 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix23, (*p_c)->f_pg->f_types.len, "check.obx:2916"))->f_name, sl4217);
       obx_str t25 = rt_int_to_str(v_ntp_20);
       obx_str t26 = rt_str_concat(t24, t25);
       obx_str t27 = rt_str_concat(t26, sl4218);
@@ -70790,7 +70786,7 @@ static int64_t f1004_check_Checker_resolveNamed(struct S70_check_Checker**p_c, i
       f976_check_Checker_err(p_c, t22, t29);
     }
     int64_t ix30 = p_d;
-    bool c31 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix30, (*p_c)->f_pg->f_types.len, "check.obx:2914"))->f_form == 3LL);
+    bool c31 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix30, (*p_c)->f_pg->f_types.len, "check.obx:2918"))->f_form == 3LL);
     if (c31) {
       obx_arr a32 = rt_arr_new(0LL, 8ULL);
       obx_arr v_env_33 = a32;
@@ -70798,10 +70794,10 @@ static int64_t f1004_check_Checker_resolveNamed(struct S70_check_Checker**p_c, i
       for (int64_t v_i_35 = 0LL; v_i_35 < end34; v_i_35++) {
         int64_t ix36 = p_d;
         int64_t ix37 = v_i_35;
-        int64_t ap38 = *((int64_t*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:2917"))->f_tparams.data + rt_idx(ix37, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:2917"))->f_tparams.len, "check.obx:2917"));
+        int64_t ap38 = *((int64_t*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:2921"))->f_tparams.data + rt_idx(ix37, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:2921"))->f_tparams.len, "check.obx:2921"));
         *(int64_t*)rt_arr_push(&v_env_33, 8ULL) = ap38;
         int64_t ix39 = v_i_35;
-        int64_t ap40 = *((int64_t*)v_args_10.data + rt_idx(ix39, v_args_10.len, "check.obx:2918"));
+        int64_t ap40 = *((int64_t*)v_args_10.data + rt_idx(ix39, v_args_10.len, "check.obx:2922"));
         *(int64_t*)rt_arr_push(&v_env_33, 8ULL) = ap40;
       }
       int64_t t41 = f965_sema_Program_aliasTarget(&(*p_c)->f_pg, p_d);
@@ -70812,7 +70808,7 @@ static int64_t f1004_check_Checker_resolveNamed(struct S70_check_Checker**p_c, i
       return r43;
     }
     int64_t ix44 = p_d;
-    obx_arr t45 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix44, (*p_c)->f_pg->f_types.len, "check.obx:2922"))->f_tparams);
+    obx_arr t45 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix44, (*p_c)->f_pg->f_types.len, "check.obx:2926"))->f_tparams);
     obx_arr v_tps_46 = t45;
     f967_sema_Program_checkTargs(&(*p_c)->f_pg, &v_args_10, &v_tps_46, v_mod_1, p_line);
     int64_t t47 = f822_sema_Program_mkInst(&(*p_c)->f_pg, p_d, &v_args_10);
@@ -71138,7 +71134,7 @@ static obx_arr f984_check_Checker_orderInits(struct S70_check_Checker**p_c, obx_
     int64_t end44 = p_names->len;
     for (int64_t v_i_45 = 0LL; v_i_45 < end44; v_i_45++) {
       int64_t ix46 = v_i_45;
-      bool c47 = rt_str_eq(*((obx_str*)p_names->data + rt_idx(ix46, p_names->len, "check.obx:4023")), v_n_43);
+      bool c47 = rt_str_eq(*((obx_str*)p_names->data + rt_idx(ix46, p_names->len, "check.obx:4027")), v_n_43);
       if (c47) {
         int64_t ap48 = v_i_45;
         *(int64_t*)rt_arr_push(&v_order_38, 8ULL) = ap48;
@@ -71276,7 +71272,7 @@ static int64_t f1013_check_cint(struct S84_tmpl_Arena**p_x, struct S101_num_Big 
   }
   obx_slice t49 = k5_check_CTYPES;
   int64_t ix50 = p_t;
-  int64_t t51 = f743_tmpl_Arena_ct(p_x, rt_str_dup(*((obx_str*)t49.data + rt_idx(ix50, t49.len, "check.obx:2688"))));
+  int64_t t51 = f743_tmpl_Arena_ct(p_x, rt_str_dup(*((obx_str*)t49.data + rt_idx(ix50, t49.len, "check.obx:2692"))));
   obx_str t52 = f906_num_bigStr(gl64_dup(p_v));
   int64_t t53 = f740_tmpl_Arena_num(p_x, t52);
   int64_t t54 = f839_tmpl_Arena_pcast(p_x, t51, t53);
@@ -71429,24 +71425,24 @@ static struct S107_check_Ctx*f1015_check_newCtx(int64_t p_f, obx_str p_label, in
 }
 static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_f) {
   int64_t ix1 = p_f;
-  int64_t v_m_2 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:5289"))->f_mod;
+  int64_t v_m_2 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:5293"))->f_mod;
   int64_t t3 = p_f;
   obx_str t4 = f882_sema_Program_label(&(*p_c)->f_pg, p_f);
   int64_t ix5 = p_f;
-  int64_t t6 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix5, (*p_c)->f_pg->f_fns.len, "check.obx:5290"))->f_ret;
+  int64_t t6 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix5, (*p_c)->f_pg->f_fns.len, "check.obx:5294"))->f_ret;
   int64_t ix7 = p_f;
-  obx_arr t8 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix7, (*p_c)->f_pg->f_fns.len, "check.obx:5290"))->f_tps);
+  obx_arr t8 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix7, (*p_c)->f_pg->f_fns.len, "check.obx:5294"))->f_tps);
   f973_check_Checker_startFn(p_c, t3, t4, t6, t8, v_m_2);
   obx_arr a9 = rt_arr_new(0LL, 8ULL);
   obx_arr v_vs_10 = a9;
   int64_t ix11 = p_f;
-  obx_str v_bp_12 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix11, (*p_c)->f_pg->f_fns.len, "check.obx:5292"))->f_bparam);
+  obx_str v_bp_12 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix11, (*p_c)->f_pg->f_fns.len, "check.obx:5296"))->f_bparam);
   int64_t ix13 = p_f;
-  int64_t end14 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix13, (*p_c)->f_pg->f_fns.len, "check.obx:5293"))->f_params.len;
+  int64_t end14 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix13, (*p_c)->f_pg->f_fns.len, "check.obx:5297"))->f_params.len;
   for (int64_t v_i_15 = 0LL; v_i_15 < end14; v_i_15++) {
     int64_t ix16 = p_f;
     int64_t ix17 = v_i_15;
-    struct S75_sema_Param v_p_18 = gl57_dup(*((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:5294"))->f_params.data + rt_idx(ix17, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:5294"))->f_params.len, "check.obx:5294")));
+    struct S75_sema_Param v_p_18 = gl57_dup(*((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:5298"))->f_params.data + rt_idx(ix17, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:5298"))->f_params.len, "check.obx:5298")));
     obx_str t19 = rt_str_concat(sl4148, v_p_18.f_name);
     int64_t t20 = f1016_check_Checker_newVar(p_c, rt_str_dup(v_p_18.f_name), t19, v_p_18.f_ty, v_p_18.f_isVar, 0LL, v_p_18.f_line);
     int64_t v_v_21 = t20;
@@ -71460,22 +71456,22 @@ static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_
     gl58_drop(v_p_18);
   }
   int64_t ix24 = p_f;
-  bool t25 = f893_sema_Program_isBorrowClass(&(*p_c)->f_pg, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix24, (*p_c)->f_pg->f_fns.len, "check.obx:5300"))->f_ret);
+  bool t25 = f893_sema_Program_isBorrowClass(&(*p_c)->f_pg, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix24, (*p_c)->f_pg->f_fns.len, "check.obx:5304"))->f_ret);
   bool c26 = t25;
   if (c26) {
     int64_t ix27 = p_f;
-    obx_arr t28 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix27, (*p_c)->f_pg->f_fns.len, "check.obx:5301"))->f_bsrc);
+    obx_arr t28 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix27, (*p_c)->f_pg->f_fns.len, "check.obx:5305"))->f_bsrc);
     obx_arr v_bsrc_29 = t28;
     obx_slice ap30 = rt_as_slice(&v_bsrc_29);
     for (int64_t i31 = 0LL; i31 < ap30.len; i31++) {
       int64_t v_i_32 = *((int64_t*)ap30.data + i31);
       int64_t ix33 = v_i_32;
-      int64_t v_pv_34 = *((int64_t*)v_vs_10.data + rt_idx(ix33, v_vs_10.len, "check.obx:5303"));
+      int64_t v_pv_34 = *((int64_t*)v_vs_10.data + rt_idx(ix33, v_vs_10.len, "check.obx:5307"));
       int64_t ix35 = v_pv_34;
       int64_t ifx36;
-      if (((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix35, (*p_c)->f_vars.len, "check.obx:5304"))->f_croot >= 0LL) {
+      if (((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix35, (*p_c)->f_vars.len, "check.obx:5308"))->f_croot >= 0LL) {
         int64_t ix37 = v_pv_34;
-        ifx36 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix37, (*p_c)->f_vars.len, "check.obx:5304"))->f_croot;
+        ifx36 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix37, (*p_c)->f_vars.len, "check.obx:5308"))->f_croot;
       } else {
         ifx36 = v_pv_34;
       }
@@ -71492,12 +71488,12 @@ static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_
   struct S109_check_Scope*ap42 = t41;
   *(struct S109_check_Scope**)rt_arr_push(&(*p_c)->f_cx->f_scopes, 8ULL) = ap42;
   int64_t ix43 = p_f;
-  int64_t v_line_44 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix43, (*p_c)->f_pg->f_fns.len, "check.obx:5308"))->f_line;
+  int64_t v_line_44 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix43, (*p_c)->f_pg->f_fns.len, "check.obx:5312"))->f_line;
   int64_t ix45 = p_f;
-  bool b46 = rt_str_eq(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix45, (*p_c)->f_pg->f_fns.len, "check.obx:5309"))->f_name, sl3937);
+  bool b46 = rt_str_eq(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix45, (*p_c)->f_pg->f_fns.len, "check.obx:5313"))->f_name, sl3937);
   if (b46) {
     int64_t ix47 = p_f;
-    b46 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix47, (*p_c)->f_pg->f_fns.len, "check.obx:5309"))->f_ownerKind == 0LL);
+    b46 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix47, (*p_c)->f_pg->f_fns.len, "check.obx:5313"))->f_ownerKind == 0LL);
   }
   bool b48 = b46;
   if (b48) {
@@ -71506,15 +71502,15 @@ static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_
   bool c49 = b48;
   if (c49) {
     int64_t ix50 = p_f;
-    bool b51 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix50, (*p_c)->f_pg->f_fns.len, "check.obx:5310"))->f_params.len > 0LL);
+    bool b51 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix50, (*p_c)->f_pg->f_fns.len, "check.obx:5314"))->f_params.len > 0LL);
     if (!b51) {
       int64_t ix52 = p_f;
-      b51 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix52, (*p_c)->f_pg->f_fns.len, "check.obx:5310"))->f_ret != 11LL);
+      b51 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix52, (*p_c)->f_pg->f_fns.len, "check.obx:5314"))->f_ret != 11LL);
     }
     bool b53 = b51;
     if (!b53) {
       int64_t ix54 = p_f;
-      b53 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix54, (*p_c)->f_pg->f_fns.len, "check.obx:5310"))->f_tps.len > 0LL);
+      b53 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix54, (*p_c)->f_pg->f_fns.len, "check.obx:5314"))->f_tps.len > 0LL);
     }
     bool c55 = b53;
     if (c55) {
@@ -71522,13 +71518,13 @@ static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_
     }
   }
   int64_t ix56 = p_f;
-  struct S99_syntax_Node t57 = f891_sema_Program_nd(&(*p_c)->f_pg, v_m_2, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix56, (*p_c)->f_pg->f_fns.len, "check.obx:5314"))->f_node);
+  struct S99_syntax_Node t57 = f891_sema_Program_nd(&(*p_c)->f_pg, v_m_2, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix56, (*p_c)->f_pg->f_fns.len, "check.obx:5318"))->f_node);
   f1018_check_Checker_block(p_c, t57.f_e, (bool)0LL, (bool)1LL);
   gl62_drop(t57);
   bool c58 = (bool)!(*p_c)->f_cx->f_dead;
   if (c58) {
     int64_t ix59 = p_f;
-    int64_t v_ret_60 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix59, (*p_c)->f_pg->f_fns.len, "check.obx:5316"))->f_ret;
+    int64_t v_ret_60 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix59, (*p_c)->f_pg->f_fns.len, "check.obx:5320"))->f_ret;
     bool c61 = (bool)(v_ret_60 == 12LL);
     if (c61) {
       obx_str t62 = rt_str_concat((*p_c)->f_cx->f_label, sl4273);
@@ -71560,8 +71556,8 @@ static void f887_check_Checker_checkFn(struct S70_check_Checker**p_c, int64_t p_
   int64_t ix74 = p_f;
   {
     struct S95_check_Tmpl*nw75 = t73;
-    gl59_drop(*((struct S95_check_Tmpl**)(*p_c)->f_tmpls.data + rt_idx(ix74, (*p_c)->f_tmpls.len, "check.obx:5324")));
-    *((struct S95_check_Tmpl**)(*p_c)->f_tmpls.data + rt_idx(ix74, (*p_c)->f_tmpls.len, "check.obx:5324")) = nw75;
+    gl59_drop(*((struct S95_check_Tmpl**)(*p_c)->f_tmpls.data + rt_idx(ix74, (*p_c)->f_tmpls.len, "check.obx:5328")));
+    *((struct S95_check_Tmpl**)(*p_c)->f_tmpls.data + rt_idx(ix74, (*p_c)->f_tmpls.len, "check.obx:5328")) = nw75;
   }
   rt_str_drop(v_bp_12);
 }
@@ -72233,52 +72229,67 @@ static void f1046_check_Checker_sMatch(struct S70_check_Checker**p_c, int64_t p_
         } else {
           bool c197 = (bool)!rt_str_eq(v_bn_181, sl1794);
           if (c197) {
-            bool t198 = f1065_check_Checker_isCopy(p_c, v_ft_169);
-            bool c199 = t198;
-            if (c199) {
-              int64_t t200 = f1009_check_Checker_T(p_c, v_ft_169);
-              int64_t v_ct_201 = t200;
-              int64_t t202 = v_ct_201;
-              obx_str t203 = rt_str_dup(v_cn_189);
-              int64_t t204 = f1051_check_Checker_dup(p_c, v_fc_175, v_ft_169);
-              int64_t t205 = f834_tmpl_Arena_decl(&(*p_c)->f_x, t202, t203, t204);
-              f1025_check_Checker_emit(p_c, t205);
-              int64_t t206 = f1016_check_Checker_newVar(p_c, rt_str_dup(v_bn_181), rt_str_dup(v_cn_189), v_ft_169, (bool)0LL, 1LL, v_an_94.f_line);
-              int64_t v_x_207 = t206;
-              f1063_check_Checker_declare(p_c, v_x_207);
-              bool t208 = f893_sema_Program_isBorrowClass(&(*p_c)->f_pg, v_ft_169);
-              bool c209 = t208;
-              if (c209) {
-                int64_t t210 = v_x_207;
-                int64_t t211 = v_ft_169;
-                int64_t t212 = f1066_check_Checker_innerCr(p_c, v_root_35, v_pcr_37, v_ft_169);
-                f1064_check_Checker_bindBC(p_c, t210, t211, t212, v_an_94.f_line, (bool)1LL);
+            bool b198 = (bool)(v_ft_169 == 9LL);
+            if (b198) {
+              int64_t t199 = f814_sema_Program_tk(&(*p_c)->f_pg, v_v_4.f_t);
+              b198 = (bool)(t199 == 2LL);
+            }
+            bool b200 = b198;
+            if (b200) {
+              bool t201 = f817_sema_Program_tm(&(*p_c)->f_pg, v_v_4.f_t);
+              b200 = (bool)!t201;
+            }
+            bool v_strView_202 = b200;
+            bool t203 = f1065_check_Checker_isCopy(p_c, v_ft_169);
+            bool b204 = t203;
+            if (b204) {
+              b204 = (bool)!v_strView_202;
+            }
+            bool c205 = b204;
+            if (c205) {
+              int64_t t206 = f1009_check_Checker_T(p_c, v_ft_169);
+              int64_t v_ct_207 = t206;
+              int64_t t208 = v_ct_207;
+              obx_str t209 = rt_str_dup(v_cn_189);
+              int64_t t210 = f1051_check_Checker_dup(p_c, v_fc_175, v_ft_169);
+              int64_t t211 = f834_tmpl_Arena_decl(&(*p_c)->f_x, t208, t209, t210);
+              f1025_check_Checker_emit(p_c, t211);
+              int64_t t212 = f1016_check_Checker_newVar(p_c, rt_str_dup(v_bn_181), rt_str_dup(v_cn_189), v_ft_169, (bool)0LL, 1LL, v_an_94.f_line);
+              int64_t v_x_213 = t212;
+              f1063_check_Checker_declare(p_c, v_x_213);
+              bool t214 = f893_sema_Program_isBorrowClass(&(*p_c)->f_pg, v_ft_169);
+              bool c215 = t214;
+              if (c215) {
+                int64_t t216 = v_x_213;
+                int64_t t217 = v_ft_169;
+                int64_t t218 = f1066_check_Checker_innerCr(p_c, v_root_35, v_pcr_37, v_ft_169);
+                f1064_check_Checker_bindBC(p_c, t216, t217, t218, v_an_94.f_line, (bool)1LL);
               }
             } else {
-              int64_t t213 = f958_sema_Program_mkRef(&(*p_c)->f_pg, v_ft_169, (bool)0LL);
-              int64_t v_rt_214 = t213;
-              int64_t t215 = f1009_check_Checker_T(p_c, v_rt_214);
-              obx_str t216 = rt_str_dup(v_cn_189);
-              int64_t t217 = f1067_check_Checker_addrOf(p_c, v_ft_169, v_fc_175);
-              int64_t t218 = f834_tmpl_Arena_decl(&(*p_c)->f_x, t215, t216, t217);
-              f1025_check_Checker_emit(p_c, t218);
-              int64_t t219 = f1016_check_Checker_newVar(p_c, rt_str_dup(v_bn_181), rt_str_dup(v_cn_189), v_rt_214, (bool)0LL, 1LL, v_an_94.f_line);
-              int64_t v_x_220 = t219;
-              int64_t ix222 = v_x_220;
-              ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix222, (*p_c)->f_vars.len, "check.obx:2464"))->f_broot = v_root_35 >= 0LL ? v_root_35 : -1LL;
-              f1063_check_Checker_declare(p_c, v_x_220);
-              int64_t v_sc_223 = rt_sub_int((*p_c)->f_cx->f_scopes.len, 1LL, "check.obx:2466");
-              bool b224 = (bool)(v_root_35 >= 0LL);
-              if (b224) {
-                int64_t ix225 = v_sc_223;
-                b224 = (bool)((*((struct S109_check_Scope**)(*p_c)->f_cx->f_scopes.data + rt_idx(ix225, (*p_c)->f_cx->f_scopes.len, "check.obx:2467")))->f_freezes.len == 0LL);
+              int64_t t219 = f958_sema_Program_mkRef(&(*p_c)->f_pg, v_ft_169, (bool)0LL);
+              int64_t v_rt_220 = t219;
+              int64_t t221 = f1009_check_Checker_T(p_c, v_rt_220);
+              obx_str t222 = rt_str_dup(v_cn_189);
+              int64_t t223 = f1067_check_Checker_addrOf(p_c, v_ft_169, v_fc_175);
+              int64_t t224 = f834_tmpl_Arena_decl(&(*p_c)->f_x, t221, t222, t223);
+              f1025_check_Checker_emit(p_c, t224);
+              int64_t t225 = f1016_check_Checker_newVar(p_c, rt_str_dup(v_bn_181), rt_str_dup(v_cn_189), v_rt_220, (bool)0LL, 1LL, v_an_94.f_line);
+              int64_t v_x_226 = t225;
+              int64_t ix228 = v_x_226;
+              ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix228, (*p_c)->f_vars.len, "check.obx:2468"))->f_broot = v_root_35 >= 0LL ? v_root_35 : -1LL;
+              f1063_check_Checker_declare(p_c, v_x_226);
+              int64_t v_sc_229 = rt_sub_int((*p_c)->f_cx->f_scopes.len, 1LL, "check.obx:2470");
+              bool b230 = (bool)(v_root_35 >= 0LL);
+              if (b230) {
+                int64_t ix231 = v_sc_229;
+                b230 = (bool)((*((struct S109_check_Scope**)(*p_c)->f_cx->f_scopes.data + rt_idx(ix231, (*p_c)->f_cx->f_scopes.len, "check.obx:2471")))->f_freezes.len == 0LL);
               }
-              bool c226 = b224;
-              if (c226) {
-                obx_str t227 = rt_str_concat(sl4291, v_bn_181);
-                obx_str t228 = rt_str_concat(t227, sl3972);
-                f1068_check_Checker_freeze(p_c, v_root_35, (bool)0LL, t228);
-                rt_str_drop(t227);
+              bool c232 = b230;
+              if (c232) {
+                obx_str t233 = rt_str_concat(sl4291, v_bn_181);
+                obx_str t234 = rt_str_concat(t233, sl3972);
+                f1068_check_Checker_freeze(p_c, v_root_35, (bool)0LL, t234);
+                rt_str_drop(t233);
               }
             }
           }
@@ -72287,79 +72298,79 @@ static void f1046_check_Checker_sMatch(struct S70_check_Checker**p_c, int64_t p_
         rt_str_drop(v_bn_181);
         gl55_drop(v_f_167);
       }
-      bool b229 = (bool)!v_borrowing_29;
-      if (b229) {
-        int64_t ix230 = v_d_24;
-        b229 = (bool)!((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix230, (*p_c)->f_pg->f_types.len, "check.obx:2473"))->f_value;
+      bool b235 = (bool)!v_borrowing_29;
+      if (b235) {
+        int64_t ix236 = v_d_24;
+        b235 = (bool)!((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix236, (*p_c)->f_pg->f_types.len, "check.obx:2477"))->f_value;
       }
-      bool c231 = b229;
-      if (c231) {
-        obx_arr a232 = rt_arr_new(1LL, 8ULL);
-        *((int64_t*)a232.data + 0LL) = v_acc_34;
-        int64_t t233 = f752_tmpl_Arena_call(&(*p_c)->f_x, sl227, a232);
-        f1024_check_Checker_emitx(p_c, t233);
+      bool c237 = b235;
+      if (c237) {
+        obx_arr a238 = rt_arr_new(1LL, 8ULL);
+        *((int64_t*)a238.data + 0LL) = v_acc_34;
+        int64_t t239 = f752_tmpl_Arena_call(&(*p_c)->f_x, sl227, a238);
+        f1024_check_Checker_emitx(p_c, t239);
       }
       rt_str_drop(v_vname_149);
     }
     f1069_check_Checker_armBody(p_c, v_an_94.f_d, p_mx);
-    struct S109_check_Scope*t234 = *(struct S109_check_Scope**)rt_arr_pop(&(*p_c)->f_cx->f_scopes, 8ULL, "check.obx:2476");
-    struct S109_check_Scope*v_sc_235 = t234;
-    bool c236 = (bool)!(*p_c)->f_cx->f_dead;
-    if (c236) {
-      f1027_check_Checker_dropVars(p_c, &v_sc_235->f_vars);
+    struct S109_check_Scope*t240 = *(struct S109_check_Scope**)rt_arr_pop(&(*p_c)->f_cx->f_scopes, 8ULL, "check.obx:2480");
+    struct S109_check_Scope*v_sc_241 = t240;
+    bool c242 = (bool)!(*p_c)->f_cx->f_dead;
+    if (c242) {
+      f1027_check_Checker_dropVars(p_c, &v_sc_241->f_vars);
     }
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2478");
-    bool c237 = (bool)!(*p_c)->f_cx->f_dead;
-    if (c237) {
-      struct S117_check_PathEnd t238 = f1070_check_Checker_pathEnd(p_c);
-      struct S117_check_PathEnd ap239 = t238;
-      *(struct S117_check_PathEnd*)rt_arr_push(&v_ends_85, 16ULL) = ap239;
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2482");
+    bool c243 = (bool)!(*p_c)->f_cx->f_dead;
+    if (c243) {
+      struct S117_check_PathEnd t244 = f1070_check_Checker_pathEnd(p_c);
+      struct S117_check_PathEnd ap245 = t244;
+      *(struct S117_check_PathEnd*)rt_arr_push(&v_ends_85, 16ULL) = ap245;
     }
     f1071_check_Checker_live(p_c, &v_results_83);
-    gl82_drop(v_sc_235);
+    gl82_drop(v_sc_241);
     gl62_drop(v_an_94);
   }
-  bool b240 = (bool)!v_hasElse_87;
-  if (b240) {
-    int64_t t241 = v_nseen_81;
-    int64_t ix242 = v_d_24;
-    b240 = (bool)(t241 != ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix242, (*p_c)->f_pg->f_types.len, "check.obx:2482"))->f_variants.len);
+  bool b246 = (bool)!v_hasElse_87;
+  if (b246) {
+    int64_t t247 = v_nseen_81;
+    int64_t ix248 = v_d_24;
+    b246 = (bool)(t247 != ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix248, (*p_c)->f_pg->f_types.len, "check.obx:2486"))->f_variants.len);
   }
-  bool c243 = b240;
-  if (c243) {
-    struct S6_std_StrBuf*t244 = f16_std_newStrBuf();
-    struct S6_std_StrBuf*v_b_245 = t244;
-    int64_t v_k_246 = 0LL;
-    int64_t ix247 = v_d_24;
-    obx_slice ap248 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix247, (*p_c)->f_pg->f_types.len, "check.obx:2485"))->f_variants);
-    for (int64_t i249 = 0LL; i249 < ap248.len; i249++) {
-      int64_t v_x_250 = *((int64_t*)ap248.data + i249);
-      int64_t ix251 = v_x_250;
-      int64_t ix252 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix251, (*p_c)->f_pg->f_variants.len, "check.obx:2486"))->f_index;
-      bool c253 = (bool)!*((bool*)v_seen_76.data + rt_idx(ix252, v_seen_76.len, "check.obx:2486"));
-      if (c253) {
-        bool c254 = (bool)(v_k_246 > 0LL);
-        if (c254) {
-          f18_std_StrBuf_add(&v_b_245, sl3829);
+  bool c249 = b246;
+  if (c249) {
+    struct S6_std_StrBuf*t250 = f16_std_newStrBuf();
+    struct S6_std_StrBuf*v_b_251 = t250;
+    int64_t v_k_252 = 0LL;
+    int64_t ix253 = v_d_24;
+    obx_slice ap254 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix253, (*p_c)->f_pg->f_types.len, "check.obx:2489"))->f_variants);
+    for (int64_t i255 = 0LL; i255 < ap254.len; i255++) {
+      int64_t v_x_256 = *((int64_t*)ap254.data + i255);
+      int64_t ix257 = v_x_256;
+      int64_t ix258 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix257, (*p_c)->f_pg->f_variants.len, "check.obx:2490"))->f_index;
+      bool c259 = (bool)!*((bool*)v_seen_76.data + rt_idx(ix258, v_seen_76.len, "check.obx:2490"));
+      if (c259) {
+        bool c260 = (bool)(v_k_252 > 0LL);
+        if (c260) {
+          f18_std_StrBuf_add(&v_b_251, sl3829);
         }
-        int64_t ix255 = v_x_250;
-        f18_std_StrBuf_add(&v_b_245, rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix255, (*p_c)->f_pg->f_variants.len, "check.obx:2488"))->f_name));
-        v_k_246 = rt_add_int(v_k_246, 1LL, "check.obx:2489");
+        int64_t ix261 = v_x_256;
+        f18_std_StrBuf_add(&v_b_251, rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix261, (*p_c)->f_pg->f_variants.len, "check.obx:2492"))->f_name));
+        v_k_252 = rt_add_int(v_k_252, 1LL, "check.obx:2493");
       }
     }
-    int64_t t256 = v_n_2.f_line;
-    obx_str t257 = sl4292;
-    obx_str t258 = f1049_check_Checker_tstr(p_c, v_base_8);
-    obx_str t259 = rt_str_concat(t257, t258);
-    obx_str t260 = rt_str_concat(t259, sl4293);
-    obx_str t261 = f20_std_StrBuf_toStr(&v_b_245);
-    obx_str t262 = rt_str_concat(t260, t261);
-    f976_check_Checker_err(p_c, t256, t262);
+    int64_t t262 = v_n_2.f_line;
+    obx_str t263 = sl4292;
+    obx_str t264 = f1049_check_Checker_tstr(p_c, v_base_8);
+    obx_str t265 = rt_str_concat(t263, t264);
+    obx_str t266 = rt_str_concat(t265, sl4293);
+    obx_str t267 = f20_std_StrBuf_toStr(&v_b_251);
+    obx_str t268 = rt_str_concat(t266, t267);
+    f976_check_Checker_err(p_c, t262, t268);
   }
-  bool c263 = (bool)(v_arms_89.len > 0LL);
-  if (c263) {
-    int64_t t264 = f718_tmpl_Arena_send(&(*p_c)->f_x);
-    f1025_check_Checker_emit(p_c, t264);
+  bool c269 = (bool)(v_arms_89.len > 0LL);
+  if (c269) {
+    int64_t t270 = f718_tmpl_Arena_send(&(*p_c)->f_x);
+    f1025_check_Checker_emit(p_c, t270);
   }
   f1072_check_Checker_joinAt(p_c, &v_results_83, &v_ends_85, v_n_2.f_line);
   gl11_drop(v_arms_89);
@@ -72589,26 +72600,26 @@ static void f1069_check_Checker_armBody(struct S70_check_Checker**p_c, int64_t p
   }
 }
 static void f1077_check_Checker_mxArm(struct S70_check_Checker**p_c, int64_t p_x) {
-  int64_t v_top_1 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3750");
+  int64_t v_top_1 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3754");
   int64_t t2 = f974_check_Checker_kind(p_c, p_x);
   bool t3 = f1078_check_isLitNode(t2);
   bool b4 = t3;
   if (b4) {
     int64_t ix5 = v_top_1;
-    b4 = (bool)((*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix5, (*p_c)->f_mxs.len, "check.obx:3751")))->f_t == -1LL);
+    b4 = (bool)((*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix5, (*p_c)->f_mxs.len, "check.obx:3755")))->f_t == -1LL);
   }
   bool c6 = b4;
   if (c6) {
     int64_t ix7 = v_top_1;
-    (void)&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix7, (*p_c)->f_mxs.len, "check.obx:3752")))->f_lits;
+    (void)&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix7, (*p_c)->f_mxs.len, "check.obx:3756")))->f_lits;
     int64_t ap8 = (*p_c)->f_cx->f_lines.len;
-    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix7, (*p_c)->f_mxs.len, "check.obx:3752")))->f_lits, 8ULL) = ap8;
+    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix7, (*p_c)->f_mxs.len, "check.obx:3756")))->f_lits, 8ULL) = ap8;
     int64_t ix9 = v_top_1;
     int64_t ap10 = p_x;
-    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix9, (*p_c)->f_mxs.len, "check.obx:3753")))->f_lits, 8ULL) = ap10;
+    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix9, (*p_c)->f_mxs.len, "check.obx:3757")))->f_lits, 8ULL) = ap10;
     int64_t ix11 = v_top_1;
     int64_t ap12 = (*p_c)->f_cx->f_ind;
-    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix11, (*p_c)->f_mxs.len, "check.obx:3754")))->f_lits, 8ULL) = ap12;
+    *(int64_t*)rt_arr_push(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix11, (*p_c)->f_mxs.len, "check.obx:3758")))->f_lits, 8ULL) = ap12;
     int64_t t13 = f1079_tmpl_Arena_holder(&(*p_c)->f_x);
     int64_t ap14 = t13;
     *(int64_t*)rt_arr_push(&(*p_c)->f_cx->f_lines, 8ULL) = ap14;
@@ -72617,10 +72628,10 @@ static void f1077_check_Checker_mxArm(struct S70_check_Checker**p_c, int64_t p_x
   }
 }
 static void f1080_check_Checker_mxBody(struct S70_check_Checker**p_c, int64_t p_x) {
-  int64_t v_top_1 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3724");
+  int64_t v_top_1 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3728");
   f1032_check_Checker_pushFrame(p_c);
   int64_t ix2 = v_top_1;
-  struct S110_check_Val t3 = f1036_check_Checker_expr(p_c, p_x, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix2, (*p_c)->f_mxs.len, "check.obx:3726")))->f_t);
+  struct S110_check_Val t3 = f1036_check_Checker_expr(p_c, p_x, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix2, (*p_c)->f_mxs.len, "check.obx:3730")))->f_t);
   struct S110_check_Val v_v_4 = t3;
   int64_t t5 = f814_sema_Program_tk(&(*p_c)->f_pg, v_v_4.f_t);
   int64_t v_k_6 = t5;
@@ -72652,11 +72663,11 @@ static void f1080_check_Checker_mxBody(struct S70_check_Checker**p_c, int64_t p_
   bool c16 = b14;
   if (c16) {
     int64_t ix17 = v_top_1;
-    int64_t t18 = (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix17, (*p_c)->f_mxs.len, "check.obx:3732")))->f_cr;
+    int64_t t18 = (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix17, (*p_c)->f_mxs.len, "check.obx:3736")))->f_cr;
     int64_t t19 = f1054_check_Checker_crOf(p_c, gl75_dup(v_v_4));
     int64_t t20 = f1081_check_Checker_joinRoots(p_c, t18, t19);
     int64_t ix21 = v_top_1;
-    (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix21, (*p_c)->f_mxs.len, "check.obx:3732")))->f_cr = t20;
+    (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix21, (*p_c)->f_mxs.len, "check.obx:3736")))->f_cr = t20;
   }
   obx_arr t22 = f1034_check_Checker_popFrame(p_c);
   obx_arr v_fr_23 = t22;
@@ -72665,18 +72676,18 @@ static void f1080_check_Checker_mxBody(struct S70_check_Checker**p_c, int64_t p_
     (*p_c)->f_cx->f_dead = (bool)1LL;
   } else {
     int64_t ix25 = v_top_1;
-    bool c26 = (bool)((*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix25, (*p_c)->f_mxs.len, "check.obx:3737")))->f_t == -1LL);
+    bool c26 = (bool)((*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix25, (*p_c)->f_mxs.len, "check.obx:3741")))->f_t == -1LL);
     if (c26) {
       int64_t ix27 = v_top_1;
-      (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix27, (*p_c)->f_mxs.len, "check.obx:3738")))->f_t = v_v_4.f_t;
+      (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix27, (*p_c)->f_mxs.len, "check.obx:3742")))->f_t = v_v_4.f_t;
     } else {
       int64_t ix28 = v_top_1;
-      bool c29 = (bool)(v_v_4.f_t != (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix28, (*p_c)->f_mxs.len, "check.obx:3739")))->f_t);
+      bool c29 = (bool)(v_v_4.f_t != (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix28, (*p_c)->f_mxs.len, "check.obx:3743")))->f_t);
       if (c29) {
         int64_t t30 = f975_check_Checker_line(p_c, p_x);
         obx_str t31 = sl4295;
         int64_t ix32 = v_top_1;
-        obx_str t33 = f1049_check_Checker_tstr(p_c, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix32, (*p_c)->f_mxs.len, "check.obx:3740")))->f_t);
+        obx_str t33 = f1049_check_Checker_tstr(p_c, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix32, (*p_c)->f_mxs.len, "check.obx:3744")))->f_t);
         obx_str t34 = rt_str_concat(t31, t33);
         obx_str t35 = rt_str_concat(t34, sl4077);
         obx_str t36 = f1049_check_Checker_tstr(p_c, v_v_4.f_t);
@@ -72689,7 +72700,7 @@ static void f1080_check_Checker_mxBody(struct S70_check_Checker**p_c, int64_t p_
     int64_t t40 = f1055_check_Checker_consume(p_c, t38, t39);
     int64_t v_cc_41 = t40;
     int64_t ix42 = v_top_1;
-    int64_t t43 = f712_tmpl_Arena_asg(&(*p_c)->f_x, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix42, (*p_c)->f_mxs.len, "check.obx:3744")))->f_r, v_cc_41);
+    int64_t t43 = f712_tmpl_Arena_asg(&(*p_c)->f_x, (*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix42, (*p_c)->f_mxs.len, "check.obx:3748")))->f_r, v_cc_41);
     f1024_check_Checker_emitx(p_c, t43);
   }
   f1030_check_Checker_dropFrame(p_c, &v_fr_23);
@@ -73188,7 +73199,7 @@ static int64_t f1058_tmpl_Arena_selif(struct S84_tmpl_Arena**p_x, int64_t p_a) {
 static int64_t f1057_check_Checker_armVariantAt(struct S70_check_Checker**p_c, int64_t p_vpath, int64_t p_line, int64_t p_d, int64_t p_base) {
   int64_t t1 = f994_check_Checker_count(p_c, p_vpath);
   int64_t v_np_2 = t1;
-  int64_t t3 = f995_check_Checker_item(p_c, p_vpath, rt_sub_int(v_np_2, 1LL, "check.obx:2506"));
+  int64_t t3 = f995_check_Checker_item(p_c, p_vpath, rt_sub_int(v_np_2, 1LL, "check.obx:2510"));
   struct S99_syntax_Node t4 = f977_check_Checker_nd(p_c, t3);
   obx_str v_last_5 = rt_str_dup(t4.f_s);
   gl62_drop(t4);
@@ -73215,7 +73226,7 @@ static int64_t f1057_check_Checker_armVariantAt(struct S70_check_Checker**p_c, i
   bool b15 = (bool)(v_vr_6 < 0LL);
   if (!b15) {
     int64_t ix16 = v_vr_6;
-    b15 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix16, (*p_c)->f_pg->f_variants.len, "check.obx:2512"))->f_decl != p_d);
+    b15 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix16, (*p_c)->f_pg->f_variants.len, "check.obx:2516"))->f_decl != p_d);
   }
   bool c17 = b15;
   if (c17) {
@@ -73223,7 +73234,7 @@ static int64_t f1057_check_Checker_armVariantAt(struct S70_check_Checker**p_c, i
     if (c18) {
       int64_t t19 = p_line;
       int64_t ix20 = p_d;
-      obx_str t21 = rt_str_concat(sl4308, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix20, (*p_c)->f_pg->f_types.len, "check.obx:2514"))->f_name);
+      obx_str t21 = rt_str_concat(sl4308, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix20, (*p_c)->f_pg->f_types.len, "check.obx:2518"))->f_name);
       obx_str t22 = rt_str_concat(t21, sl37);
       obx_str t23 = rt_str_concat(t22, v_last_5);
       obx_str t24 = rt_str_concat(t23, sl4309);
@@ -74449,7 +74460,7 @@ static void f1048_check_Checker_matchLits(struct S70_check_Checker**p_c, int64_t
           ifx119 = v_cmp_85;
         }
         v_conds_46 = ifx119;
-        v_nc_47 = rt_add_int(v_nc_47, 1LL, "check.obx:2578");
+        v_nc_47 = rt_add_int(v_nc_47, 1LL, "check.obx:2582");
         obx_str ifx121;
         if (p_t == 9LL) {
           obx_str t122 = rt_str_concat(sl4350, v_xs_54);
@@ -74504,11 +74515,11 @@ static void f1048_check_Checker_matchLits(struct S70_check_Checker**p_c, int64_t
       gl11_drop(v_items_41);
     }
     v_first_16 = (bool)0LL;
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2590");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2594");
     f1062_check_Checker_restore(p_c, &v_snap_11);
     (*p_c)->f_cx->f_dead = (bool)0LL;
     f1069_check_Checker_armBody(p_c, v_an_26.f_d, p_mx);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2594");
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:2598");
     bool c147 = (bool)!(*p_c)->f_cx->f_dead;
     if (c147) {
       struct S117_check_PathEnd t148 = f1070_check_Checker_pathEnd(p_c);
@@ -75714,13 +75725,13 @@ static struct S110_check_Val f1134_check_Checker_opCall(struct S70_check_Checker
   int64_t v_off_17 = v_sig_2->f_recv != 0LL ? 1LL : 0LL;
   int64_t end18 = p_args->len;
   for (int64_t v_i_19 = 0LL; v_i_19 < end18; v_i_19++) {
-    int64_t t20 = rt_add_int(v_i_19, v_off_17, "check.obx:3587");
+    int64_t t20 = rt_add_int(v_i_19, v_off_17, "check.obx:3591");
     bool c21 = (bool)(t20 < v_sig_2->f_params.len);
     if (c21) {
-      int64_t ix22 = rt_add_int(v_i_19, v_off_17, "check.obx:3588");
-      int64_t v_p_23 = *((int64_t*)v_sig_2->f_params.data + rt_idx(ix22, v_sig_2->f_params.len, "check.obx:3588"));
+      int64_t ix22 = rt_add_int(v_i_19, v_off_17, "check.obx:3592");
+      int64_t v_p_23 = *((int64_t*)v_sig_2->f_params.data + rt_idx(ix22, v_sig_2->f_params.len, "check.obx:3592"));
       int64_t ix24 = v_i_19;
-      struct S110_check_Val v_a_25 = gl75_dup(*((struct S110_check_Val*)p_args->data + rt_idx(ix24, p_args->len, "check.obx:3589")));
+      struct S110_check_Val v_a_25 = gl75_dup(*((struct S110_check_Val*)p_args->data + rt_idx(ix24, p_args->len, "check.obx:3593")));
       int64_t t26 = f814_sema_Program_tk(&(*p_c)->f_pg, v_p_23);
       bool b27 = (bool)(t26 == 2LL);
       if (b27) {
@@ -75766,12 +75777,12 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     obx_arr v_ta_7 = t6;
     obx_arr a8 = rt_arr_new(0LL, 8ULL);
     obx_arr v_own_9 = a8;
-    int64_t v_from_11 = (*p_o)->f_alltargs ? 0LL : rt_sub_int((*p_sig)->f_tps.len, (*p_sig)->f_nown, "check.obx:4350");
+    int64_t v_from_11 = (*p_o)->f_alltargs ? 0LL : rt_sub_int((*p_sig)->f_tps.len, (*p_sig)->f_nown, "check.obx:4354");
     int64_t t12 = v_from_11;
     int64_t end13 = (*p_sig)->f_tps.len;
     for (int64_t v_i_14 = t12; v_i_14 < end13; v_i_14++) {
       int64_t ix15 = v_i_14;
-      int64_t ap16 = *((int64_t*)(*p_sig)->f_tps.data + rt_idx(ix15, (*p_sig)->f_tps.len, "check.obx:4351"));
+      int64_t ap16 = *((int64_t*)(*p_sig)->f_tps.data + rt_idx(ix15, (*p_sig)->f_tps.len, "check.obx:4355"));
       *(int64_t*)rt_arr_push(&v_own_9, 8ULL) = ap16;
     }
     int64_t t17 = v_ta_7.len;
@@ -75791,19 +75802,19 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     int64_t end28 = v_own_9.len;
     for (int64_t v_i_29 = 0LL; v_i_29 < end28; v_i_29++) {
       int64_t ix30 = v_i_29;
-      int64_t t31 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_7.data + rt_idx(ix30, v_ta_7.len, "check.obx:4357")), 5LL, p_line);
+      int64_t t31 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_7.data + rt_idx(ix30, v_ta_7.len, "check.obx:4361")), 5LL, p_line);
       int64_t v_t_32 = t31;
       int64_t ap33 = v_t_32;
       *(int64_t*)rt_arr_push(&v_given_27, 8ULL) = ap33;
       int64_t ix34 = v_i_29;
-      f1138_check_bindSet(&v_bind_4, *((int64_t*)v_own_9.data + rt_idx(ix34, v_own_9.len, "check.obx:4359")), v_t_32);
+      f1138_check_bindSet(&v_bind_4, *((int64_t*)v_own_9.data + rt_idx(ix34, v_own_9.len, "check.obx:4363")), v_t_32);
     }
     int64_t end35 = v_given_27.len;
     for (int64_t v_i_36 = 0LL; v_i_36 < end35; v_i_36++) {
       int64_t ix37 = v_i_36;
-      int64_t t38 = *((int64_t*)v_given_27.data + rt_idx(ix37, v_given_27.len, "check.obx:4361"));
+      int64_t t38 = *((int64_t*)v_given_27.data + rt_idx(ix37, v_given_27.len, "check.obx:4365"));
       int64_t ix39 = v_i_36;
-      f968_sema_Program_checkBorrowTarg(&(*p_c)->f_pg, t38, *((int64_t*)v_own_9.data + rt_idx(ix39, v_own_9.len, "check.obx:4361")), (*p_c)->f_cx->f_mod, p_line);
+      f968_sema_Program_checkBorrowTarg(&(*p_c)->f_pg, t38, *((int64_t*)v_own_9.data + rt_idx(ix39, v_own_9.len, "check.obx:4365")), (*p_c)->f_cx->f_mod, p_line);
     }
     gl11_drop(v_given_27);
     gl11_drop(v_own_9);
@@ -75839,13 +75850,13 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     }
     gl11_drop(v_trial_47);
   }
-  int64_t v_nall_53 = rt_add_int(p_args->len, p_hasRecv ? 1LL : 0LL, "check.obx:4367");
+  int64_t v_nall_53 = rt_add_int(p_args->len, p_hasRecv ? 1LL : 0LL, "check.obx:4371");
   obx_arr t54 = f886_check_copyInts(&(*p_sig)->f_params);
   obx_arr v_params_55 = t54;
   bool b56 = (bool)((*p_sig)->f_kind == 1LL);
   if (b56) {
     int64_t ix57 = (*p_sig)->f_fd;
-    b56 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix57, (*p_c)->f_pg->f_fns.len, "check.obx:4369"))->f_varargs;
+    b56 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix57, (*p_c)->f_pg->f_fns.len, "check.obx:4373"))->f_varargs;
   }
   bool c58 = b56;
   if (c58) {
@@ -75859,11 +75870,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
   int64_t t63 = v_nall_53;
   bool c64 = (bool)(t63 != v_params_55.len);
   if (c64) {
-    int64_t v_n_66 = rt_sub_int(v_params_55.len, p_hasRecv ? 1LL : 0LL, "check.obx:4373");
+    int64_t v_n_66 = rt_sub_int(v_params_55.len, p_hasRecv ? 1LL : 0LL, "check.obx:4377");
     bool b67 = (bool)((*p_sig)->f_kind == 1LL);
     if (b67) {
       int64_t ix68 = (*p_sig)->f_fd;
-      b67 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix68, (*p_c)->f_pg->f_fns.len, "check.obx:4374"))->f_varargs;
+      b67 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix68, (*p_c)->f_pg->f_fns.len, "check.obx:4378"))->f_varargs;
     }
     obx_str t70 = b67 ? sl4403 : sl1794;
     obx_str v_least_71 = t70;
@@ -75945,9 +75956,9 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
   int64_t end127 = v_order_103.len;
   for (int64_t v_pos_128 = 0LL; v_pos_128 < end127; v_pos_128++) {
     int64_t ix129 = v_pos_128;
-    int64_t v_i_130 = *((int64_t*)v_order_103.data + rt_idx(ix129, v_order_103.len, "check.obx:4406"));
+    int64_t v_i_130 = *((int64_t*)v_order_103.data + rt_idx(ix129, v_order_103.len, "check.obx:4410"));
     int64_t ix131 = v_i_130;
-    int64_t v_pt_132 = *((int64_t*)v_params_55.data + rt_idx(ix131, v_params_55.len, "check.obx:4407"));
+    int64_t v_pt_132 = *((int64_t*)v_params_55.data + rt_idx(ix131, v_params_55.len, "check.obx:4411"));
     bool b133 = p_hasRecv;
     if (b133) {
       b133 = (bool)(v_i_130 == 0LL);
@@ -75959,7 +75970,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
       ifx135 = t136;
     } else {
       obx_str t137 = sl4406;
-      obx_str t139 = rt_int_to_str(rt_add_int(v_i_130, p_hasRecv ? 0LL : 1LL, "check.obx:4410"));
+      obx_str t139 = rt_int_to_str(rt_add_int(v_i_130, p_hasRecv ? 0LL : 1LL, "check.obx:4414"));
       obx_str t140 = rt_str_concat(t137, t139);
       obx_str t141 = rt_str_concat(t140, sl4321);
       obx_str t142 = rt_str_concat(t141, (*p_sig)->f_label);
@@ -75973,7 +75984,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     bool c144 = (bool)((*p_o)->f_fnames.len > 0LL);
     if (c144) {
       int64_t ix145 = v_i_130;
-      obx_str t146 = rt_str_concat(sl4265, *((obx_str*)(*p_o)->f_fnames.data + rt_idx(ix145, (*p_o)->f_fnames.len, "check.obx:4411")));
+      obx_str t146 = rt_str_concat(sl4265, *((obx_str*)(*p_o)->f_fnames.data + rt_idx(ix145, (*p_o)->f_fnames.len, "check.obx:4415")));
       obx_str t147 = rt_str_concat(t146, sl4267);
       obx_str t148 = rt_str_concat(t147, (*p_sig)->f_label);
       {
@@ -76002,9 +76013,9 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     } else {
       bool c160 = (bool)(v_an_153 < 0LL);
       if (c160) {
-        int64_t ix162 = p_hasRecv ? rt_sub_int(v_i_130, 1LL, "check.obx:4419") : v_i_130;
+        int64_t ix162 = p_hasRecv ? rt_sub_int(v_i_130, 1LL, "check.obx:4423") : v_i_130;
         {
-          struct S110_check_Val nw163 = gl75_dup(((struct S106_check_Arg*)p_args->data + rt_idx(ix162, p_args->len, "check.obx:4419"))->f_v);
+          struct S110_check_Val nw163 = gl75_dup(((struct S106_check_Arg*)p_args->data + rt_idx(ix162, p_args->len, "check.obx:4423"))->f_v);
           gl76_drop(v_v_157);
           v_v_157 = nw163;
         }
@@ -76122,8 +76133,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
       int64_t ix230 = v_i_130;
       {
         struct S120_check_CArg nw231 = t229;
-        gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix230, v_vals_81.len, "check.obx:4445")));
-        *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix230, v_vals_81.len, "check.obx:4445")) = nw231;
+        gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix230, v_vals_81.len, "check.obx:4449")));
+        *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix230, v_vals_81.len, "check.obx:4449")) = nw231;
       }
       gl76_drop(v_sv_187);
     } else {
@@ -76165,7 +76176,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
           obx_str ifx254;
           if (v_v_157.f_root >= 0LL) {
             int64_t ix255 = v_v_157.f_root;
-            obx_str t256 = rt_str_concat(sl4411, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix255, (*p_c)->f_vars.len, "check.obx:4452"))->f_name);
+            obx_str t256 = rt_str_concat(sl4411, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix255, (*p_c)->f_vars.len, "check.obx:4456"))->f_name);
             obx_str t257 = rt_str_concat(t256, sl4412);
             ifx254 = t257;
             rt_str_drop(t256);
@@ -76223,8 +76234,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
         int64_t ix290 = v_i_130;
         {
           struct S120_check_CArg nw291 = t289;
-          gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix290, v_vals_81.len, "check.obx:4465")));
-          *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix290, v_vals_81.len, "check.obx:4465")) = nw291;
+          gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix290, v_vals_81.len, "check.obx:4469")));
+          *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix290, v_vals_81.len, "check.obx:4469")) = nw291;
         }
       } else {
         bool c292 = (bool)(v_ptk_155 == 5LL);
@@ -76265,11 +76276,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
           bool c313 = (bool)(v_v_157.f_caps >= 0LL);
           if (c313) {
             int64_t ix314 = v_v_157.f_caps;
-            int64_t end315 = ((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix314, (*p_c)->f_capl.len, "check.obx:4475"))->len;
+            int64_t end315 = ((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix314, (*p_c)->f_capl.len, "check.obx:4479"))->len;
             for (int64_t v_k_316 = 0LL; v_k_316 < end315; v_k_316++) {
               int64_t ix317 = v_v_157.f_caps;
               int64_t ix318 = v_k_316;
-              struct S123_check_Cap v_cp_319 = *((struct S123_check_Cap*)((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix317, (*p_c)->f_capl.len, "check.obx:4476"))->data + rt_idx(ix318, ((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix317, (*p_c)->f_capl.len, "check.obx:4476"))->len, "check.obx:4476"));
+              struct S123_check_Cap v_cp_319 = *((struct S123_check_Cap*)((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix317, (*p_c)->f_capl.len, "check.obx:4480"))->data + rt_idx(ix318, ((obx_arr*)(*p_c)->f_capl.data + rt_idx(ix317, (*p_c)->f_capl.len, "check.obx:4480"))->len, "check.obx:4480"));
               struct S110_check_Val t320 = f1109_check_rvAt(-1LL, 11LL, v_cp_319.f_v, sl1794);
               int64_t t321 = f1144_check_hm(v_cp_319.f_m);
               f1145_check_Checker_hold(p_c, t320, t321, v_cid_98, p_line);
@@ -76279,8 +76290,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
           int64_t ix323 = v_i_130;
           {
             struct S120_check_CArg nw324 = t322;
-            gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix323, v_vals_81.len, "check.obx:4480")));
-            *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix323, v_vals_81.len, "check.obx:4480")) = nw324;
+            gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix323, v_vals_81.len, "check.obx:4484")));
+            *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix323, v_vals_81.len, "check.obx:4484")) = nw324;
           }
         } else {
           int64_t t325 = f813_sema_Program_subst(&(*p_c)->f_pg, v_pt_132, &v_bind_4);
@@ -76335,11 +76346,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
             }
           }
           bool v_later_354 = (bool)0LL;
-          int64_t t355 = rt_add_int(v_pos_128, 1LL, "check.obx:4496");
+          int64_t t355 = rt_add_int(v_pos_128, 1LL, "check.obx:4500");
           int64_t end356 = v_effs_118.len;
           for (int64_t v_p_357 = t355; v_p_357 < end356; v_p_357++) {
             int64_t ix358 = v_p_357;
-            bool c359 = *((bool*)v_effs_118.data + rt_idx(ix358, v_effs_118.len, "check.obx:4497"));
+            bool c359 = *((bool*)v_effs_118.data + rt_idx(ix358, v_effs_118.len, "check.obx:4501"));
             if (c359) {
               v_later_354 = (bool)1LL;
             }
@@ -76366,8 +76377,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
           int64_t ix367 = v_i_130;
           {
             struct S120_check_CArg nw368 = t366;
-            gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix367, v_vals_81.len, "check.obx:4501")));
-            *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix367, v_vals_81.len, "check.obx:4501")) = nw368;
+            gl92_drop(*((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix367, v_vals_81.len, "check.obx:4505")));
+            *((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix367, v_vals_81.len, "check.obx:4505")) = nw368;
           }
         }
       }
@@ -76384,11 +76395,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
       bool c374 = t373;
       if (c374) {
         int64_t ix375 = v_i_130;
-        *((bool*)v_isSrc_90.data + rt_idx(ix375, v_isSrc_90.len, "check.obx:4506")) = (bool)1LL;
+        *((bool*)v_isSrc_90.data + rt_idx(ix375, v_isSrc_90.len, "check.obx:4510")) = (bool)1LL;
         int64_t ix376 = v_i_130;
-        int64_t t377 = f1150_check_Checker_srcRoot(p_c, v_pbc_372, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix376, v_vals_81.len, "check.obx:4507"))->f_v));
+        int64_t t377 = f1150_check_Checker_srcRoot(p_c, v_pbc_372, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix376, v_vals_81.len, "check.obx:4511"))->f_v));
         int64_t ix378 = v_i_130;
-        *((int64_t*)v_srcs_88.data + rt_idx(ix378, v_srcs_88.len, "check.obx:4507")) = t377;
+        *((int64_t*)v_srcs_88.data + rt_idx(ix378, v_srcs_88.len, "check.obx:4511")) = t377;
       }
     }
     bool v_rb_379 = (bool)0LL;
@@ -76404,7 +76415,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     bool b384 = v_pend_126;
     if (!b384) {
       int64_t ix385 = v_pos_128;
-      bool b386 = *((bool*)v_effs_118.data + rt_idx(ix385, v_effs_118.len, "check.obx:4514"));
+      bool b386 = *((bool*)v_effs_118.data + rt_idx(ix385, v_effs_118.len, "check.obx:4518"));
       if (b386) {
         b386 = v_rb_379;
       }
@@ -76412,11 +76423,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     }
     v_pend_126 = b384;
     bool v_actLater_387 = (bool)0LL;
-    int64_t t388 = rt_add_int(v_pos_128, 1LL, "check.obx:4516");
+    int64_t t388 = rt_add_int(v_pos_128, 1LL, "check.obx:4520");
     int64_t end389 = v_acts_111.len;
     for (int64_t v_p_390 = t388; v_p_390 < end389; v_p_390++) {
       int64_t ix391 = v_p_390;
-      bool c392 = *((bool*)v_acts_111.data + rt_idx(ix391, v_acts_111.len, "check.obx:4517"));
+      bool c392 = *((bool*)v_acts_111.data + rt_idx(ix391, v_acts_111.len, "check.obx:4521"));
       if (c392) {
         v_actLater_387 = (bool)1LL;
       }
@@ -76428,12 +76439,12 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     bool c394 = b393;
     if (c394) {
       int64_t ix395 = v_i_130;
-      struct S110_check_Val t396 = f1151_check_Checker_seq(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix395, v_vals_81.len, "check.obx:4519"))->f_v));
+      struct S110_check_Val t396 = f1151_check_Checker_seq(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix395, v_vals_81.len, "check.obx:4523"))->f_v));
       int64_t ix397 = v_i_130;
       {
         struct S110_check_Val nw398 = t396;
-        gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix397, v_vals_81.len, "check.obx:4519"))->f_v);
-        ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix397, v_vals_81.len, "check.obx:4519"))->f_v = nw398;
+        gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix397, v_vals_81.len, "check.obx:4523"))->f_v);
+        ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix397, v_vals_81.len, "check.obx:4523"))->f_v = nw398;
       }
     }
     gl76_drop(v_v_157);
@@ -76443,8 +76454,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
   int64_t end400 = v_order_103.len;
   for (int64_t v_pos_401 = 0LL; v_pos_401 < end400; v_pos_401++) {
     int64_t ix402 = v_pos_401;
-    int64_t ix403 = *((int64_t*)v_order_103.data + rt_idx(ix402, v_order_103.len, "check.obx:4523"));
-    bool t404 = f1147_check_Checker_checks(p_c, ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix403, v_vals_81.len, "check.obx:4523"))->f_v.f_c);
+    int64_t ix403 = *((int64_t*)v_order_103.data + rt_idx(ix402, v_order_103.len, "check.obx:4527"));
+    bool t404 = f1147_check_Checker_checks(p_c, ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix403, v_vals_81.len, "check.obx:4527"))->f_v.f_c);
     bool c405 = t404;
     if (c405) {
       v_last_399 = v_pos_401;
@@ -76454,11 +76465,11 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
   for (int64_t i407 = 0LL; i407 < ap406.len; i407++) {
     struct S122_check_Recheck v_r_408 = gl93_dup(*((struct S122_check_Recheck*)ap406.data + i407));
     bool v_later_409 = (bool)0LL;
-    int64_t t410 = rt_add_int(v_r_408.f_pos, 1LL, "check.obx:4527");
+    int64_t t410 = rt_add_int(v_r_408.f_pos, 1LL, "check.obx:4531");
     int64_t end411 = v_effs_118.len;
     for (int64_t v_p_412 = t410; v_p_412 < end411; v_p_412++) {
       int64_t ix413 = v_p_412;
-      bool c414 = *((bool*)v_effs_118.data + rt_idx(ix413, v_effs_118.len, "check.obx:4528"));
+      bool c414 = *((bool*)v_effs_118.data + rt_idx(ix413, v_effs_118.len, "check.obx:4532"));
       if (c414) {
         v_later_409 = (bool)1LL;
       }
@@ -76498,8 +76509,8 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
         f18_std_StrBuf_add(&v_missing_426, sl3829);
       }
       int64_t ix434 = v_tp_430;
-      f18_std_StrBuf_add(&v_missing_426, rt_str_dup(((struct S96_sema_TParam*)(*p_c)->f_pg->f_tparams.data + rt_idx(ix434, (*p_c)->f_pg->f_tparams.len, "check.obx:4538"))->f_name));
-      v_nm_427 = rt_add_int(v_nm_427, 1LL, "check.obx:4539");
+      f18_std_StrBuf_add(&v_missing_426, rt_str_dup(((struct S96_sema_TParam*)(*p_c)->f_pg->f_tparams.data + rt_idx(ix434, (*p_c)->f_pg->f_tparams.len, "check.obx:4542"))->f_name));
+      v_nm_427 = rt_add_int(v_nm_427, 1LL, "check.obx:4543");
     }
   }
   bool c435 = (bool)(v_nm_427 > 0LL);
@@ -76537,7 +76548,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
   int64_t end455 = (*p_c)->f_cx->f_pending.len;
   for (int64_t v_k_456 = 0LL; v_k_456 < end455; v_k_456++) {
     int64_t ix457 = v_k_456;
-    struct S113_check_Pend v_p_458 = gl85_dup(*((struct S113_check_Pend*)(*p_c)->f_cx->f_pending.data + rt_idx(ix457, (*p_c)->f_cx->f_pending.len, "check.obx:4553")));
+    struct S113_check_Pend v_p_458 = gl85_dup(*((struct S113_check_Pend*)(*p_c)->f_cx->f_pending.data + rt_idx(ix457, (*p_c)->f_cx->f_pending.len, "check.obx:4557")));
     bool b459 = (bool)(v_k_456 < v_mark_99);
     if (!b459) {
       b459 = (bool)(v_p_458.f_m != 2LL);
@@ -76573,34 +76584,34 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     int64_t end470 = v_vals_81.len;
     for (int64_t v_k_471 = 0LL; v_k_471 < end470; v_k_471++) {
       int64_t ix472 = v_k_471;
-      bool b473 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix472, v_vals_81.len, "check.obx:4565"))->f_v.f_t == 9LL);
+      bool b473 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix472, v_vals_81.len, "check.obx:4569"))->f_v.f_t == 9LL);
       if (b473) {
         int64_t ix474 = v_k_471;
-        b473 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix474, v_vals_81.len, "check.obx:4565"))->f_v.f_cat == 2LL);
+        b473 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix474, v_vals_81.len, "check.obx:4569"))->f_v.f_cat == 2LL);
       }
       bool b475 = b473;
       if (b475) {
         int64_t ix476 = v_k_471;
-        b475 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix476, v_vals_81.len, "check.obx:4565"))->f_v.f_gk >= 0LL);
+        b475 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix476, v_vals_81.len, "check.obx:4569"))->f_v.f_gk >= 0LL);
       }
       bool c477 = b475;
       if (c477) {
         int64_t ix478 = v_k_471;
-        struct S110_check_Val t479 = f1149_check_Checker_snapVal(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix478, v_vals_81.len, "check.obx:4566"))->f_v));
+        struct S110_check_Val t479 = f1149_check_Checker_snapVal(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix478, v_vals_81.len, "check.obx:4570"))->f_v));
         int64_t ix480 = v_k_471;
         {
           struct S110_check_Val nw481 = t479;
-          gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix480, v_vals_81.len, "check.obx:4566"))->f_v);
-          ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix480, v_vals_81.len, "check.obx:4566"))->f_v = nw481;
+          gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix480, v_vals_81.len, "check.obx:4570"))->f_v);
+          ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix480, v_vals_81.len, "check.obx:4570"))->f_v = nw481;
         }
       }
       int64_t ix482 = v_k_471;
-      struct S110_check_Val t483 = f1151_check_Checker_seq(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix482, v_vals_81.len, "check.obx:4568"))->f_v));
+      struct S110_check_Val t483 = f1151_check_Checker_seq(p_c, gl75_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix482, v_vals_81.len, "check.obx:4572"))->f_v));
       int64_t ix484 = v_k_471;
       {
         struct S110_check_Val nw485 = t483;
-        gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix484, v_vals_81.len, "check.obx:4568"))->f_v);
-        ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix484, v_vals_81.len, "check.obx:4568"))->f_v = nw485;
+        gl76_drop(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix484, v_vals_81.len, "check.obx:4572"))->f_v);
+        ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix484, v_vals_81.len, "check.obx:4572"))->f_v = nw485;
       }
     }
   }
@@ -76645,36 +76656,36 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     bool b506 = b505;
     if (b506) {
       int64_t ix507 = (*p_sig)->f_fd;
-      b506 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix507, (*p_c)->f_pg->f_fns.len, "check.obx:4582"))->f_bsrc.len > 0LL);
+      b506 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix507, (*p_c)->f_pg->f_fns.len, "check.obx:4586"))->f_bsrc.len > 0LL);
     }
     bool c508 = b506;
     if (c508) {
       int64_t end509 = v_sel_504.len;
       for (int64_t v_k_510 = 0LL; v_k_510 < end509; v_k_510++) {
         int64_t ix511 = v_k_510;
-        *((bool*)v_sel_504.data + rt_idx(ix511, v_sel_504.len, "check.obx:4583")) = (bool)0LL;
+        *((bool*)v_sel_504.data + rt_idx(ix511, v_sel_504.len, "check.obx:4587")) = (bool)0LL;
       }
       int64_t ix512 = (*p_sig)->f_fd;
-      obx_slice ap513 = rt_as_slice(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix512, (*p_c)->f_pg->f_fns.len, "check.obx:4584"))->f_bsrc);
+      obx_slice ap513 = rt_as_slice(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix512, (*p_c)->f_pg->f_fns.len, "check.obx:4588"))->f_bsrc);
       for (int64_t i514 = 0LL; i514 < ap513.len; i514++) {
         int64_t v_k_515 = *((int64_t*)ap513.data + i514);
         int64_t t516 = v_k_515;
         bool c517 = (bool)(t516 < v_sel_504.len);
         if (c517) {
           int64_t ix518 = v_k_515;
-          bool t519 = *((bool*)v_isSrc_90.data + rt_idx(ix518, v_isSrc_90.len, "check.obx:4585"));
+          bool t519 = *((bool*)v_isSrc_90.data + rt_idx(ix518, v_isSrc_90.len, "check.obx:4589"));
           int64_t ix520 = v_k_515;
-          *((bool*)v_sel_504.data + rt_idx(ix520, v_sel_504.len, "check.obx:4585")) = t519;
+          *((bool*)v_sel_504.data + rt_idx(ix520, v_sel_504.len, "check.obx:4589")) = t519;
         }
       }
     }
     int64_t end521 = v_sel_504.len;
     for (int64_t v_k_522 = 0LL; v_k_522 < end521; v_k_522++) {
       int64_t ix523 = v_k_522;
-      bool c524 = *((bool*)v_sel_504.data + rt_idx(ix523, v_sel_504.len, "check.obx:4589"));
+      bool c524 = *((bool*)v_sel_504.data + rt_idx(ix523, v_sel_504.len, "check.obx:4593"));
       if (c524) {
         int64_t ix525 = v_k_522;
-        int64_t t526 = f1081_check_Checker_joinRoots(p_c, v_rroot_501, *((int64_t*)v_srcs_88.data + rt_idx(ix525, v_srcs_88.len, "check.obx:4589")));
+        int64_t t526 = f1081_check_Checker_joinRoots(p_c, v_rroot_501, *((int64_t*)v_srcs_88.data + rt_idx(ix525, v_srcs_88.len, "check.obx:4593")));
         v_rroot_501 = t526;
       }
     }
@@ -76738,10 +76749,10 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
         int64_t end551 = v_cs_487.len;
         for (int64_t v_k_552 = 1LL; v_k_552 < end551; v_k_552++) {
           int64_t ix553 = v_k_552;
-          int64_t ap554 = *((int64_t*)v_cs_487.data + rt_idx(ix553, v_cs_487.len, "check.obx:4604"));
+          int64_t ap554 = *((int64_t*)v_cs_487.data + rt_idx(ix553, v_cs_487.len, "check.obx:4608"));
           *(int64_t*)rt_arr_push(&v_ras_550, 8ULL) = ap554;
         }
-        struct S93_check_Hole t555 = (struct S93_check_Hole){.f_k = 9LL, .f_t = (*p_sig)->f_tpt, .f_f = (*p_sig)->f_recv, .f_s = rt_str_dup((*p_sig)->f_name), .f_x = -1LL, .f_r = *((int64_t*)v_cs_487.data + rt_idx(0LL, v_cs_487.len, "check.obx:4605")), .f_args = v_ras_550};
+        struct S93_check_Hole t555 = (struct S93_check_Hole){.f_k = 9LL, .f_t = (*p_sig)->f_tpt, .f_f = (*p_sig)->f_recv, .f_s = rt_str_dup((*p_sig)->f_name), .f_x = -1LL, .f_r = *((int64_t*)v_cs_487.data + rt_idx(0LL, v_cs_487.len, "check.obx:4609")), .f_args = v_ras_550};
         int64_t t556 = f981_check_Checker_hole(p_c, t555);
         v_text_527 = t556;
         gl11_drop(v_cs_487);
@@ -76809,14 +76820,14 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                 int64_t end594 = v_vals_81.len;
                 for (int64_t v_k_595 = 0LL; v_k_595 < end594; v_k_595++) {
                   int64_t ix596 = v_k_595;
-                  int64_t t597 = f814_sema_Program_tk(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix596, v_params_55.len, "check.obx:4623")));
+                  int64_t t597 = f814_sema_Program_tk(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix596, v_params_55.len, "check.obx:4627")));
                   int64_t v_pk_598 = t597;
                   int64_t ix599 = v_k_595;
-                  bool c600 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix599, v_vals_81.len, "check.obx:4624"))->f_v.f_t == 9LL);
+                  bool c600 = (bool)(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix599, v_vals_81.len, "check.obx:4628"))->f_v.f_t == 9LL);
                   if (c600) {
                     obx_str t601 = sl249;
                     int64_t ix602 = v_k_595;
-                    int64_t t603 = *((int64_t*)v_cs_487.data + rt_idx(ix602, v_cs_487.len, "check.obx:4625"));
+                    int64_t t603 = *((int64_t*)v_cs_487.data + rt_idx(ix602, v_cs_487.len, "check.obx:4629"));
                     int64_t t604 = f1158_check_Checker_W(p_c, p_line);
                     obx_arr a605 = rt_arr_new(2LL, 8ULL);
                     *((int64_t*)a605.data + 0LL) = t603;
@@ -76829,7 +76840,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                     if (c608) {
                       obx_str t609 = sl251;
                       int64_t ix610 = v_k_595;
-                      int64_t t611 = f756_tmpl_Arena_par(&(*p_c)->f_x, *((int64_t*)v_cs_487.data + rt_idx(ix610, v_cs_487.len, "check.obx:4627")));
+                      int64_t t611 = f756_tmpl_Arena_par(&(*p_c)->f_x, *((int64_t*)v_cs_487.data + rt_idx(ix610, v_cs_487.len, "check.obx:4631")));
                       int64_t t612 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t611, sl4062);
                       obx_arr a613 = rt_arr_new(1LL, 8ULL);
                       *((int64_t*)a613.data + 0LL) = t612;
@@ -76840,7 +76851,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                       bool b616 = (bool)(v_pk_598 == 2LL);
                       if (b616) {
                         int64_t ix617 = v_k_595;
-                        int64_t t618 = f722_sema_Program_ta(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix617, v_params_55.len, "check.obx:4628")));
+                        int64_t t618 = f722_sema_Program_ta(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix617, v_params_55.len, "check.obx:4632")));
                         int64_t t619 = f814_sema_Program_tk(&(*p_c)->f_pg, t618);
                         b616 = (bool)(t619 == 1LL);
                       }
@@ -76848,7 +76859,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                       if (c620) {
                         obx_str t621 = sl251;
                         int64_t ix622 = v_k_595;
-                        int64_t t623 = f756_tmpl_Arena_par(&(*p_c)->f_x, *((int64_t*)v_cs_487.data + rt_idx(ix622, v_cs_487.len, "check.obx:4629")));
+                        int64_t t623 = f756_tmpl_Arena_par(&(*p_c)->f_x, *((int64_t*)v_cs_487.data + rt_idx(ix622, v_cs_487.len, "check.obx:4633")));
                         int64_t t624 = f847_tmpl_Arena_arrow(&(*p_c)->f_x, t623, sl4062);
                         obx_arr a625 = rt_arr_new(1LL, 8ULL);
                         *((int64_t*)a625.data + 0LL) = t624;
@@ -76857,14 +76868,14 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                         *(int64_t*)rt_arr_push(&v_cs2_593, 8ULL) = ap627;
                       } else {
                         int64_t ix628 = v_k_595;
-                        int64_t ap629 = *((int64_t*)v_cs_487.data + rt_idx(ix628, v_cs_487.len, "check.obx:4631"));
+                        int64_t ap629 = *((int64_t*)v_cs_487.data + rt_idx(ix628, v_cs_487.len, "check.obx:4635"));
                         *(int64_t*)rt_arr_push(&v_cs2_593, 8ULL) = ap629;
                       }
                     }
                   }
                 }
                 int64_t ix630 = (*p_sig)->f_fd;
-                bool c631 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix630, (*p_c)->f_pg->f_fns.len, "check.obx:4634"))->f_blocking;
+                bool c631 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix630, (*p_c)->f_pg->f_fns.len, "check.obx:4638"))->f_blocking;
                 if (c631) {
                   struct S110_check_Val t632 = f1159_check_Checker_blockingCall(p_c, (*p_sig)->f_fd, &v_params_55, &v_vals_81, &v_cs2_593, v_ret_498, v_hasStr_463, p_line);
                   struct S110_check_Val r633 = t632;
@@ -76886,7 +76897,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
                   return r633;
                 }
                 int64_t ix634 = (*p_sig)->f_fd;
-                obx_str t635 = rt_str_concat(sl4066, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix634, (*p_c)->f_pg->f_fns.len, "check.obx:4635"))->f_cname);
+                obx_str t635 = rt_str_concat(sl4066, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix634, (*p_c)->f_pg->f_fns.len, "check.obx:4639"))->f_cname);
                 int64_t t636 = f752_tmpl_Arena_call(&(*p_c)->f_x, t635, v_cs2_593);
                 v_text_527 = t636;
                 bool c637 = (bool)(v_ret_498 == 9LL);
@@ -77004,13 +77015,13 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     int64_t end671 = v_params_55.len;
     for (int64_t v_k_672 = 0LL; v_k_672 < end671; v_k_672++) {
       int64_t ix673 = v_k_672;
-      bool c674 = *((bool*)v_isSrc_90.data + rt_idx(ix673, v_isSrc_90.len, "check.obx:4659"));
+      bool c674 = *((bool*)v_isSrc_90.data + rt_idx(ix673, v_isSrc_90.len, "check.obx:4663"));
       if (c674) {
         bool c675 = (bool)(v_nb_670 == 0LL);
         if (c675) {
           v_bi_669 = v_k_672;
         }
-        v_nb_670 = rt_add_int(v_nb_670, 1LL, "check.obx:4661");
+        v_nb_670 = rt_add_int(v_nb_670, 1LL, "check.obx:4665");
       }
     }
     obx_str t676 = f1053_check_Checker_fresh(p_c, sl4063);
@@ -77029,7 +77040,7 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
     bool b684 = (bool)(v_nb_670 == 1LL);
     if (b684) {
       int64_t ix685 = v_bi_669;
-      int64_t t686 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix685, v_params_55.len, "check.obx:4670")), &v_bind_4);
+      int64_t t686 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_params_55.data + rt_idx(ix685, v_params_55.len, "check.obx:4674")), &v_bind_4);
       bool t687 = f1121_check_Checker_inherits(p_c, t686);
       b684 = (bool)!t687;
     }
@@ -77038,9 +77049,9 @@ static struct S110_check_Val f1137_check_Checker_call(struct S70_check_Checker**
       int64_t t689 = f982_check_Checker_nm(p_c, rt_str_dup(v_n_677));
       int64_t t690 = v_ret_498;
       int64_t ix691 = v_bi_669;
-      int64_t t692 = ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix691, v_vals_81.len, "check.obx:4671"))->f_v.f_root;
+      int64_t t692 = ((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix691, v_vals_81.len, "check.obx:4675"))->f_v.f_root;
       int64_t ix693 = v_bi_669;
-      obx_str t694 = f1087_check_pathAdd(rt_str_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix693, v_vals_81.len, "check.obx:4671"))->f_v.f_path), sl44);
+      obx_str t694 = f1087_check_pathAdd(rt_str_dup(((struct S120_check_CArg*)v_vals_81.data + rt_idx(ix693, v_vals_81.len, "check.obx:4675"))->f_v.f_path), sl44);
       struct S110_check_Val t695 = f1109_check_rvAt(t689, t690, t692, t694);
       struct S110_check_Val r696 = t695;
       rt_str_drop(v_n_677);
@@ -77149,14 +77160,14 @@ static struct S110_check_Val f1159_check_Checker_blockingCall(struct S70_check_C
   obx_str t11 = f1053_check_Checker_fresh(p_c, sl4420);
   obx_str v_bk_12 = t11;
   int64_t t13 = f1126_check_Checker_ct(p_c, sl127);
-  int64_t t14 = f1160_tmpl_Arena_declArr(&(*p_c)->f_x, t13, rt_str_dup(v_bk_12), rt_add_int(v_n_1, 1LL, "check.obx:4699"), -1LL);
+  int64_t t14 = f1160_tmpl_Arena_declArr(&(*p_c)->f_x, t13, rt_str_dup(v_bk_12), rt_add_int(v_n_1, 1LL, "check.obx:4703"), -1LL);
   f1025_check_Checker_emit(p_c, t14);
   int64_t end15 = v_n_1;
   for (int64_t v_k_16 = 0LL; v_k_16 < end15; v_k_16++) {
     int64_t ix17 = v_k_16;
-    int64_t t18 = *((int64_t*)p_params->data + rt_idx(ix17, p_params->len, "check.obx:4701"));
+    int64_t t18 = *((int64_t*)p_params->data + rt_idx(ix17, p_params->len, "check.obx:4705"));
     int64_t ix19 = v_k_16;
-    int64_t t20 = f1161_check_Checker_slotType(p_c, t18, ((struct S120_check_CArg*)p_vals->data + rt_idx(ix19, p_vals->len, "check.obx:4701"))->f_v.f_t);
+    int64_t t20 = f1161_check_Checker_slotType(p_c, t18, ((struct S120_check_CArg*)p_vals->data + rt_idx(ix19, p_vals->len, "check.obx:4705"))->f_v.f_t);
     obx_str t21 = sl42;
     int64_t t22 = f982_check_Checker_nm(p_c, rt_str_dup(v_bk_12));
     int64_t t23 = f987_check_Checker_lit(p_c, v_k_16);
@@ -77164,12 +77175,12 @@ static struct S110_check_Val f1159_check_Checker_blockingCall(struct S70_check_C
     int64_t t25 = f751_tmpl_Arena_at(&(*p_c)->f_x, t20, t24);
     int64_t v_slot_26 = t25;
     int64_t ix27 = v_k_16;
-    int64_t t28 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_slot_26, *((int64_t*)p_cs2->data + rt_idx(ix27, p_cs2->len, "check.obx:4702")));
+    int64_t t28 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_slot_26, *((int64_t*)p_cs2->data + rt_idx(ix27, p_cs2->len, "check.obx:4706")));
     f1024_check_Checker_emitx(p_c, t28);
   }
   obx_str t29 = sl471;
   int64_t ix30 = p_f;
-  obx_str t31 = rt_str_concat(sl4067, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix30, (*p_c)->f_pg->f_fns.len, "check.obx:4704"))->f_cname);
+  obx_str t31 = rt_str_concat(sl4067, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix30, (*p_c)->f_pg->f_fns.len, "check.obx:4708"))->f_cname);
   int64_t t32 = f982_check_Checker_nm(p_c, t31);
   int64_t t33 = f982_check_Checker_nm(p_c, rt_str_dup(v_bk_12));
   int64_t t34 = f1158_check_Checker_W(p_c, p_line);
@@ -77324,7 +77335,7 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
   bool c5 = (bool)(p_vr >= 0LL);
   if (c5) {
     int64_t ix6 = p_vr;
-    obx_slice ap7 = rt_as_slice(&((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix6, (*p_c)->f_pg->f_variants.len, "check.obx:3908"))->f_fields);
+    obx_slice ap7 = rt_as_slice(&((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix6, (*p_c)->f_pg->f_variants.len, "check.obx:3912"))->f_fields);
     for (int64_t i8 = 0LL; i8 < ap7.len; i8++) {
       struct S90_sema_Field v_f_9 = gl54_dup(*((struct S90_sema_Field*)ap7.data + i8));
       obx_str ap10 = rt_str_dup(v_f_9.f_name);
@@ -77333,7 +77344,7 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
     }
   } else {
     int64_t ix11 = v_d_2;
-    obx_slice ap12 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix11, (*p_c)->f_pg->f_types.len, "check.obx:3910"))->f_fields);
+    obx_slice ap12 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix11, (*p_c)->f_pg->f_types.len, "check.obx:3914"))->f_fields);
     for (int64_t i13 = 0LL; i13 < ap12.len; i13++) {
       struct S90_sema_Field v_f_14 = gl54_dup(*((struct S90_sema_Field*)ap12.data + i13));
       obx_str ap15 = rt_str_dup(v_f_14.f_name);
@@ -77344,16 +77355,16 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
   int64_t t16 = v_names_4.len;
   int64_t v_m_18 = t16 < p_cs->len ? v_names_4.len : p_cs->len;
   int64_t ix19 = v_d_2;
-  bool c20 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix19, (*p_c)->f_pg->f_types.len, "check.obx:3913"))->f_value;
+  bool c20 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix19, (*p_c)->f_pg->f_types.len, "check.obx:3917"))->f_value;
   if (c20) {
     obx_arr a21 = rt_arr_new(0LL, 8ULL);
     obx_arr v_its_22 = a21;
     int64_t end23 = v_m_18;
     for (int64_t v_i_24 = 0LL; v_i_24 < end23; v_i_24++) {
       int64_t ix25 = v_i_24;
-      obx_str t26 = rt_str_concat(sl4258, *((obx_str*)v_names_4.data + rt_idx(ix25, v_names_4.len, "check.obx:3915")));
+      obx_str t26 = rt_str_concat(sl4258, *((obx_str*)v_names_4.data + rt_idx(ix25, v_names_4.len, "check.obx:3919")));
       int64_t ix27 = v_i_24;
-      int64_t t28 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t26, *((int64_t*)p_cs->data + rt_idx(ix27, p_cs->len, "check.obx:3915")));
+      int64_t t28 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t26, *((int64_t*)p_cs->data + rt_idx(ix27, p_cs->len, "check.obx:3919")));
       int64_t ap29 = t28;
       *(int64_t*)rt_arr_push(&v_its_22, 8ULL) = ap29;
     }
@@ -77363,11 +77374,11 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
     if (c32) {
       obx_str t33 = sl4261;
       int64_t ix34 = p_vr;
-      int64_t t35 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix34, (*p_c)->f_pg->f_variants.len, "check.obx:3918"))->f_index);
+      int64_t t35 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix34, (*p_c)->f_pg->f_variants.len, "check.obx:3922"))->f_index);
       int64_t t36 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t33, t35);
       int64_t v_tag_37 = t36;
       int64_t ix38 = p_vr;
-      obx_str t39 = rt_str_concat(sl4262, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix38, (*p_c)->f_pg->f_variants.len, "check.obx:3919"))->f_name);
+      obx_str t39 = rt_str_concat(sl4262, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix38, (*p_c)->f_pg->f_variants.len, "check.obx:3923"))->f_name);
       int64_t t40 = f723_tmpl_Arena_init(&(*p_c)->f_x, v_its_22);
       int64_t t41 = f985_tmpl_Arena_desig(&(*p_c)->f_x, t39, t40);
       int64_t v_u_42 = t41;
@@ -77421,7 +77432,7 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
   if (c72) {
     int64_t t73 = f847_tmpl_Arena_arrow(&(*p_c)->f_x, v_nn_63, sl4124);
     int64_t ix74 = p_vr;
-    int64_t t75 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix74, (*p_c)->f_pg->f_variants.len, "check.obx:3929"))->f_index);
+    int64_t t75 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix74, (*p_c)->f_pg->f_variants.len, "check.obx:3933"))->f_index);
     int64_t t76 = f712_tmpl_Arena_asg(&(*p_c)->f_x, t73, t75);
     f1024_check_Checker_emitx(p_c, t76);
   }
@@ -77431,21 +77442,21 @@ static int64_t f1156_check_Checker_build(struct S70_check_Checker**p_c, int64_t 
     if (p_vr >= 0LL) {
       int64_t t80 = f847_tmpl_Arena_arrow(&(*p_c)->f_x, v_nn_63, sl4125);
       int64_t ix81 = p_vr;
-      obx_str t82 = rt_str_concat(sl4122, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix81, (*p_c)->f_pg->f_variants.len, "check.obx:3931"))->f_name);
+      obx_str t82 = rt_str_concat(sl4122, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix81, (*p_c)->f_pg->f_variants.len, "check.obx:3935"))->f_name);
       int64_t t83 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t80, t82);
       int64_t ix84 = v_i_78;
-      obx_str t85 = rt_str_concat(sl4126, *((obx_str*)v_names_4.data + rt_idx(ix84, v_names_4.len, "check.obx:3931")));
+      obx_str t85 = rt_str_concat(sl4126, *((obx_str*)v_names_4.data + rt_idx(ix84, v_names_4.len, "check.obx:3935")));
       int64_t t86 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t83, t85);
       ifx79 = t86;
     } else {
       int64_t ix87 = v_i_78;
-      obx_str t88 = rt_str_concat(sl4126, *((obx_str*)v_names_4.data + rt_idx(ix87, v_names_4.len, "check.obx:3931")));
+      obx_str t88 = rt_str_concat(sl4126, *((obx_str*)v_names_4.data + rt_idx(ix87, v_names_4.len, "check.obx:3935")));
       int64_t t89 = f847_tmpl_Arena_arrow(&(*p_c)->f_x, v_nn_63, t88);
       ifx79 = t89;
     }
     int64_t v_f_90 = ifx79;
     int64_t ix91 = v_i_78;
-    int64_t t92 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_f_90, *((int64_t*)p_cs->data + rt_idx(ix91, p_cs->len, "check.obx:3932")));
+    int64_t t92 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_f_90, *((int64_t*)p_cs->data + rt_idx(ix91, p_cs->len, "check.obx:3936")));
     f1024_check_Checker_emitx(p_c, t92);
   }
   int64_t r93 = v_nn_63;
@@ -77468,13 +77479,13 @@ static obx_arr f1155_check_copyBools(obx_arr*p_xs) {
 static bool f1154_check_distinct(obx_arr*p_xs) {
   int64_t end1 = p_xs->len;
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
-    int64_t t3 = rt_add_int(v_i_2, 1LL, "check.obx:4724");
+    int64_t t3 = rt_add_int(v_i_2, 1LL, "check.obx:4728");
     int64_t end4 = p_xs->len;
     for (int64_t v_j_5 = t3; v_j_5 < end4; v_j_5++) {
       int64_t ix6 = v_i_2;
-      int64_t t7 = *((int64_t*)p_xs->data + rt_idx(ix6, p_xs->len, "check.obx:4725"));
+      int64_t t7 = *((int64_t*)p_xs->data + rt_idx(ix6, p_xs->len, "check.obx:4729"));
       int64_t ix8 = v_j_5;
-      bool c9 = (bool)(t7 == *((int64_t*)p_xs->data + rt_idx(ix8, p_xs->len, "check.obx:4725")));
+      bool c9 = (bool)(t7 == *((int64_t*)p_xs->data + rt_idx(ix8, p_xs->len, "check.obx:4729")));
       if (c9) {
         bool r10 = (bool)0LL;
         return r10;
@@ -77493,13 +77504,13 @@ static int64_t f1153_check_bindGet(obx_arr*p_bind, int64_t p_tp) {
       break;
     }
     int64_t ix4 = v_i_1;
-    bool c5 = (bool)(*((int64_t*)p_bind->data + rt_idx(ix4, p_bind->len, "check.obx:3023")) == p_tp);
+    bool c5 = (bool)(*((int64_t*)p_bind->data + rt_idx(ix4, p_bind->len, "check.obx:3027")) == p_tp);
     if (c5) {
-      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:3023");
-      int64_t r7 = *((int64_t*)p_bind->data + rt_idx(ix6, p_bind->len, "check.obx:3023"));
+      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:3027");
+      int64_t r7 = *((int64_t*)p_bind->data + rt_idx(ix6, p_bind->len, "check.obx:3027"));
       return r7;
     }
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:3024");
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:3028");
   }
   int64_t r8 = -1LL;
   return r8;
@@ -77508,12 +77519,12 @@ static void f1152_check_Checker_take(struct S70_check_Checker**p_c, struct S110_
   bool b1 = (bool)(p_v.f_root >= 0LL);
   if (b1) {
     int64_t ix2 = p_v.f_root;
-    b1 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix2, (*p_c)->f_vars.len, "check.obx:4284"))->f_moved;
+    b1 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix2, (*p_c)->f_vars.len, "check.obx:4288"))->f_moved;
   }
   bool c3 = b1;
   if (c3) {
     int64_t ix4 = p_v.f_root;
-    obx_str t5 = rt_str_concat(sl3972, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix4, (*p_c)->f_vars.len, "check.obx:4285"))->f_name);
+    obx_str t5 = rt_str_concat(sl3972, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix4, (*p_c)->f_vars.len, "check.obx:4289"))->f_name);
     obx_str t6 = rt_str_concat(t5, sl4422);
     obx_str t7 = rt_str_concat(t6, sl4423);
     f976_check_Checker_err(p_c, p_line, t7);
@@ -78104,24 +78115,24 @@ static int64_t f1143_check_Checker_argNode(struct S70_check_Checker**p_c, bool p
       int64_t r3 = -1LL;
       return r3;
     }
-    int64_t ix4 = rt_sub_int(p_i, 1LL, "check.obx:4322");
+    int64_t ix4 = rt_sub_int(p_i, 1LL, "check.obx:4326");
     int64_t ifx5;
-    if (((struct S106_check_Arg*)p_args->data + rt_idx(ix4, p_args->len, "check.obx:4322"))->f_isVal) {
+    if (((struct S106_check_Arg*)p_args->data + rt_idx(ix4, p_args->len, "check.obx:4326"))->f_isVal) {
       ifx5 = -1LL;
     } else {
-      int64_t ix6 = rt_sub_int(p_i, 1LL, "check.obx:4322");
-      ifx5 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix6, p_args->len, "check.obx:4322"))->f_n;
+      int64_t ix6 = rt_sub_int(p_i, 1LL, "check.obx:4326");
+      ifx5 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix6, p_args->len, "check.obx:4326"))->f_n;
     }
     int64_t r7 = ifx5;
     return r7;
   }
   int64_t ix8 = p_i;
   int64_t ifx9;
-  if (((struct S106_check_Arg*)p_args->data + rt_idx(ix8, p_args->len, "check.obx:4324"))->f_isVal) {
+  if (((struct S106_check_Arg*)p_args->data + rt_idx(ix8, p_args->len, "check.obx:4328"))->f_isVal) {
     ifx9 = -1LL;
   } else {
     int64_t ix10 = p_i;
-    ifx9 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix10, p_args->len, "check.obx:4324"))->f_n;
+    ifx9 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix10, p_args->len, "check.obx:4328"))->f_n;
   }
   int64_t r11 = ifx9;
   return r11;
@@ -78440,13 +78451,13 @@ static bool f1172_check_Checker_namesOwned(struct S70_check_Checker**p_c, int64_
     bool b9 = (bool)(v_vx_8 >= 0LL);
     if (b9) {
       int64_t ix10 = v_vx_8;
-      int64_t t11 = f814_sema_Program_tk(&(*p_c)->f_pg, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix10, (*p_c)->f_vars.len, "check.obx:4745"))->f_t);
+      int64_t t11 = f814_sema_Program_tk(&(*p_c)->f_pg, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix10, (*p_c)->f_vars.len, "check.obx:4749"))->f_t);
       b9 = (bool)(t11 != 2LL);
     }
     bool b12 = b9;
     if (b12) {
       int64_t ix13 = v_vx_8;
-      bool t14 = f1065_check_Checker_isCopy(p_c, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix13, (*p_c)->f_vars.len, "check.obx:4745"))->f_t);
+      bool t14 = f1065_check_Checker_isCopy(p_c, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix13, (*p_c)->f_vars.len, "check.obx:4749"))->f_t);
       b12 = (bool)!t14;
     }
     bool r15 = b12;
@@ -78663,12 +78674,12 @@ static int64_t f1141_check_Checker_newCid(struct S70_check_Checker**p_c) {
 static int64_t f1140_check_Checker_varargType(struct S70_check_Checker**p_c, obx_arr*p_args, int64_t p_i, int64_t p_line) {
   int64_t ix1 = p_i;
   int64_t ifx2;
-  if (((struct S106_check_Arg*)p_args->data + rt_idx(ix1, p_args->len, "check.obx:4330"))->f_isVal) {
+  if (((struct S106_check_Arg*)p_args->data + rt_idx(ix1, p_args->len, "check.obx:4334"))->f_isVal) {
     int64_t ix3 = p_i;
-    ifx2 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix3, p_args->len, "check.obx:4330"))->f_v.f_t;
+    ifx2 = ((struct S106_check_Arg*)p_args->data + rt_idx(ix3, p_args->len, "check.obx:4334"))->f_v.f_t;
   } else {
     int64_t ix4 = p_i;
-    int64_t t5 = f1177_check_Checker_peekType(p_c, ((struct S106_check_Arg*)p_args->data + rt_idx(ix4, p_args->len, "check.obx:4330"))->f_n, -1LL);
+    int64_t t5 = f1177_check_Checker_peekType(p_c, ((struct S106_check_Arg*)p_args->data + rt_idx(ix4, p_args->len, "check.obx:4334"))->f_n, -1LL);
     ifx2 = t5;
   }
   int64_t v_t_6 = ifx2;
@@ -78679,7 +78690,7 @@ static int64_t f1140_check_Checker_varargType(struct S70_check_Checker**p_c, obx
     v_t_6 = t9;
   }
   int64_t ix10 = p_i;
-  bool b11 = (bool)!((struct S106_check_Arg*)p_args->data + rt_idx(ix10, p_args->len, "check.obx:4332"))->f_isVal;
+  bool b11 = (bool)!((struct S106_check_Arg*)p_args->data + rt_idx(ix10, p_args->len, "check.obx:4336"))->f_isVal;
   if (b11) {
     bool t12 = f903_sema_Program_isInt(&(*p_c)->f_pg, v_t_6);
     b11 = (bool)!t12;
@@ -78691,7 +78702,7 @@ static int64_t f1140_check_Checker_varargType(struct S70_check_Checker**p_c, obx
   bool b14 = b13;
   if (b14) {
     int64_t ix15 = p_i;
-    int64_t t16 = f1177_check_Checker_peekType(p_c, ((struct S106_check_Arg*)p_args->data + rt_idx(ix15, p_args->len, "check.obx:4332"))->f_n, 7LL);
+    int64_t t16 = f1177_check_Checker_peekType(p_c, ((struct S106_check_Arg*)p_args->data + rt_idx(ix15, p_args->len, "check.obx:4336"))->f_n, 7LL);
     b14 = (bool)(t16 == 7LL);
   }
   bool c17 = b14;
@@ -78728,7 +78739,7 @@ static int64_t f1140_check_Checker_varargType(struct S70_check_Checker**p_c, obx
   if (c26) {
     int64_t t27 = p_line;
     obx_str t28 = sl4406;
-    obx_str t29 = rt_int_to_str(rt_add_int(p_i, 1LL, "check.obx:4338"));
+    obx_str t29 = rt_int_to_str(rt_add_int(p_i, 1LL, "check.obx:4342"));
     obx_str t30 = rt_str_concat(t28, t29);
     obx_str t31 = rt_str_concat(t30, sl4431);
     obx_str t32 = f1049_check_Checker_tstr(p_c, v_t_6);
@@ -78758,7 +78769,7 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
   int64_t end13 = (*p_c)->f_cx->f_frames.len;
   for (int64_t v_f_14 = 0LL; v_f_14 < end13; v_f_14++) {
     int64_t ix15 = v_f_14;
-    int64_t ap16 = ((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix15, (*p_c)->f_cx->f_frames.len, "check.obx:3341"))->len;
+    int64_t ap16 = ((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix15, (*p_c)->f_cx->f_frames.len, "check.obx:3345"))->len;
     *(int64_t*)rt_arr_push(&v_frames_12, 8ULL) = ap16;
   }
   obx_arr t17 = f1056_check_Checker_snapshot(p_c);
@@ -78768,7 +78779,7 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
   int64_t end21 = (*p_c)->f_cx->f_loops.len;
   for (int64_t v_lp_22 = 0LL; v_lp_22 < end21; v_lp_22++) {
     int64_t ix23 = v_lp_22;
-    int64_t ap24 = (*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix23, (*p_c)->f_cx->f_loops.len, "check.obx:3344")))->f_breaks.len;
+    int64_t ap24 = (*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix23, (*p_c)->f_cx->f_loops.len, "check.obx:3348")))->f_breaks.len;
     *(int64_t*)rt_arr_push(&v_nbreaks_20, 8ULL) = ap24;
   }
   bool v_dead_25 = (*p_c)->f_cx->f_dead;
@@ -78781,14 +78792,14 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
   for (int64_t v_lp_30 = 0LL; v_lp_30 < end29; v_lp_30++) {
     while (1) {
       int64_t ix31 = v_lp_30;
-      int64_t t32 = (*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix31, (*p_c)->f_cx->f_loops.len, "check.obx:3349")))->f_breaks.len;
+      int64_t t32 = (*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix31, (*p_c)->f_cx->f_loops.len, "check.obx:3353")))->f_breaks.len;
       int64_t ix33 = v_lp_30;
-      bool c34 = (bool)(t32 > *((int64_t*)v_nbreaks_20.data + rt_idx(ix33, v_nbreaks_20.len, "check.obx:3349")));
+      bool c34 = (bool)(t32 > *((int64_t*)v_nbreaks_20.data + rt_idx(ix33, v_nbreaks_20.len, "check.obx:3353")));
       if (!c34) {
         break;
       }
       int64_t ix35 = v_lp_30;
-      obx_arr t36 = *(obx_arr*)rt_arr_pop(&(*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix35, (*p_c)->f_cx->f_loops.len, "check.obx:3349")))->f_breaks, 24ULL, "check.obx:3349");
+      obx_arr t36 = *(obx_arr*)rt_arr_pop(&(*((struct S112_check_Loop**)(*p_c)->f_cx->f_loops.data + rt_idx(ix35, (*p_c)->f_cx->f_loops.len, "check.obx:3353")))->f_breaks, 24ULL, "check.obx:3353");
       gl11_drop(t36);
     }
   }
@@ -78797,14 +78808,14 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
     if (!c37) {
       break;
     }
-    int64_t t38 = *(int64_t*)rt_arr_pop(&(*p_c)->f_cx->f_lines, 8ULL, "check.obx:3351");
+    int64_t t38 = *(int64_t*)rt_arr_pop(&(*p_c)->f_cx->f_lines, 8ULL, "check.obx:3355");
   }
   while (1) {
     bool c39 = (bool)((*p_c)->f_holes.len > v_nholes_2);
     if (!c39) {
       break;
     }
-    struct S93_check_Hole t40 = *(struct S93_check_Hole*)rt_arr_pop(&(*p_c)->f_holes, 80ULL, "check.obx:3352");
+    struct S93_check_Hole t40 = *(struct S93_check_Hole*)rt_arr_pop(&(*p_c)->f_holes, 80ULL, "check.obx:3356");
     gl102_drop(t40);
   }
   while (1) {
@@ -78812,7 +78823,7 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
     if (!c41) {
       break;
     }
-    struct S94_check_Lifted*t42 = *(struct S94_check_Lifted**)rt_arr_pop(&(*p_c)->f_lifted, 8ULL, "check.obx:3353");
+    struct S94_check_Lifted*t42 = *(struct S94_check_Lifted**)rt_arr_pop(&(*p_c)->f_lifted, 8ULL, "check.obx:3357");
     gl103_drop(t42);
   }
   {
@@ -78825,9 +78836,9 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
     if (!c44) {
       break;
     }
-    obx_str t45 = *(obx_str*)rt_arr_pop(&(*p_c)->f_cx->f_capNames, 16ULL, "check.obx:3356");
+    obx_str t45 = *(obx_str*)rt_arr_pop(&(*p_c)->f_cx->f_capNames, 16ULL, "check.obx:3360");
     rt_str_drop(t45);
-    int64_t t46 = *(int64_t*)rt_arr_pop(&(*p_c)->f_cx->f_capVars, 8ULL, "check.obx:3357");
+    int64_t t46 = *(int64_t*)rt_arr_pop(&(*p_c)->f_cx->f_capVars, 8ULL, "check.obx:3361");
   }
   int64_t end47 = v_frames_12.len;
   for (int64_t v_f_48 = 0LL; v_f_48 < end47; v_f_48++) {
@@ -78836,14 +78847,14 @@ static int64_t f1177_check_Checker_peekType(struct S70_check_Checker**p_c, int64
     if (c50) {
       while (1) {
         int64_t ix51 = v_f_48;
-        int64_t t52 = ((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix51, (*p_c)->f_cx->f_frames.len, "check.obx:3361"))->len;
+        int64_t t52 = ((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix51, (*p_c)->f_cx->f_frames.len, "check.obx:3365"))->len;
         int64_t ix53 = v_f_48;
-        bool c54 = (bool)(t52 > *((int64_t*)v_frames_12.data + rt_idx(ix53, v_frames_12.len, "check.obx:3361")));
+        bool c54 = (bool)(t52 > *((int64_t*)v_frames_12.data + rt_idx(ix53, v_frames_12.len, "check.obx:3365")));
         if (!c54) {
           break;
         }
         int64_t ix55 = v_f_48;
-        int64_t t56 = *(int64_t*)rt_arr_pop((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix55, (*p_c)->f_cx->f_frames.len, "check.obx:3361"), 8ULL, "check.obx:3361");
+        int64_t t56 = *(int64_t*)rt_arr_pop((obx_arr*)(*p_c)->f_cx->f_frames.data + rt_idx(ix55, (*p_c)->f_cx->f_frames.len, "check.obx:3365"), 8ULL, "check.obx:3365");
       }
     }
   }
@@ -78919,13 +78930,13 @@ static void f1138_check_bindSet(obx_arr*p_bind, int64_t p_tp, int64_t p_t) {
       break;
     }
     int64_t ix4 = v_i_1;
-    bool c5 = (bool)(*((int64_t*)p_bind->data + rt_idx(ix4, p_bind->len, "check.obx:4294")) == p_tp);
+    bool c5 = (bool)(*((int64_t*)p_bind->data + rt_idx(ix4, p_bind->len, "check.obx:4298")) == p_tp);
     if (c5) {
-      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:4295");
-      *((int64_t*)p_bind->data + rt_idx(ix6, p_bind->len, "check.obx:4295")) = p_t;
+      int64_t ix6 = rt_add_int(v_i_1, 1LL, "check.obx:4299");
+      *((int64_t*)p_bind->data + rt_idx(ix6, p_bind->len, "check.obx:4299")) = p_t;
       return;
     }
-    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:4298");
+    v_i_1 = rt_add_int(v_i_1, 2LL, "check.obx:4302");
   }
   int64_t ap7 = p_tp;
   *(int64_t*)rt_arr_push(p_bind, 8ULL) = ap7;
@@ -79293,7 +79304,7 @@ static struct S118_check_Sig*f1132_check_Checker_methodSig(struct S70_check_Chec
   bool b41 = (bool)(v_f_40 < 0LL);
   if (!b41) {
     int64_t ix42 = v_f_40;
-    b41 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix42, (*p_c)->f_pg->f_fns.len, "check.obx:4252"))->f_recvMode == 4LL);
+    b41 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix42, (*p_c)->f_pg->f_fns.len, "check.obx:4256"))->f_recvMode == 4LL);
   }
   bool c43 = b41;
   if (c43) {
@@ -79330,13 +79341,13 @@ static struct S118_check_Sig*f1132_check_Checker_methodSig(struct S70_check_Chec
   bool b62 = rt_str_eq(p_name, sl1980);
   if (b62) {
     int64_t ix63 = v_f_40;
-    b62 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix63, (*p_c)->f_pg->f_fns.len, "check.obx:4257"))->f_ownerKind == 2LL);
+    b62 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix63, (*p_c)->f_pg->f_fns.len, "check.obx:4261"))->f_ownerKind == 2LL);
   }
   bool b64 = b62;
   if (b64) {
     int64_t ix65 = v_f_40;
-    int64_t ix66 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix65, (*p_c)->f_pg->f_fns.len, "check.obx:4257"))->f_owner;
-    b64 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix66, (*p_c)->f_pg->f_types.len, "check.obx:4257"))->f_drop == v_f_40);
+    int64_t ix66 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix65, (*p_c)->f_pg->f_fns.len, "check.obx:4261"))->f_owner;
+    b64 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix66, (*p_c)->f_pg->f_types.len, "check.obx:4261"))->f_drop == v_f_40);
   }
   bool c67 = b64;
   if (c67) {
@@ -79346,9 +79357,9 @@ static struct S118_check_Sig*f1132_check_Checker_methodSig(struct S70_check_Chec
   obx_arr a68 = rt_arr_new(0LL, 8ULL);
   obx_arr v_bind_69 = a68;
   int64_t ix70 = v_f_40;
-  int64_t t71 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix70, (*p_c)->f_pg->f_fns.len, "check.obx:4262"))->f_recvType;
+  int64_t t71 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix70, (*p_c)->f_pg->f_fns.len, "check.obx:4266"))->f_recvType;
   int64_t ix72 = v_f_40;
-  bool t73 = f873_sema_Program_unify(&(*p_c)->f_pg, t71, p_t, &v_bind_69, &((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix72, (*p_c)->f_pg->f_fns.len, "check.obx:4262"))->f_tps);
+  bool t73 = f873_sema_Program_unify(&(*p_c)->f_pg, t71, p_t, &v_bind_69, &((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix72, (*p_c)->f_pg->f_fns.len, "check.obx:4266"))->f_tps);
   struct S118_check_Sig*t74 = f1183_check_Checker_fnSig(p_c, v_f_40, v_bind_69);
   struct S118_check_Sig*r75 = t74;
   rt_str_drop(p_name);
@@ -79356,7 +79367,7 @@ static struct S118_check_Sig*f1132_check_Checker_methodSig(struct S70_check_Chec
 }
 static struct S118_check_Sig*f1183_check_Checker_fnSig(struct S70_check_Checker**p_c, int64_t p_f, obx_arr p_bind) {
   int64_t ix1 = p_f;
-  int64_t v_rm_2 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:4178"))->f_recvMode;
+  int64_t v_rm_2 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:4182"))->f_recvMode;
   bool b3 = (bool)(v_rm_2 == 1LL);
   if (!b3) {
     b3 = (bool)(v_rm_2 == 2LL);
@@ -79369,21 +79380,21 @@ static struct S118_check_Sig*f1183_check_Checker_fnSig(struct S70_check_Checker*
   obx_arr a7 = rt_arr_new(0LL, 8ULL);
   obx_arr v_ps_8 = a7;
   int64_t ix9 = p_f;
-  int64_t end10 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix9, (*p_c)->f_pg->f_fns.len, "check.obx:4181"))->f_params.len;
+  int64_t end10 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix9, (*p_c)->f_pg->f_fns.len, "check.obx:4185"))->f_params.len;
   for (int64_t v_i_11 = 0LL; v_i_11 < end10; v_i_11++) {
     int64_t ix12 = p_f;
     int64_t ix13 = v_i_11;
-    int64_t ap14 = ((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix12, (*p_c)->f_pg->f_fns.len, "check.obx:4181"))->f_params.data + rt_idx(ix13, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix12, (*p_c)->f_pg->f_fns.len, "check.obx:4181"))->f_params.len, "check.obx:4181"))->f_ty;
+    int64_t ap14 = ((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix12, (*p_c)->f_pg->f_fns.len, "check.obx:4185"))->f_params.data + rt_idx(ix13, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix12, (*p_c)->f_pg->f_fns.len, "check.obx:4185"))->f_params.len, "check.obx:4185"))->f_ty;
     *(int64_t*)rt_arr_push(&v_ps_8, 8ULL) = ap14;
   }
   obx_str t15 = f882_sema_Program_label(&(*p_c)->f_pg, p_f);
   int64_t ix16 = p_f;
-  int64_t t18 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:4182"))->f_isExtern ? 1LL : 0LL;
+  int64_t t18 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix16, (*p_c)->f_pg->f_fns.len, "check.obx:4186"))->f_isExtern ? 1LL : 0LL;
   int64_t ix19 = p_f;
-  struct S118_check_Sig*t20 = f1180_check_newSig(t15, t18, v_ps_8, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix19, (*p_c)->f_pg->f_fns.len, "check.obx:4182"))->f_ret);
+  struct S118_check_Sig*t20 = f1180_check_newSig(t15, t18, v_ps_8, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix19, (*p_c)->f_pg->f_fns.len, "check.obx:4186"))->f_ret);
   struct S118_check_Sig*v_s_21 = t20;
   int64_t ix22 = p_f;
-  obx_arr t23 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix22, (*p_c)->f_pg->f_fns.len, "check.obx:4183"))->f_tps);
+  obx_arr t23 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix22, (*p_c)->f_pg->f_fns.len, "check.obx:4187"))->f_tps);
   {
     obx_arr nw24 = t23;
     gl11_drop(v_s_21->f_tps);
@@ -79397,9 +79408,9 @@ static struct S118_check_Sig*f1183_check_Checker_fnSig(struct S70_check_Checker*
     v_s_21->f_bind = nw25;
   }
   int64_t ix26 = p_f;
-  int64_t v_m_27 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix26, (*p_c)->f_pg->f_fns.len, "check.obx:4187"))->f_mod;
+  int64_t v_m_27 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix26, (*p_c)->f_pg->f_fns.len, "check.obx:4191"))->f_mod;
   int64_t ix28 = p_f;
-  struct S99_syntax_Node t29 = f891_sema_Program_nd(&(*p_c)->f_pg, v_m_27, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix28, (*p_c)->f_pg->f_fns.len, "check.obx:4188"))->f_node);
+  struct S99_syntax_Node t29 = f891_sema_Program_nd(&(*p_c)->f_pg, v_m_27, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix28, (*p_c)->f_pg->f_fns.len, "check.obx:4192"))->f_node);
   int64_t v_tl_30 = t29.f_b;
   gl62_drop(t29);
   int64_t ifx31;
@@ -79415,10 +79426,10 @@ static struct S118_check_Sig*f1183_check_Checker_fnSig(struct S70_check_Checker*
 }
 static void f1182_check_Checker_visible(struct S70_check_Checker**p_c, int64_t p_f, int64_t p_line) {
   int64_t ix1 = p_f;
-  bool b2 = (bool)!((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:4226"))->f_isPub;
+  bool b2 = (bool)!((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix1, (*p_c)->f_pg->f_fns.len, "check.obx:4230"))->f_isPub;
   if (b2) {
     int64_t ix3 = p_f;
-    b2 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix3, (*p_c)->f_pg->f_fns.len, "check.obx:4226"))->f_mod != (*p_c)->f_cx->f_mod);
+    b2 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix3, (*p_c)->f_pg->f_fns.len, "check.obx:4230"))->f_mod != (*p_c)->f_cx->f_mod);
   }
   bool c4 = b2;
   if (c4) {
@@ -79426,8 +79437,8 @@ static void f1182_check_Checker_visible(struct S70_check_Checker**p_c, int64_t p
     obx_str t6 = f882_sema_Program_label(&(*p_c)->f_pg, p_f);
     obx_str t7 = rt_str_concat(t6, sl4200);
     int64_t ix8 = p_f;
-    int64_t ix9 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix8, (*p_c)->f_pg->f_fns.len, "check.obx:4227"))->f_mod;
-    obx_str t10 = rt_str_concat(t7, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix9, (*p_c)->f_pg->f_mods.len, "check.obx:4227"))->f_name);
+    int64_t ix9 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix8, (*p_c)->f_pg->f_fns.len, "check.obx:4231"))->f_mod;
+    obx_str t10 = rt_str_concat(t7, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix9, (*p_c)->f_pg->f_mods.len, "check.obx:4231"))->f_name);
     f976_check_Checker_err(p_c, t5, t10);
   }
 }
@@ -80111,7 +80122,7 @@ static struct S110_check_Val f1192_check_Checker_binop(struct S70_check_Checker*
   if (c28) {
     obx_slice t29 = k4_sema_PRIM_NAMES;
     int64_t ix30 = v_lt_3;
-    obx_str v_nm_31 = rt_str_dup(*((obx_str*)t29.data + rt_idx(ix30, t29.len, "check.obx:3492")));
+    obx_str v_nm_31 = rt_str_dup(*((obx_str*)t29.data + rt_idx(ix30, t29.len, "check.obx:3496")));
     bool b32 = rt_str_eq(p_op, sl19);
     if (!b32) {
       b32 = rt_str_eq(p_op, sl20);
@@ -80144,7 +80155,7 @@ static struct S110_check_Val f1192_check_Checker_binop(struct S70_check_Checker*
       if (c50) {
         obx_slice t51 = k5_check_CTYPES;
         int64_t ix52 = v_lt_3;
-        int64_t t53 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t51.data + rt_idx(ix52, t51.len, "check.obx:3503"))));
+        int64_t t53 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t51.data + rt_idx(ix52, t51.len, "check.obx:3507"))));
         int64_t t54 = f715_tmpl_Arena_bin(&(*p_c)->f_x, rt_str_dup(p_op), v_lv_2.f_c, v_rv1_19.f_c);
         int64_t t55 = f756_tmpl_Arena_par(&(*p_c)->f_x, t54);
         int64_t t56 = f839_tmpl_Arena_pcast(&(*p_c)->f_x, t53, t55);
@@ -80304,7 +80315,7 @@ static struct S110_check_Val f1192_check_Checker_binop(struct S70_check_Checker*
       if (c107) {
         obx_slice t108 = k5_check_CTYPES;
         int64_t ix109 = v_lt_3;
-        int64_t t110 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t108.data + rt_idx(ix109, t108.len, "check.obx:3517"))));
+        int64_t t110 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t108.data + rt_idx(ix109, t108.len, "check.obx:3521"))));
         int64_t t111 = f715_tmpl_Arena_bin(&(*p_c)->f_x, rt_str_dup(p_op), v_lv_2.f_c, v_rv1_19.f_c);
         int64_t t112 = f756_tmpl_Arena_par(&(*p_c)->f_x, t111);
         int64_t t113 = f839_tmpl_Arena_pcast(&(*p_c)->f_x, t110, t112);
@@ -80555,7 +80566,7 @@ static struct S110_check_Val f1192_check_Checker_binop(struct S70_check_Checker*
     }
     int64_t t200 = f722_sema_Program_ta(&(*p_c)->f_pg, v_lt_3);
     int64_t ix201 = t200;
-    obx_str t203 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix201, (*p_c)->f_pg->f_types.len, "check.obx:3547"))->f_value ? sl37 : sl3901;
+    obx_str t203 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix201, (*p_c)->f_pg->f_types.len, "check.obx:3551"))->f_value ? sl37 : sl3901;
     obx_str v_sep_204 = t203;
     struct S110_check_Val v_a_205 = gl75_dup(v_lv_2);
     struct S110_check_Val v_b_206 = gl75_dup(v_rv1_19);
@@ -80677,17 +80688,17 @@ static bool f1194_check_Checker_tagEq(struct S70_check_Checker**p_c, int64_t p_t
   int64_t t4 = f722_sema_Program_ta(&(*p_c)->f_pg, p_t);
   int64_t v_d_5 = t4;
   int64_t ix6 = v_d_5;
-  bool c7 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3570"))->f_form != 1LL);
+  bool c7 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3574"))->f_form != 1LL);
   if (c7) {
     bool r8 = (bool)0LL;
     return r8;
   }
   int64_t ix9 = v_d_5;
-  obx_slice ap10 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix9, (*p_c)->f_pg->f_types.len, "check.obx:3571"))->f_variants);
+  obx_slice ap10 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix9, (*p_c)->f_pg->f_types.len, "check.obx:3575"))->f_variants);
   for (int64_t i11 = 0LL; i11 < ap10.len; i11++) {
     int64_t v_x_12 = *((int64_t*)ap10.data + i11);
     int64_t ix13 = v_x_12;
-    bool c14 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix13, (*p_c)->f_pg->f_variants.len, "check.obx:3572"))->f_fields.len > 0LL);
+    bool c14 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix13, (*p_c)->f_pg->f_variants.len, "check.obx:3576"))->f_fields.len > 0LL);
     if (c14) {
       bool r15 = (bool)0LL;
       return r15;
@@ -80699,7 +80710,7 @@ static bool f1194_check_Checker_tagEq(struct S70_check_Checker**p_c, int64_t p_t
 }
 static int64_t f1193_check_Checker_shiftCount(struct S70_check_Checker**p_c, int64_t p_n) {
   int64_t ix1 = p_n;
-  struct S86_tmpl_Node v_x_2 = gl51_dup(*((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix1, (*p_c)->f_x->f_nodes.len, "check.obx:2693")));
+  struct S86_tmpl_Node v_x_2 = gl51_dup(*((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix1, (*p_c)->f_x->f_nodes.len, "check.obx:2697")));
   bool b3 = (bool)(v_x_2.f_k != 2LL);
   if (!b3) {
     b3 = (bool)((int64_t)v_x_2.f_s.len < 3LL);
@@ -80720,9 +80731,9 @@ static int64_t f1193_check_Checker_shiftCount(struct S70_check_Checker**p_c, int
     return r8;
   }
   int64_t v_v_9 = 0LL;
-  int64_t end10 = rt_sub_int((int64_t)v_x_2.f_s.len, 2LL, "check.obx:2696");
+  int64_t end10 = rt_sub_int((int64_t)v_x_2.f_s.len, 2LL, "check.obx:2700");
   for (int64_t v_i_11 = 0LL; v_i_11 < end10; v_i_11++) {
-    uint8_t t12 = rt_str_byte(v_x_2.f_s, v_i_11, "check.obx:2697");
+    uint8_t t12 = rt_str_byte(v_x_2.f_s, v_i_11, "check.obx:2701");
     uint8_t v_d_13 = t12;
     bool b14 = (bool)((int32_t)v_d_13 < 48);
     if (!b14) {
@@ -80734,8 +80745,8 @@ static int64_t f1193_check_Checker_shiftCount(struct S70_check_Checker**p_c, int
       gl52_drop(v_x_2);
       return r16;
     }
-    int64_t t17 = rt_mul_int(v_v_9, 10LL, "check.obx:2699");
-    v_v_9 = rt_add_int(t17, rt_cvs_int((__int128)rt_sub_byte(v_d_13, (uint8_t)48LL, "check.obx:2699"), "check.obx:2699"), "check.obx:2699");
+    int64_t t17 = rt_mul_int(v_v_9, 10LL, "check.obx:2703");
+    v_v_9 = rt_add_int(t17, rt_cvs_int((__int128)rt_sub_byte(v_d_13, (uint8_t)48LL, "check.obx:2703"), "check.obx:2703"), "check.obx:2703");
   }
   int64_t r18 = v_v_9;
   gl52_drop(v_x_2);
@@ -80863,14 +80874,14 @@ static bool f1197_check_Checker_isCallTo(struct S70_check_Checker**p_c, int64_t 
   bool b3 = b1;
   if (b3) {
     int64_t ix4 = p_n;
-    int64_t t5 = f765_tmpl_Arena_k(&(*p_c)->f_x, ((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix4, (*p_c)->f_x->f_nodes.len, "check.obx:3283"))->f_a);
+    int64_t t5 = f765_tmpl_Arena_k(&(*p_c)->f_x, ((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix4, (*p_c)->f_x->f_nodes.len, "check.obx:3287"))->f_a);
     b3 = (bool)(t5 == 1LL);
   }
   bool b6 = b3;
   if (b6) {
     int64_t ix7 = p_n;
-    int64_t ix8 = ((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix7, (*p_c)->f_x->f_nodes.len, "check.obx:3283"))->f_a;
-    b6 = rt_str_eq(((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix8, (*p_c)->f_x->f_nodes.len, "check.obx:3283"))->f_s, p_f);
+    int64_t ix8 = ((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix7, (*p_c)->f_x->f_nodes.len, "check.obx:3287"))->f_a;
+    b6 = rt_str_eq(((struct S86_tmpl_Node*)(*p_c)->f_x->f_nodes.data + rt_idx(ix8, (*p_c)->f_x->f_nodes.len, "check.obx:3287"))->f_s, p_f);
   }
   bool r9 = b6;
   rt_str_drop(p_f);
@@ -81866,7 +81877,7 @@ static struct S110_check_Val f1218_check_Checker_xCall(struct S70_check_Checker*
     bool b20 = b19;
     if (b20) {
       int64_t ix21 = (*p_c)->f_cx->f_mod;
-      b20 = ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix21, (*p_c)->f_pg->f_mods.len, "check.obx:4884"))->f_isLib;
+      b20 = ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix21, (*p_c)->f_pg->f_mods.len, "check.obx:4888"))->f_isLib;
     }
     bool b22 = b20;
     if (b22) {
@@ -81961,7 +81972,7 @@ static struct S110_check_Val f1218_check_Checker_xCall(struct S70_check_Checker*
     bool b64 = b63;
     if (b64) {
       int64_t ix65 = v_og_62.f_di;
-      b64 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix65, (*p_c)->f_pg->f_globals.len, "check.obx:4903"))->f_isOnce;
+      b64 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix65, (*p_c)->f_pg->f_globals.len, "check.obx:4907"))->f_isOnce;
     }
     bool c66 = b64;
     if (c66) {
@@ -82102,7 +82113,7 @@ static struct S110_check_Val f1218_check_Checker_xCall(struct S70_check_Checker*
     bool c125 = (bool)(v_st_120.f_k == 3LL);
     if (c125) {
       int64_t ix126 = v_st_120.f_m;
-      obx_str t127 = rt_str_concat(((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix126, (*p_c)->f_pg->f_mods.len, "check.obx:4936"))->f_name, sl4513);
+      obx_str t127 = rt_str_concat(((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix126, (*p_c)->f_pg->f_mods.len, "check.obx:4940"))->f_name, sl4513);
       f976_check_Checker_err(p_c, v_n_2.f_line, t127);
     }
     bool c128 = (bool)(v_st_120.f_dk == 4LL);
@@ -82135,7 +82146,7 @@ static struct S110_check_Val f1218_check_Checker_xCall(struct S70_check_Checker*
     bool c141 = (bool)(v_st_120.f_dk == 0LL);
     if (c141) {
       int64_t ix142 = v_st_120.f_di;
-      bool c143 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix142, (*p_c)->f_pg->f_types.len, "check.obx:4947"))->f_form == 3LL);
+      bool c143 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix142, (*p_c)->f_pg->f_types.len, "check.obx:4951"))->f_form == 3LL);
       if (c143) {
         int64_t t144 = f1000_check_Checker_staticType(p_c, v_st_120, v_n_2.f_line);
         int64_t v_t_145 = t144;
@@ -82150,7 +82161,7 @@ static struct S110_check_Val f1218_check_Checker_xCall(struct S70_check_Checker*
         }
       }
       int64_t ix150 = v_st_120.f_di;
-      obx_str v_dn_151 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix150, (*p_c)->f_pg->f_types.len, "check.obx:4951"))->f_name);
+      obx_str v_dn_151 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix150, (*p_c)->f_pg->f_types.len, "check.obx:4955"))->f_name);
       int64_t t152 = v_n_2.f_line;
       obx_str t153 = rt_str_concat(v_dn_151, sl4514);
       obx_str t154 = rt_str_concat(t153, v_dn_151);
@@ -82184,7 +82195,7 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
   bool c3 = (bool)(p_st.f_k == 3LL);
   if (c3) {
     int64_t ix4 = p_st.f_m;
-    obx_str t5 = rt_str_concat(((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix4, (*p_c)->f_pg->f_mods.len, "check.obx:2960"))->f_name, sl4517);
+    obx_str t5 = rt_str_concat(((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix4, (*p_c)->f_pg->f_mods.len, "check.obx:2964"))->f_name, sl4517);
     f976_check_Checker_err(p_c, v_line_2, t5);
   }
   bool c6 = (bool)(p_st.f_k == 2LL);
@@ -82204,9 +82215,9 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
   bool c14 = (bool)(p_st.f_dk == 3LL);
   if (c14) {
     int64_t ix15 = v_di_10;
-    obx_str v_name_16 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix15, (*p_c)->f_pg->f_globals.len, "check.obx:2965"))->f_name);
+    obx_str v_name_16 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix15, (*p_c)->f_pg->f_globals.len, "check.obx:2969"))->f_name);
     int64_t ix17 = v_di_10;
-    bool c18 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix17, (*p_c)->f_pg->f_globals.len, "check.obx:2966"))->f_isOnce;
+    bool c18 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix17, (*p_c)->f_pg->f_globals.len, "check.obx:2970"))->f_isOnce;
     if (c18) {
       int64_t t19 = v_line_2;
       obx_str t20 = rt_str_concat(v_name_16, sl4519);
@@ -82215,9 +82226,9 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
       f976_check_Checker_err(p_c, t19, t22);
     }
     int64_t ix23 = v_di_10;
-    int64_t t24 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix23, (*p_c)->f_pg->f_globals.len, "check.obx:2969"))->f_cname));
+    int64_t t24 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix23, (*p_c)->f_pg->f_globals.len, "check.obx:2973"))->f_cname));
     int64_t ix25 = v_di_10;
-    struct S110_check_Val t26 = f1012_check_val(t24, ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix25, (*p_c)->f_pg->f_globals.len, "check.obx:2969"))->f_ty, 2LL);
+    struct S110_check_Val t26 = f1012_check_val(t24, ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix25, (*p_c)->f_pg->f_globals.len, "check.obx:2973"))->f_ty, 2LL);
     struct S110_check_Val v_v_27 = t26;
     v_v_27.f_mutable = (bool)1LL;
     v_v_27.f_gk = 3LL;
@@ -82230,18 +82241,18 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
   bool c29 = (bool)(p_st.f_dk == 4LL);
   if (c29) {
     int64_t ix30 = v_di_10;
-    bool c31 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:2976"))->f_fields.len > 0LL);
+    bool c31 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:2980"))->f_fields.len > 0LL);
     if (c31) {
       int64_t t32 = v_line_2;
       int64_t ix33 = v_di_10;
-      obx_str t34 = rt_str_concat(sl4259, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix33, (*p_c)->f_pg->f_variants.len, "check.obx:2977"))->f_name);
+      obx_str t34 = rt_str_concat(sl4259, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix33, (*p_c)->f_pg->f_variants.len, "check.obx:2981"))->f_name);
       obx_str t35 = rt_str_concat(t34, sl4521);
       int64_t ix36 = v_di_10;
-      int64_t ix37 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix36, (*p_c)->f_pg->f_variants.len, "check.obx:2978"))->f_decl;
-      obx_str t38 = rt_str_concat(t35, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix37, (*p_c)->f_pg->f_types.len, "check.obx:2978"))->f_name);
+      int64_t ix37 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix36, (*p_c)->f_pg->f_variants.len, "check.obx:2982"))->f_decl;
+      obx_str t38 = rt_str_concat(t35, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix37, (*p_c)->f_pg->f_types.len, "check.obx:2982"))->f_name);
       obx_str t39 = rt_str_concat(t38, sl37);
       int64_t ix40 = v_di_10;
-      obx_str t41 = rt_str_concat(t39, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix40, (*p_c)->f_pg->f_variants.len, "check.obx:2978"))->f_name);
+      obx_str t41 = rt_str_concat(t39, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix40, (*p_c)->f_pg->f_variants.len, "check.obx:2982"))->f_name);
       obx_str t42 = rt_str_concat(t41, sl4345);
       f976_check_Checker_err(p_c, t32, t42);
     }
@@ -82255,12 +82266,12 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
   bool c47 = (bool)(p_st.f_dk == 1LL);
   if (c47) {
     int64_t ix48 = v_di_10;
-    obx_str v_fname_49 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix48, (*p_c)->f_pg->f_fns.len, "check.obx:2984"))->f_name);
+    obx_str v_fname_49 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix48, (*p_c)->f_pg->f_fns.len, "check.obx:2988"))->f_name);
     int64_t ix50 = v_di_10;
-    obx_arr t51 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix50, (*p_c)->f_pg->f_fns.len, "check.obx:2985"))->f_tps);
+    obx_arr t51 = f886_check_copyInts(&((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix50, (*p_c)->f_pg->f_fns.len, "check.obx:2989"))->f_tps);
     obx_arr v_tps_52 = t51;
     int64_t ix53 = v_di_10;
-    bool c54 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix53, (*p_c)->f_pg->f_fns.len, "check.obx:2986"))->f_isExtern;
+    bool c54 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix53, (*p_c)->f_pg->f_fns.len, "check.obx:2990"))->f_isExtern;
     if (c54) {
       obx_str t55 = rt_str_concat(sl4522, v_fname_49);
       obx_str t56 = rt_str_concat(t55, sl4523);
@@ -82287,10 +82298,10 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
       int64_t end71 = v_ta_61.len;
       for (int64_t v_i_72 = 0LL; v_i_72 < end71; v_i_72++) {
         int64_t ix73 = v_i_72;
-        int64_t ap74 = *((int64_t*)v_tps_52.data + rt_idx(ix73, v_tps_52.len, "check.obx:2994"));
+        int64_t ap74 = *((int64_t*)v_tps_52.data + rt_idx(ix73, v_tps_52.len, "check.obx:2998"));
         *(int64_t*)rt_arr_push(&v_bind_58, 8ULL) = ap74;
         int64_t ix75 = v_i_72;
-        int64_t t76 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_61.data + rt_idx(ix75, v_ta_61.len, "check.obx:2995")), 5LL, v_line_2);
+        int64_t t76 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_61.data + rt_idx(ix75, v_ta_61.len, "check.obx:2999")), 5LL, v_line_2);
         int64_t ap77 = t76;
         *(int64_t*)rt_arr_push(&v_bind_58, 8ULL) = ap77;
       }
@@ -82299,21 +82310,21 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
     obx_arr a78 = rt_arr_new(0LL, 8ULL);
     obx_arr v_ps_79 = a78;
     int64_t ix80 = v_di_10;
-    int64_t end81 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix80, (*p_c)->f_pg->f_fns.len, "check.obx:2999"))->f_params.len;
+    int64_t end81 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix80, (*p_c)->f_pg->f_fns.len, "check.obx:3003"))->f_params.len;
     for (int64_t v_i_82 = 0LL; v_i_82 < end81; v_i_82++) {
       int64_t ix83 = v_di_10;
       int64_t ix84 = v_i_82;
-      int64_t ap85 = ((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix83, (*p_c)->f_pg->f_fns.len, "check.obx:2999"))->f_params.data + rt_idx(ix84, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix83, (*p_c)->f_pg->f_fns.len, "check.obx:2999"))->f_params.len, "check.obx:2999"))->f_ty;
+      int64_t ap85 = ((struct S75_sema_Param*)((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix83, (*p_c)->f_pg->f_fns.len, "check.obx:3003"))->f_params.data + rt_idx(ix84, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix83, (*p_c)->f_pg->f_fns.len, "check.obx:3003"))->f_params.len, "check.obx:3003"))->f_ty;
       *(int64_t*)rt_arr_push(&v_ps_79, 8ULL) = ap85;
     }
     int64_t ix86 = v_di_10;
-    int64_t t87 = f705_sema_Program_mkFn(&(*p_c)->f_pg, &v_ps_79, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix86, (*p_c)->f_pg->f_fns.len, "check.obx:3000"))->f_ret);
+    int64_t t87 = f705_sema_Program_mkFn(&(*p_c)->f_pg, &v_ps_79, ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix86, (*p_c)->f_pg->f_fns.len, "check.obx:3004"))->f_ret);
     int64_t v_ft_88 = t87;
     int64_t t89 = f1201_check_Checker_ek(p_c, p_exp);
     int64_t v_ek_90 = t89;
     bool b91 = (bool)(v_tps_52.len > 0LL);
     if (b91) {
-      int64_t t92 = rt_div_int(v_bind_58.len, 2LL, "check.obx:3002");
+      int64_t t92 = rt_div_int(v_bind_58.len, 2LL, "check.obx:3006");
       b91 = (bool)(t92 < v_tps_52.len);
     }
     bool b93 = b91;
@@ -82334,7 +82345,7 @@ static struct S110_check_Val f1235_check_Checker_staticValue(struct S70_check_Ch
       bool t101 = f873_sema_Program_unify(&(*p_c)->f_pg, v_ft_88, v_et_100, &v_bind_58, &v_tps_52);
       gl11_drop(v_xs_97);
     }
-    int64_t t102 = rt_div_int(v_bind_58.len, 2LL, "check.obx:3007");
+    int64_t t102 = rt_div_int(v_bind_58.len, 2LL, "check.obx:3011");
     bool c103 = (bool)(t102 < v_tps_52.len);
     if (c103) {
       int64_t t104 = v_line_2;
@@ -82385,7 +82396,7 @@ static struct S110_check_Val f1236_check_Checker_constVal(struct S70_check_Check
     bool c7 = (bool)(t6 == 1LL);
     if (c7) {
       int64_t ix8 = p_k;
-      int64_t t9 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix8, (*p_c)->f_pg->f_consts.len, "check.obx:3059"))->f_cname));
+      int64_t t9 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix8, (*p_c)->f_pg->f_consts.len, "check.obx:3063"))->f_cname));
       int64_t t10 = f722_sema_Program_ta(&(*p_c)->f_pg, v_ty_3);
       int64_t t11 = f959_sema_Program_mkSlice(&(*p_c)->f_pg, t10, (bool)0LL);
       int64_t t12 = f1237_check_Checker_staticVar(p_c, 2LL, p_k);
@@ -82395,7 +82406,7 @@ static struct S110_check_Val f1236_check_Checker_constVal(struct S70_check_Check
       return r14;
     }
     int64_t ix15 = p_k;
-    int64_t t16 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix15, (*p_c)->f_pg->f_consts.len, "check.obx:3061"))->f_cname));
+    int64_t t16 = f982_check_Checker_nm(p_c, rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix15, (*p_c)->f_pg->f_consts.len, "check.obx:3065"))->f_cname));
     struct S110_check_Val t17 = f1012_check_val(t16, v_ty_3, 2LL);
     struct S110_check_Val v_r_18 = t17;
     v_r_18.f_gk = 2LL;
@@ -82494,19 +82505,19 @@ static int64_t f1237_check_Checker_staticVar(struct S70_check_Checker**p_c, int6
   int64_t ifx10;
   if (p_dk == 2LL) {
     int64_t ix11 = p_di;
-    obx_str t12 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix11, (*p_c)->f_pg->f_consts.len, "check.obx:3045"))->f_name);
+    obx_str t12 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix11, (*p_c)->f_pg->f_consts.len, "check.obx:3049"))->f_name);
     int64_t ix13 = p_di;
-    obx_str t14 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix13, (*p_c)->f_pg->f_consts.len, "check.obx:3045"))->f_cname);
+    obx_str t14 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix13, (*p_c)->f_pg->f_consts.len, "check.obx:3049"))->f_cname);
     int64_t ix15 = p_di;
-    int64_t t16 = f1016_check_Checker_newVar(p_c, t12, t14, 11LL, (bool)0LL, 2LL, ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix15, (*p_c)->f_pg->f_consts.len, "check.obx:3045"))->f_line);
+    int64_t t16 = f1016_check_Checker_newVar(p_c, t12, t14, 11LL, (bool)0LL, 2LL, ((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix15, (*p_c)->f_pg->f_consts.len, "check.obx:3049"))->f_line);
     ifx10 = t16;
   } else {
     int64_t ix17 = p_di;
-    obx_str t18 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix17, (*p_c)->f_pg->f_globals.len, "check.obx:3047"))->f_name);
+    obx_str t18 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix17, (*p_c)->f_pg->f_globals.len, "check.obx:3051"))->f_name);
     int64_t ix19 = p_di;
-    obx_str t20 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix19, (*p_c)->f_pg->f_globals.len, "check.obx:3047"))->f_cname);
+    obx_str t20 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix19, (*p_c)->f_pg->f_globals.len, "check.obx:3051"))->f_cname);
     int64_t ix21 = p_di;
-    int64_t t22 = f1016_check_Checker_newVar(p_c, t18, t20, 11LL, (bool)0LL, 2LL, ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix21, (*p_c)->f_pg->f_globals.len, "check.obx:3047"))->f_line);
+    int64_t t22 = f1016_check_Checker_newVar(p_c, t18, t20, 11LL, (bool)0LL, 2LL, ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix21, (*p_c)->f_pg->f_globals.len, "check.obx:3051"))->f_line);
     ifx10 = t22;
   }
   int64_t v_id_23 = ifx10;
@@ -82543,7 +82554,7 @@ static struct S110_check_Val f1234_check_Checker_convert(struct S70_check_Checke
   if (c12) {
     obx_slice t13 = k4_sema_PRIM_NAMES;
     int64_t ix14 = p_t;
-    obx_str t15 = rt_str_concat(sl4528, *((obx_str*)t13.data + rt_idx(ix14, t13.len, "check.obx:4787")));
+    obx_str t15 = rt_str_concat(sl4528, *((obx_str*)t13.data + rt_idx(ix14, t13.len, "check.obx:4791")));
     obx_str t16 = rt_str_concat(t15, sl4529);
     f976_check_Checker_err(p_c, v_n_2.f_line, t16);
   }
@@ -82554,7 +82565,7 @@ static struct S110_check_Val f1234_check_Checker_convert(struct S70_check_Checke
   int64_t v_s_21 = v_v_20.f_t;
   obx_slice t22 = k4_sema_PRIM_NAMES;
   int64_t ix23 = p_t;
-  obx_str v_d_24 = rt_str_dup(*((obx_str*)t22.data + rt_idx(ix23, t22.len, "check.obx:4790")));
+  obx_str v_d_24 = rt_str_dup(*((obx_str*)t22.data + rt_idx(ix23, t22.len, "check.obx:4794")));
   int64_t t25 = f1158_check_Checker_W(p_c, v_n_2.f_line);
   int64_t v_W_26 = t25;
   bool b27 = (bool)(v_s_21 < 7LL);
@@ -82694,7 +82705,7 @@ static struct S110_check_Val f1232_check_Checker_fieldOf(struct S70_check_Checke
   if (!b6) {
     int64_t t7 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_3);
     int64_t ix8 = t7;
-    b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix8, (*p_c)->f_pg->f_types.len, "check.obx:3110"))->f_form != 0LL);
+    b6 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix8, (*p_c)->f_pg->f_types.len, "check.obx:3114"))->f_form != 0LL);
   }
   bool c9 = b6;
   if (c9) {
@@ -82702,7 +82713,7 @@ static struct S110_check_Val f1232_check_Checker_fieldOf(struct S70_check_Checke
     if (b10) {
       int64_t t11 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_3);
       int64_t ix12 = t11;
-      b10 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix12, (*p_c)->f_pg->f_types.len, "check.obx:3111"))->f_form == 1LL);
+      b10 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix12, (*p_c)->f_pg->f_types.len, "check.obx:3115"))->f_form == 1LL);
     }
     bool c13 = b10;
     if (c13) {
@@ -82733,10 +82744,10 @@ static struct S110_check_Val f1232_check_Checker_fieldOf(struct S70_check_Checke
   }
   int64_t ix32 = v_d_23;
   int64_t ix33 = v_fi_25;
-  bool b34 = (bool)!((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix32, (*p_c)->f_pg->f_types.len, "check.obx:3119"))->f_fields.data + rt_idx(ix33, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix32, (*p_c)->f_pg->f_types.len, "check.obx:3119"))->f_fields.len, "check.obx:3119"))->f_isPub;
+  bool b34 = (bool)!((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix32, (*p_c)->f_pg->f_types.len, "check.obx:3123"))->f_fields.data + rt_idx(ix33, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix32, (*p_c)->f_pg->f_types.len, "check.obx:3123"))->f_fields.len, "check.obx:3123"))->f_isPub;
   if (b34) {
     int64_t ix35 = v_d_23;
-    b34 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix35, (*p_c)->f_pg->f_types.len, "check.obx:3119"))->f_mod != (*p_c)->f_cx->f_mod);
+    b34 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix35, (*p_c)->f_pg->f_types.len, "check.obx:3123"))->f_mod != (*p_c)->f_cx->f_mod);
   }
   bool c36 = b34;
   if (c36) {
@@ -82744,21 +82755,21 @@ static struct S110_check_Val f1232_check_Checker_fieldOf(struct S70_check_Checke
     obx_str t38 = rt_str_concat(sl4265, p_name);
     obx_str t39 = rt_str_concat(t38, sl4267);
     int64_t ix40 = v_d_23;
-    obx_str t41 = rt_str_concat(t39, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix40, (*p_c)->f_pg->f_types.len, "check.obx:3120"))->f_name);
+    obx_str t41 = rt_str_concat(t39, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix40, (*p_c)->f_pg->f_types.len, "check.obx:3124"))->f_name);
     obx_str t42 = rt_str_concat(t41, sl4496);
     int64_t ix43 = v_d_23;
-    int64_t ix44 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:3120"))->f_mod;
-    obx_str t45 = rt_str_concat(t42, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix44, (*p_c)->f_pg->f_mods.len, "check.obx:3120"))->f_name);
+    int64_t ix44 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:3124"))->f_mod;
+    obx_str t45 = rt_str_concat(t42, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix44, (*p_c)->f_pg->f_mods.len, "check.obx:3124"))->f_name);
     f976_check_Checker_err(p_c, t37, t45);
   }
   obx_arr t46 = f810_sema_Program_declEnv(&(*p_c)->f_pg, v_t_3);
   obx_arr v_env_47 = t46;
   int64_t ix48 = v_d_23;
   int64_t ix49 = v_fi_25;
-  int64_t t50 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:3123"))->f_fields.data + rt_idx(ix49, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:3123"))->f_fields.len, "check.obx:3123"))->f_ty, &v_env_47);
+  int64_t t50 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:3127"))->f_fields.data + rt_idx(ix49, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:3127"))->f_fields.len, "check.obx:3127"))->f_ty, &v_env_47);
   int64_t v_ft_51 = t50;
   int64_t ix52 = v_d_23;
-  obx_str t54 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix52, (*p_c)->f_pg->f_types.len, "check.obx:3124"))->f_value ? sl37 : sl3901;
+  obx_str t54 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix52, (*p_c)->f_pg->f_types.len, "check.obx:3128"))->f_value ? sl37 : sl3901;
   obx_str v_sep_55 = t54;
   obx_str t56 = rt_str_concat(sl4126, p_name);
   int64_t t57 = f859_tmpl_Arena_member(&(*p_c)->f_x, v_v_2.f_c, rt_str_dup(v_sep_55), t56);
@@ -82888,8 +82899,8 @@ static void f1231_check_Checker_implicitWhere(struct S70_check_Checker**p_c, str
   bool b3 = b2;
   if (!b3) {
     int64_t ix4 = (*p_sig)->f_fd;
-    int64_t ix5 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix4, (*p_c)->f_pg->f_fns.len, "check.obx:4852"))->f_mod;
-    b3 = (bool)!((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix5, (*p_c)->f_pg->f_mods.len, "check.obx:4852"))->f_isLib;
+    int64_t ix5 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix4, (*p_c)->f_pg->f_fns.len, "check.obx:4856"))->f_mod;
+    b3 = (bool)!((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix5, (*p_c)->f_pg->f_mods.len, "check.obx:4856"))->f_isLib;
   }
   bool c6 = b3;
   if (c6) {
@@ -82901,8 +82912,8 @@ static void f1231_check_Checker_implicitWhere(struct S70_check_Checker**p_c, str
   if (c10) {
     return;
   }
-  int64_t ix11 = rt_sub_int(v_np_7, 1LL, "check.obx:4856");
-  int64_t v_pt_12 = *((int64_t*)(*p_sig)->f_params.data + rt_idx(ix11, (*p_sig)->f_params.len, "check.obx:4856"));
+  int64_t ix11 = rt_sub_int(v_np_7, 1LL, "check.obx:4860");
+  int64_t v_pt_12 = *((int64_t*)(*p_sig)->f_params.data + rt_idx(ix11, (*p_sig)->f_params.len, "check.obx:4860"));
   int64_t t13 = f814_sema_Program_tk(&(*p_c)->f_pg, v_pt_12);
   bool b14 = (bool)(t13 != 6LL);
   if (!b14) {
@@ -82911,18 +82922,18 @@ static void f1231_check_Checker_implicitWhere(struct S70_check_Checker**p_c, str
   }
   bool b16 = b14;
   if (!b16) {
-    b16 = (bool)(rt_add_int(p_args->len, v_nr_9, "check.obx:4857") == v_np_7);
+    b16 = (bool)(rt_add_int(p_args->len, v_nr_9, "check.obx:4861") == v_np_7);
   }
   bool c17 = b16;
   if (c17) {
     return;
   }
-  int64_t t18 = rt_add_int(p_args->len, v_nr_9, "check.obx:4858");
-  bool c19 = (bool)(t18 != rt_sub_int(v_np_7, 1LL, "check.obx:4858"));
+  int64_t t18 = rt_add_int(p_args->len, v_nr_9, "check.obx:4862");
+  bool c19 = (bool)(t18 != rt_sub_int(v_np_7, 1LL, "check.obx:4862"));
   if (c19) {
     int64_t t20 = p_line;
     obx_str t21 = rt_str_concat((*p_sig)->f_label, sl4217);
-    obx_str t22 = rt_int_to_str(rt_sub_int(rt_sub_int(v_np_7, 1LL, "check.obx:4859"), v_nr_9, "check.obx:4859"));
+    obx_str t22 = rt_int_to_str(rt_sub_int(rt_sub_int(v_np_7, 1LL, "check.obx:4863"), v_nr_9, "check.obx:4863"));
     obx_str t23 = rt_str_concat(t21, t22);
     obx_str t24 = rt_str_concat(t23, sl4534);
     obx_str t25 = rt_int_to_str(p_args->len);
@@ -82996,7 +83007,7 @@ static struct S118_check_Sig*f1230_check_Checker_assocSig(struct S70_check_Check
   if (c29) {
     int64_t t30 = f722_sema_Program_ta(&(*p_c)->f_pg, p_t);
     int64_t ix31 = t30;
-    int64_t t32 = f119_std_Map_getOr(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix31, (*p_c)->f_pg->f_types.len, "check.obx:4210"))->f_methods, p_name, -1LL);
+    int64_t t32 = f119_std_Map_getOr(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix31, (*p_c)->f_pg->f_types.len, "check.obx:4214"))->f_methods, p_name, -1LL);
     v_f_25 = t32;
   } else {
     int64_t t33 = f872_sema_Program_methodOf(&(*p_c)->f_pg, p_t, rt_str_dup(p_name));
@@ -83004,15 +83015,15 @@ static struct S118_check_Sig*f1230_check_Checker_assocSig(struct S70_check_Check
     bool c34 = (bool)(v_f_25 >= 0LL);
     if (c34) {
       int64_t ix35 = v_f_25;
-      int64_t t36 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix35, (*p_c)->f_pg->f_fns.len, "check.obx:4213"))->f_recvType;
+      int64_t t36 = ((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix35, (*p_c)->f_pg->f_fns.len, "check.obx:4217"))->f_recvType;
       int64_t ix37 = v_f_25;
-      bool t38 = f873_sema_Program_unify(&(*p_c)->f_pg, t36, p_t, &v_bind_27, &((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix37, (*p_c)->f_pg->f_fns.len, "check.obx:4213"))->f_tps);
+      bool t38 = f873_sema_Program_unify(&(*p_c)->f_pg, t36, p_t, &v_bind_27, &((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix37, (*p_c)->f_pg->f_fns.len, "check.obx:4217"))->f_tps);
     }
   }
   bool b39 = (bool)(v_f_25 < 0LL);
   if (!b39) {
     int64_t ix40 = v_f_25;
-    b39 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix40, (*p_c)->f_pg->f_fns.len, "check.obx:4215"))->f_recvMode != 4LL);
+    b39 = (bool)(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix40, (*p_c)->f_pg->f_fns.len, "check.obx:4219"))->f_recvMode != 4LL);
   }
   bool c41 = b39;
   if (c41) {
@@ -83036,7 +83047,7 @@ static struct S118_check_Sig*f1230_check_Checker_assocSig(struct S70_check_Check
     if (t49) {
       int64_t t51 = f722_sema_Program_ta(&(*p_c)->f_pg, p_t);
       int64_t ix52 = t51;
-      ifx50 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix52, (*p_c)->f_pg->f_types.len, "check.obx:4218"))->f_name);
+      ifx50 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix52, (*p_c)->f_pg->f_types.len, "check.obx:4222"))->f_name);
     } else {
       obx_str t53 = f1049_check_Checker_tstr(p_c, p_t);
       ifx50 = t53;
@@ -83059,19 +83070,19 @@ static obx_str f1229_check_Checker_declName(struct S70_check_Checker**p_c, struc
   int64_t sv2 = p_st.f_dk;
   if (sv2 == 0LL) {
     int64_t ix3 = p_st.f_di;
-    mx1 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix3, (*p_c)->f_pg->f_types.len, "check.obx:3031"))->f_name);
+    mx1 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix3, (*p_c)->f_pg->f_types.len, "check.obx:3035"))->f_name);
   } else if (sv2 == 1LL) {
     int64_t ix4 = p_st.f_di;
-    mx1 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix4, (*p_c)->f_pg->f_fns.len, "check.obx:3032"))->f_name);
+    mx1 = rt_str_dup(((struct S72_sema_FnDecl*)(*p_c)->f_pg->f_fns.data + rt_idx(ix4, (*p_c)->f_pg->f_fns.len, "check.obx:3036"))->f_name);
   } else if (sv2 == 2LL) {
     int64_t ix5 = p_st.f_di;
-    mx1 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix5, (*p_c)->f_pg->f_consts.len, "check.obx:3033"))->f_name);
+    mx1 = rt_str_dup(((struct S79_sema_Const*)(*p_c)->f_pg->f_consts.data + rt_idx(ix5, (*p_c)->f_pg->f_consts.len, "check.obx:3037"))->f_name);
   } else if (sv2 == 3LL) {
     int64_t ix6 = p_st.f_di;
-    mx1 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix6, (*p_c)->f_pg->f_globals.len, "check.obx:3034"))->f_name);
+    mx1 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix6, (*p_c)->f_pg->f_globals.len, "check.obx:3038"))->f_name);
   } else {
     int64_t ix7 = p_st.f_di;
-    mx1 = rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix7, (*p_c)->f_pg->f_variants.len, "check.obx:3035"))->f_name);
+    mx1 = rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix7, (*p_c)->f_pg->f_variants.len, "check.obx:3039"))->f_name);
   }
   obx_str r8 = mx1;
   return r8;
@@ -83079,14 +83090,14 @@ static obx_str f1229_check_Checker_declName(struct S70_check_Checker**p_c, struc
 static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_check_Checker**p_c, struct S3_check_St p_st, obx_arr*p_args0, int64_t p_line, int64_t p_exp, int64_t p_named) {
   int64_t v_vr_1 = p_st.f_di;
   int64_t ix2 = v_vr_1;
-  int64_t v_d_3 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix2, (*p_c)->f_pg->f_variants.len, "check.obx:3939"))->f_decl;
+  int64_t v_d_3 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix2, (*p_c)->f_pg->f_variants.len, "check.obx:3943"))->f_decl;
   int64_t ix4 = v_vr_1;
-  obx_str v_vname_5 = rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix4, (*p_c)->f_pg->f_variants.len, "check.obx:3940"))->f_name);
+  obx_str v_vname_5 = rt_str_dup(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix4, (*p_c)->f_pg->f_variants.len, "check.obx:3944"))->f_name);
   int64_t ix6 = v_d_3;
-  bool b7 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3941"))->f_mod != (*p_c)->f_cx->f_mod);
+  bool b7 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3945"))->f_mod != (*p_c)->f_cx->f_mod);
   if (b7) {
     int64_t ix8 = v_d_3;
-    b7 = (bool)!((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix8, (*p_c)->f_pg->f_types.len, "check.obx:3941"))->f_isPub;
+    b7 = (bool)!((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix8, (*p_c)->f_pg->f_types.len, "check.obx:3945"))->f_isPub;
   }
   bool c9 = b7;
   if (c9) {
@@ -83094,7 +83105,7 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
     f976_check_Checker_err(p_c, p_line, t10);
   }
   int64_t ix11 = v_d_3;
-  obx_arr t12 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix11, (*p_c)->f_pg->f_types.len, "check.obx:3942"))->f_tparams);
+  obx_arr t12 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix11, (*p_c)->f_pg->f_types.len, "check.obx:3946"))->f_tparams);
   obx_arr v_tps_13 = t12;
   obx_arr a14 = rt_arr_new(0LL, 8ULL);
   obx_arr v_bind_15 = a14;
@@ -83126,14 +83137,14 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
     int64_t end30 = v_m_29;
     for (int64_t v_i_31 = 0LL; v_i_31 < end30; v_i_31++) {
       int64_t ix32 = v_i_31;
-      int64_t ap33 = *((int64_t*)v_tps_13.data + rt_idx(ix32, v_tps_13.len, "check.obx:3951"));
+      int64_t ap33 = *((int64_t*)v_tps_13.data + rt_idx(ix32, v_tps_13.len, "check.obx:3955"));
       *(int64_t*)rt_arr_push(&v_env_17, 8ULL) = ap33;
       int64_t ix34 = v_i_31;
-      int64_t ap35 = *((int64_t*)v_targs_20.data + rt_idx(ix34, v_targs_20.len, "check.obx:3952"));
+      int64_t ap35 = *((int64_t*)v_targs_20.data + rt_idx(ix34, v_targs_20.len, "check.obx:3956"));
       *(int64_t*)rt_arr_push(&v_env_17, 8ULL) = ap35;
     }
     int64_t ix36 = p_st.f_free;
-    obx_arr t37 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:3954"))->f_tparams);
+    obx_arr t37 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:3958"))->f_tparams);
     {
       obx_arr nw38 = t37;
       gl11_drop(v_tps_13);
@@ -83147,7 +83158,7 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
       if (c41) {
         int64_t t42 = p_line;
         int64_t ix43 = v_d_3;
-        obx_str t44 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:3957"))->f_name, sl4217);
+        obx_str t44 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix43, (*p_c)->f_pg->f_types.len, "check.obx:3961"))->f_name, sl4217);
         obx_str t45 = rt_int_to_str(v_tps_13.len);
         obx_str t46 = rt_str_concat(t44, t45);
         obx_str t47 = rt_str_concat(t46, sl4218);
@@ -83158,15 +83169,15 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
       int64_t end50 = v_tps_13.len;
       for (int64_t v_i_51 = 0LL; v_i_51 < end50; v_i_51++) {
         int64_t ix52 = v_i_51;
-        int64_t ap53 = *((int64_t*)v_tps_13.data + rt_idx(ix52, v_tps_13.len, "check.obx:3960"));
+        int64_t ap53 = *((int64_t*)v_tps_13.data + rt_idx(ix52, v_tps_13.len, "check.obx:3964"));
         *(int64_t*)rt_arr_push(&v_bind_15, 8ULL) = ap53;
         int64_t ifx54;
         if (p_st.f_tres) {
           int64_t ix55 = v_i_51;
-          ifx54 = *((int64_t*)v_targs_20.data + rt_idx(ix55, v_targs_20.len, "check.obx:3961"));
+          ifx54 = *((int64_t*)v_targs_20.data + rt_idx(ix55, v_targs_20.len, "check.obx:3965"));
         } else {
           int64_t ix56 = v_i_51;
-          int64_t t57 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_targs_20.data + rt_idx(ix56, v_targs_20.len, "check.obx:3961")), 5LL, p_line);
+          int64_t t57 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_targs_20.data + rt_idx(ix56, v_targs_20.len, "check.obx:3965")), 5LL, p_line);
           ifx54 = t57;
         }
         int64_t ap58 = ifx54;
@@ -83192,7 +83203,7 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
           bool c68 = (bool)(t66 < t67);
           if (c68) {
             int64_t ix69 = v_i_65;
-            int64_t ap70 = *((int64_t*)v_tps_13.data + rt_idx(ix69, v_tps_13.len, "check.obx:3966"));
+            int64_t ap70 = *((int64_t*)v_tps_13.data + rt_idx(ix69, v_tps_13.len, "check.obx:3970"));
             *(int64_t*)rt_arr_push(&v_bind_15, 8ULL) = ap70;
             int64_t t71 = f820_sema_Program_ti(&(*p_c)->f_pg, p_exp, v_i_65);
             int64_t ap72 = t71;
@@ -83207,11 +83218,11 @@ static struct S110_check_Val f1228_check_Checker_constructVariant(struct S70_che
   obx_arr a75 = rt_arr_new(0LL, 16ULL);
   obx_arr v_names_76 = a75;
   int64_t ix77 = v_vr_1;
-  int64_t end78 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix77, (*p_c)->f_pg->f_variants.len, "check.obx:3973"))->f_fields.len;
+  int64_t end78 = ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix77, (*p_c)->f_pg->f_variants.len, "check.obx:3977"))->f_fields.len;
   for (int64_t v_i_79 = 0LL; v_i_79 < end78; v_i_79++) {
     int64_t ix80 = v_vr_1;
     int64_t ix81 = v_i_79;
-    struct S90_sema_Field v_f_82 = gl54_dup(*((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix80, (*p_c)->f_pg->f_variants.len, "check.obx:3974"))->f_fields.data + rt_idx(ix81, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix80, (*p_c)->f_pg->f_variants.len, "check.obx:3974"))->f_fields.len, "check.obx:3974")));
+    struct S90_sema_Field v_f_82 = gl54_dup(*((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix80, (*p_c)->f_pg->f_variants.len, "check.obx:3978"))->f_fields.data + rt_idx(ix81, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix80, (*p_c)->f_pg->f_variants.len, "check.obx:3978"))->f_fields.len, "check.obx:3978")));
     int64_t t83 = f813_sema_Program_subst(&(*p_c)->f_pg, v_f_82.f_ty, &v_env_17);
     int64_t ap84 = t83;
     *(int64_t*)rt_arr_push(&v_fts_74, 8ULL) = ap84;
@@ -83312,11 +83323,11 @@ static struct S110_check_Val f1227_check_Checker_onceCall(struct S70_check_Check
   int64_t t3 = f1158_check_Checker_W(p_c, v_n_2.f_line);
   int64_t v_W_4 = t3;
   int64_t ix5 = p_g;
-  obx_str v_gname_6 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix5, (*p_c)->f_pg->f_globals.len, "check.obx:4994"))->f_name);
+  obx_str v_gname_6 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix5, (*p_c)->f_pg->f_globals.len, "check.obx:4998"))->f_name);
   int64_t ix7 = p_g;
-  obx_str v_cn_8 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix7, (*p_c)->f_pg->f_globals.len, "check.obx:4995"))->f_cname);
+  obx_str v_cn_8 = rt_str_dup(((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix7, (*p_c)->f_pg->f_globals.len, "check.obx:4999"))->f_cname);
   int64_t ix9 = p_g;
-  int64_t v_gt_10 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix9, (*p_c)->f_pg->f_globals.len, "check.obx:4996"))->f_ty;
+  int64_t v_gt_10 = ((struct S78_sema_Global*)(*p_c)->f_pg->f_globals.data + rt_idx(ix9, (*p_c)->f_pg->f_globals.len, "check.obx:5000"))->f_ty;
   obx_str t11 = rt_str_concat(sl4540, v_gname_6);
   obx_str v_msg_12 = t11;
   obx_str t13 = rt_str_concat(v_cn_8, sl4059);
@@ -83740,11 +83751,11 @@ static struct S118_check_Sig*f1224_check_Checker_intrSig(struct S70_check_Checke
   }
   obx_slice t56 = k5_check_INTR_NAMES;
   int64_t ix57 = p_i;
-  struct S118_check_Sig*t58 = f1180_check_newSig(rt_str_dup(*((obx_str*)t56.data + rt_idx(ix57, t56.len, "check.obx:4843"))), 7LL, v_ps_4, v_ret_5);
+  struct S118_check_Sig*t58 = f1180_check_newSig(rt_str_dup(*((obx_str*)t56.data + rt_idx(ix57, t56.len, "check.obx:4847"))), 7LL, v_ps_4, v_ret_5);
   struct S118_check_Sig*v_s_59 = t58;
   obx_slice t60 = k5_check_INTR_C;
   int64_t ix61 = p_i;
-  int64_t t62 = f982_check_Checker_nm(p_c, rt_str_dup(*((obx_str*)t60.data + rt_idx(ix61, t60.len, "check.obx:4844"))));
+  int64_t t62 = f982_check_Checker_nm(p_c, rt_str_dup(*((obx_str*)t60.data + rt_idx(ix61, t60.len, "check.obx:4848"))));
   v_s_59->f_c = t62;
   v_s_59->f_loc = (bool)(p_i <= 1LL);
   struct S118_check_Sig*r63 = v_s_59;
@@ -83755,7 +83766,7 @@ static int64_t f1223_check_intrinsic(obx_str p_name) {
   for (int64_t v_i_2 = 0LL; v_i_2 < end1; v_i_2++) {
     obx_slice t3 = k5_check_INTR_NAMES;
     int64_t ix4 = v_i_2;
-    bool c5 = rt_str_eq(*((obx_str*)t3.data + rt_idx(ix4, t3.len, "check.obx:4811")), p_name);
+    bool c5 = rt_str_eq(*((obx_str*)t3.data + rt_idx(ix4, t3.len, "check.obx:4815")), p_name);
     if (c5) {
       int64_t r6 = v_i_2;
       rt_str_drop(p_name);
@@ -83780,7 +83791,7 @@ static struct S110_check_Val f1222_check_Checker_rawPtr(struct S70_check_Checker
     if (!b8) {
       int64_t t9 = f722_sema_Program_ta(&(*p_c)->f_pg, v_v_6.f_t);
       int64_t ix10 = t9;
-      b8 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix10, (*p_c)->f_pg->f_types.len, "check.obx:4969"))->f_value;
+      b8 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix10, (*p_c)->f_pg->f_types.len, "check.obx:4973"))->f_value;
     }
     bool c11 = b8;
     if (c11) {
@@ -83809,7 +83820,7 @@ static struct S110_check_Val f1222_check_Checker_rawPtr(struct S70_check_Checker
   if (!b24) {
     int64_t t25 = f722_sema_Program_ta(&(*p_c)->f_pg, p_exp);
     int64_t ix26 = t25;
-    b24 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix26, (*p_c)->f_pg->f_types.len, "check.obx:4975"))->f_value;
+    b24 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix26, (*p_c)->f_pg->f_types.len, "check.obx:4979"))->f_value;
   }
   bool c27 = b24;
   if (c27) {
@@ -84818,7 +84829,7 @@ static struct S110_check_Val f1217_check_Checker_xArrlit(struct S70_check_Checke
   int64_t end11 = v_items_10.len;
   for (int64_t v_i_12 = 0LL; v_i_12 < end11; v_i_12++) {
     int64_t ix13 = v_i_12;
-    int64_t v_it_14 = *((int64_t*)v_items_10.data + rt_idx(ix13, v_items_10.len, "check.obx:4122"));
+    int64_t v_it_14 = *((int64_t*)v_items_10.data + rt_idx(ix13, v_items_10.len, "check.obx:4126"));
     struct S110_check_Val t15 = f1036_check_Checker_expr(p_c, v_it_14, v_et_6);
     struct S110_check_Val v_v_16 = t15;
     int64_t t17 = f814_sema_Program_tk(&(*p_c)->f_pg, v_v_16.f_t);
@@ -84860,11 +84871,11 @@ static struct S110_check_Val f1217_check_Checker_xArrlit(struct S70_check_Checke
     }
     obx_arr a36 = rt_arr_new(0LL, 8ULL);
     obx_arr v_later_37 = a36;
-    int64_t t38 = rt_add_int(v_i_12, 1LL, "check.obx:4128");
+    int64_t t38 = rt_add_int(v_i_12, 1LL, "check.obx:4132");
     int64_t end39 = v_items_10.len;
     for (int64_t v_j_40 = t38; v_j_40 < end39; v_j_40++) {
       int64_t ix41 = v_j_40;
-      int64_t ap42 = *((int64_t*)v_items_10.data + rt_idx(ix41, v_items_10.len, "check.obx:4128"));
+      int64_t ap42 = *((int64_t*)v_items_10.data + rt_idx(ix41, v_items_10.len, "check.obx:4132"));
       *(int64_t*)rt_arr_push(&v_later_37, 8ULL) = ap42;
     }
     struct S110_check_Val t43 = f1185_check_Checker_before(p_c, gl75_dup(v_v_16), &v_later_37);
@@ -84932,7 +84943,7 @@ static struct S110_check_Val f1217_check_Checker_xArrlit(struct S70_check_Checke
     int64_t t84 = f987_check_Checker_lit(p_c, v_i_78);
     int64_t t85 = f848_tmpl_Arena_idx(&(*p_c)->f_x, t83, t84);
     int64_t ix86 = v_i_78;
-    int64_t t87 = f712_tmpl_Arena_asg(&(*p_c)->f_x, t85, *((int64_t*)v_cs_57.data + rt_idx(ix86, v_cs_57.len, "check.obx:4145")));
+    int64_t t87 = f712_tmpl_Arena_asg(&(*p_c)->f_x, t85, *((int64_t*)v_cs_57.data + rt_idx(ix86, v_cs_57.len, "check.obx:4149")));
     f1024_check_Checker_emitx(p_c, t87);
   }
   int64_t t88 = f816_sema_Program_mkArr(&(*p_c)->f_pg, v_et_6);
@@ -84992,7 +85003,7 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
   int64_t v_d_20 = v_st_5.f_di;
   bool v_hasTargs_21 = (bool)(v_st_5.f_n > 2LL);
   int64_t ix22 = v_d_20;
-  bool c23 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix22, (*p_c)->f_pg->f_types.len, "check.obx:4050"))->f_form == 3LL);
+  bool c23 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix22, (*p_c)->f_pg->f_types.len, "check.obx:4054"))->f_form == 3LL);
   if (c23) {
     int64_t t24 = f1000_check_Checker_staticType(p_c, v_st_5, v_n_2.f_line);
     int64_t v_t_25 = t24;
@@ -85000,7 +85011,7 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
     bool c27 = (bool)(t26 != 6LL);
     if (c27) {
       int64_t ix28 = v_d_20;
-      obx_str t29 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix28, (*p_c)->f_pg->f_types.len, "check.obx:4052"))->f_name, sl4592);
+      obx_str t29 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix28, (*p_c)->f_pg->f_types.len, "check.obx:4056"))->f_name, sl4592);
       f976_check_Checker_err(p_c, v_n_2.f_line, t29);
     }
     int64_t t30 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_25);
@@ -85022,22 +85033,22 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
     }
   }
   int64_t ix36 = v_d_20;
-  obx_str v_dname_37 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:4057"))->f_name);
+  obx_str v_dname_37 = rt_str_dup(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:4061"))->f_name);
   int64_t ix38 = v_d_20;
-  bool c39 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix38, (*p_c)->f_pg->f_types.len, "check.obx:4058"))->f_form != 0LL);
+  bool c39 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix38, (*p_c)->f_pg->f_types.len, "check.obx:4062"))->f_form != 0LL);
   if (c39) {
     int64_t t40 = v_n_2.f_line;
     obx_str t41 = rt_str_concat(v_dname_37, sl4592);
     int64_t ix42 = v_d_20;
-    obx_str t44 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix42, (*p_c)->f_pg->f_types.len, "check.obx:4059"))->f_form == 1LL ? sl4593 : sl1794;
+    obx_str t44 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix42, (*p_c)->f_pg->f_types.len, "check.obx:4063"))->f_form == 1LL ? sl4593 : sl1794;
     obx_str t45 = rt_str_concat(t41, t44);
     f976_check_Checker_err(p_c, t40, t45);
   }
   int64_t ix46 = v_d_20;
-  bool c47 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix46, (*p_c)->f_pg->f_types.len, "check.obx:4061"))->f_mod != (*p_c)->f_cx->f_mod);
+  bool c47 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix46, (*p_c)->f_pg->f_types.len, "check.obx:4065"))->f_mod != (*p_c)->f_cx->f_mod);
   if (c47) {
     int64_t ix48 = v_d_20;
-    obx_slice ap49 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:4062"))->f_fields);
+    obx_slice ap49 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix48, (*p_c)->f_pg->f_types.len, "check.obx:4066"))->f_fields);
     for (int64_t i50 = 0LL; i50 < ap49.len; i50++) {
       struct S90_sema_Field v_f_51 = gl54_dup(*((struct S90_sema_Field*)ap49.data + i50));
       bool c52 = (bool)!v_f_51.f_isPub;
@@ -85048,15 +85059,15 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
         obx_str t56 = rt_str_concat(t55, v_f_51.f_name);
         obx_str t57 = rt_str_concat(t56, sl4596);
         int64_t ix58 = v_d_20;
-        int64_t ix59 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix58, (*p_c)->f_pg->f_types.len, "check.obx:4065"))->f_mod;
-        obx_str t60 = rt_str_concat(t57, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix59, (*p_c)->f_pg->f_mods.len, "check.obx:4065"))->f_name);
+        int64_t ix59 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix58, (*p_c)->f_pg->f_types.len, "check.obx:4069"))->f_mod;
+        obx_str t60 = rt_str_concat(t57, ((struct S71_sema_Module*)(*p_c)->f_pg->f_mods.data + rt_idx(ix59, (*p_c)->f_pg->f_mods.len, "check.obx:4069"))->f_name);
         f976_check_Checker_err(p_c, t53, t60);
       }
       gl55_drop(v_f_51);
     }
   }
   int64_t ix61 = v_d_20;
-  obx_arr t62 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix61, (*p_c)->f_pg->f_types.len, "check.obx:4069"))->f_tparams);
+  obx_arr t62 = f886_check_copyInts(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix61, (*p_c)->f_pg->f_types.len, "check.obx:4073"))->f_tparams);
   obx_arr v_tps_63 = t62;
   obx_arr a64 = rt_arr_new(0LL, 8ULL);
   obx_arr v_bind_65 = a64;
@@ -85079,10 +85090,10 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
     int64_t end78 = v_tps_63.len;
     for (int64_t v_i_79 = 0LL; v_i_79 < end78; v_i_79++) {
       int64_t ix80 = v_i_79;
-      int64_t ap81 = *((int64_t*)v_tps_63.data + rt_idx(ix80, v_tps_63.len, "check.obx:4077"));
+      int64_t ap81 = *((int64_t*)v_tps_63.data + rt_idx(ix80, v_tps_63.len, "check.obx:4081"));
       *(int64_t*)rt_arr_push(&v_bind_65, 8ULL) = ap81;
       int64_t ix82 = v_i_79;
-      int64_t t83 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_68.data + rt_idx(ix82, v_ta_68.len, "check.obx:4078")), 5LL, v_n_2.f_line);
+      int64_t t83 = f1005_check_Checker_resolve(p_c, *((int64_t*)v_ta_68.data + rt_idx(ix82, v_ta_68.len, "check.obx:4082")), 5LL, v_n_2.f_line);
       int64_t ap84 = t83;
       *(int64_t*)rt_arr_push(&v_bind_65, 8ULL) = ap84;
     }
@@ -85107,7 +85118,7 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
         bool c94 = (bool)(t92 < t93);
         if (c94) {
           int64_t ix95 = v_i_91;
-          int64_t ap96 = *((int64_t*)v_tps_63.data + rt_idx(ix95, v_tps_63.len, "check.obx:4083"));
+          int64_t ap96 = *((int64_t*)v_tps_63.data + rt_idx(ix95, v_tps_63.len, "check.obx:4087"));
           *(int64_t*)rt_arr_push(&v_bind_65, 8ULL) = ap96;
           int64_t t97 = f820_sema_Program_ti(&(*p_c)->f_pg, v_exp_3, v_i_91);
           int64_t ap98 = t97;
@@ -85121,7 +85132,7 @@ static struct S110_check_Val f1216_check_Checker_xLit(struct S70_check_Checker**
   obx_arr a101 = rt_arr_new(0LL, 8ULL);
   obx_arr v_fts_102 = a101;
   int64_t ix103 = v_d_20;
-  obx_slice ap104 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix103, (*p_c)->f_pg->f_types.len, "check.obx:4090"))->f_fields);
+  obx_slice ap104 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix103, (*p_c)->f_pg->f_types.len, "check.obx:4094"))->f_fields);
   for (int64_t i105 = 0LL; i105 < ap104.len; i105++) {
     struct S90_sema_Field v_f_106 = gl54_dup(*((struct S90_sema_Field*)ap104.data + i105));
     obx_str ap107 = rt_str_dup(v_f_106.f_name);
@@ -85279,15 +85290,15 @@ static struct S110_check_Val f1214_check_Checker_xTry(struct S70_check_Checker**
   int64_t t34 = f722_sema_Program_ta(&(*p_c)->f_pg, v_t_5);
   int64_t v_d_35 = t34;
   int64_t ix36 = v_d_35;
-  bool c37 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:3863"))->f_drop >= 0LL);
+  bool c37 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix36, (*p_c)->f_pg->f_types.len, "check.obx:3867"))->f_drop >= 0LL);
   if (c37) {
     int64_t ix38 = v_d_35;
-    obx_str t39 = rt_str_concat(sl4605, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix38, (*p_c)->f_pg->f_types.len, "check.obx:3863"))->f_name);
+    obx_str t39 = rt_str_concat(sl4605, ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix38, (*p_c)->f_pg->f_types.len, "check.obx:3867"))->f_name);
     obx_str t40 = rt_str_concat(t39, sl4489);
     f976_check_Checker_err(p_c, v_n_2.f_line, t40);
   }
   int64_t ix41 = v_d_35;
-  bool v_value_42 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix41, (*p_c)->f_pg->f_types.len, "check.obx:3864"))->f_value;
+  bool v_value_42 = ((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix41, (*p_c)->f_pg->f_types.len, "check.obx:3868"))->f_value;
   obx_str t44 = v_value_42 ? sl37 : sl3901;
   obx_str v_sep_45 = t44;
   obx_str t46 = f1053_check_Checker_fresh(p_c, sl4606);
@@ -85321,11 +85332,11 @@ static struct S110_check_Val f1214_check_Checker_xTry(struct S70_check_Checker**
   obx_str t62 = sl22;
   int64_t t63 = f859_tmpl_Arena_member(&(*p_c)->f_x, v_snn_61, rt_str_dup(v_sep_45), sl4124);
   int64_t ix64 = v_a_9.f_er;
-  int64_t t65 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix64, (*p_c)->f_pg->f_variants.len, "check.obx:3875"))->f_index);
+  int64_t t65 = f987_check_Checker_lit(p_c, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix64, (*p_c)->f_pg->f_variants.len, "check.obx:3879"))->f_index);
   int64_t t66 = f715_tmpl_Arena_bin(&(*p_c)->f_x, t62, t63, t65);
   int64_t t67 = f716_tmpl_Arena_sif(&(*p_c)->f_x, t66);
   f1025_check_Checker_emit(p_c, t67);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3876");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3880");
   obx_str t68 = f1053_check_Checker_fresh(p_c, sl3930);
   obx_str v_en_69 = t68;
   int64_t t70 = f1009_check_Checker_T(p_c, v_a_9.f_erT);
@@ -85335,7 +85346,7 @@ static struct S110_check_Val f1214_check_Checker_xTry(struct S70_check_Checker**
   int64_t t74 = f859_tmpl_Arena_member(&(*p_c)->f_x, v_snn_61, rt_str_dup(v_sep_45), sl4125);
   int64_t t75 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t74, sl4607);
   int64_t ix76 = v_a_9.f_er;
-  obx_str t77 = rt_str_concat(sl4126, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix76, (*p_c)->f_pg->f_variants.len, "check.obx:3879"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix76, (*p_c)->f_pg->f_variants.len, "check.obx:3879"))->f_fields.len, "check.obx:3879"))->f_name);
+  obx_str t77 = rt_str_concat(sl4126, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix76, (*p_c)->f_pg->f_variants.len, "check.obx:3883"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix76, (*p_c)->f_pg->f_variants.len, "check.obx:3883"))->f_fields.len, "check.obx:3883"))->f_name);
   int64_t t78 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t75, t77);
   int64_t t79 = f834_tmpl_Arena_decl(&(*p_c)->f_x, t72, t73, t78);
   f1025_check_Checker_emit(p_c, t79);
@@ -85364,13 +85375,13 @@ static struct S110_check_Val f1214_check_Checker_xTry(struct S70_check_Checker**
   int64_t t94 = f982_check_Checker_nm(p_c, rt_str_dup(v_rn_90));
   int64_t t95 = f753_tmpl_Arena_sret(&(*p_c)->f_x, t94);
   f1025_check_Checker_emit(p_c, t95);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3887");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3891");
   int64_t t96 = f718_tmpl_Arena_send(&(*p_c)->f_x);
   f1025_check_Checker_emit(p_c, t96);
   int64_t t97 = f859_tmpl_Arena_member(&(*p_c)->f_x, v_snn_61, rt_str_dup(v_sep_45), sl4125);
   int64_t t98 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t97, sl4608);
   int64_t ix99 = v_a_9.f_ok;
-  obx_str t100 = rt_str_concat(sl4126, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix99, (*p_c)->f_pg->f_variants.len, "check.obx:3889"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix99, (*p_c)->f_pg->f_variants.len, "check.obx:3889"))->f_fields.len, "check.obx:3889"))->f_name);
+  obx_str t100 = rt_str_concat(sl4126, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix99, (*p_c)->f_pg->f_variants.len, "check.obx:3893"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix99, (*p_c)->f_pg->f_variants.len, "check.obx:3893"))->f_fields.len, "check.obx:3893"))->f_name);
   int64_t t101 = f841_tmpl_Arena_dot(&(*p_c)->f_x, t98, t100);
   int64_t v_oc_102 = t101;
   bool c103 = (bool)!v_value_42;
@@ -85417,7 +85428,7 @@ static struct S124_check_OkErr f1260_check_Checker_okerr(struct S70_check_Checke
   if (!b4) {
     int64_t t5 = f722_sema_Program_ta(&(*p_c)->f_pg, p_t);
     int64_t ix6 = t5;
-    b4 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3829"))->f_form != 1LL);
+    b4 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix6, (*p_c)->f_pg->f_types.len, "check.obx:3833"))->f_form != 1LL);
   }
   bool c7 = b4;
   if (c7) {
@@ -85429,16 +85440,16 @@ static struct S124_check_OkErr f1260_check_Checker_okerr(struct S70_check_Checke
   int64_t v_ok_11 = -1LL;
   int64_t v_er_12 = -1LL;
   int64_t ix13 = v_d_10;
-  obx_slice ap14 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix13, (*p_c)->f_pg->f_types.len, "check.obx:3833"))->f_variants);
+  obx_slice ap14 = rt_as_slice(&((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix13, (*p_c)->f_pg->f_types.len, "check.obx:3837"))->f_variants);
   for (int64_t i15 = 0LL; i15 < ap14.len; i15++) {
     int64_t v_v_16 = *((int64_t*)ap14.data + i15);
     int64_t ix17 = v_v_16;
-    bool c18 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix17, (*p_c)->f_pg->f_variants.len, "check.obx:3834"))->f_name, sl4610);
+    bool c18 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix17, (*p_c)->f_pg->f_variants.len, "check.obx:3838"))->f_name, sl4610);
     if (c18) {
       v_ok_11 = v_v_16;
     }
     int64_t ix19 = v_v_16;
-    bool c20 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix19, (*p_c)->f_pg->f_variants.len, "check.obx:3835"))->f_name, sl4611);
+    bool c20 = rt_str_eq(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix19, (*p_c)->f_pg->f_variants.len, "check.obx:3839"))->f_name, sl4611);
     if (c20) {
       v_er_12 = v_v_16;
     }
@@ -85450,12 +85461,12 @@ static struct S124_check_OkErr f1260_check_Checker_okerr(struct S70_check_Checke
   bool b22 = b21;
   if (!b22) {
     int64_t ix23 = v_ok_11;
-    b22 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix23, (*p_c)->f_pg->f_variants.len, "check.obx:3837"))->f_fields.len != 1LL);
+    b22 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix23, (*p_c)->f_pg->f_variants.len, "check.obx:3841"))->f_fields.len != 1LL);
   }
   bool b24 = b22;
   if (!b24) {
     int64_t ix25 = v_er_12;
-    b24 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix25, (*p_c)->f_pg->f_variants.len, "check.obx:3837"))->f_fields.len != 1LL);
+    b24 = (bool)(((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix25, (*p_c)->f_pg->f_variants.len, "check.obx:3841"))->f_fields.len != 1LL);
   }
   bool c26 = b24;
   if (c26) {
@@ -85466,11 +85477,11 @@ static struct S124_check_OkErr f1260_check_Checker_okerr(struct S70_check_Checke
   obx_arr v_env_29 = t28;
   v_r_2.f_ok = v_ok_11;
   int64_t ix30 = v_ok_11;
-  int64_t t31 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:3840"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:3840"))->f_fields.len, "check.obx:3840"))->f_ty, &v_env_29);
+  int64_t t31 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:3844"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix30, (*p_c)->f_pg->f_variants.len, "check.obx:3844"))->f_fields.len, "check.obx:3844"))->f_ty, &v_env_29);
   v_r_2.f_okT = t31;
   v_r_2.f_er = v_er_12;
   int64_t ix32 = v_er_12;
-  int64_t t33 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix32, (*p_c)->f_pg->f_variants.len, "check.obx:3842"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix32, (*p_c)->f_pg->f_variants.len, "check.obx:3842"))->f_fields.len, "check.obx:3842"))->f_ty, &v_env_29);
+  int64_t t33 = f813_sema_Program_subst(&(*p_c)->f_pg, ((struct S90_sema_Field*)((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix32, (*p_c)->f_pg->f_variants.len, "check.obx:3846"))->f_fields.data + rt_idx(0LL, ((struct S89_sema_Variant*)(*p_c)->f_pg->f_variants.data + rt_idx(ix32, (*p_c)->f_pg->f_variants.len, "check.obx:3846"))->f_fields.len, "check.obx:3846"))->f_ty, &v_env_29);
   v_r_2.f_erT = t33;
   struct S124_check_OkErr r34 = v_r_2;
   gl11_drop(v_env_29);
@@ -85508,9 +85519,9 @@ static struct S110_check_Val f1213_check_Checker_xMatchx(struct S70_check_Checke
   struct S111_check_MatchX*ap16 = t15;
   *(struct S111_check_MatchX**)rt_arr_push(&(*p_c)->f_mxs, 8ULL) = ap16;
   f1046_check_Checker_sMatch(p_c, p_e, (bool)1LL);
-  int64_t v_top_17 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3772");
+  int64_t v_top_17 = rt_sub_int((*p_c)->f_mxs.len, 1LL, "check.obx:3776");
   int64_t ix18 = v_top_17;
-  obx_arr t19 = f886_check_copyInts(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix18, (*p_c)->f_mxs.len, "check.obx:3773")))->f_lits);
+  obx_arr t19 = f886_check_copyInts(&(*((struct S111_check_MatchX**)(*p_c)->f_mxs.data + rt_idx(ix18, (*p_c)->f_mxs.len, "check.obx:3777")))->f_lits);
   obx_arr v_lits_20 = t19;
   int64_t v_saved_21 = (*p_c)->f_cx->f_ind;
   obx_arr a22 = rt_arr_new(0LL, 24ULL);
@@ -85524,22 +85535,22 @@ static struct S110_check_Val f1213_check_Checker_xMatchx(struct S70_check_Checke
     if (!c28) {
       break;
     }
-    int64_t ix29 = rt_add_int(v_i_26, 2LL, "check.obx:3779");
-    (*p_c)->f_cx->f_ind = *((int64_t*)v_lits_20.data + rt_idx(ix29, v_lits_20.len, "check.obx:3779"));
+    int64_t ix29 = rt_add_int(v_i_26, 2LL, "check.obx:3783");
+    (*p_c)->f_cx->f_ind = *((int64_t*)v_lits_20.data + rt_idx(ix29, v_lits_20.len, "check.obx:3783"));
     obx_arr a30 = rt_arr_new(0LL, 8ULL);
     obx_arr old31 = *&(*p_c)->f_cx->f_lines;
     *&(*p_c)->f_cx->f_lines = a30;
     obx_arr v_keep_32 = old31;
-    int64_t ix33 = rt_add_int(v_i_26, 1LL, "check.obx:3781");
-    f1080_check_Checker_mxBody(p_c, *((int64_t*)v_lits_20.data + rt_idx(ix33, v_lits_20.len, "check.obx:3781")));
+    int64_t ix33 = rt_add_int(v_i_26, 1LL, "check.obx:3785");
+    f1080_check_Checker_mxBody(p_c, *((int64_t*)v_lits_20.data + rt_idx(ix33, v_lits_20.len, "check.obx:3785")));
     obx_arr old34 = *&(*p_c)->f_cx->f_lines;
     *&(*p_c)->f_cx->f_lines = v_keep_32;
     obx_arr ap35 = old34;
     *(obx_arr*)rt_arr_push(&v_done_23, 24ULL) = ap35;
     int64_t ix36 = v_i_26;
-    int64_t ap37 = *((int64_t*)v_lits_20.data + rt_idx(ix36, v_lits_20.len, "check.obx:3783"));
+    int64_t ap37 = *((int64_t*)v_lits_20.data + rt_idx(ix36, v_lits_20.len, "check.obx:3787"));
     *(int64_t*)rt_arr_push(&v_at2_25, 8ULL) = ap37;
-    v_i_26 = rt_add_int(v_i_26, 3LL, "check.obx:3784");
+    v_i_26 = rt_add_int(v_i_26, 3LL, "check.obx:3788");
   }
   (*p_c)->f_cx->f_ind = v_saved_21;
   bool c38 = (bool)(v_done_23.len > 0LL);
@@ -85555,27 +85566,27 @@ static struct S110_check_Val f1213_check_Checker_xMatchx(struct S70_check_Checke
       bool b46 = (bool)(t45 < v_at2_25.len);
       if (b46) {
         int64_t ix47 = v_j_42;
-        b46 = (bool)(*((int64_t*)v_at2_25.data + rt_idx(ix47, v_at2_25.len, "check.obx:3791")) == v_li_44);
+        b46 = (bool)(*((int64_t*)v_at2_25.data + rt_idx(ix47, v_at2_25.len, "check.obx:3795")) == v_li_44);
       }
       bool c48 = b46;
       if (c48) {
         int64_t ix49 = v_j_42;
-        obx_slice ap50 = rt_as_slice((obx_arr*)v_done_23.data + rt_idx(ix49, v_done_23.len, "check.obx:3792"));
+        obx_slice ap50 = rt_as_slice((obx_arr*)v_done_23.data + rt_idx(ix49, v_done_23.len, "check.obx:3796"));
         for (int64_t i51 = 0LL; i51 < ap50.len; i51++) {
           int64_t v_x_52 = *((int64_t*)ap50.data + i51);
           int64_t ap53 = v_x_52;
           *(int64_t*)rt_arr_push(&(*p_c)->f_cx->f_lines, 8ULL) = ap53;
         }
-        v_j_42 = rt_add_int(v_j_42, 1LL, "check.obx:3793");
+        v_j_42 = rt_add_int(v_j_42, 1LL, "check.obx:3797");
       } else {
         int64_t ix54 = v_li_44;
-        int64_t ap55 = *((int64_t*)v_old_41.data + rt_idx(ix54, v_old_41.len, "check.obx:3795"));
+        int64_t ap55 = *((int64_t*)v_old_41.data + rt_idx(ix54, v_old_41.len, "check.obx:3799"));
         *(int64_t*)rt_arr_push(&(*p_c)->f_cx->f_lines, 8ULL) = ap55;
       }
     }
     gl11_drop(v_old_41);
   }
-  struct S111_check_MatchX*t56 = *(struct S111_check_MatchX**)rt_arr_pop(&(*p_c)->f_mxs, 8ULL, "check.obx:3799");
+  struct S111_check_MatchX*t56 = *(struct S111_check_MatchX**)rt_arr_pop(&(*p_c)->f_mxs, 8ULL, "check.obx:3803");
   struct S111_check_MatchX*v_mx_57 = t56;
   int64_t v_t_58 = v_mx_57->f_t;
   bool c59 = (*p_c)->f_cx->f_dead;
@@ -85607,7 +85618,7 @@ static struct S110_check_Val f1213_check_Checker_xMatchx(struct S70_check_Checke
       *(int64_t*)rt_arr_push(&v_nl_69, 8ULL) = ap73;
     }
     int64_t ix74 = v_li_71;
-    int64_t ap75 = *((int64_t*)(*p_c)->f_cx->f_lines.data + rt_idx(ix74, (*p_c)->f_cx->f_lines.len, "check.obx:3810"));
+    int64_t ap75 = *((int64_t*)(*p_c)->f_cx->f_lines.data + rt_idx(ix74, (*p_c)->f_cx->f_lines.len, "check.obx:3814"));
     *(int64_t*)rt_arr_push(&v_nl_69, 8ULL) = ap75;
   }
   int64_t t76 = v_at_12;
@@ -85774,13 +85785,13 @@ static struct S110_check_Val f1212_check_Checker_xIfx(struct S70_check_Checker**
   bool c77 = (bool)!v_a_27->f_v.f_noreturn;
   if (c77) {
     int64_t ix78 = v_k_76;
-    f1262_check_Checker_ifxDrops(p_c, &v_a_27, (obx_arr*)v_drops_75.data + rt_idx(ix78, v_drops_75.len, "check.obx:3669"), v_r_21);
-    v_k_76 = rt_add_int(v_k_76, 1LL, "check.obx:3670");
+    f1262_check_Checker_ifxDrops(p_c, &v_a_27, (obx_arr*)v_drops_75.data + rt_idx(ix78, v_drops_75.len, "check.obx:3673"), v_r_21);
+    v_k_76 = rt_add_int(v_k_76, 1LL, "check.obx:3674");
   }
   bool c79 = (bool)!v_b_33->f_v.f_noreturn;
   if (c79) {
     int64_t ix80 = v_k_76;
-    f1262_check_Checker_ifxDrops(p_c, &v_b_33, (obx_arr*)v_drops_75.data + rt_idx(ix80, v_drops_75.len, "check.obx:3672"), v_r_21);
+    f1262_check_Checker_ifxDrops(p_c, &v_b_33, (obx_arr*)v_drops_75.data + rt_idx(ix80, v_drops_75.len, "check.obx:3676"), v_r_21);
   }
   bool t81 = f893_sema_Program_isBorrowClass(&(*p_c)->f_pg, v_t_55);
   int64_t ifx82;
@@ -85847,10 +85858,10 @@ static struct S110_check_Val f1212_check_Checker_xIfx(struct S70_check_Checker**
   }
   bool c107 = b106;
   if (c107) {
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3688");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3692");
     int64_t t108 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_r_21, v_a_27->f_v.f_c);
     f1024_check_Checker_emitx(p_c, t108);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3690");
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3694");
   }
   int64_t t109 = f1059_tmpl_Arena_selse(&(*p_c)->f_x);
   f1025_check_Checker_emit(p_c, t109);
@@ -85866,10 +85877,10 @@ static struct S110_check_Val f1212_check_Checker_xIfx(struct S70_check_Checker**
   }
   bool c115 = b114;
   if (c115) {
-    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3695");
+    (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3699");
     int64_t t116 = f712_tmpl_Arena_asg(&(*p_c)->f_x, v_r_21, v_b_33->f_v.f_c);
     f1024_check_Checker_emitx(p_c, t116);
-    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3697");
+    (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3701");
   }
   int64_t t117 = f718_tmpl_Arena_send(&(*p_c)->f_x);
   f1025_check_Checker_emit(p_c, t117);
@@ -85907,7 +85918,7 @@ static struct S110_check_Val f1212_check_Checker_xIfx(struct S70_check_Checker**
   return r124;
 }
 static void f1262_check_Checker_ifxDrops(struct S70_check_Checker**p_c, struct S125_check_Branch**p_br, obx_arr*p_vs, int64_t p_r) {
-  obx_arr t1 = f1074_check_Checker_joinDropLines(p_c, p_vs, rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3710"));
+  obx_arr t1 = f1074_check_Checker_joinDropLines(p_c, p_vs, rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3714"));
   obx_arr v_ls_2 = t1;
   bool c3 = (bool)(v_ls_2.len == 0LL);
   if (c3) {
@@ -85916,7 +85927,7 @@ static void f1262_check_Checker_ifxDrops(struct S70_check_Checker**p_c, struct S
   }
   bool c4 = (bool)((*p_br)->f_v.f_c != p_r);
   if (c4) {
-    int64_t t5 = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3713");
+    int64_t t5 = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3717");
     int64_t t6 = f712_tmpl_Arena_asg(&(*p_c)->f_x, p_r, (*p_br)->f_v.f_c);
     int64_t t7 = f713_tmpl_Arena_sx(&(*p_c)->f_x, t6);
     int64_t t8 = f1026_tmpl_Arena_line(&(*p_c)->f_x, t5, t7);
@@ -85939,7 +85950,7 @@ static struct S125_check_Branch*f1261_check_Checker_ifBranch(struct S70_check_Ch
   *&(*p_c)->f_cx->f_lines = a1;
   obx_arr v_saved_3 = old2;
   (*p_c)->f_cx->f_dead = (bool)0LL;
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3611");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3615");
   f1032_check_Checker_pushFrame(p_c);
   struct S110_check_Val t4 = f1036_check_Checker_expr(p_c, p_x, p_want);
   struct S110_check_Val v_v_5 = t4;
@@ -85996,7 +86007,7 @@ static struct S125_check_Branch*f1261_check_Checker_ifBranch(struct S70_check_Ch
     for (int64_t i30 = 0LL; i30 < ap29.len; i30++) {
       int64_t v_t_31 = *((int64_t*)ap29.data + i30);
       int64_t ix32 = v_t_31;
-      bool c33 = ((struct S116_check_Tmp*)(*p_c)->f_tmps.data + rt_idx(ix32, (*p_c)->f_tmps.len, "check.obx:3625"))->f_live;
+      bool c33 = ((struct S116_check_Tmp*)(*p_c)->f_tmps.data + rt_idx(ix32, (*p_c)->f_tmps.len, "check.obx:3629"))->f_live;
       if (c33) {
         v_live_28 = (bool)1LL;
       }
@@ -86013,7 +86024,7 @@ static struct S125_check_Branch*f1261_check_Checker_ifBranch(struct S70_check_Ch
     }
   }
   f1030_check_Checker_dropFrame(p_c, &v_fr_21);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3633");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3637");
   obx_arr old37 = *&(*p_c)->f_cx->f_lines;
   *&(*p_c)->f_cx->f_lines = v_saved_3;
   obx_arr v_lines_38 = old37;
@@ -86158,7 +86169,7 @@ static struct S110_check_Val f1263_check_Checker_logic(struct S70_check_Checker*
   }
   int64_t t22 = f716_tmpl_Arena_sif(&(*p_c)->f_x, ifx20);
   f1025_check_Checker_emit(p_c, t22);
-  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3461");
+  (*p_c)->f_cx->f_ind = rt_add_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3465");
   f1032_check_Checker_pushFrame(p_c);
   struct S110_check_Val t23 = f1036_check_Checker_expr(p_c, v_n_2.f_b, 8LL);
   struct S110_check_Val t24 = f1047_check_Checker_rd(p_c, t23);
@@ -86176,10 +86187,10 @@ static struct S110_check_Val f1263_check_Checker_logic(struct S70_check_Checker*
   obx_arr t32 = f1034_check_Checker_popFrame(p_c);
   obx_arr v_fr2_33 = t32;
   f1030_check_Checker_dropFrame(p_c, &v_fr2_33);
-  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3468");
+  (*p_c)->f_cx->f_ind = rt_sub_int((*p_c)->f_cx->f_ind, 1LL, "check.obx:3472");
   int64_t t34 = f718_tmpl_Arena_send(&(*p_c)->f_x);
   f1025_check_Checker_emit(p_c, t34);
-  obx_str t35 = *(obx_str*)rt_arr_pop(&(*p_c)->f_cx->f_nomove, 16ULL, "check.obx:3470");
+  obx_str t35 = *(obx_str*)rt_arr_pop(&(*p_c)->f_cx->f_nomove, 16ULL, "check.obx:3474");
   rt_str_drop(t35);
   struct S110_check_Val t36 = f1011_check_rv(v_lnn_17, 8LL);
   struct S110_check_Val r37 = t36;
@@ -86228,7 +86239,7 @@ static struct S110_check_Val f1210_check_Checker_xUn(struct S70_check_Checker**p
     }
     obx_slice t23 = k5_check_CTYPES;
     int64_t ix24 = v_t_6;
-    int64_t t25 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t23.data + rt_idx(ix24, t23.len, "check.obx:3296"))));
+    int64_t t25 = f1126_check_Checker_ct(p_c, rt_str_dup(*((obx_str*)t23.data + rt_idx(ix24, t23.len, "check.obx:3300"))));
     int64_t t26 = f746_tmpl_Arena_pre(&(*p_c)->f_x, sl41, v_v_5.f_c);
     int64_t t27 = f839_tmpl_Arena_pcast(&(*p_c)->f_x, t25, t26);
     struct S110_check_Val t28 = f1011_check_rv(t27, v_t_6);
@@ -86244,7 +86255,7 @@ static struct S110_check_Val f1210_check_Checker_xUn(struct S70_check_Checker**p
     if (c32) {
       obx_slice t33 = k4_sema_PRIM_NAMES;
       int64_t ix34 = v_t_6;
-      obx_str t35 = rt_str_concat(sl4619, *((obx_str*)t33.data + rt_idx(ix34, t33.len, "check.obx:3299")));
+      obx_str t35 = rt_str_concat(sl4619, *((obx_str*)t33.data + rt_idx(ix34, t33.len, "check.obx:3303")));
       int64_t t36 = v_v_5.f_c;
       int64_t t37 = f1158_check_Checker_W(p_c, v_n_2.f_line);
       obx_arr a38 = rt_arr_new(2LL, 8ULL);
@@ -86558,13 +86569,13 @@ static struct S110_check_Val f1207_check_Checker_xField(struct S70_check_Checker
     bool b12 = b11;
     if (b12) {
       int64_t ix13 = v_st_4.f_di;
-      b12 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix13, (*p_c)->f_pg->f_types.len, "check.obx:3097"))->f_form == 1LL);
+      b12 = (bool)(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix13, (*p_c)->f_pg->f_types.len, "check.obx:3101"))->f_form == 1LL);
     }
     bool c14 = b12;
     if (c14) {
       int64_t t15 = v_n_2.f_line;
       int64_t ix16 = v_st_4.f_di;
-      obx_str t17 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix16, (*p_c)->f_pg->f_types.len, "check.obx:3098"))->f_name, sl4625);
+      obx_str t17 = rt_str_concat(((struct S88_sema_TypeDecl*)(*p_c)->f_pg->f_types.data + rt_idx(ix16, (*p_c)->f_pg->f_types.len, "check.obx:3102"))->f_name, sl4625);
       obx_str t18 = rt_str_concat(t17, v_n_2.f_s);
       f976_check_Checker_err(p_c, t15, t18);
     }
@@ -86753,7 +86764,7 @@ static struct S110_check_Val f1206_check_Checker_xClosure(struct S70_check_Check
     }
     f1022_check_Checker_dropScope(p_c, 0LL);
   }
-  struct S107_check_Ctx*t98 = *(struct S107_check_Ctx**)rt_arr_pop(&(*p_c)->f_outers, 8ULL, "check.obx:3421");
+  struct S107_check_Ctx*t98 = *(struct S107_check_Ctx**)rt_arr_pop(&(*p_c)->f_outers, 8ULL, "check.obx:3425");
   struct S107_check_Ctx*old99 = *&(*p_c)->f_cx;
   *&(*p_c)->f_cx = t98;
   struct S107_check_Ctx*v_cx_100 = old99;
@@ -86789,9 +86800,9 @@ static struct S110_check_Val f1206_check_Checker_xClosure(struct S70_check_Check
   for (int64_t i120 = 0LL; i120 < ap119.len; i120++) {
     int64_t v_pv_121 = *((int64_t*)ap119.data + i120);
     int64_t ix122 = v_pv_121;
-    int64_t v_cap_123 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix122, (*p_c)->f_vars.len, "check.obx:3428"))->f_cap;
+    int64_t v_cap_123 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix122, (*p_c)->f_vars.len, "check.obx:3432"))->f_cap;
     int64_t ix124 = v_pv_121;
-    bool v_cm_125 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix124, (*p_c)->f_vars.len, "check.obx:3429"))->f_capmut;
+    bool v_cm_125 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix124, (*p_c)->f_vars.len, "check.obx:3433"))->f_capmut;
     f1095_check_Checker_frozen(p_c, v_cap_123, v_cm_125 ? 3LL : 0LL, v_n_2.f_line);
     struct S123_check_Cap t127 = (struct S123_check_Cap){.f_v = v_cap_123, .f_m = v_cm_125};
     struct S123_check_Cap ap128 = t127;
@@ -86811,8 +86822,8 @@ static struct S110_check_Val f1206_check_Checker_xClosure(struct S70_check_Check
     for (int64_t v_i_139 = 0LL; v_i_139 < end138; v_i_139++) {
       int64_t t140 = v_vp_135;
       int64_t ix141 = v_i_139;
-      int64_t ix142 = ((struct S123_check_Cap*)v_caps_118.data + rt_idx(ix141, v_caps_118.len, "check.obx:3438"))->f_v;
-      int64_t t143 = f746_tmpl_Arena_pre(&(*p_c)->f_x, sl38, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix142, (*p_c)->f_vars.len, "check.obx:3438"))->f_c);
+      int64_t ix142 = ((struct S123_check_Cap*)v_caps_118.data + rt_idx(ix141, v_caps_118.len, "check.obx:3442"))->f_v;
+      int64_t t143 = f746_tmpl_Arena_pre(&(*p_c)->f_x, sl38, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix142, (*p_c)->f_vars.len, "check.obx:3442"))->f_c);
       int64_t t144 = f725_tmpl_Arena_cast(&(*p_c)->f_x, t140, t143);
       int64_t ap145 = t144;
       *(int64_t*)rt_arr_push(&v_its_137, 8ULL) = ap145;
@@ -86837,7 +86848,7 @@ static struct S110_check_Val f1206_check_Checker_xClosure(struct S70_check_Check
   struct S110_check_Val v_r_159 = t158;
   obx_arr ap160 = v_caps_118;
   *(obx_arr*)rt_arr_push(&(*p_c)->f_capl, 24ULL) = ap160;
-  v_r_159.f_caps = rt_sub_int((*p_c)->f_capl.len, 1LL, "check.obx:3445");
+  v_r_159.f_caps = rt_sub_int((*p_c)->f_capl.len, 1LL, "check.obx:3449");
   struct S110_check_Val r161 = gl75_dup(v_r_159);
   gl76_drop(v_r_159);
   gl77_drop(v_cx_100);
@@ -86855,19 +86866,19 @@ static struct S110_check_Val f1205_check_Checker_xName(struct S70_check_Checker*
   bool c5 = (bool)(v_vx_4 >= 0LL);
   if (c5) {
     int64_t ix6 = v_vx_4;
-    bool c7 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix6, (*p_c)->f_vars.len, "check.obx:2944"))->f_moved;
+    bool c7 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix6, (*p_c)->f_vars.len, "check.obx:2948"))->f_moved;
     if (c7) {
       f1094_check_Checker_movedErr(p_c, v_vx_4, v_n_2.f_line);
     }
     f1095_check_Checker_frozen(p_c, v_vx_4, 0LL, v_n_2.f_line);
     int64_t ix8 = v_vx_4;
-    int64_t t9 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix8, (*p_c)->f_vars.len, "check.obx:2946"))->f_c;
+    int64_t t9 = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix8, (*p_c)->f_vars.len, "check.obx:2950"))->f_c;
     int64_t ix10 = v_vx_4;
-    struct S110_check_Val t11 = f1012_check_val(t9, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix10, (*p_c)->f_vars.len, "check.obx:2946"))->f_t, 2LL);
+    struct S110_check_Val t11 = f1012_check_val(t9, ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix10, (*p_c)->f_vars.len, "check.obx:2950"))->f_t, 2LL);
     struct S110_check_Val v_v_12 = t11;
     v_v_12.f_root = v_vx_4;
     int64_t ix13 = v_vx_4;
-    v_v_12.f_mutable = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix13, (*p_c)->f_vars.len, "check.obx:2948"))->f_mutable;
+    v_v_12.f_mutable = ((struct S108_check_Var*)(*p_c)->f_vars.data + rt_idx(ix13, (*p_c)->f_vars.len, "check.obx:2952"))->f_mutable;
     v_v_12.f_vvar = v_vx_4;
     struct S110_check_Val r14 = gl75_dup(v_v_12);
     gl76_drop(v_v_12);
@@ -86920,7 +86931,7 @@ static struct S110_check_Val f1204_check_Checker_xFrac(struct S70_check_Checker*
   int64_t t16 = v_neg_5 ? 1LL : 0LL;
   int64_t end17 = (int64_t)p_text.len;
   for (int64_t v_i_18 = t16; v_i_18 < end17; v_i_18++) {
-    uint8_t t19 = rt_str_byte(p_text, v_i_18, "check.obx:2734");
+    uint8_t t19 = rt_str_byte(p_text, v_i_18, "check.obx:2738");
     uint8_t v_x_20 = t19;
     bool b21 = (bool)((int32_t)v_x_20 >= 65);
     if (b21) {
@@ -86928,7 +86939,7 @@ static struct S110_check_Val f1204_check_Checker_xFrac(struct S70_check_Checker*
     }
     bool c22 = b21;
     if (c22) {
-      v_x_20 = rt_add_byte(v_x_20, (uint8_t)32LL, "check.obx:2735");
+      v_x_20 = rt_add_byte(v_x_20, (uint8_t)32LL, "check.obx:2739");
     }
     bool b23 = (bool)(v_part_14 == 0LL);
     if (b23) {
@@ -86982,17 +86993,17 @@ static struct S110_check_Val f1204_check_Checker_xFrac(struct S70_check_Checker*
   struct S101_num_Big v_e_39 = t38;
   bool c40 = (bool)((int64_t)v_es_37.len > 0LL);
   if (c40) {
-    uint8_t t41 = rt_str_byte(v_es_37, 0LL, "check.obx:2756");
+    uint8_t t41 = rt_str_byte(v_es_37, 0LL, "check.obx:2760");
     bool v_eneg_42 = (bool)((int32_t)t41 == 45);
-    uint8_t t43 = rt_str_byte(v_es_37, 0LL, "check.obx:2757");
+    uint8_t t43 = rt_str_byte(v_es_37, 0LL, "check.obx:2761");
     bool b44 = (bool)((int32_t)t43 == 45);
     if (!b44) {
-      uint8_t t45 = rt_str_byte(v_es_37, 0LL, "check.obx:2757");
+      uint8_t t45 = rt_str_byte(v_es_37, 0LL, "check.obx:2761");
       b44 = (bool)((int32_t)t45 == 43);
     }
     obx_str ifx46;
     if (b44) {
-      obx_str t47 = rt_str_sub(v_es_37, 1LL, (int64_t)v_es_37.len, "check.obx:2757");
+      obx_str t47 = rt_str_sub(v_es_37, 1LL, (int64_t)v_es_37.len, "check.obx:2761");
       ifx46 = t47;
     } else {
       ifx46 = rt_str_dup(v_es_37);
@@ -87055,12 +87066,12 @@ static struct S110_check_Val f1204_check_Checker_xFrac(struct S70_check_Checker*
     }
     bool b85 = b84;
     if (b85) {
-      int64_t t86 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_sig_83->f_params.data + rt_idx(0LL, v_sig_83->f_params.len, "check.obx:2773")), &v_sig_83->f_bind);
+      int64_t t86 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_sig_83->f_params.data + rt_idx(0LL, v_sig_83->f_params.len, "check.obx:2777")), &v_sig_83->f_bind);
       b85 = (bool)(t86 == 5LL);
     }
     bool b87 = b85;
     if (b87) {
-      int64_t t88 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_sig_83->f_params.data + rt_idx(1LL, v_sig_83->f_params.len, "check.obx:2774")), &v_sig_83->f_bind);
+      int64_t t88 = f813_sema_Program_subst(&(*p_c)->f_pg, *((int64_t*)v_sig_83->f_params.data + rt_idx(1LL, v_sig_83->f_params.len, "check.obx:2778")), &v_sig_83->f_bind);
       b87 = (bool)(t88 == 0LL);
     }
     bool c89 = b87;
@@ -87485,7 +87496,7 @@ static struct S110_check_Val f1200_check_Checker_xInt(struct S70_check_Checker**
     obx_str t15 = rt_str_concat(t14, sl4182);
     obx_slice t16 = k4_sema_PRIM_NAMES;
     int64_t ix17 = v_t_4;
-    obx_str t18 = rt_str_concat(t15, *((obx_str*)t16.data + rt_idx(ix17, t16.len, "check.obx:2713")));
+    obx_str t18 = rt_str_concat(t15, *((obx_str*)t16.data + rt_idx(ix17, t16.len, "check.obx:2717")));
     obx_str t19 = rt_str_concat(t18, sl4652);
     f976_check_Checker_err(p_c, t11, t19);
   }

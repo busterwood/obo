@@ -753,6 +753,11 @@ from first to last.
 
 `match` on a place (a variable, field, element or borrow) borrows it: positional
 or named fields of owned types are bound as `&T`, and of copy types as copies.
+Through a shared borrow (the scrutinee is a `&T`), a `str` field is bound as a
+view, `&str`, rooted where the scrutinee is: uncounted, and returnable through
+a borrowed parameter (`fn name(e: &E): &str { match e { E.S(s) { return s }
+... } }`). Matching a variable directly binds a `str` field as a copy, so the
+arm may still assign that variable.
 `match` on any other expression (a call result, `move(x)`) consumes it: the
 bindings own the fields, and fields not bound (or bound to `_`) are dropped at
 the start of the arm, before its body runs; an arm naming several variants, like

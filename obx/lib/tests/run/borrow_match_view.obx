@@ -1,0 +1,47 @@
+// A str field bound through a shared borrow is a view (&str) rooted at the scrutinee (SPEC 9.3):
+// returned through the borrowed parameter, converted to str wherever a str is wanted, and a
+// direct match on a variable still copies it, so the arm may assign the variable.
+// expect: abc9 14
+// expect: abc9
+// expect: 2
+type E = value closed {
+    S(str)
+    N(int)
+}
+fn view(e: &E): &str {
+    match e {
+        E.S(s) { return s }
+        else { return "-" }
+    }
+}
+fn takes(x: str): int { return len(x) }
+fn owned(e: &E): Option[str] {
+    match e {
+        E.S(s) { return Some(s) }
+        else { return None }
+    }
+}
+fn uses(e: &E): int {
+    var keep: []str = []
+    match e {
+        E.S(s) {
+            var t: str = s
+            append(mut &keep, s)
+            let u = s + "!"
+            t = t + u
+            return takes(s) + len(t) + len(keep)
+        }
+        else { return 0 }
+    }
+}
+fn main() {
+    var a = E.S("abc" + intToStr(9))
+    println(view(&a) + " " + intToStr(uses(&a)))
+    match owned(&a) { Some(o) { println(o) } None {} }
+    var st = E.S("x" + intToStr(1))
+    match st {
+        E.S(name) { st = E.N(len(name)) }
+        else {}
+    }
+    match st { E.N(k) { println(intToStr(k)) } else {} }
+}

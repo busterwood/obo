@@ -1,0 +1,17 @@
+// error: is borrowed by 'v' and cannot be assigned
+type E = value closed {
+    S(str)
+    N(int)
+}
+fn view(e: &E): &str {
+    match e {
+        E.S(s) { return s }
+        else { return "-" }
+    }
+}
+fn main() {
+    var a = E.S("t" + intToStr(2))
+    let v = view(&a)
+    a = E.N(1)
+    println(v)
+}

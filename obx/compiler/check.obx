@@ -2451,7 +2451,11 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                         c.dropc(fc, ft)
                     }
                 } else if bn != "" {
-                    if c.isCopy(ft) {
+                    // through a shared borrow a str field binds as a view (&str, uncounted) rooted where the
+                    // scrutinee is, so it can be returned through the borrowed parameter; matching a place
+                    // directly keeps the copy, so the arm may still assign that place
+                    let strView = ft == sema.T_STR && c.pg.tk(v.t) == sema.TK_REF && !c.pg.tm(v.t)
+                    if c.isCopy(ft) && !strView {
                         let ct = c.T(ft)
                         c.emit(c.x.decl(ct, cn, c.dup(fc, ft)))
                         let x = c.newVar(bn, cn, ft, false, VK_LOCAL, an.line)
