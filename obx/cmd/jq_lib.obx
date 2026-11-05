@@ -37,10 +37,11 @@ pub fn numVal(j: &J): float {
     }
 }
 
-pub fn strVal(j: &J): str {
-    match j.asStr() {
-        Some(s) { return s }
-        None { return "" }
+// The text of a string value, as a view into it (uncounted), or "" for any other value.
+pub fn strVal(j: &J): &str {
+    match j {
+        json.Json.Str(s) { return s }
+        else { return "" }
     }
 }
 
@@ -1786,7 +1787,7 @@ pub fn matchImpl(input: &J, re: &J, flags: &J, test: bool, cache: mut &RegexCach
             }
         }
     }
-    var pat = strVal(re)
+    var pat: str = strVal(re)
     if indexOf(prefix, "x", 0) >= 0 {
         pat = stripExtended(pat)
         prefix = strings_without(prefix, 'x')
