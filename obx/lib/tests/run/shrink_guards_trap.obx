@@ -1,0 +1,43 @@
+// A trap after the guards of a function reports as it always did: the overflow is checked in the
+// body, past the prologue, and names the same line. Functions that return strs, records and records
+// through a hidden pointer behind a guard on their parameters are right too.
+// expect: 5
+// expect: x
+// expect: 3 4
+// expect: 7 8 9
+// expect: 0
+// stderr: obx: integer overflow at shrink_guards_trap.obx:31
+// exit: 10
+type Pair2 = record { a: int; b: int }
+type Big = record { a: int; b: int; c: int; d: int }
+
+fn word(n: int, s: &str): str {
+    if n == 0 { return "" }
+    return s[0..n]
+}
+
+fn pair(n: int): Pair2 {
+    if n < 0 { return Pair2{a: 0, b: 0} }
+    return Pair2{a: n - 1, b: n}
+}
+
+fn big(n: int): Big {
+    if n == 0 { return Big{a: 7, b: 8, c: 9, d: 10} }
+    return Big{a: n, b: n, c: n, d: n}
+}
+
+fn grow(a: int, b: int): int {
+    if b == 0 { return a }
+    return a * b + a
+}
+
+fn main() {
+    println(intToStr(grow(5, 0)))
+    println(word(0, &"abc") + "x")
+    let p = pair(4)
+    println(intToStr(p.a) + " " + intToStr(p.b))
+    let g = big(0)
+    println(intToStr(g.a) + " " + intToStr(g.b) + " " + intToStr(g.c))
+    println(intToStr(grow(0, 0)))
+    println(intToStr(grow(4611686018427387904, 2)))
+}

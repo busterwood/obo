@@ -647,6 +647,28 @@ Then:
   returns leave with `leave` (a function that restores registers jumps to
   one copy of the restores; when there are at most two, each jump is
   replaced by a copy once the body is done);
+- guards before the prologue (`genGuards`; shrink-wrapping the early exits
+  only): the leading statements of a function's body that are `if c {
+  return v }`, or `bool b = c; if (b) { return v }` (what `fusedIf` takes),
+  with `v` nothing, an integer or pointer constant, or a parameter of 8
+  bytes (in the block as `T r = v; return r;` as `fusedReturn` takes it),
+  and `c` the truth of such a parameter or a comparison of two of them, or
+  of one and a constant that fits 32 bits, are generated first, by the same
+  code as any other statement, with each such parameter read from the
+  register it arrives in (`g.reg` set to it meanwhile) and a return that is
+  a bare `ret` (`g.shrink`). They write `rax` and the flags only (a compare
+  of registers or of a register and an immediate; the value into `rax`),
+  touch no frame slot, make no call and use no check, so there is no trap
+  with the stack unaligned and nothing to restore. The prologue is then
+  inserted where the last guard ends (`placeCode` at that position; the
+  guards' else labels, bound there, are moved back to the start of the
+  prologue by `Asm.moveLabel` after the insertion), and the parameters'
+  moves into their registers and slots, then the rest of the body, follow
+  as before. Not taken when the function returns a record, a double or a
+  128-bit value, when it has sites (`g.spill`), or for a guard that loads
+  from memory, calls, checks (`rt_add_int`, an index) or compares a
+  narrower type (a narrow parameter is not normalized in its register on
+  entry);
 - the generated code starts at a multiple of 64 and functions at multiples
   of 16 (`int3` between them), so their absolute addresses keep that
   alignment whatever the runtime's size;
@@ -823,6 +845,33 @@ flushed. Exit codes, traps, `OBX_CHECK=1` and the stack-overflow handler
 ## 8. Status / next phases
 
 (kept current; the next agent starts here)
+
+2026-11-05, the nineteenth performance step (branch `perf19`: guards before
+the prologue; kept). Sizing: a sampled profile of the self-build (4,360M
+instructions; perf here caps at about 6,300 samples a run, so 40 runs with
+different periods) puts the callee-saved pushes of the generated functions at
+1.1% of the instructions, and an estimate of those on paths that return before
+using a callee-saved register or a frame slot (parameter moves allowed) at
+0.4% of the instructions, about 1% with `push rbp`, the frame and the
+restores; 845 of 863 generated functions save a register. The cheapest sound
+variant is built: the leading `if c { return v }` on parameters runs before the
+prologue (section 4). `tools/perfsuite.py main perf19 -n 5` (instructions /
+cycles): run suite -1.66% / -1.76% (fib 5,629.7M to 4,305.1M, -23.5%, cycles
+-8.3%; the other programs 0.0% in instructions), compile suite -0.82% /
+-1.34% (compiler `--native` 4,387.2M to 4,348.8M). 51 of 1,078 functions of
+the compiler begin with guards. fib's early path is `cmp rdi,2; jge L; mov
+rax,rdi; ret` instead of twelve instructions with two saves and two
+restores. Tests: `lib/tests/run/shrink_guards.obx` (guards on rdx, rcx, r9;
+bool, void and int returns; recursion; callers with five live values in
+callee-saved registers; a task parked in a guarded function) and
+`shrink_guards_trap.obx` (the overflow trap past a guard keeps its message and
+line; functions returning strs and records behind guards are untouched).
+Not done: guards that return a record (trees, lists, maps begin with one:
+`if d == 0 { return Tree{..} }`) or load through a pointer (`if p.len == 0`),
+which need the loaded value in `rax` only (possible: no frame) but each form
+needs its own check that the code writes no argument register; guards after a
+first statement; saving registers around only the part of a function that uses
+them (the general shrink-wrapping).
 
 2026-11-04, the fourteenth performance step (branch `perf14`: value-record
 copies and small record returns). `copyMem` of 32 bytes or more goes 16
@@ -2143,7 +2192,7 @@ Not done, and why:
   parameters and doubles in `xmm` registers: left for later, as asked
   (each is its own analysis: invariance under the loop's writes, the IR's
   ownership rules, and the absence of callee-saved `xmm` registers);
-- shrink-wrapping (saving only on the paths that need it): fib's leaf
+- shrink-wrapping (saving only on the paths that need it; the early exits on parameters are done since perf19, see section 8): fib's leaf
   path still saves and restores two registers. It would need the saves
   moved past the first branch, with the probe and the pushes; the copied
   restores already make that path short;

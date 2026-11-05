@@ -218,7 +218,23 @@ What made the difference:
   on each side. Before, each candidate line was checked again.
 - **Output in pieces.** The prefix, the line and the newline go into a
   byte buffer; no string is built per line.
-- **The runtime's memcpy.** See "Native backend progress".
+- The nineteenth is shrink-wrapping of the cheapest kind: a function that
+begins with `if c { return v }` on its parameters (comparisons of
+parameters with each other or with small constants, `v` nothing, a constant
+or a parameter) tests before the prologue, in the argument registers, and
+returns with a bare `ret`. `tools/perfsuite.py main perf19 -n 5`: run suite
+-1.66% instructions, -1.76% cycles (fib -23.5% instructions, -8.3% cycles;
+every other program within 0.0% of its instructions: the loops, trees, maps
+and tools begin with no such guard, or with one that returns a record or
+loads through a pointer), compile suite -0.82% instructions, -1.34% cycles
+(compiler `--native` -0.87%, `--emit-c` -1.08%, grep -1.02%, eza -0.75%,
+zoxide -0.38%). 51 of the 1,078 functions the backend generates for the
+compiler begin with guards. The sampled profile (4,360M instructions) puts
+the whole of the callee-saved pushes of those functions' early exits at
+about 0.4% of the instructions (about 1% with the frame setup and
+restores); the measured gain is that.
+
+**The runtime's memcpy.** See "Native backend progress".
 
 User-mode instructions for the native build fell from 1,186M to 886M
 (`-c omega`), 5,045M to 155M (`[0-9]*7 alpha`), 16,466M to 2,545M (`-w`)
@@ -355,6 +371,7 @@ itself, native eza `-T /usr/share` and native bench fib:
 | before the fifteenth, on later sources (`5590fb6`) | 4,479M | 596M | 5,630M |
 | after it (`str` headers out of loops) | 4,469M | 580M | 5,630M |
 | the sixteenth, on `perf16` only (assembler load reuse; shelved, not merged), main's 4,399M on the same sources | 4,439M | 577M | 5,630M |
+| the nineteenth (guards that return early run before the prologue), main's 4,387M on the same sources | 4,349M | 577M | 4,305M |
 
 The compiler had grown between the third and fourth passes (it builds
 the IR for both backends since then), so its two pairs of rows do not
