@@ -47,6 +47,7 @@ import "io"
 import "strings"
 import "sqldialect"
 import "math"
+import "codepage"
 
 pub type Error = sqldialect.DbError
 
@@ -981,7 +982,14 @@ fn decodeValue(col: &Column, b: str): Cell {
         }
         T_BIGVARCHR, T_BIGCHAR, T_TEXT, T_VARCHAR, T_CHAR {
             if !col.collation.utf8() {
-                return Cell.Failed("varchar data in " + col.collation.describe() + ": only UTF-8 collations are supported yet")
+                let cp = col.collation.codePage()
+                if !codepage.supported(cp) {
+                    return Cell.Failed("varchar data in " + col.collation.describe() + ": only UTF-8 collations, code page 1252 and ISO-8859-1 are supported yet")
+                }
+                match codepage.decode(cp, &b) {
+                    Ok(s) { return Cell.Text(s) }
+                    Err(e) { return Cell.Failed(e) }
+                }
             }
             if !strings.isValidUtf8(b) { return Cell.Failed("invalid UTF-8 in a UTF-8 collation") }
             return Cell.Text(b)

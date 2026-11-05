@@ -1,0 +1,66 @@
+// codepage: single-byte code pages, for the char and varchar data of SQL
+// Server (code page 1252) and Sybase (iso_1, ISO-8859-1), by number as
+// the servers name them: 1252 and 28591. The tables are generated
+// (gen_codepages.py, codepage_data.obx).
+
+import "strings"
+import "codepage_data" as data
+
+pub const WINDOWS_1252 = 1252
+pub const ISO_8859_1 = 28591
+
+// Whether decode and encode know this code page.
+pub fn supported(cp: int): bool { return cp == WINDOWS_1252 || cp == ISO_8859_1 }
+
+// The UTF-8 text of bytes b in code page cp. ASCII bytes pass through
+// (all-ASCII input is returned as it is); a byte the code page leaves
+// undefined (cp1252: 0x81, 0x8D, 0x8F, 0x90, 0x9D) becomes the C1 control of
+// the same value.
+pub fn decode(cp: int, b: &str): Result[str, str] {
+    if !supported(cp) { return Err("code page " + cp.toStr() + " is not supported") }
+    var i = 0
+    while i < len(b) && strByte(b, i) < 0x80 { i += 1 }
+    if i == len(b) { return Ok(b) }
+    let w = cp == WINDOWS_1252
+    var out = newStrBuf()
+    out.add(b[0..i])
+    while i < len(b) {
+        let c = int(strByte(b, i))
+        if c < 0x80 { out.addByte(byte(c)) } else { strings.addRune(mut &out, if w { data.DECODE_1252[c] } else { data.DECODE_28591[c] }) }
+        i += 1
+    }
+    return Ok(out.toStr())
+}
+
+// The bytes of UTF-8 text s in code page cp; an error names the first
+// character the code page cannot represent (or the invalid UTF-8).
+pub fn encode(cp: int, s: &str): Result[str, str] {
+    if !supported(cp) { return Err("code page " + cp.toStr() + " is not supported") }
+    var i = 0
+    while i < len(s) && strByte(s, i) < 0x80 { i += 1 }
+    if i == len(s) { return Ok(s) }
+    let w = cp == WINDOWS_1252
+    var out = newStrBuf()
+    out.add(s[0..i])
+    while i < len(s) {
+        let d = strings.decodeAt(s, i)
+        if !d.ok { return Err("invalid UTF-8 at byte " + i.toStr()) }
+        if d.rune < 0x80 {
+            out.addByte(byte(d.rune))
+        } else {
+            var lo = 0
+            var hi = 128
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if (if w { data.ENC_RUNE_1252[mid] } else { data.ENC_RUNE_28591[mid] }) < d.rune { lo = mid + 1 } else { hi = mid }
+            }
+            if lo == 128 || (if w { data.ENC_RUNE_1252[lo] } else { data.ENC_RUNE_28591[lo] }) != d.rune {
+                return Err("U+" + strings.toUpper(strings.padLeft(strings.hex(d.rune), 4, '0')) + " (" + s[i..i + d.size] +
+                           ") cannot be represented in code page " + cp.toStr())
+            }
+            out.addByte(byte(if w { data.ENC_BYTE_1252[lo] } else { data.ENC_BYTE_28591[lo] }))
+        }
+        i += d.size
+    }
+    return Ok(out.toStr())
+}

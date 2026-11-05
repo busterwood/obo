@@ -24,8 +24,11 @@
 // expect: parameters: error 1000
 // expect: ints: 255 0 -32768 32767 -2147483648 2147483647 -9223372036854775808 9223372036854775807 true false
 // expect: floats: 0.10000000149011612 -3.3999999521443642e38 0.1 1.7976931348623157e308 0 0 1.1754943508222875e-38
-// expect: texts: '' 'café 😀 日本' 'ab  ' NULL 'naïve' error 1002 error 1002 x'00ff10' NULL
-// expect: code page: error 1002: column 5: varchar data in code page 1252 (LCID 0x0409, sort order 52): only UTF-8 collations are supported yet
+// expect: texts: '' 'café 😀 日本' 'ab  ' NULL 'naïve' 'naïve' error 1002 x'00ff10' NULL
+// expect: code page: 'naïve' | error 1002: column 6: varchar data in code page 1251 (LCID 0x0419, sort order 0): only UTF-8 collations, code page 1252 and ISO-8859-1 are supported yet
+// expect: cp1252 256 bytes: 256 chars, same as the server's own conversion to nvarchar true
+// expect: cp1252 undefined bytes: 129 141 143 144 157, server 129 141 143 144 157
+// expect: cp1252 text: café €™… | max 140000 true | char(5) 'ab   ' | empty '' | null true | 1251 error 1002
 // expect: as text: café 😀 日本 | bytes of text: 17 | int of text: error 1002 | null: error 1001 | text of int: -2147483648
 // expect: max: 30000 9000 true size -1
 // expect: long batch: 5000
@@ -136,7 +139,39 @@ fn main() {
                      "CAST(N'naïve' AS varchar(20)) COLLATE SQL_Latin1_General_CP1_CI_AS, " +
                      "CAST(N'x' AS varchar(5)) COLLATE Cyrillic_General_CI_AS, 0x00ff10, CAST(NULL AS varbinary(4))", &[]).unwrap()
     println("texts: " + values(&tx, 0))
-    println("code page: " + tx.text(0, 5).unwrapErr().toStr())
+    println("code page: '" + tx.text(0, 5).unwrap() + "' | " + tx.text(0, 6).unwrapErr().toStr())
+    // code page 1252: every byte, against the server's own conversion to nvarchar
+    var hx = newStrBuf()
+    hx.add("0x")
+    for v in 0..256 { hx.add(strings.padLeft(strings.hex(v), 2, '0')) }
+    let lit = hx.toStr()
+    let all = c.query("SELECT CAST(" + lit + " AS varchar(256)) COLLATE Latin1_General_CI_AS, " +
+                      "CAST(CAST(" + lit + " AS varchar(256)) COLLATE Latin1_General_CI_AS AS nvarchar(256))", &[]).unwrap()
+    let viaVarchar = all.text(0, 0).unwrap()
+    println("cp1252 256 bytes: " + strings.runeCount(viaVarchar).toStr() + " chars, same as the server's own conversion to nvarchar " +
+            (viaVarchar == all.text(0, 1).unwrap()).toStr())
+    let und = c.query("SELECT CAST(0x81 AS varchar(1)) COLLATE Latin1_General_CI_AS, CAST(0x8D AS varchar(1)) COLLATE Latin1_General_CI_AS, " +
+                      "CAST(0x8F AS varchar(1)) COLLATE Latin1_General_CI_AS, CAST(0x90 AS varchar(1)) COLLATE Latin1_General_CI_AS, " +
+                      "CAST(0x9D AS varchar(1)) COLLATE Latin1_General_CI_AS, UNICODE(CAST(0x81 AS varchar(1)) COLLATE Latin1_General_CI_AS), " +
+                      "UNICODE(CAST(0x8D AS varchar(1)) COLLATE Latin1_General_CI_AS), UNICODE(CAST(0x8F AS varchar(1)) COLLATE Latin1_General_CI_AS), " +
+                      "UNICODE(CAST(0x90 AS varchar(1)) COLLATE Latin1_General_CI_AS), UNICODE(CAST(0x9D AS varchar(1)) COLLATE Latin1_General_CI_AS)", &[]).unwrap()
+    var ours: []str = []
+    var theirs: []str = []
+    for i in 0..5 {
+        append(mut &ours, strings.decodeAt(und.text(0, i).unwrap(), 0).rune.toStr())
+        append(mut &theirs, und.int(0, 5 + i).unwrap().toStr())
+    }
+    println("cp1252 undefined bytes: " + strings.join(&ours, " ") + ", server " + strings.join(&theirs, " "))
+    var wantBuf = newStrBuf()
+    for i in 0..20000 { wantBuf.add("€éü") }
+    let want = wantBuf.toStr()
+    let cp = c.query("SELECT CAST(N'café €™…' AS varchar(20)) COLLATE Latin1_General_CI_AS, " +
+                     "REPLICATE(CAST(0x80e9fc AS varchar(max)), 20000) COLLATE Latin1_General_CI_AS, " +
+                     "CAST(N'ab' AS char(5)) COLLATE Latin1_General_CI_AS, CAST(N'' AS varchar(5)) COLLATE Latin1_General_CI_AS, " +
+                     "CAST(NULL AS varchar(5)) COLLATE Latin1_General_CI_AS, CAST(N'x' AS varchar(5)) COLLATE Cyrillic_General_CI_AS", &[]).unwrap()
+    println("cp1252 text: " + cp.text(0, 0).unwrap() + " | max " + len(cp.text(0, 1).unwrap()).toStr() + " " +
+            (cp.text(0, 1).unwrap() == want).toStr() + " | char(5) '" + cp.text(0, 2).unwrap() +
+            "' | empty '" + cp.text(0, 3).unwrap() + "' | null " + cp.isNull(0, 4).unwrap().toStr() + " | 1251 " + code(cp.text(0, 5)))
     println("as text: " + tx.text(0, 1).unwrap() + " | bytes of text: " + len(tx.bytes(0, 1).unwrap()).toStr() +
             " | int of text: " + code(tx.int(0, 1)) + " | null: " + code(tx.text(0, 3)) + " | text of int: " + ints.text(0, 4).unwrap())
     let big = c.query("SELECT REPLICATE(CAST(N'é😀' AS nvarchar(max)), 30000), REPLICATE(CAST('a' AS varchar(max)), 9000) " +

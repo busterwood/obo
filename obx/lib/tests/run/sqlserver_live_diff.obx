@@ -13,6 +13,9 @@
 // expect: utf8 varchar: 4 cells, 0 differ
 // expect: max: 3 cells, 0 differ
 // expect: binary: 4 cells, 0 differ
+// expect: cp1252 text: 6 cells, 0 differ
+// expect: cp1252 bytes 0x01-0xff, the 250 defined ones: 1 cells, 0 differ
+// expect: cp1252 max: 2 cells, 0 differ
 // expect: options: 6 cells, 0 differ
 // expect: rows: 9000 cells, 0 differ
 // expect: system: 7917 cells, 0 differ
@@ -23,6 +26,7 @@ import "mssql"
 import "sqldialect"
 import "io"
 import "os"
+import "strings"
 
 fn dsn(): Option[str] {
     match os.env("MSSQL_TEST_DSN") {
@@ -106,6 +110,20 @@ fn compare(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str) {
     println(label + ": " + cells.toStr() + " cells, " + diffs.toStr() + " differ")
 }
 
+// The bytes lo to hi, except those listed, as a hex literal.
+fn hexRange(lo: int, hi: int, skip: &[int]): str {
+    var b = newStrBuf()
+    b.add("0x")
+    for v in lo..hi + 1 {
+        var skipped = false
+        for k in skip { if k == v { skipped = true } }
+        if !skipped {
+            b.add(strings.padLeft(strings.hex(v), 2, '0'))
+        }
+    }
+    return b.toStr()
+}
+
 fn main() {
     let d = match dsn() {
         Some(x) { x }
@@ -142,6 +160,17 @@ fn main() {
     compare("max", &o, mut &n, "SELECT REPLICATE(CAST(N'é😀' AS nvarchar(max)), 20000) AS a, CAST(N'' AS nvarchar(max)) AS b, " +
             "CAST(0x0001ff AS varbinary(max)) AS c")
     compare("binary", &o, mut &n, "SELECT 0x AS a, 0x00ff AS b, CAST(0x01 AS binary(4)) AS c, CAST(REPLICATE(0xab, 100) AS varbinary(200)) AS d")
+    compare("cp1252 text", &o, mut &n, "SELECT CAST(N'café €™…' AS varchar(20)) COLLATE Latin1_General_CI_AS AS a, " +
+            "CAST(N'naïve' AS varchar(20)) COLLATE SQL_Latin1_General_CP1_CI_AS AS b, " +
+            "CAST(N'ab' AS char(5)) COLLATE Latin1_General_CI_AS AS c, CAST(N'' AS varchar(5)) COLLATE Latin1_General_CI_AS AS d, " +
+            "CAST(NULL AS varchar(5)) COLLATE Latin1_General_CI_AS AS e, CAST(N'ÀÿŒœŠšŽž' AS varchar(20)) COLLATE Latin1_General_CI_AS AS f")
+    compare("cp1252 bytes 0x01-0xff, the 250 defined ones", &o, mut &n, "SELECT CAST(" + hexRange(1, 255, &[0x81, 0x8D, 0x8F, 0x90, 0x9D]) +
+            " AS varchar(300)) COLLATE Latin1_General_CI_AS AS a")
+    // not compared: the five bytes cp1252 leaves undefined, which the server turns into U+0081, U+008D,
+    // U+008F, U+0090 and U+009D (UNICODE()) and sqlserver decodes alike, but the ODBC driver gives as '?'
+    // (sqlserver_live_basic checks them against UNICODE()).
+    compare("cp1252 max", &o, mut &n, "SELECT REPLICATE(CAST(0x80e9fc AS varchar(max)), 20000) COLLATE Latin1_General_CI_AS AS a, " +
+            "CAST(N'x' AS varchar(max)) COLLATE Latin1_General_CI_AS AS b")
     compare("options", &o, mut &n, "SELECT @@OPTIONS AS opts, @@TEXTSIZE AS ts, @@LANGUAGE AS lang, DB_NAME() AS db, " +
             "CAST(SESSIONPROPERTY('ANSI_NULLS') AS int) AS an, @@MAX_PRECISION AS mp")
     compare("rows", &o, mut &n, "SELECT TOP 3000 CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS int) AS n, " +
