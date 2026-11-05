@@ -1,0 +1,316 @@
+// Decimal differential test: random operands from a fixed seed, every public
+// Decimal operation, and a hash of every result's full text (canonical form,
+// display text, display scale, exponent, coefficient, or the error code).
+// hash() is keyed per process, so it is not printed; the fields it hashes are,
+// and cmp checks that equal values hash alike. Built against two
+// versions of the library (or by two compilers), the output must be the same:
+// bench/decimal/diff.py runs both and compares.
+//
+//     ddiff [COUNT] [OP] [dump]
+//
+// COUNT inputs per operation (default 1000000); OP runs one operation only;
+// dump prints every result line (to find the first difference).
+
+const OPS: str = "add sub mul div quant rem cmp text parse toint fromi128"
+
+var SEED: u64 = 0x9b1f0c3d5e7a2468
+var DUMP: bool = false
+
+fn next(): u64 {
+    SEED = SEED +% 0x9e3779b97f4a7c15
+    var z = SEED
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb
+    return z ^ (z >> 31)
+}
+
+fn below(n: int): int { return int(next() % u64(n)) }
+fn range(lo: int, hi: int): int { return lo + below(hi - lo + 1) }
+
+fn p10(k: int): u128 {
+    var x: u128 = 1
+    for i in 0..k { x = x * 10 }
+    return x
+}
+
+fn ndigits(x: u128): int {
+    var n = 0
+    var v = x
+    while v != 0 {
+        v = v / 10
+        n += 1
+    }
+    return n
+}
+
+fn rand128(): u128 { return (u128(next()) << 64) | u128(next()) }
+
+// A random coefficient of exactly d digits (1..38).
+fn coefOf(d: int): u128 {
+    let lo = p10(d - 1)
+    return lo + rand128() % (p10(d) - lo)
+}
+
+// A coefficient of every shape that matters: all nines, powers of ten, small,
+// with trailing zeros, products of powers of 2 and 5, near 2^64 and 2^128,
+// uniform lengths.
+fn randCoef(): u128 {
+    let k = below(100)
+    if k < 6 { return p10(range(1, 38)) - 1 }
+    if k < 12 { return p10(range(0, 37)) }
+    if k < 20 { return u128(range(1, 999)) }
+    if k < 30 {
+        let d = range(1, 30)
+        return coefOf(d) * p10(range(0, 38 - d))
+    }
+    if k < 36 {
+        var c = u128(range(1, 99))
+        var lim = below(130)
+        let five = below(2) == 0
+        while lim > 0 {
+            var m: u128 = 2
+            if five { m = 5 }
+            if c > p10(38) / m { break }
+            c = c * m
+            lim -= 1
+        }
+        if c >= p10(38) { c = c / 10 }
+        return c
+    }
+    if k < 40 {
+        let c = (u128(1) << 64) + u128(range(-3, 3) + 3) - 3
+        return c
+    }
+    if k < 43 { return (u128(1) << 127) + u128(below(1000)) - 500 }
+    if k < 48 { return u128(next()) }
+    return coefOf(range(1, 38))
+}
+
+fn randExp(): int {
+    let k = below(100)
+    if k < 70 { return range(-12, 4) }
+    if k < 85 { return range(-40, 10) }
+    if k < 93 { return range(-90, 90) }
+    if k < 96 { return range(32767 - 40, 32767) }
+    if k < 99 { return range(-32768, -32768 + 40) }
+    return range(-200, 200)
+}
+
+// A random valid Decimal (fromFraction stops on an invalid one, so the
+// exponent is clamped into range first).
+fn randDec(): Decimal {
+    var c = randCoef()
+    if c == 0 { c = 1 }
+    if c >= p10(38) { c = p10(38) - 1 }
+    var e = randExp()
+    let nd = ndigits(c)
+    if e + nd > 32767 + 38 { e = 32767 + 38 - nd }
+    if e < -32768 { e = -32768 }
+    if below(40) == 0 { c = 0 }
+    var u = i128(c)
+    if below(2) == 0 { u = -u }
+    // fromFraction(units, scale): value units * 10^-scale; scale <= 65535
+    var d = fromFraction(u, -e)
+    if below(4) == 0 {
+        match d.withScale(d.scale() + range(0, 3)) {
+            Ok(x) { d = x }
+            Err(_) {}
+        }
+    }
+    return d
+}
+
+// b related to a: the same leading position, a neighbour, the negation, or random.
+fn partner(a: Decimal): Decimal {
+    let k = below(10)
+    if k == 0 { return a.neg() }
+    if k == 1 { return a }
+    if k == 2 {
+        match a.addExact(randSmall(a.exponent())) {
+            Ok(x) { return x }
+            Err(_) {}
+        }
+    }
+    if k == 3 && !a.isZero() {
+        // a coefficient of another length at the same leading digit position
+        let nd = ndigits(a.coefficient())
+        let d2 = range(1, 38)
+        let e2 = a.exponent() + nd - d2
+        if e2 >= -32768 && e2 <= 32767 {
+            var u = i128(coefOf(d2))
+            if a.isNeg() { u = -u }
+            return fromFraction(u, -e2)
+        }
+    }
+    return randDec()
+}
+
+fn randSmall(e: int): Decimal {
+    var u = i128(range(-9, 9))
+    if u == 0 { u = 1 }
+    if e < -32768 || e > 32700 { return fromFraction(u, 0) }
+    return fromFraction(u, -e)
+}
+
+fn randMode(): Rounding {
+    match below(8) {
+        0 { return Rounding.HALF_EVEN }
+        1 { return Rounding.HALF_AWAY }
+        2 { return Rounding.HALF_TOWARD_ZERO }
+        3 { return Rounding.TOWARD_ZERO }
+        4 { return Rounding.AWAY }
+        5 { return Rounding.FLOOR }
+        6 { return Rounding.CEILING }
+        else { return Rounding.UNNECESSARY }
+    }
+}
+
+fn randScale(): int {
+    let k = below(100)
+    if k < 80 { return range(0, 40) }
+    if k < 95 { return range(-2, 100) }
+    return range(32700, 32770)
+}
+
+fn decText(d: &Decimal): str {
+    return d.canonical() + " " + d.toStr() + " " + intToStr(d.scale()) + " " + intToStr(d.exponent()) + " " +
+        d.coefficient().toStr()
+}
+
+fn resText(r: Result[Decimal, DecError]): str {
+    match r {
+        Ok(d) { return decText(&d) }
+        Err(e) { return "E" + intToStr(e.code()) }
+    }
+}
+
+fn fnv(acc: u64, s: str): u64 {
+    var h = acc
+    for i in 0..len(s) { h = (h ^ u64(strByte(s, i))) *% 0x100000001b3 }
+    return (h ^ 10) *% 0x100000001b3
+}
+
+fn emit(acc: u64, i: int, s: str): u64 {
+    if DUMP { println(intToStr(i) + " " + s) }
+    return fnv(acc, s)
+}
+
+fn digitRun(n: int): str {
+    var b = newStrBuf()
+    for i in 0..n {
+        let k = below(10)
+        if k < 3 { b.addByte('0') } else { b.addByte(byte(48 + below(10))) }
+    }
+    return b.toStr()
+}
+
+// Decimal text, valid or nearly so.
+fn randText(): str {
+    let k = below(100)
+    if k < 30 {
+        let d = randDec()
+        if below(2) == 0 { return d.canonical() }
+        return d.toStr()
+    }
+    var t = ""
+    let s = below(6)
+    if s == 0 { t = "-" }
+    if s == 1 { t = "+" }
+    if k < 85 {
+        t = t + digitRun(range(1, 50))
+        if below(2) == 0 { t = t + "." + digitRun(range(1, 50)) }
+        if below(3) == 0 {
+            t = t + "e"
+            let es = below(4)
+            if es == 0 { t = t + "-" }
+            if es == 1 { t = t + "+" }
+            t = t + intToStr(range(0, 40000))
+        }
+        return t
+    }
+    // malformed: an odd character somewhere
+    let bad = ".eE+-x 0_9"
+    let n = range(0, 12)
+    for i in 0..n {
+        if below(3) == 0 {
+            let at = below(len(bad))
+            t = t + strSlice(bad, at, at + 1)
+        } else {
+            t = t + digitRun(1)
+        }
+    }
+    return t
+}
+
+fn run(op: str, count: int): u64 {
+    var acc: u64 = 0xcbf29ce484222325
+    for i in 0..count {
+        if op == "add" || op == "sub" || op == "mul" || op == "rem" || op == "div" || op == "cmp" {
+            let a = randDec()
+            let b = partner(a)
+            if op == "add" { acc = emit(acc, i, resText(a.addExact(b))) }
+            if op == "sub" { acc = emit(acc, i, resText(a.subExact(b))) }
+            if op == "mul" { acc = emit(acc, i, resText(a.mulExact(b))) }
+            if op == "rem" { acc = emit(acc, i, resText(a.remExact(b))) }
+            if op == "div" { acc = emit(acc, i, resText(a.div(b, randScale(), randMode()))) }
+            if op == "cmp" {
+                var s = intToStr(a.cmp(&b)) + " " + intToStr(b.cmp(&a))
+                if a.eq(&b) { s = s + " eq" }
+                if a.hash() == b.hash() { s = s + " heq" }
+                acc = emit(acc, i, s)
+            }
+        }
+        if op == "quant" {
+            let a = randDec()
+            acc = emit(acc, i, resText(a.quantize(randScale(), randMode())))
+        }
+        if op == "text" {
+            let a = randDec()
+            var s = decText(&a)
+            match a.format() {
+                Ok(f) { s = s + " " + f }
+                Err(e) { s = s + " E" + intToStr(e.code()) }
+            }
+            s = s + " " + intToStr(a.sign()) + " " + a.coefficient().toStr()
+            acc = emit(acc, i, s)
+        }
+        if op == "parse" {
+            let t = randText()
+            acc = emit(acc, i, t + " " + resText(Decimal.parse(t)))
+        }
+        if op == "toint" {
+            let a = randDec()
+            match a.toInt(randMode()) {
+                Ok(v) { acc = emit(acc, i, intToStr(v)) }
+                Err(e) { acc = emit(acc, i, "E" + intToStr(e.code())) }
+            }
+        }
+        if op == "fromi128" {
+            var v = i128(rand128() >> below(128) >> 1)
+            if below(2) == 0 { v = -v }
+            if below(50) == 0 { v = -170141183460469231731687303715884105727 - 1 }
+            acc = emit(acc, i, resText(Decimal.fromI128(v)))
+        }
+    }
+    return acc
+}
+
+fn main() {
+    let argv = args()
+    var count = 1000000
+    if len(argv) > 1 { count = parseInt(argv[1]).unwrap() }
+    var only = ""
+    if len(argv) > 2 { only = argv[2] }
+    if len(argv) > 3 { DUMP = argv[3] == "dump" }
+    var at = 0
+    while at < len(OPS) {
+        var e = at
+        while e < len(OPS) && strByte(OPS, e) != ' ' { e += 1 }
+        let op = strSlice(OPS, at, e)
+        if only == "" || only == op {
+            let h = run(op, count)
+            if !DUMP { println(op + " " + intToStr(count) + " " + h.toStr()) }
+        }
+        at = e + 1
+    }
+}
