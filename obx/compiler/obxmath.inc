@@ -2192,10 +2192,10 @@ OBXM double __sin(double x, double y, int iy)
 
         z = x*x;
         w = z*z;
-        r = S2 + z*(S3 + z*S4) + z*w*(S5 + z*S6);
+        r = __builtin_fma(z * w, __builtin_fma(z, S6, S5), __builtin_fma(z, __builtin_fma(z, S4, S3), S2));
         v = z*x;
         if (iy == 0)
-                return x + v*(S1 + z*r);
+                return __builtin_fma(v, __builtin_fma(z, r, S1), x);
         else
                 return x - ((z*(0.5*y - v*r) - y) - v*S1);
 }
@@ -2265,7 +2265,7 @@ OBXM double __cos(double x, double y)
 
         z  = x*x;
         w  = z*z;
-        r  = z*(C1+z*(C2+z*C3)) + w*w*(C4+z*(C5+z*C6));
+        r  = __builtin_fma(w * w, __builtin_fma(z, __builtin_fma(z, C6, C5), C4), z * __builtin_fma(z, __builtin_fma(z, C3, C2), C1));
         hz = 0.5*z;
         w  = 1.0-hz;
         return w + (((1.0-w)-hz) + (z*r-x*y));
@@ -3204,7 +3204,7 @@ OBXM double exp(double x)
         ki = asuint64(kd);
         kd -= Shift;
 #endif
-        r = x + kd * NegLn2hiN + kd * NegLn2loN;
+        r = __builtin_fma(kd, NegLn2loN, __builtin_fma(kd, NegLn2hiN, x));
         /* 2^(k/N) ~= scale * (1 + tail).  */
         idx = 2 * (ki % N);
         top = ki << (52 - EXP_TABLE_BITS);
@@ -3216,13 +3216,13 @@ OBXM double exp(double x)
         r2 = r * r;
         /* Without fma the worst case error is 0.25/N ulp larger.  */
         /* Worst case error is less than 0.5+1.11/N+(abs poly error * 2^53) ulp.  */
-        tmp = tail + r + r2 * (C2 + r * C3) + r2 * r2 * (C4 + r * C5);
+        tmp = __builtin_fma(r2 * r2, __builtin_fma(r, C5, C4), __builtin_fma(r2, __builtin_fma(r, C3, C2), tail + r));
         if (predict_false(abstop == 0))
                 return specialcase(tmp, sbits, ki);
         scale = asdouble(sbits);
         /* Note: tmp == 0 or |tmp| > 2^-200 and scale > 2^-739, so there
            is no spurious underflow here even without fma.  */
-        return eval_as_double(scale + scale * tmp);
+        return __builtin_fma(scale, tmp, scale);
 }
 #undef C2
 #undef C3
@@ -3348,13 +3348,13 @@ OBXM double exp2(double x)
         r2 = r * r;
         /* Without fma the worst case error is 0.5/N ulp larger.  */
         /* Worst case error is less than 0.5+0.86/N+(abs poly error * 2^53) ulp.  */
-        tmp = tail + r * C1 + r2 * (C2 + r * C3) + r2 * r2 * (C4 + r * C5);
+        tmp = __builtin_fma(r2 * r2, __builtin_fma(r, C5, C4), __builtin_fma(r2, __builtin_fma(r, C3, C2), __builtin_fma(r, C1, tail)));
         if (predict_false(abstop == 0))
                 return specialcase(tmp, sbits, ki);
         scale = asdouble(sbits);
         /* Note: tmp == 0 or |tmp| > 2^-65 and scale > 2^-928, so there
            is no spurious underflow here even without fma.  */
-        return eval_as_double(scale + scale * tmp);
+        return __builtin_fma(scale, tmp, scale);
 }
 #undef C1
 #undef C2
@@ -3472,8 +3472,7 @@ OBXM double log(double x)
            0.5 + 4.13/N + abs-poly-error*2^57 ULP (+ 0.002 ULP without fma)
            Worst case error if |y| > 0x1p-4:
            0.5 + 2.06/N + abs-poly-error*2^56 ULP (+ 0.001 ULP without fma).  */
-        y = lo + r2 * A[0] +
-            r * r2 * (A[1] + r * A[2] + r2 * (A[3] + r * A[4])) + hi;
+        y = __builtin_fma(r * r2, __builtin_fma(r2, __builtin_fma(r, A[4], A[3]), __builtin_fma(r, A[2], A[1])), __builtin_fma(r2, A[0], lo)) + hi;
         return eval_as_double(y);
 }
 #undef A
@@ -3603,7 +3602,7 @@ OBXM double log2(double x)
         r4 = r2 * r2;
         /* Worst-case error if |y| > 0x1p-4: 0.547 ULP (0.550 ULP without fma).
            ~ 0.5 + 2/N/ln2 + abs-poly-error*0x1p56 ULP (+ 0.003 ULP without fma).  */
-        p = A[0] + r * A[1] + r2 * (A[2] + r * A[3]) + r4 * (A[4] + r * A[5]);
+        p = __builtin_fma(r4, __builtin_fma(r, A[5], A[4]), __builtin_fma(r2, __builtin_fma(r, A[3], A[2]), __builtin_fma(r, A[1], A[0])));
         y = lo + r2 * p + hi;
         return eval_as_double(y);
 }
@@ -3710,8 +3709,7 @@ static inline double_t log_inline(uint64_t ix, double_t *tail)
         lo4 = t2 - hi + arhi2;
 #endif
         /* p = log1p(r) - r - A[0]*r*r.  */
-        p = (ar3 * (A[1] + r * A[2] +
-                    ar2 * (A[3] + r * A[4] + ar2 * (A[5] + r * A[6]))));
+        p = ar3 * __builtin_fma(ar2, __builtin_fma(ar2, __builtin_fma(r, A[6], A[5]), __builtin_fma(r, A[4], A[3])), __builtin_fma(r, A[2], A[1]));
         lo = lo1 + lo2 + lo3 + lo4 + p;
         y = hi + lo;
         *tail = hi - y + lo;
@@ -3825,7 +3823,7 @@ static inline double exp_inline(double_t x, double_t xtail, uint32_t sign_bias)
         ki = asuint64(kd);
         kd -= Shift;
 #endif
-        r = x + kd * NegLn2hiN + kd * NegLn2loN;
+        r = __builtin_fma(kd, NegLn2loN, __builtin_fma(kd, NegLn2hiN, x));
         /* The code assumes 2^-200 < |xtail| < 2^-8/N.  */
         r += xtail;
         /* 2^(k/N) ~= scale * (1 + tail).  */
@@ -3839,13 +3837,13 @@ static inline double exp_inline(double_t x, double_t xtail, uint32_t sign_bias)
         r2 = r * r;
         /* Without fma the worst case error is 0.25/N ulp larger.  */
         /* Worst case error is less than 0.5+1.11/N+(abs poly error * 2^53) ulp.  */
-        tmp = tail + r + r2 * (C2 + r * C3) + r2 * r2 * (C4 + r * C5);
+        tmp = __builtin_fma(r2 * r2, __builtin_fma(r, C5, C4), __builtin_fma(r2, __builtin_fma(r, C3, C2), tail + r));
         if (predict_false(abstop == 0))
                 return specialcase(tmp, sbits, ki);
         scale = asdouble(sbits);
         /* Note: tmp == 0 or |tmp| > 2^-200 and scale > 2^-739, so there
            is no spurious underflow here even without fma.  */
-        return eval_as_double(scale + scale * tmp);
+        return __builtin_fma(scale, tmp, scale);
 }
 
 /* Returns 0 if not int, 1 if odd int, 2 if even int.  The argument is

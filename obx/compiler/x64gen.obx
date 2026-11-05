@@ -3562,7 +3562,7 @@ fn (g: mut &Gen) pairF(a: int, b: int) {
     let s = g.temp(8, 8)
     g.a.movsdStore(rbp(s), 0)
     g.gen(b)
-    g.a.sse(x64.MOVSD, 1, 0)
+    g.a.sse66(0x28, 1, 0)       // movapd: movsd xmm, xmm would wait for the old xmm1
     g.a.movsdLoad(0, rbp(s))
 }
 
@@ -4377,7 +4377,7 @@ fn (g: mut &Gen) inlineMath(e: int, name: str): bool {
         g.a.movsdStore(rbp(t0), 0)
         g.a.movsdStore(rbp(t1), 1)
         g.gen(g.u.listAt(args, 2))
-        g.a.sse(x64.MOVSD, 2, 0)
+        g.a.sse66(0x28, 2, 0)
         g.a.movsdLoad(0, rbp(t0))
         g.a.movsdLoad(1, rbp(t1))
         g.a.vfmadd213sd(0, 1, 2)
