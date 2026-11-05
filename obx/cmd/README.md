@@ -300,3 +300,19 @@ are in [../../PERFORMANCE.md](../../PERFORMANCE.md).
     python3 cmd/http_gate.py --idle 1000 --servers native,c --seconds 2
     python3 cmd/http_gate.py --servers native,c --db 4,16   # with Postgres
     python3 cmd/http_gate.py --workers 1,2,4,8 --db 4 --listen both   # worker processes
+
+## tlsbench
+
+`tlsbench.obx` measures `lib/tls.obx` and https in the http client:
+- `hs ADDR CA N`: N full handshakes one after another;
+- `get URL CA`: one GET streamed;
+- `reqs URL CA N CONNS`: N GETs over CONNS kept-alive connections;
+- `serve ADDR CERT KEY`: a small https server for the other modes.
+
+`tls_bench.py` makes a test CA and a certificate with the `openssl`
+command, builds tlsbench natively and via C, and compares it with
+`openssl s_time` and curl against the same local servers. The numbers are
+in [../../PERFORMANCE.md](../../PERFORMANCE.md) ("TLS").
+
+    python3 cmd/tls_bench.py                     # about 2 minutes
+    python3 cmd/tls_bench.py --time 1 --mib 64 --requests 2000

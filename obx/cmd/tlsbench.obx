@@ -1,0 +1,183 @@
+// tlsbench: TLS and https measurements for PERFORMANCE.md, driven by
+// cmd/tls_bench.py, which compares them with openssl s_time and curl.
+//
+//     tlsbench hs HOST:PORT CA N         N handshakes one after another (connect, handshake, close)
+//     tlsbench get URL CA                one GET, its body read in 64 KiB pieces and dropped
+//     tlsbench reqs URL CA N CONNS       N GETs over CONNS kept-alive connections (one task each)
+//     tlsbench serve ADDR CERT KEY       an https server: every request gets "hello"; /big?n=N
+//                                        gets N bytes; prints "listening PORT"
+//
+// Each client mode prints one line: what it did, the milliseconds, and the rate.
+import "tls"
+import "net"
+import "http"
+import "task"
+import "time"
+import "io"
+import "strings"
+
+fn ms(t0: int): int { return max((time.monotonicNs() - t0) / 1000000, 1) }
+
+fn handshakes(addr: str, ca: str, n: int) {
+    var o = tls.defaults()
+    o.caFile = ca
+    let ctx = tls.client(o).unwrap()
+    let host = strings.cut(addr, ":").unwrap().before
+    let t0 = time.monotonicNs()
+    for i in 0..n {
+        let sock = match net.connect(addr) {
+            Ok(s) { s }
+            Err(e) { panic("connection " + intToStr(i) + ": " + e.toStr()) }
+        }
+        sock.setNoDelay(true).unwrap()
+        let c = match ctx.connect(sock, host) {
+            Ok(x) { x }
+            Err(e) { panic("handshake " + intToStr(i) + ": " + e.toStr()) }
+        }
+        match c.close() {
+            Ok(_) {}
+            Err(e) { panic("close " + intToStr(i) + ": " + e.toStr()) }
+        }
+    }
+    let t = ms(t0)
+    println("handshakes " + intToStr(n) + " ms " + intToStr(t) + " per_s " + intToStr(n * 1000 / t))
+}
+
+fn client(ca: str, conns: int): http.Client {
+    var o = http.defaults()
+    o.tls.caFile = ca
+    o.maxPerHost = conns
+    o.timeoutMs = 0
+    return http.newClient(o)
+}
+
+fn get(u: str, ca: str) {
+    let c = client(ca, 1)
+    let t0 = time.monotonicNs()
+    var r = c.get(u).unwrap()
+    var buf = array(65536, byte(0))
+    var total = 0
+    while true {
+        let n = r.read(mut &buf).unwrap()
+        if n == 0 { break }
+        total += n
+    }
+    let t = ms(t0)
+    println("bytes " + intToStr(total) + " ms " + intToStr(t) + " mb_s " + intToStr(total / 1000 / t))
+}
+
+type Job = record { c: http.Client; u: str; n: int }
+
+fn worker(j: Job): int {
+    for i in 0..j.n {
+        let r = j.c.get(j.u).unwrap()
+        let t = r.text().unwrap()
+    }
+    return j.n
+}
+
+fn requests(u: str, ca: str, n: int, conns: int) {
+    let c = client(ca, conns)
+    let t0 = time.monotonicNs()
+    var done = 0
+    task.scope(fn(s: mut &task.Scope) {
+        var fs: []task.Future[int] = []
+        for i in 0..conns { append(mut &fs, s.start(worker, Job{c: c, u: u, n: n / conns + (if i < n % conns { 1 } else { 0 })})) }
+        for k in task.all(fs).unwrap() { done += k }
+    })
+    let t = ms(t0)
+    let st = c.stats()
+    println("requests " + intToStr(done) + " ms " + intToStr(t) + " per_s " + intToStr(done * 1000 / t) + " dials " +
+            intToStr(st.dials))
+}
+
+// ---------------------------------------------------------------- the server
+
+type Peer = record { ctx: tls.Context; c: net.Conn }
+
+fn serve(addr: str, cert: str, key: str) {
+    var o = tls.defaults()
+    o.certFile = cert
+    o.keyFile = key
+    let ctx = tls.server(o).unwrap()
+    let ln = net.listen(addr).unwrap()
+    println("listening " + strings.cut(ln.localAddr(), ":").unwrap().after)
+    io.flushStdout().unwrap()
+    task.scope(fn(s: mut &task.Scope) {
+        while true {
+            match ln.accept() {
+                Ok(c) { s.spawn(handle, Peer{ctx: ctx.share(), c: c}) }
+                Err(_) { break }
+            }
+        }
+    })
+}
+
+fn handle(p: Peer): int {
+    let Peer{ctx: ctx, c: sock} = move(p)
+    var c = match ctx.accept(sock) {
+        Ok(x) { x }
+        Err(_) { return 0 }
+    }
+    var buf = array(16384, byte(0))
+    var w = 0
+    let chunk = array(65536, byte('x'))
+    while true {
+        var e = http.headEnd(&buf, 0, 0, w)
+        while e < 0 {
+            if w == len(buf) { return 0 }
+            let n = match c.read(mut &buf[w..len(buf)]) {
+                Ok(k) { k }
+                Err(_) { return 0 }
+            }
+            if n == 0 { return 0 }
+            w += n
+            e = http.headEnd(&buf, 0, 0, w)
+        }
+        let head = match http.parseRequest(strFromBytes(&buf[0..e])) {
+            Ok(h) { h }
+            Err(_) { return 0 }
+        }
+        let rest = w - (e + 4)
+        for i in 0..rest { buf[i] = buf[e + 4 + i] }
+        w = rest
+        var size = 5
+        match strings.cut(head.target, "/big?n=") {
+            Some(x) { size = strings.parseInt(x.after).unwrapOr(0) }
+            None {}
+        }
+        let h = "HTTP/1.1 200 OK\r\nContent-Length: " + intToStr(size) + "\r\n\r\n"
+        if size == 5 && !contains(head.target, "/big") {
+            if c.writeStr(h + "hello").isErr() { return 0 }
+        } else {
+            if c.writeStr(h).isErr() { return 0 }
+            var left = size
+            while left > 0 {
+                let k = min(left, len(chunk))
+                if c.write(&chunk[0..k]).isErr() { return 0 }
+                left -= k
+            }
+        }
+        if !head.keepAlive() {
+            let d = c.close()
+            return 0
+        }
+    }
+    return 0
+}
+
+fn main() {
+    let a = args()
+    if len(a) >= 5 && a[1] == "hs" {
+        handshakes(a[2], a[3], strings.parseInt(a[4]).unwrap())
+    } else if len(a) >= 4 && a[1] == "get" {
+        get(a[2], a[3])
+    } else if len(a) >= 6 && a[1] == "reqs" {
+        requests(a[2], a[3], strings.parseInt(a[4]).unwrap(), strings.parseInt(a[5]).unwrap())
+    } else if len(a) >= 5 && a[1] == "serve" {
+        serve(a[2], a[3], a[4])
+    } else {
+        eprintln("usage: tlsbench hs HOST:PORT CA N | get URL CA | reqs URL CA N CONNS | serve ADDR CERT KEY")
+        exit(2)
+    }
+}

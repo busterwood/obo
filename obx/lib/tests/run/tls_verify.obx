@@ -1,0 +1,114 @@
+// tls: what verification refuses, against `openssl s_server` with
+// certificates made at test time (skipped without the openssl command): a
+// CA that is not trusted, the system's store (which does not have the test
+// CA), a certificate for another name, another IP address, an expired one,
+// a server that speaks only TLS 1.1; and what the options allow:
+// insecureSkipVerify (verify result still reported), pins with and without
+// it, a wrong pin, bad option values.
+// needs: ssl
+// expect: rogue CA: verify 20 unable to get local issuer certificate
+// expect: system store: verify 20 unable to get local issuer certificate
+// expect: insecureSkipVerify: ok, verify result 20
+// expect: pinned and skipVerify: ok
+// expect: pinned with verification: verify 20 unable to get local issuer certificate
+// expect: wrong pin: verify 0 the certificate is not one of the pinned ones (sha256 ...) (localhost)
+// expect: other.example: verify 62 hostname mismatch
+// expect: 127.0.0.2: verify 64 IP address mismatch
+// expect: expired: verify 10 certificate has expired
+// expect: TLS 1.1 only: handshake true
+// expect: no name: tls: config: a server name is needed to verify the server's certificate
+// expect: bad pin: tls: config: a pin that is not a SHA-256 fingerprint (64 hex digits): abc
+// expect: bad CA file: tls: config: the CA file nope.pem: No such file or directory
+// expect: min above max: tls: config: minVersion is above maxVersion
+// expect: no server certificate: tls: config: a server needs a certificate (certFile)
+// expect: handles 0
+import "tls"
+import "net"
+import "strings"
+import "../support/tlstest" as tt
+
+fn attempt(o: tls.Options, addr: str, name: str): str {
+    let ctx = match tls.client(o) {
+        Ok(c) { c }
+        Err(e) { return e.toStr() }
+    }
+    match ctx.connect(net.connect(addr).unwrap(), name) {
+        Ok(c) { return "ok, verify result " + c.engine().verifyResult().toStr() }
+        Err(e) {
+            if e.kind == tls.Kind.Verify { return "verify " + intToStr(e.code) + " " + e.msg }
+            return e.toStr()
+        }
+    }
+}
+
+fn fingerprint(file: str): str {
+    let text = tt.opensslOut(["x509", "-in", file, "-noout", "-fingerprint", "-sha256"])
+    return strings.cut(trim(text), "=").unwrap().after
+}
+
+fn main() {
+    tt.pki()
+    let trusted = tt.clientOptions()
+    {
+        let rogue = tt.sServer(["-cert", "rogue.pem", "-key", "rogue.key", "-rev"])
+        println("rogue CA: " + attempt(trusted, rogue.addr, "localhost"))
+        println("system store: " + attempt(tls.defaults(), rogue.addr, "localhost"))
+        var skip = tls.defaults()
+        skip.insecureSkipVerify = true
+        println("insecureSkipVerify: " + attempt(skip, rogue.addr, "localhost"))
+        let pin = fingerprint("rogue.pem")
+        skip.pins = pin
+        println("pinned and skipVerify: " + okOnly(attempt(skip, rogue.addr, "localhost")))
+        var pinned = tt.clientOptions()
+        pinned.pins = pin
+        println("pinned with verification: " + attempt(pinned, rogue.addr, "localhost"))
+        var wrong = tls.defaults()
+        wrong.insecureSkipVerify = true
+        wrong.pins = fingerprint("srv.pem") + ",00:" + repeat("ab", 31)
+        let w = attempt(wrong, rogue.addr, "localhost")
+        match strings.cut(w, "(sha256 ") {
+            Some(x) { println("wrong pin: " + x.before + "(sha256 ...) (localhost)") }
+            None { println("wrong pin: " + w) }
+        }
+    }
+    {
+        let other = tt.sServer(["-cert", "other.pem", "-key", "other.key", "-rev"])
+        println("other.example: " + attempt(trusted, other.addr, "localhost"))
+    }
+    {
+        let srv = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-rev"])
+        println("127.0.0.2: " + attempt(trusted, srv.addr, "127.0.0.2"))
+    }
+    {
+        let exp = tt.sServer(["-cert", "expired.pem", "-key", "expired.key", "-rev"])
+        println("expired: " + attempt(trusted, exp.addr, "localhost"))
+    }
+    {
+        let old = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-tls1_1", "-cipher", "DEFAULT@SECLEVEL=0", "-rev"])
+        let r = attempt(trusted, old.addr, "localhost")
+        println("TLS 1.1 only: handshake " + startsWith(r, "tls: handshake: ").toStr())
+        if !startsWith(r, "tls: handshake: ") { println(r) }
+
+    }
+    {
+        let ctx = tls.client(trusted).unwrap()
+        match ctx.engine("") {
+            Ok(_) { println("no name: accepted") }
+            Err(e) { println("no name: " + e.toStr()) }
+        }
+    }
+    var bad = tls.defaults()
+    bad.pins = "abc"
+    println("bad pin: " + tls.client(bad).unwrapErr().toStr())
+    var nofile = tls.defaults()
+    nofile.caFile = "nope.pem"
+    println("bad CA file: " + tls.client(nofile).unwrapErr().toStr())
+    var minmax = tls.defaults()
+    minmax.minVersion = tls.Version.Tls13
+    minmax.maxVersion = tls.Version.Tls12
+    println("min above max: " + tls.client(minmax).unwrapErr().toStr())
+    println("no server certificate: " + tls.server(tls.defaults()).unwrapErr().toStr())
+    println("handles " + intToStr(tls.openHandles()))
+}
+
+fn okOnly(s: str): str { return if startsWith(s, "ok") { "ok" } else { s } }

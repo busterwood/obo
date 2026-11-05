@@ -1,0 +1,167 @@
+// tls against `openssl s_server` (made at test time with a throwaway PKI;
+// skipped without the openssl command): a handshake verified against a
+// test CA by name and by IP address, the session's diagnostics, data both
+// ways (s_server -rev sends each line back reversed) in small and large
+// amounts, the server closing, a client certificate the server requires,
+// and the memory mode driven by hand over a socket.
+// needs: ssl
+// expect: localhost: TLSv1.3 cipher=true subject=/CN=localhost issuer=/CN=obx test ca valid=true sha256=64 verify=0 ok
+// expect: hello world: olleh / dlrow
+// expect: 1 MiB both ways: true
+// expect: CLOSE: 0
+// expect: 127.0.0.1: TLSv1.3
+// expect: TLS 1.2 only: TLSv1.2 ECDHE-ECDSA-AES256-GCM-SHA384
+// expect: client certificate: tneilc
+// expect: no client certificate: tls: protocol: tlsv13 alert certificate required (localhost)
+// expect: memory mode by hand: TLSv1.3 dnah yb
+// expect: handles 0
+import "tls"
+import "net"
+import "time"
+import "strings"
+import "../support/tlstest" as tt
+
+fn readN(c: mut &tls.Conn, n: int): str {
+    var b = array(n, byte(0))
+    var have = 0
+    while have < n {
+        let k = c.read(mut &b[have..n]).unwrap()
+        if k == 0 { break }
+        have += k
+    }
+    return strFromBytes(&b[0..have])
+}
+
+fn reversed(s: str): str {
+    var b = strToBytes(s)
+    var i = 0
+    var j = len(b) - 1
+    while i < j {
+        swap(mut &b, i, j)
+        i += 1
+        j -= 1
+    }
+    return strFromBytes(&b)
+}
+
+fn main() {
+    tt.pki()
+    {
+        let ctx = tls.client(tt.clientOptions()).unwrap()
+        let srv = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-rev"])
+        var c = ctx.connect(net.connect(srv.addr).unwrap(), "localhost").unwrap()
+        let p = c.peer().unwrap()
+        let now = time.unixSeconds()
+        println("localhost: " + c.version() + " cipher=" + (len(c.cipher()) > 0).toStr() + " subject=" + p.subject +
+                " issuer=" + p.issuer + " valid=" + (p.notBefore <= now && now < p.notAfter).toStr() + " sha256=" +
+                intToStr(len(p.sha256)) + " verify=" + c.engine().verifyResult().toStr() + " " + c.engine().verifyText())
+        c.writeStr("hello\nworld\n").unwrap()
+        let back = readN(mut &c, 12)
+        println("hello world: " + strings.replaceAll(trim(back), "\n", " / "))
+
+        // 1 MiB each way, in rounds of 64 lines of 128 bytes
+        var line = newStrBuf()
+        for i in 0..127 { line.addByte(byte(97 + i % 26)) }
+        line.add("\n")
+        let l = line.toStr()
+        var batch = newStrBuf()
+        for i in 0..64 { batch.add(l) }
+        let b = batch.toStr()
+        let want = reversed(l[0..127]) + "\n"
+        var same = true
+        for round in 0..128 {
+            c.writeStr(b).unwrap()
+            let got = readN(mut &c, len(b))
+            if got[0..128] != want || len(got) != len(b) { same = false }
+        }
+        println("1 MiB both ways: " + same.toStr())
+        c.writeStr("CLOSE\n").unwrap()
+        var buf = array(100, byte(0))
+        var n = c.read(mut &buf).unwrap()
+        while n > 0 && n != 0 {
+            let s = strFromBytes(&buf[0..n])
+            n = c.read(mut &buf).unwrap()
+        }
+        println("CLOSE: " + intToStr(n))
+
+        let srv2 = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-rev"])
+        {
+            // s_server serves one connection at a time: this one ends with its block
+            let ip = ctx.connect(net.connect(srv2.addr).unwrap(), "127.0.0.1").unwrap()
+            println("127.0.0.1: " + ip.version())
+        }
+
+        var o12 = tt.clientOptions()
+        o12.maxVersion = tls.Version.Tls12
+        let c12 = tls.client(o12).unwrap()
+        let t12 = c12.connect(net.connect(srv2.addr).unwrap(), "localhost").unwrap()
+        println("TLS 1.2 only: " + t12.version() + " " + t12.cipher())
+    }
+    {
+        let srv = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-rev", "-Verify", "1", "-CAfile", "ca.pem"])
+        var o = tt.clientOptions()
+        o.certFile = tt.path("cli.pem")
+        o.keyFile = tt.path("cli.key")
+        let ctx = tls.client(o).unwrap()
+        {
+            var c = ctx.connect(net.connect(srv.addr).unwrap(), "localhost").unwrap()
+            c.writeStr("client\n").unwrap()
+            println("client certificate: " + trim(readN(mut &c, 7)))
+        }
+
+        // without one, TLS 1.3's handshake ends on the client's side first;
+        // the server's alert comes with the first read
+        let plain = tls.client(tt.clientOptions()).unwrap()
+        var what = "no error"
+        match plain.connect(net.connect(srv.addr).unwrap(), "localhost") {
+            Ok(x) {
+                var d = x
+                match d.writeStr("client\n") {
+                    Ok(_) {
+                        var buf = array(16, byte(0))
+                        match d.read(mut &buf) {
+                            Ok(n) { what = "read " + intToStr(n) }
+                            Err(e) { what = e.toStr() }
+                        }
+                    }
+                    Err(e) { what = e.toStr() }
+                }
+            }
+            Err(e) { what = e.toStr() }
+        }
+        println("no client certificate: " + what)
+    }
+    {
+        // the memory mode as a protocol that frames TLS itself would drive it
+        let srv = tt.sServer(["-cert", "srv.pem", "-key", "srv.key", "-rev"])
+        let ctx = tls.client(tt.clientOptions()).unwrap()
+        var e = ctx.engine("localhost").unwrap()
+        let sock = net.connect(srv.addr).unwrap()
+        var buf = array(16384, byte(0))
+        while !e.handshake().unwrap() {
+            let out = e.takeOutput()
+            sock.write(&out).unwrap()
+            let n = sock.read(mut &buf).unwrap()
+            if n == 0 { panic("closed") }
+            e.feed(&buf[0..n])
+        }
+        let fin = e.takeOutput()
+        sock.write(&fin).unwrap()
+        e.write(&strToBytes("by hand\n")).unwrap()
+        let out = e.takeOutput()
+        sock.write(&out).unwrap()
+        var plain = array(64, byte(0))
+        var got = ""
+        while !contains(got, "\n") {
+            let k = e.read(mut &plain).unwrap()
+            if k == tls.WANT_INPUT {
+                let n = sock.read(mut &buf).unwrap()
+                e.feed(&buf[0..n])
+            } else {
+                got = got + strFromBytes(&plain[0..k])
+            }
+        }
+        println("memory mode by hand: " + e.version() + " " + trim(got))
+    }
+    println("handles " + intToStr(tls.openHandles()))
+}

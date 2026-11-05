@@ -19,7 +19,9 @@ fn main() {
         let e = c.get("http://127.0.0.1:9/").unwrapErr()
         println("child: " + e.kind.toStr() + ": " + e.msg)
         println("child default: " + http.get("http://127.0.0.1:9/").unwrapErr().kind.toStr())
-        let mine = http.newClient(http.defaults())
+        var o = http.defaults()
+        o.tls.caFile = "no-such-ca.pem"        // fails before connecting
+        let mine = http.newClient(o)
         println("child's own client: " + mine.get("https://127.0.0.1:9/").unwrapErr().kind.toStr())
         exit(0)
     }

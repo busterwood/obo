@@ -651,6 +651,31 @@ pub fn (c: &Conn) readNow(buf: mut &[byte]): Result[int, io.IoError] {
     return Err(io.ioError(EINVAL, "read", c.addr))
 }
 
+// Writes what the socket takes now, without parking and without the
+// checks of a call that can park (so it may run in a drop, or inside
+// Shared.with): the count sent, maybe less than len(data), 0 when the
+// socket's buffer is full. tls sends its close_notify with it when a
+// connection is dropped.
+pub fn (c: &Conn) writeNow(data: &[byte]): Result[int, io.IoError] {
+    while true {
+        let n = rtWrite(c.fd, data, len(data))
+        if n >= 0 { return Ok(n) }
+        if n == -EAGAIN { return Ok(0) }
+        if n != -EINTR { return Err(io.ioError(-n, "write", c.addr)) }
+    }
+    return Err(io.ioError(EINVAL, "write", c.addr))
+}
+
+// Moves the socket out into a new Conn, leaving c without one (its calls
+// then fail with EBADF and its drop closes nothing). A wrapper with a drop
+// method, which cannot be taken apart, gives its socket back with it
+// (tls.Conn.detach).
+pub fn (c: mut &Conn) take(): Conn {
+    let out = Conn{fd: c.fd, addr: c.addr}
+    c.fd = -1
+    return out
+}
+
 // ---- halves, hangup detection and the server's listener options (stage S1,
 // design/http-server.md sections 2.2, 2.5 and 3.4)
 //

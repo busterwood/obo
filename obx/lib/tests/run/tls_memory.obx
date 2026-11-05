@@ -1,0 +1,164 @@
+// tls in memory mode: a client and a server engine in one process, the
+// ciphertext moved between them by hand as a protocol that frames TLS in
+// its own packets would (TDS pre-login): the handshake's flights, a client
+// certificate the server verifies, TLS 1.2 and 1.3, data both ways in
+// pieces and in bulk, close_notify, what was fed but not used (unread),
+// and the errors: garbage instead of a handshake, a record changed on the
+// way, a client without the certificate the server requires.
+// needs: ssl
+// expect: flights: 4 (client first: true) TLSv1.3 TLS_AES_256_GCM_SHA384
+// expect: server sees the client: /CN=client verify 0
+// expect: hello / world
+// expect: bulk 3 MiB: true
+// expect: one byte at a time: true
+// expect: close_notify: 0 true / client still reads: pong
+// expect: unread: 5 [1 2 3 4 5] then 0
+// expect: garbage: tls: handshake: http request
+// expect: changed record: tls: protocol: decryption failed or bad record mac
+// expect: no client certificate: tls: handshake: peer did not return a certificate
+// expect: TLS 1.2: TLSv1.2 flights 4
+// expect: handles 2
+import "tls"
+import "../support/tlstest" as tt
+
+// Moves what from has to send to to; the bytes moved.
+fn pump(from: mut &tls.Engine, to: mut &tls.Engine): int {
+    let b = from.takeOutput()
+    to.feed(&b)
+    return len(b)
+}
+
+// Runs the handshake; the number of flights (non-empty pumps).
+fn handshake(c: mut &tls.Engine, s: mut &tls.Engine): Result[int, tls.Error] {
+    var flights = 0
+    var cd = false
+    var sd = false
+    for i in 0..10 {
+        cd = try c.handshake()
+        if pump(c, s) > 0 { flights += 1 }
+        sd = try s.handshake()
+        if pump(s, c) > 0 { flights += 1 }
+        if cd && sd { return Ok(flights) }
+    }
+    panic("the handshake made no progress")
+}
+
+fn readAll(e: mut &tls.Engine, n: int): str {
+    var b = array(n, byte(0))
+    var have = 0
+    while have < n {
+        let k = e.read(mut &b[have..n]).unwrap()
+        if k <= 0 { break }
+        have += k
+    }
+    return strFromBytes(&b[0..have])
+}
+
+fn main() {
+    tt.pki()
+    var so = tls.defaults()
+    so.certFile = tt.path("srv.pem")
+    so.keyFile = tt.path("srv.key")
+    so.clientCaFile = tt.path("ca.pem")
+    let sctx = tls.server(so).unwrap()
+    var co = tt.clientOptions()
+    co.certFile = tt.path("cli.pem")
+    co.keyFile = tt.path("cli.key")
+    let cctx = tls.client(co).unwrap()
+    {
+        var c = cctx.engine("localhost").unwrap()
+        var s = sctx.engine("").unwrap()
+        let first = !s.handshake().unwrap() && c.pending() == 0     // the server waits; nothing to send yet
+        let flights = handshake(mut &c, mut &s).unwrap()
+        println("flights: " + intToStr(flights) + " (client first: " + first.toStr() + ") " + c.version() + " " + c.cipher())
+        println("server sees the client: " + s.peer().unwrap().subject + " verify " + s.verifyResult().toStr())
+
+        c.write(&strToBytes("hello")).unwrap()
+        let a = pump(mut &c, mut &s)
+        let hello = readAll(mut &s, 5)
+        s.write(&strToBytes("world")).unwrap()
+        let b = pump(mut &s, mut &c)
+        println(hello + " / " + readAll(mut &c, 5))
+
+        // 3 MiB from the client, read by the server in 4 KiB pieces
+        var big = array(3 << 20, byte(0))
+        for i in 0..len(big) { big[i] = byte(i % 251) }
+        c.write(&big).unwrap()
+        let moved = pump(mut &c, mut &s)
+        var got = array(len(big), byte(0))
+        var have = 0
+        var buf = array(4096, byte(0))
+        while have < len(got) {
+            let k = s.read(mut &buf).unwrap()
+            if k <= 0 { break }
+            for i in 0..k { got[have + i] = buf[i] }
+            have += k
+        }
+        var same = have == len(big) && moved > len(big)
+        for i in 0..have { if got[i] != big[i] { same = false } }
+        println("bulk 3 MiB: " + same.toStr())
+
+        // the ciphertext of a record given one byte at a time
+        s.write(&strToBytes("dribble")).unwrap()
+        let rec = s.takeOutput()
+        var out = ""
+        for i in 0..len(rec) {
+            c.feed(&rec[i..i + 1])
+            var one = array(16, byte(0))
+            let k = c.read(mut &one).unwrap()
+            if k > 0 { out = out + strFromBytes(&one[0..k]) }
+            if k == 0 { out = out + "<eof>" }
+        }
+        println("one byte at a time: " + (out == "dribble").toStr())
+
+        s.write(&strToBytes("pong")).unwrap()
+        c.shutdown()
+        let x = pump(mut &c, mut &s)
+        var sb = array(16, byte(0))
+        let end = s.read(mut &sb).unwrap()
+        let y = pump(mut &s, mut &c)
+        println("close_notify: " + intToStr(end) + " " + s.closeNotified().toStr() + " / client still reads: " + readAll(mut &c, 4))
+
+        c.feed(&[byte(1), 2, 3, 4, 5])
+        let u = c.unread()
+        var t = ""
+        for v in u { t = if len(t) == 0 { intToStr(int(v)) } else { t + " " + intToStr(int(v)) } }
+        println("unread: " + intToStr(len(u)) + " [" + t + "] then " + intToStr(len(c.unread())))
+    }
+    {
+        var s = sctx.engine("").unwrap()
+        s.feed(&strToBytes("GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+        println("garbage: " + s.handshake().unwrapErr().toStr())
+    }
+    {
+        var c = cctx.engine("localhost").unwrap()
+        var s = sctx.engine("").unwrap()
+        let f = handshake(mut &c, mut &s).unwrap()
+        c.write(&strToBytes("secret")).unwrap()
+        var rec = c.takeOutput()
+        rec[len(rec) - 3] ^= byte(1)
+        s.feed(&rec)
+        var buf = array(16, byte(0))
+        let r = s.read(mut &buf)
+        println("changed record: " + (if r.isErr() { r.unwrapErr().toStr() } else { "read " + r.unwrap().toStr() }))
+    }
+    {
+        let plain = tls.client(tt.clientOptions()).unwrap()
+        var c = plain.engine("localhost").unwrap()
+        var s = sctx.engine("").unwrap()
+        let r = handshake(mut &c, mut &s)
+        println("no client certificate: " + (if r.isErr() { r.unwrapErr().toStr() } else { "ok" }))
+    }
+    {
+        var o12 = tt.clientOptions()
+        o12.maxVersion = tls.Version.Tls12
+        o12.certFile = tt.path("cli.pem")
+        o12.keyFile = tt.path("cli.key")
+        let c12 = tls.client(o12).unwrap()
+        var c = c12.engine("localhost").unwrap()
+        var s = sctx.engine("").unwrap()
+        let f = handshake(mut &c, mut &s).unwrap()
+        println("TLS 1.2: " + c.version() + " flights " + intToStr(f))
+    }
+    println("handles " + intToStr(tls.openHandles()))         // the two contexts
+}

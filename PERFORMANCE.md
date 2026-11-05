@@ -792,6 +792,62 @@ The differential parsing test (`python3 obx/tests/httpsrvgen.py -n
 100000`, 16 threads) sends 100,000 generated request streams to both obx
 builds and Go, and parses them with llhttp, in about 160 s.
 
+## TLS
+
+`obx/lib/tls.obx` over OpenSSL 3.0.13 (design/tls.md), and https in the
+http client. Measured on 5 November 2026 by `python3 obx/cmd/tls_bench.py`.
+
+Setup:
+- `obx/cmd/tlsbench.obx`, built natively and via C, against OpenSSL's own
+  clients;
+- the same local servers for both, the server on CPU 0 and the client on
+  CPU 2;
+- a P-256 ECDSA certificate from a test CA, verified by every client;
+  TLS 1.3, TLS_AES_256_GCM_SHA384, X25519;
+- each row the median of three runs.
+
+Workloads:
+- **Handshakes:** full handshakes one after another (connect, handshake,
+  close_notify, no resumption) against `openssl s_server -www`.
+- **Bulk:** one GET of 1 GiB from `tlsbench serve` (an https server written
+  with `tls`, native), its body streamed in 64 KiB reads.
+- **Requests:** 20,000 small GETs over kept-alive connections to the same
+  server (5,000 for curl, one URL list).
+
+| | obx native | obx via C | OpenSSL / curl |
+|---|---:|---:|---:|
+| handshakes/s (s_server is the limit) | 722 | 723 | 522 (`openssl s_time -new`) |
+| client CPU per handshake | 516 µs | 515 µs | 590 µs (`s_time`) |
+| GET 1 GiB: MB/s | 1,866 | 1,934 | 1,788 (curl) |
+| GET 1 GiB: client CPU | 0.41 s | 0.43 s | 0.47 s (curl) |
+| requests/s, 1 connection | 3,240 | 4,030 | 2,900 (curl) |
+| requests/s, 10 connections | 28,400 | 28,000 | |
+
+**Handshakes.** A handshake's client side costs what OpenSSL's own client
+costs. Most of the 0.5 ms is in OpenSSL 3.0:
+- the per-connection `SSL` setup (provider lookups);
+- verifying the ECDSA chain;
+- the X25519 exchange.
+
+The engine's memory BIOs and the parking add nothing measurable. The rate
+is bound by s_server, which handshakes one connection at a time. s_time
+gets fewer per second against the same server, and spends more client CPU
+on each.
+
+**Bulk.** Bulk throughput is decryption: AES-GCM with AES-NI, 0.4 s of
+client CPU for 1 GiB. The engine's extra copy (socket to BIO to the
+caller's buffer) shows as a little less CPU than curl's, not more.
+
+**Requests.** The one-connection row is the loopback round trip, and it
+moves by 15 % from run to run (3,240 to 3,550 natively in other runs). For
+scale, plain http to `httpd` reaches about 4,400 per second on one
+connection (above).
+
+These runs are also the H2 gate's "1,000 https requests over kept-alive
+connections" (design/http-client.md): 20,000 per row, on 1 and 10
+connections, under no `OBX_CHECK`. The tests run under `OBX_CHECK=1` with
+no leak.
+
 ## Reproducing
 
 ```sh
@@ -805,6 +861,7 @@ python3 obx/cmd/http_gate.py                           # the server table (about
 python3 obx/cmd/http_gate.py --servers native,c --db 4,16   # with Postgres ($OBX_PG_DSN)
 python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4   # worker processes (about 3 minutes)
 python3 obx/tests/httpsrvgen.py -n 100000                              # the server's parsing against Go and llhttp
+python3 obx/cmd/tls_bench.py                           # TLS handshakes, bulk and https requests (about 2 minutes)
 ```
 
 ## For the record: obo
