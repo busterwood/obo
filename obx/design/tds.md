@@ -251,6 +251,16 @@ server.
 - **D4. Narrow code pages.** Recommendation: UTF-8 collations, 1252 and
   Latin-1 first; others an error naming the code page, added from
   Microsoft's published tables when someone needs them.
+  Decided and built (2026-11-05): `codepage.obx` (decode, encode, supported)
+  with tables generated from Python's codecs by `gen_codepages.py` (a new
+  single-byte code page is one line there); `tds` decodes varchar in code
+  pages 1252 and 28591 (Sybase's iso_1), any other non-UTF-8 code page is
+  `E_TYPE` for that cell, naming it. The five bytes cp1252 leaves undefined
+  (0x81, 0x8D, 0x8F, 0x90, 0x9D) decode to U+0081, U+008D, U+008F, U+0090
+  and U+009D: the live server's own `UNICODE()` and its conversion to
+  nvarchar give exactly these. (The ODBC driver gives `?` for them, so the
+  differential test leaves them out and `sqlserver_live_basic` checks them
+  against `UNICODE()`.) `encode` is there for T2's varchar parameters.
 - **D5. Dates and times.** time.obx has `Date` (year, month, day) and
   `Time`, an instant in seconds and nanoseconds. It has no time of day, no
   local date-time without a zone (`datetime2`, Postgres `timestamp`) and no
@@ -303,8 +313,11 @@ names and D3's buffered `query`; `mssql` is unchanged. Written from MS-TDS.
   nvarchar with surrogate pairs, UTF-8 varchar, (max) values, binary,
   `@@OPTIONS`, 3000 generated rows, a system catalog) give no difference
   against ODBC. All pass under OBX_CHECK=1 on the C and native backends.
+- **D4, built after T1:** varchar in code pages 1252 and ISO-8859-1 (see D4
+  in section 7); the live differential adds 1252 cases (the 250 defined
+  bytes 0x01 to 0xFF, text, (max)) with no difference against ODBC.
 - **Left for T2:** RPC with parameters, every result set of a batch, the
-  other types (D4, D5), RETURNVALUE, `transaction[T]`. For T3: ATTENTION,
+  other types (D5), RETURNVALUE, `transaction[T]`. For T3: ATTENTION,
   streamed rows, pools. The recorded-exchange server of section 5 is the
   scripted `sqlserver_fake` for now; TLS inside PRELOGIN is tested live
   only.

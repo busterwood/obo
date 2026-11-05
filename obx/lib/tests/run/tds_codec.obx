@@ -21,7 +21,7 @@
 // expect: describe: code page 1252 (LCID 0x0409, sort order 52)
 // expect: columns: id bigint, name nvarchar, note varchar, old varchar, f float, r real, b bit, t tinyint, s smallint, big nvarchar size -1, bin varbinary, d date
 // expect: rows 3 count 3
-// expect: row 0: Int(-5) Text(café) Text(naïve) Failed(varchar data in code page 1252 (LCID 0x0409, sort order 52): only UTF-8 collations are supported yet) Float(2.5) Float(0.10000000149011612) Int(1) Int(255) Int(-2) Text(long😀text) Bytes(0001ff) Failed(type date is not supported yet)
+// expect: row 0: Int(-5) Text(café) Text(naïve) Text(café) Float(2.5) Float(0.10000000149011612) Int(1) Int(255) Int(-2) Text(long😀text) Bytes(0001ff) Failed(type date is not supported yet)
 // expect: row 1: Null Null Null Null Null Null Null Null Null Null Null Null
 // expect: row 2: Int(9223372036854775807) Text() Text(x) Null Float(-0) Null Int(0) Int(0) Int(-32768) Text() Bytes() Null
 // expect: messages: errors [Msg 208, Level 16, State 1, Line 3: Invalid object name 'nope'.] infos [Msg 5701, Level 10, State 2, Line 1: Changed database context to 'master'.]

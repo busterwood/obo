@@ -1,0 +1,118 @@
+// codepage: the single-byte code pages 1252 and 28591 (ISO-8859-1): all 256
+// bytes decoded and compared with Python's codecs (generated expectations),
+// round trips both ways, the five bytes cp1252 leaves undefined, characters a
+// code page cannot represent, invalid UTF-8 and unsupported code pages.
+// expect: supported: true true false false
+// expect: cp1252 0x80-0xff: 8364 129 8218 402 8222 8230 8224 8225 710 8240 352 8249 338 141 381 143 144 8216 8217 8220 8221 8226 8211 8212 732 8482 353 8250 339 157 382 376 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255
+// expect: latin1 0x80-0xff: 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255
+// expect: ascii: true true unchanged true
+// expect: undefined 1252: 129 141 143 144 157
+// expect: round trip: true true
+// expect: encode runes: true true
+// expect: text: café € ™ | bytes 63 61 66 e9 20 80 20 99
+// expect: latin1 text: bytes 63 61 66 e9
+// expect: unrepresentable: U+20AC (€) cannot be represented in code page 28591
+// expect: first of several: U+65E5 (日) cannot be represented in code page 1252
+// expect: emoji: U+1F600 (😀) cannot be represented in code page 1252
+// expect: invalid utf-8: invalid UTF-8 at byte 1
+// expect: unsupported: code page 1251 is not supported | code page 1251 is not supported
+// expect: empty: '' ''
+// expect: long: 100000 true
+
+import "codepage"
+import "strings"
+
+fn allBytes(): str {
+    var b: []byte = []
+    for i in 0..256 { append(mut &b, byte(i)) }
+    return strFromBytes(&b)
+}
+
+fn runes(s: &str): str {
+    var out: []str = []
+    var i = 0
+    while i < len(s) {
+        let d = strings.decodeAt(s, i)
+        append(mut &out, d.rune.toStr())
+        i += d.size
+    }
+    return strings.join(&out, " ")
+}
+
+fn high(cp: int): str {
+    let all = allBytes()
+    let h = all[128..256]
+    let t = codepage.decode(cp, &h).unwrap()
+    return runes(&t)
+}
+
+fn hexOf(s: &str): str {
+    var out: []str = []
+    for i in 0..len(s) { append(mut &out, strings.hex(int(strByte(s, i)))) }
+    return strings.join(&out, " ")
+}
+
+fn main() {
+    println("supported: " + codepage.supported(1252).toStr() + " " + codepage.supported(28591).toStr() + " " +
+            codepage.supported(1251).toStr() + " " + codepage.supported(65001).toStr())
+    println("cp1252 0x80-0xff: " + high(1252))
+    println("latin1 0x80-0xff: " + high(28591))
+
+    // ASCII passes through, and all-ASCII text comes back as it is
+    let a = allBytes()[0..128]
+    let da = codepage.decode(1252, &a).unwrap()
+    let db = codepage.decode(28591, &a).unwrap()
+    let plain = "plain ascii only"
+    println("ascii: " + (da == a).toStr() + " " + (db == a).toStr() + " " +
+            (if codepage.decode(1252, &plain).unwrap() == plain { "unchanged" } else { "changed" }) + " " +
+            (codepage.encode(1252, &a).unwrap() == a).toStr())
+    let und = allBytes()
+    var u: []str = []
+    for b in [0x81, 0x8D, 0x8F, 0x90, 0x9D] {
+        let one = und[b..b + 1]
+        append(mut &u, runes(&codepage.decode(1252, &one).unwrap()))
+    }
+    println("undefined 1252: " + strings.join(&u, " "))
+
+    // every byte back to itself, and every character of the table back to its byte
+    let all = allBytes()
+    var rt: []bool = []
+    for cp in [1252, 28591] {
+        let t = codepage.decode(cp, &all).unwrap()
+        append(mut &rt, codepage.encode(cp, &t).unwrap() == all)
+    }
+    println("round trip: " + rt[0].toStr() + " " + rt[1].toStr())
+    var er: []bool = []
+    for cp in [1252, 28591] {
+        var ok = true
+        for b in 128..256 {
+            let one = all[b..b + 1]
+            let t = codepage.decode(cp, &one).unwrap()
+            if codepage.encode(cp, &t).unwrap() != one { ok = false }
+        }
+        append(mut &er, ok)
+    }
+    println("encode runes: " + er[0].toStr() + " " + er[1].toStr())
+
+    let text = "caf\xc3\xa9 \xe2\x82\xac \xe2\x84\xa2"
+    let enc = codepage.encode(1252, &text).unwrap()
+    println("text: " + codepage.decode(1252, &enc).unwrap() + " | bytes " + hexOf(&enc))
+    let lt = "caf\xc3\xa9"
+    println("latin1 text: bytes " + hexOf(&codepage.encode(28591, &lt).unwrap()))
+    let euro = "\xe2\x82\xac"
+    println("unrepresentable: " + codepage.encode(28591, &euro).unwrapErr())
+    let jp = "a\xc3\xa9\xe6\x97\xa5\xe6\x9c\xac"
+    println("first of several: " + codepage.encode(1252, &jp).unwrapErr())
+    let em = "x\xf0\x9f\x98\x80"
+    println("emoji: " + codepage.encode(1252, &em).unwrapErr())
+    let bad = "a\xff"
+    println("invalid utf-8: " + codepage.encode(1252, &bad).unwrapErr())
+    println("unsupported: " + codepage.decode(1251, &plain).unwrapErr() + " | " + codepage.encode(1251, &plain).unwrapErr())
+    let empty = ""
+    println("empty: '" + codepage.decode(1252, &empty).unwrap() + "' '" + codepage.encode(28591, &empty).unwrap() + "'")
+    var big = newStrBuf()
+    for i in 0..100000 { big.addByte(byte(0x80 + i % 128)) }
+    let bs = big.toStr()
+    let bd = codepage.decode(28591, &bs).unwrap()
+    println("long: " + (len(bd) / 2).toStr() + " " + (codepage.encode(28591, &bd).unwrap() == bs).toStr())
+}

@@ -1,0 +1,90 @@
+// tds: char and varchar data in code page 1252 (a SQL sort order and a
+// Windows collation),
+// as a varchar(max) in several chunks, with NULL, empty and all-ASCII values,
+// and in a code page that is not supported (an error naming it, the other
+// cells still read).
+// needs: ssl
+// expect: columns: a varchar, b varchar, c varchar size -1, d varchar, e char
+// expect: row 0: Text(café € ™ …) Text(naïve üÿ) Text( ©®µ Àß÷ plain) Failed(varchar data in code page 1251 (LCID 0x0419, sort order 0): only UTF-8 collations, code page 1252 and ISO-8859-1 are supported yet) Text(ab)
+// expect: row 1: Text() Null Text() Null Text(x)
+
+import "tds"
+import "strings"
+import "../support/tdstest" as tt
+
+fn cellText(c: &tds.Cell): str {
+    match c {
+        tds.Cell.Null { return "Null" }
+        tds.Cell.Int(n) { return "Int(" + n.toStr() + ")" }
+        tds.Cell.Float(f) { return "Float(" + f.toStr() + ")" }
+        tds.Cell.Text(t) { return "Text(" + t + ")" }
+        tds.Cell.Bytes(_) { return "Bytes" }
+        tds.Cell.Failed(m) { return "Failed(" + m + ")" }
+    }
+}
+
+fn main() {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(5)
+    b.col("a", tds.T_BIGVARCHR)
+    b.u16(50)
+    b.collation(0x0409, 0x01, 52)            // SQL_Latin1_General_CP1_CI_AS
+    b.name("a")
+    b.col("b", tds.T_BIGVARCHR)
+    b.u16(50)
+    b.collation(0x0407, 0x01, 0)             // German_PhoneBook-like: Windows collation, code page 1252
+    b.name("b")
+    b.col("c", tds.T_BIGVARCHR)
+    b.u16(0xFFFF)
+    b.collation(0x0409, 0x01, 52)
+    b.name("c")
+    b.col("d", tds.T_BIGVARCHR)
+    b.u16(10)
+    b.collation(0x0419, 0x01, 0)             // Cyrillic_General_CI_AS: code page 1251
+    b.name("d")
+    b.col("e", tds.T_BIGCHAR)
+    b.u16(10)
+    b.collation(0x0409, 0x01, 52)
+    b.name("e")
+    // ROW 0
+    b.u8(tds.TK_ROW)
+    b.u16(10)
+    b.raw("caf\xe9 \x80 \x99 \x85")
+    b.u16(8)
+    b.raw("na\xefve \xfc\xff")
+    b.u64(-2)
+    b.u32(5)
+    b.raw("\xa0\xa9\xae\xb5 ")
+    b.u32(9)
+    b.raw("\xc0\xdf\xf7 plain")
+    b.u32(0)
+    b.u16(2)
+    b.raw("\xcf\xf0")
+    b.u16(7)
+    b.raw("ab\x81\x8d\x8f\x90\x9d")
+    // ROW 1: empty, NULL, empty PLP, NULL, one byte
+    b.u8(tds.TK_ROW)
+    b.u16(0)
+    b.u16(0xffff)
+    b.u64(0)
+    b.u32(0)
+    b.u16(0xffff)
+    b.u16(1)
+    b.raw("x")
+    b.done(tds.TK_DONE, 0x10, 0xC1, 2)
+    let r = tds.decode(b.str(), 1000).unwrap()
+    let rs = &r.results[0]
+    var cn: []str = []
+    for c in rs.columns {
+        var t = c.name + " " + c.typeName()
+        if c.size < 0 { t = t + " size -1" }
+        append(mut &cn, t)
+    }
+    println("columns: " + strings.join(&cn, ", "))
+    for i in 0..len(rs.rows) {
+        var cells: []str = []
+        for c in rs.rows[i] { append(mut &cells, cellText(&c)) }
+        println("row " + i.toStr() + ": " + strings.join(&cells, " "))
+    }
+}
