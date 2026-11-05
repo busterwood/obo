@@ -320,6 +320,7 @@ type MatchX = record {
     r: int
     t: int
     lits: []int     // (line index, node, indent) triples
+    cr: int         // a value holding borrows: the join of the arms' roots (R_FREE: none yet)
 }
 
 pub type Checker = record {
@@ -3550,6 +3551,7 @@ type Branch = record {
     v: Val
     lines: []int
     snap: []int
+    cr: int         // a value holding borrows: their root (R_FREE: none)
 }
 
 fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
@@ -3564,6 +3566,7 @@ fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
         c.err(c.line(x), "an if expression cannot give a borrow, a slice or a closure")
     }
     v = c.rd(v)
+    let bcr = if !v.noreturn && c.pg.isBorrowClass(v.t) { c.crOf(v) } else { R_FREE }
     let fr = c.popFrame()
     if !v.noreturn {
         v = rv(c.consume(v, c.line(x)), v.t)
@@ -3579,7 +3582,7 @@ fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
     c.dropFrame(&fr)
     c.cx.ind -= 1
     let lines = replace(mut &c.cx.lines, saved)
-    return Branch{v: v, lines: lines, snap: c.snapshot()}
+    return Branch{v: v, lines: lines, snap: c.snapshot(), cr: bcr}
 }
 
 fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
@@ -3593,8 +3596,8 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     let snap = c.snapshot()
     let rn = c.fresh("ifx")
     let r = c.nm(rn)
-    var a = Branch{v: voidVal(false), lines: [], snap: []}
-    var b = Branch{v: voidVal(false), lines: [], snap: []}
+    var a = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
+    var b = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
     if exp == -1 && isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) {     // a literal takes the other's type
         b = c.ifBranch(n.c, -1, &snap, r)
         a = c.ifBranch(n.b, if b.v.noreturn { -1 } else { b.v.t }, &snap, r)
@@ -3617,9 +3620,13 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         k += 1
     }
     if !b.v.noreturn { c.ifxDrops(mut &b, &drops[k], r) }
+    // a value holding borrows has the roots of both branches (design/borrow-types.md)
+    let jcr = if c.pg.isBorrowClass(t) { c.joinRoots(a.cr, b.cr) } else { -1 }
     if len(a.lines) == 0 && len(b.lines) == 0 {
         let text = c.x.par(c.x.cond(cv.c, a.v.c, b.v.c))
-        return if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
+        var rx = if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
+        if jcr != -1 { rx.cr = jcr }
+        return rx
     }
     if !c.cx.dead {
         let ct = c.T(t)
@@ -3644,7 +3651,9 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         c.cx.dead = false
         return voidVal(true)
     }
-    return c.tmpval(r, t)
+    var rx = c.tmpval(r, t)
+    if jcr != -1 { rx.cr = jcr }
+    return rx
 }
 
 fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: int) {
@@ -3670,6 +3679,7 @@ fn (c: mut &Checker) mxBody(x: int) {
         c.err(c.line(x), "a match expression cannot give a borrow, a slice or a closure")
     }
     v = c.rd(v)
+    if !v.noreturn && c.pg.isBorrowClass(v.t) { c.mxs[top].cr = c.joinRoots(c.mxs[top].cr, c.crOf(v)) }
     let fr = c.popFrame()
     if v.noreturn {
         c.cx.dead = true
@@ -3707,7 +3717,7 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     let rn = c.fresh("mx")
     let r = c.nm(rn)
     let at = len(c.cx.lines)
-    append(mut &c.mxs, MatchX{r: r, t: exp, lits: []})
+    append(mut &c.mxs, MatchX{r: r, t: exp, lits: [], cr: R_FREE})
     c.sMatch(e, true)
     let top = len(c.mxs) - 1
     let lits = copyInts(&c.mxs[top].lits)
@@ -3751,7 +3761,9 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     }
     if at == len(c.cx.lines) { append(mut &nl, dl) }
     c.cx.lines = nl
-    return c.tmpval(r, t)
+    var rx = c.tmpval(r, t)
+    if c.pg.isBorrowClass(t) { rx.cr = mx.cr }
+    return rx
 }
 
 // ref's okerr: the Ok and Err variants of a closed type (and their types), or ok = -1.
