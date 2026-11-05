@@ -3543,8 +3543,47 @@ fn (g: &Gen) quietList(l: int): bool {
     return true
 }
 
+// A 128-bit constant as its two words: the front end writes one above 2^64 as
+// ((unsigned __int128)HI << 64) | LO, and one below as a conversion of a 64-bit literal.
+type C128 = value record { ok: bool; lo: int; hi: int }
+
+fn (g: &Gen) const128(e: int): C128 {
+    let n = g.u.nodes[e]
+    let no = C128{ok: false, lo: 0, hi: 0}
+    if n.k == ir.E_CAST && g.is128(n.ty) {
+        let s = g.u.nodes[n.a]
+        if s.k != ir.E_INT || g.is128(s.ty) || g.isF(s.ty) || !g.u.isInt(s.ty) { return no }
+        let neg = g.u.isSigned(s.ty) && s.v < 0
+        return C128{ok: true, lo: s.v, hi: if neg { -1 } else { 0 }}
+    }
+    if n.k != ir.E_BIN || !g.is128(n.ty) || !g.is128(n.c) { return no }
+    if n.v == ir.OP_SHL {
+        let c = g.u.nodes[n.b]
+        let a = g.const128(n.a)
+        if !a.ok || c.k != ir.E_INT || c.v != 64 { return no }
+        return C128{ok: true, lo: 0, hi: a.lo}
+    }
+    if n.v == ir.OP_OR || n.v == ir.OP_AND || n.v == ir.OP_XOR {
+        let a = g.const128(n.a)
+        if !a.ok { return no }
+        let b = g.const128(n.b)
+        if !b.ok { return no }
+        if n.v == ir.OP_OR { return C128{ok: true, lo: a.lo | b.lo, hi: a.hi | b.hi} }
+        if n.v == ir.OP_AND { return C128{ok: true, lo: a.lo & b.lo, hi: a.hi & b.hi} }
+        return C128{ok: true, lo: a.lo ^ b.lo, hi: a.hi ^ b.hi}
+    }
+    return no
+}
+
 // a into rax:rdx, b into r8:r9 (128-bit).
 fn (g: mut &Gen) pair128(a: int, b: int) {
+    let kb = g.const128(b)
+    if kb.ok {
+        g.gen(a)
+        g.a.movRI(R8, kb.lo)
+        g.a.movRI(R9, kb.hi)
+        return
+    }
     g.gen(a)
     let s = g.temp(16, 16)
     g.a.store(8, rbp(s), RAX)
@@ -3597,6 +3636,10 @@ fn (g: mut &Gen) gen(e: int) {
         g.genAddr(e)
     } else if k == ir.E_CALL {
         g.genCall(e)
+    } else if (k == ir.E_CAST || k == ir.E_BIN) && g.is128(t) && g.const128(e).ok {
+        let c = g.const128(e)
+        g.a.movRI(RAX, c.lo)
+        g.a.movRI(RDX, c.hi)
     } else if k == ir.E_CAST {
         g.genCast(e)
     } else if k == ir.E_BIN {

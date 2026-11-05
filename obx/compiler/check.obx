@@ -2879,6 +2879,8 @@ pub fn cint(x: mut &tm.Arena, v: num.Big, t: int): int {
         let u = num.bigMask(v, 128)
         let hi = num.bigShr(u, 64)
         let lo = num.bigMask(u, 64)
+        // below 2^64 (and not negative): one conversion, which the native backend loads directly
+        if num.bigStr(hi) == "0" { return x.pcast(x.ct(ct), x.num(num.bigStr(lo) + "ULL")) }
         let h = x.par(x.bin("<<", x.cast(x.ct("unsigned __int128"), x.num(num.bigStr(hi) + "ULL")), x.num("64")))
         return x.pcast(x.ct(ct), x.par(x.bin("|", h, x.num(num.bigStr(lo) + "ULL"))))
     }
