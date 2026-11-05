@@ -1,0 +1,580 @@
+// jq: a port of jq 1.7.1, the command-line JSON processor.
+//
+//     jq [options] <filter> [file...]
+//     jq [options] --args <filter> [strings...]
+//     jq [options] --jsonargs <filter> [JSON texts...]
+//
+// Options: -n -r -j -a -c -s -e -S -R -f file, --tab, --indent n, --arg,
+// --argjson, --slurpfile, --rawfile, --args, --jsonargs, -h, -V. Not
+// supported: modules (import, include, -L), --stream, --seq, colours (-C).
+//
+// The language is jq's: jq_parse reads it, jq_eval runs it, jq_lib has the
+// value operations and jq_builtins the builtins written in jq. Messages and
+// exit codes follow jq 1.7.1 (MIT licensed, Copyright (C) 2012 Stephen
+// Dolan; see NOTICE).
+import "json"
+import "io"
+import "os"
+import "ffi"
+import "./jq_parse"
+import "./jq_eval"
+import "./jq_lib"
+import "./jq_builtins"
+
+const VERSION = "1.7.1"
+
+extern "c" fn getrlimit(resource: i32, rl: ptr): i32
+extern "c" fn setrlimit(resource: i32, rl: ptr): i32
+
+const STACK_WANTED = 120 * 1024 * 1024
+
+fn get64(m: &ffi.Mem, at: int): int {
+    var x = 0
+    for i in 0..8 { x = x | (int(m.get(at + i)) << (8 * i)) }
+    return x
+}
+
+fn set64(m: mut &ffi.Mem, at: int, x: int) {
+    for i in 0..8 { m.set(at + i, byte((x >> (8 * i)) & 0xff)) }
+}
+
+// The evaluator recurses natively, about 1.5 KB of stack a level of jq
+// recursion, where jq keeps its own stack on the heap. Linux grows the main
+// stack up to the current soft limit, so raise it (to 120 MB, below the
+// 128 MB the kernel leaves under the stack at exec) when the hard limit lets.
+fn raiseStack() {
+    var m = ffi.alloc(16)
+    if getrlimit(i32(3), m.ptr()) != i32(0) { return }
+    let cur = get64(&m, 0)
+    let max = get64(&m, 8)
+    if cur < 0 || cur >= STACK_WANTED { return }
+    var want = STACK_WANTED
+    if max >= 0 && max < want { want = max }
+    if want <= cur { return }
+    set64(mut &m, 0, want)
+    let r = setrlimit(i32(3), m.ptr())
+}
+
+type Opts = record {
+    raw: bool
+    join: bool
+    ascii: bool
+    sortKeys: bool
+    indent: int        // 0 compact, -1 tab
+    slurp: bool
+    rawInput: bool
+    nullInput: bool
+    exitStatus: bool
+    fromFile: bool
+}
+
+fn die(prog: str): never {
+    eprintln("Use " + prog + " --help for help with command-line options,\nor see the jq manpage, or online docs  at https://jqlang.github.io/jq")
+    os.quit(2)
+}
+
+fn usage(prog: str, code: int, short: bool): never {
+    var b = newStrBuf()
+    b.add("jq - commandline JSON processor [version " + VERSION + "]\n")
+    b.add("\nUsage:\t" + prog + " [options] <jq filter> [file...]\n")
+    b.add("\t" + prog + " [options] --args <jq filter> [strings...]\n")
+    b.add("\t" + prog + " [options] --jsonargs <jq filter> [JSON_TEXTS...]\n\n")
+    b.add("jq is a tool for processing JSON inputs, applying the given filter to\n")
+    b.add("its JSON text inputs and producing the filter's results as JSON on\n")
+    b.add("standard output.\n\n")
+    b.add("The simplest filter is ., which copies jq's input to its output\n")
+    b.add("unmodified except for formatting. For more advanced filters see\n")
+    b.add("the jq(1) manpage (\"man jq\") and/or https://jqlang.github.io/jq/.\n\n")
+    b.add("Example:\n\n\t$ echo '{\"foo\": 0}' | jq .\n")
+    b.add("\t{\n\t  \"foo\": 0\n\t}\n\n")
+    if short {
+        b.add("For listing the command options, use " + prog + " --help.\n")
+    } else {
+        b.add("Command options:\n")
+        b.add("  -n, --null-input          use `null` as the single input value;\n")
+        b.add("  -R, --raw-input           read each line as string instead of JSON;\n")
+        b.add("  -s, --slurp               read all inputs into an array and use it as\n")
+        b.add("                            the single input value;\n")
+        b.add("  -c, --compact-output      compact instead of pretty-printed output;\n")
+        b.add("  -r, --raw-output          output strings without escapes and quotes;\n")
+        b.add("      --raw-output0         implies -r and output NUL after each output;\n")
+        b.add("  -j, --join-output         implies -r and output without newline after\n")
+        b.add("                            each output;\n")
+        b.add("  -a, --ascii-output        output strings by only ASCII characters\n")
+        b.add("                            using escape sequences;\n")
+        b.add("  -S, --sort-keys           sort keys of each object on output;\n")
+        b.add("  -C, --color-output        colorize JSON output;\n")
+        b.add("  -M, --monochrome-output   disable colored output;\n")
+        b.add("      --tab                 use tabs for indentation;\n")
+        b.add("      --indent n            use n spaces for indentation (max 7 spaces);\n")
+        b.add("      --unbuffered          flush output stream after each output;\n")
+        b.add("      --stream              parse the input value in streaming fashion;\n")
+        b.add("      --stream-errors       implies --stream and report parse error as\n")
+        b.add("                            an array;\n")
+        b.add("      --seq                 parse input/output as application/json-seq;\n")
+        b.add("  -f, --from-file file      load filter from the file;\n")
+        b.add("  -L directory              search modules from the directory;\n")
+        b.add("      --arg name value      set $name to the string value;\n")
+        b.add("      --argjson name value  set $name to the JSON value;\n")
+        b.add("      --slurpfile name file set $name to an array of JSON values read\n")
+        b.add("                            from the file;\n")
+        b.add("      --rawfile name file   set $name to string contents of file;\n")
+        b.add("      --args                consume remaining arguments as positional\n")
+        b.add("                            string values;\n")
+        b.add("      --jsonargs            consume remaining arguments as positional\n")
+        b.add("                            JSON values;\n")
+        b.add("  -e, --exit-status         set exit status code based on the output;\n")
+        b.add("  -V, --version             show the version;\n")
+        b.add("  --build-configuration     show jq's build configuration;\n")
+        b.add("  -h, --help                show the help;\n")
+        b.add("  --                        terminates argument processing;\n\n")
+        b.add("Named arguments are also available as $ARGS.named[], while\n")
+        b.add("positional arguments are available as $ARGS.positional[].\n")
+    }
+    if code == 0 {
+        var w = io.stdout()
+        w.write(b.toStr())
+        let r = w.flush()
+    } else {
+        var w = io.stderr()
+        w.write(b.toStr())
+        let r = w.flush()
+    }
+    os.quit(code)
+}
+
+// jq's isoption: a long option, or a short one anywhere in a group of
+// short options (-nr); counts the short options matched.
+fn isOption(text: str, short: byte, long: str, count: mut &int): bool {
+    if len(text) < 2 || text[0] != '-' { return false }
+    if text[1] == '-' { return text[2..] == long }
+    if short == 0 { return false }
+    for i in 1..len(text) {
+        if text[i] == short {
+            count += 1
+            return true
+        }
+    }
+    return false
+}
+
+fn isOptish(t: str): bool {
+    return len(t) >= 2 && t[0] == '-' && (t[1] == '-' || (t[1] >= 'a' && t[1] <= 'z') || (t[1] >= 'A' && t[1] <= 'Z'))
+}
+
+// A JSON text as jq reads one (--argjson, --jsonargs): one value.
+fn parseArg(s: str): Option[json.Json] {
+    match jq_lib.parseOne(s) {
+        Ok(v) { return Some(v) }
+        Err(e) { return None }
+    }
+}
+
+fn writeOpts(o: &Opts): json.WriteOptions {
+    var w = json.compact()
+    w.jqNumbers = true
+    w.sortKeys = o.sortKeys
+    w.ascii = o.ascii
+    if o.indent < 0 {
+        w.tab = true
+        w.indent = 1
+    } else {
+        w.indent = o.indent
+    }
+    return w
+}
+
+// The location jq names in an error: the input and its line.
+fn location(ip: &jq_eval.Interp): str {
+    if len(ip.inputs.name) == 0 { return "<unknown>" }
+    return ip.inputs.name + ":" + intToStr(ip.inputs.line)
+}
+
+const R_OK = 0
+const R_NULL = -1
+const R_NO_OUTPUT = -4
+const R_ERROR = 5
+
+// Runs the program on one input; jq's process(): the outputs, then a halt
+// or an uncaught error. Returns jq's ret.
+fn process(ip: mut &jq_eval.Interp, main: int, v: &json.Json, o: &Opts, wo: &json.WriteOptions,
+           out: mut &io.Writer, halted: mut &bool): int {
+    var ret = R_NO_OUTPUT
+    let nul = json.null()
+    let st = jq_eval.eval(ip, main, -1, v, &nul, false, fn(ip1: mut &jq_eval.Interp, x: &json.Json, p: &json.Json): int {
+        var isRawStr = false
+        if o.raw {
+            match x {
+                json.Json.Str(s) {
+                    isRawStr = true
+                    if o.ascii {
+                        json.writeString(out, s, true)
+                    } else {
+                        out.write(s)
+                    }
+                    ret = R_OK
+                }
+                else {}
+            }
+        }
+        if !isRawStr {
+            ret = if jq_lib.truthy(x) { R_OK } else { R_NULL }
+            json.writeTo(out, x, wo)
+        }
+        if !o.join { out.writeByte('\n') }
+        return jq_eval.ST_OK
+    })
+    if st == jq_eval.ST_HALT {
+        halted = true
+        let fl = out.flush()
+        match ip.haltMsg {
+            Some(m) {
+                ret = ip.haltCode
+                match m {
+                    json.Json.Str(s) {
+                        var e = io.stderr()
+                        e.write(s)
+                        let r = e.flush()
+                    }
+                    json.Json.Null {}
+                    else { eprintln(jq_lib.dump(&m)) }
+                }
+            }
+            None { ret = R_OK }
+        }
+        return ret
+    }
+    if st == jq_eval.ST_ERR {
+        let fl = out.flush()
+        let msg = ip.err.clone()
+        match msg {
+            json.Json.Str(s) { eprintln("jq: error (at " + location(ip) + "): " + s) }
+            else { eprintln("jq: error (at " + location(ip) + ") (not a string): " + jq_lib.dump(&msg)) }
+        }
+        return R_ERROR
+    }
+    if st == jq_eval.ST_BREAK {
+        let fl = out.flush()
+        eprintln("jq: error (at " + location(ip) + "): break")
+        return R_ERROR
+    }
+    return ret
+}
+
+fn main() {
+    raiseStack()
+    let argv = os.argv()
+    let prog = if len(argv) > 0 { argv[0] } else { "jq" }
+    var o = Opts{raw: false, join: false, ascii: false, sortKeys: false, indent: 2, slurp: false, rawInput: false,
+                 nullInput: false, exitStatus: false, fromFile: false}
+    var program = ""
+    var haveProgram = false
+    var files: []str = []
+    var positional: []json.Json = []
+    var namedKeys: []str = []
+    var named = json.object()
+    var strArgs = false
+    var jsonArgs = false
+    var argsDone = false
+    var i = 1
+    while i < len(argv) {
+        let a = argv[i]
+        if argsDone || !isOptish(a) {
+            if !haveProgram {
+                program = a
+                haveProgram = true
+            } else if strArgs {
+                append(mut &positional, json.string(a))
+            } else if jsonArgs {
+                match parseArg(a) {
+                    Some(v) { append(mut &positional, v) }
+                    None {
+                        eprintln(prog + ": invalid JSON text passed to --jsonargs")
+                        die(prog)
+                    }
+                }
+            } else {
+                append(mut &files, a)
+            }
+            i += 1
+            continue
+        }
+        if a == "--" {
+            argsDone = true
+            i += 1
+            continue
+        }
+        var n = 0
+        if isOption(a, 's', "slurp", mut &n) { o.slurp = true }
+        if isOption(a, 'r', "raw-output", mut &n) { o.raw = true }
+        if isOption(a, 'j', "join-output", mut &n) {
+            o.raw = true
+            o.join = true
+        }
+        if isOption(a, 'c', "compact-output", mut &n) { o.indent = 0 }
+        if isOption(a, 'C', "color-output", mut &n) {}
+        if isOption(a, 'M', "monochrome-output", mut &n) {}
+        if isOption(a, 'a', "ascii-output", mut &n) { o.ascii = true }
+        if isOption(a, 0, "unbuffered", mut &n) {
+            i += 1
+            continue
+        }
+        if isOption(a, 'S', "sort-keys", mut &n) { o.sortKeys = true }
+        if isOption(a, 'R', "raw-input", mut &n) { o.rawInput = true }
+        if isOption(a, 'n', "null-input", mut &n) { o.nullInput = true }
+        if isOption(a, 'f', "from-file", mut &n) { o.fromFile = true }
+        if isOption(a, 'e', "exit-status", mut &n) { o.exitStatus = true }
+        if isOption(a, 0, "tab", mut &n) {
+            o.indent = -1
+            i += 1
+            continue
+        }
+        if isOption(a, 0, "indent", mut &n) {
+            if i >= len(argv) - 1 {
+                eprintln(prog + ": --indent takes one parameter")
+                die(prog)
+            }
+            var ind = 0
+            match parseInt(argv[i + 1]) {
+                Some(x) { ind = x }
+                None { ind = 0 }
+            }
+            if ind < -1 || ind > 7 {
+                eprintln(prog + ": --indent takes a number between -1 and 7")
+                die(prog)
+            }
+            o.indent = ind
+            i += 2
+            continue
+        }
+        if isOption(a, 0, "args", mut &n) {
+            strArgs = true
+            jsonArgs = false
+            i += 1
+            continue
+        }
+        if isOption(a, 0, "jsonargs", mut &n) {
+            strArgs = false
+            jsonArgs = true
+            i += 1
+            continue
+        }
+        if isOption(a, 0, "arg", mut &n) || isOption(a, 0, "argjson", mut &n) {
+            let isJson = a == "--argjson"
+            if i >= len(argv) - 2 {
+                if isJson {
+                    eprintln(prog + ": --argjson takes two parameters (e.g. --argjson varname text)")
+                } else {
+                    eprintln(prog + ": --arg takes two parameters (e.g. --arg varname value)")
+                }
+                die(prog)
+            }
+            let name = argv[i + 1]
+            if !named.has(name) {
+                if isJson {
+                    match parseArg(argv[i + 2]) {
+                        Some(v) { named.set(name, v) }
+                        None {
+                            eprintln(prog + ": invalid JSON text passed to --argjson")
+                            die(prog)
+                        }
+                    }
+                } else {
+                    named.set(name, json.string(argv[i + 2]))
+                }
+            }
+            i += 3
+            continue
+        }
+        if isOption(a, 0, "rawfile", mut &n) || isOption(a, 0, "slurpfile", mut &n) {
+            let raw = a == "--rawfile"
+            let which = if raw { "rawfile" } else { "slurpfile" }
+            if i >= len(argv) - 2 {
+                eprintln(prog + ": --" + which + " takes two parameters (e.g. --" + which + " varname filename)")
+                die(prog)
+            }
+            let name = argv[i + 1]
+            let path = argv[i + 2]
+            if !named.has(name) {
+                match io.read(path) {
+                    Ok(t) {
+                        if raw {
+                            named.set(name, json.string(json.validUtf8(t)))
+                        } else {
+                            var vals: []json.Json = []
+                            var ins = jq_eval.newInputs([path], false)
+                            var bad = ""
+                            while true {
+                                let rr = ins.read()
+                                match move(rr) {
+                                    Ok(x) {
+                                        match move(x) {
+                                            Some(v) { append(mut &vals, v) }
+                                            None { break }
+                                        }
+                                    }
+                                    Err(e) {
+                                        bad = e
+                                        break
+                                    }
+                                }
+                            }
+                            if len(bad) > 0 {
+                                eprintln(prog + ": Bad JSON in --" + which + " " + name + " " + path + ": " + bad)
+                                os.quit(2)
+                            }
+                            named.set(name, json.arrayOf(vals))
+                        }
+                    }
+                    Err(e) {
+                        eprintln(prog + ": Bad JSON in --" + which + " " + name + " " + path + ": Could not open " + path + ": " + io.errorText(e.errno))
+                        os.quit(2)
+                    }
+                }
+            }
+            i += 3
+            continue
+        }
+        if isOption(a, 'h', "help", mut &n) { usage(prog, 0, false) }
+        if isOption(a, 'V', "version", mut &n) {
+            println("jq-" + VERSION)
+            os.quit(0)
+        }
+        if isOption(a, 0, "build-configuration", mut &n) {
+            println("obx")
+            os.quit(0)
+        }
+        if a == "--seq" || a == "--stream" || a == "--stream-errors" || a == "--raw-output0" || startsWith(a, "-L") {
+            eprintln(prog + ": " + a + " is not supported by this jq")
+            os.quit(2)
+        }
+        if len(a) != n + 1 {
+            eprintln(prog + ": Unknown option " + a)
+            die(prog)
+        }
+        i += 1
+    }
+
+    if !haveProgram {
+        if io.isTerminal(0) && io.isTerminal(1) { usage(prog, 2, true) }
+        program = "."
+    }
+    if o.fromFile {
+        match io.read(program) {
+            Ok(t) { program = t }
+            Err(e) {
+                eprintln(prog + ": Could not open " + program + ": " + io.errorText(e.errno))
+                os.quit(2)
+            }
+        }
+    }
+
+    // the global variables: $ENV, the named arguments, $ARGS
+    var gvars: []str = ["ENV"]
+    var gvals: []json.Json = [jq_eval.envObject()]
+    for k in 0..named.size() {
+        append(mut &gvars, named.keyAt(k))
+        append(mut &gvals, named.valueAt(k))
+    }
+    var argsObj = json.object()
+    argsObj.set("positional", json.arrayOf(positional))
+    argsObj.set("named", named.clone())
+    append(mut &gvars, "ARGS")
+    append(mut &gvals, argsObj)
+
+    var p = jq_parse.newParser(&jq_eval.nativeKeys(), &gvars)
+    match p.parseDefs(jq_builtins.source()) {
+        Ok(u) {}
+        Err(e) {
+            eprintln("jq: internal error in the builtins: " + e)
+            os.quit(3)
+        }
+    }
+    var main = 0
+    match p.parseMain(program) {
+        Ok(m) { main = m }
+        Err(errs) {
+            for e in errs { eprintln(e) }
+            eprintln("jq: " + intToStr(len(errs)) + " compile error" + if len(errs) == 1 { "" } else { "s" })
+            os.quit(3)
+        }
+    }
+    let prg = p.finish(main)
+    var ip = jq_eval.newInterp(prg, gvals, jq_eval.newInputs(files, o.rawInput))
+    let wo = writeOpts(&o)
+    var out = io.stdout()
+    var ret = R_NO_OUTPUT
+    var lastResult = -1
+    var halted = false
+    if o.nullInput {
+        ret = process(mut &ip, main, &json.null(), &o, &wo, mut &out, mut &halted)
+    } else if o.slurp {
+        var v = json.null()
+        var parseErr = ""
+        if o.rawInput {
+            v = json.string(ip.inputs.readAllRaw())
+        } else {
+            var vals: []json.Json = []
+            while true {
+                let rr = ip.inputs.read()
+                match move(rr) {
+                    Ok(x) {
+                        match move(x) {
+                            Some(val) { append(mut &vals, val) }
+                            None { break }
+                        }
+                    }
+                    Err(e) {
+                        parseErr = e
+                        break
+                    }
+                }
+            }
+            v = json.arrayOf(vals)
+        }
+        if len(parseErr) > 0 {
+            eprintln("jq: parse error: " + parseErr)
+            ret = R_ERROR
+        } else {
+            ret = process(mut &ip, main, &v, &o, &wo, mut &out, mut &halted)
+            if ret <= 0 && ret != R_NO_OUTPUT { lastResult = if ret != R_NULL { 1 } else { 0 } }
+        }
+    } else {
+        while true {
+            let r = ip.inputs.read()
+            match move(r) {
+                Ok(x) {
+                    match move(x) {
+                        Some(val) {
+                            ret = process(mut &ip, main, &val, &o, &wo, mut &out, mut &halted)
+                            if ret <= 0 && ret != R_NO_OUTPUT { lastResult = if ret != R_NULL { 1 } else { 0 } }
+                            if halted { break }
+                        }
+                        None { break }
+                    }
+                }
+                Err(e) {
+                    let fl = out.flush()
+                    eprintln("jq: parse error: " + e)
+                    ret = R_ERROR
+                    break
+                }
+            }
+        }
+    }
+    if ip.inputs.ioFailed { ret = 2 }
+    match out.flush() {
+        Ok(u) {}
+        Err(e) {
+            eprintln("jq: error: writing output failed: " + io.errorText(e.errno))
+            ret = 2
+        }
+    }
+    if o.exitStatus {
+        if ret != R_NO_OUTPUT { os.quit(if ret < 0 { -ret } else { ret }) }
+        if lastResult == -1 { os.quit(4) }
+        if lastResult == 0 { os.quit(1) }
+        os.quit(0)
+    }
+    os.quit(if ret > 0 { ret } else { 0 })
+}
