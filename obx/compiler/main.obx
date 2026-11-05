@@ -149,10 +149,13 @@ fn run(words: &[]str, errFile: str): int {
 fn gccCmd(exe: str, cfile: str, libs: &[]str, libm: bool): []str {
     // -falign-functions=64: a small recursive function's speed depends on where it falls in
     // the fetch blocks (bench fib: 15%), so a change in the runtime's size must not move it.
+    // -falign-loops=32: a small loop that straddles a 32-byte block runs slower (bench loop, a
+    // 32-byte loop: 1,254M cycles at a multiple of 32, 2,012M at 16 more), so loop heads sit at
+    // multiples of 32 wherever the code before them changes.
     // -march=x86-64-v3: the CPU level the runtime requires (SPEC, exit code 16). -ffp-contract=off:
     // no a * b + c fused into one rounding unless the program asks (fma), so that floats have
     // the native backend's bits.
-    var cmd: []str = ["gcc", "-O2", "-march=x86-64-v3", "-ffp-contract=off", "-falign-functions=64", "-w", "-std=gnu11",
+    var cmd: []str = ["gcc", "-O2", "-march=x86-64-v3", "-ffp-contract=off", "-falign-functions=64", "-falign-loops=32", "-w", "-std=gnu11",
         "-o", exe, cfile]
     for f in libFlags(libs) { append(mut &cmd, f) }
     if libm { append(mut &cmd, "-lm") }

@@ -148,6 +148,32 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   grew. The native runtime and gcc's builds of programs now put functions
   at multiples of 64 (`-falign-functions=64`), which restored both.
 
+  The cure was then checked by moving the code: `python3
+  obx/tools/placement.py` builds a benchmark eight times with its code
+  shifted by 0, 8, ..., 56 bytes (native: `OBX_PADB=n` puts n bytes before
+  every function's alignment, as growth of the code ahead would; C: gcc's
+  assembly with `.nops n` after each function's label) and takes the best
+  of 7 cycles of each. Before, with native functions at multiples of 16 and
+  C without loop alignment, the spreads (max over min) were: native fib
+  9.9% (1,690M or 1,855M), sieve 5% (maps and trees 5-6%); C fib 22%, loop
+  60% (1,253M or 2,009M, the loop moving across a 32-byte block), sieve
+  14%, maps 39%. Native functions now start at multiples of 64
+  (`FUNC_ALIGN`, 1% of a program's size: the compiler 2,927,673 to
+  2,956,345 bytes, eza 242,152 to 246,248, an empty program and hello
+  unchanged) and gcc gets `-falign-loops=32` (also in the runtime's
+  flags), which puts every loop head at a multiple of 32 at no cost in
+  cycles. Native fib: 0.0% (1,690M everywhere), loop, array, alloc 0.2-0.8%,
+  trees 2%, sieve 4%; C loop 0.2% (1,253M), alloc and array under 0.5%,
+  sieve 2%. Left: C fib still moves by 22% when the code inside the function
+  moves (its entry is aligned, but a 100-byte function's jumps and calls fall
+  where they fall; the build we ship is at the fast end, 1,522M), and maps
+  (22%, both backends) and trees via C (5%) vary by the same amount
+  between runs of one binary on a loaded machine: their branch and cache
+  miss counts are the same at every shift, so it is not placement. Loop heads
+  and function entries are aligned; the jumps inside a function are not
+  (gcc's `-falign-jumps` and `-falign-labels` were not tried: they run nops
+  on the hot path).
+
 ## Regex
 
 `python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),

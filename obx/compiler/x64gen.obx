@@ -19,6 +19,7 @@ import "./x64"
 import "./elf"
 import "./rtx"
 import "strings"
+import "os"
 
 const RAX = 0
 const RCX = 1
@@ -44,8 +45,11 @@ const QUIET_REGS: []int = [6, 7, 8, 9]            // rsi rdi r8 r9
 const PROBE_FREE = 2048
 
 // Functions start at multiples of this (the code segment's base is one): where a function falls
-// in the fetch blocks changes the speed of a small recursive one by 15% (bench fib). int3 pads.
-const FUNC_ALIGN = 16
+// in the fetch blocks changes the speed of a small recursive one by 10-15% (bench fib: 1,690M
+// cycles or 1,855M with the same instructions at 16), and a change in the functions before it
+// moved it. 64 costs 1% of a program's size (the compiler: 29 KB of 2.9 MB); 32 did not hold fib's
+// speed over every shift. int3 pads.
+const FUNC_ALIGN = 64
 
 // The generated code starts at a multiple of this, so FUNC_ALIGN holds for absolute addresses.
 const CODE_ALIGN = 64
@@ -157,6 +161,8 @@ type Gen = record {
     retTy: int
     epiL: int                   // the label of the function's restores and return, or -1
     epiJmps: []int              // ... the positions of the jumps to it
+    funcAlign: int              // OBX_FALIGN (default FUNC_ALIGN) and OBX_PADB: the placement experiments
+    padBefore: int              // OBX_PADB: bytes before every function's alignment (tools/placement.py)
     loopTops: []int             // the labels of the rotated loops' bodies, reached only by jumps
     loopEnds: []int             // and of their ends (right after the back branch)
     entrySym: int
@@ -220,7 +226,7 @@ type Stub = value record {
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtSym: newMap(), rtLive: [], rtAt: [], rtCodeEnd: 0, rtDataEnd: 0, rtBssEnd: 0, codeBase: 0, funcSym: [], globalSym: [], strSym: newMap(),
         strs: [], funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
-        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
+        caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], funcAlign: padFromEnv("OBX_FALIGN", FUNC_ALIGN), padBefore: padFromEnv("OBX_PADB", 0), loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
@@ -421,9 +427,17 @@ fn (g: mut &Gen) genLive() {
         let f = g.pendLo
         g.pend[f] = false
         g.pendN -= 1
-        while g.a.pos() % FUNC_ALIGN != 0 { g.a.b(0xCC) }
+        for _ in 0..g.padBefore { g.a.b(0xCC) }
+        while g.a.pos() % g.funcAlign != 0 { g.a.b(0xCC) }
         append(mut &g.order, f)
         g.genFunc(f)
+    }
+}
+
+fn padFromEnv(name: str, d: int): int {
+    match strings.parseInt(os.envOr(name, "")) {
+        Ok(n) { return n }
+        Err(e) { return d }
     }
 }
 
