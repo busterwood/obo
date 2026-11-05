@@ -35,6 +35,8 @@ for leaks.
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
 | `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
+| `tds.obx` | 1,640 | the TDS 7.4 protocol of SQL Server, from MS-TDS: packets, PRELOGIN with TLS inside, LOGIN7, SQLBatch, a checked token decoder, sessions over net and tls |
+| `sqlserver.obx` | 530 | Microsoft SQL Server natively over `tds`, for tasks: connection strings, Conn, buffered Rows (stage T1) |
 | `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 910 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
 | `tls.obx` | 950 | TLS 1.2 and 1.3 through OpenSSL 3: an engine over memory buffers, and connections over net sockets for tasks; verification, pins, client certificates, ALPN |
@@ -1129,8 +1131,8 @@ that need one are skipped when it is not installed). Examples:
   `toStr` as an SQL literal), `DbError {code, state, msg}` (`"error 19:
   UNIQUE constraint failed: t.id"`, `"error 7 (23505): duplicate key ..."`)
   and the adapters' own codes `E_INPUT E_NULL E_TYPE E_NONFINITE E_INEXACT
-  E_DEC_* E_CLOSED E_LIMIT` (1000 and up, above every SQLite and libpq
-  code); `Sql` fragments (`sql(text)`, `add`, `arg(v)`, `of(parts, args)`,
+  E_DEC_* E_CLOSED E_LIMIT E_CANCELLED E_TIMEOUT E_PROTOCOL E_IO` (1000
+  and up, above every SQLite and libpq code); `Sql` fragments (`sql(text)`, `add`, `arg(v)`, `of(parts, args)`,
   `render(dialect)` with `?`, `$n`, `@pn`, `:n` placeholders); `parseDecimal`, `decimalText`,
   `fitDecimal(d, p, s)`.
 - **sqlite**: `open(path)`, `openWith(path, flags)`; `Db`: `exec(script)`,
@@ -1236,6 +1238,59 @@ that need one are skipped when it is not installed). Examples:
 
       export MSSQL_TEST_DSN='Driver={ODBC Driver 18 for SQL Server};Server=localhost;UID=<user>;PWD=<password>;TrustServerCertificate=yes'
       python3 lib/run_tests.py mssql_
+
+### tds, sqlserver
+
+SQL Server over its own protocol, TDS 7.4, written in obx from Microsoft's
+MS-TDS specification (design/tds.md; stage T1 of its plan): no driver and no
+helper threads. Every call that waits for the server parks only its task on
+the socket, as net's calls do, so the task's cancellation and `task.within`
+deadlines end it (`E_CANCELLED`, `E_TIMEOUT`); the connection is then broken
+(no ATTENTION yet, T3). Imports tls, so a program is linked to OpenSSL.
+
+- **sqlserver**: `connect(connStr)` (also `parseConnString(s): Settings`
+  and `connectWith(&settings)`): ADO.NET or ODBC keywords, so mssql's
+  strings work (`Server`/`Data Source` with `tcp:`, `host,port`, `.`,
+  `(local)`; `Database`; `UID`/`User Id`; `PWD`; `Encrypt` yes (default:
+  TLS for everything) or no (TLS for the login at least) or strict (not
+  yet); `TrustServerCertificate`; `HostNameInCertificate`; `Connect
+  Timeout` (15 s, the whole connect); `Application Name`; `Packet Size`;
+  `Driver` ignored). SQL authentication only; a named instance needs its
+  port. Errors name an entry by position, never its text; `masked(s)`
+  hides the password. `Conn`: `exec(batch)`, `query(sql, &args)` (the first
+  result set with columns, every row read), `run(sql, &args)` (rows
+  changed), `diagnostics()` (INFO: PRINT, "Changed database context"),
+  `database`, `collation`, `encryption` ("full", "login only", "off"),
+  `serverVersion`, `tdsVersion`, `packetSize`, `inTransaction`, `idle`,
+  `setMaxReply(n)` (256 MiB), `close()`. `args` must be empty until RPC
+  (T2). `Rows`: `rowCount`, `columnCount`, `affected`, `resultSets`,
+  `columnName`, `columnType` (the TDS code), `columnTypeName`, `columnSize`,
+  and per cell `isNull int bool float text bytes value`. A server error is
+  `Err` with its number as `code` (208, 18456, ...) and state `""`; a wire
+  failure is `E_IO` (1023) and breaks the connection, a malformed reply is
+  `E_PROTOCOL` (1022).
+- Types in T1: tinyint, smallint, int, bigint, bit, real, float (exact),
+  nchar, nvarchar, ntext and (max) through PLP, char/varchar/text in a
+  UTF-8 collation (`_UTF8`), binary types as bytes. varchar in another code
+  page, and the other types (decimal, dates, money, guid, sql_variant,
+  xml, ...), decode to an `E_TYPE` error for that cell only, naming the
+  code page or the type; the rest of the row reads normally.
+- **tds** is the protocol for adapters and tests: `packets`,
+  `parseHeader`, `preloginRequest`/`parsePrelogin`, `login7` and
+  `scramble`, `sqlBatch`, `toUtf16`/`fromUtf16` (strict), `Collation`
+  (`codePage`, `utf8`, `describe`), `decode(bytes, maxCells): Reply` (every
+  length checked before use: a short or hostile reply is `E_PROTOCOL`,
+  never a trap), `Transport` and `Session` (`open(&Config)`, `batch`).
+  Under TLS each packet goes in its own TLS records: SQL Server drops the
+  connection when a record spans two packets.
+- Tests: `tds_codec` and `tds_malformed` (bytes only; truncations,
+  mutations, random input), `sqlserver_connstr`, `sqlserver_fake` (a
+  scripted server task: refusal, garbage, timeout, failed login, packet size
+  512, a cut reply), and live `sqlserver_live_basic` and
+  `sqlserver_live_diff` (the same queries through mssql and sqlserver, cell
+  by cell), which take the DSN as mssql's live tests do:
+
+      python3 lib/run_tests.py tds_ sqlserver_
 
 Every getter is exact or an error: no NULL becomes 0 or "" (`E_NULL`; use
 `isNull`, `value` or `decimalOrNull`), no REAL becomes an int or a decimal
@@ -1406,6 +1461,11 @@ them and a NUL-terminated temporary copy otherwise (freed after the call).
   until a remove.
 - Errors are errno ints in `os` (setEnv, setCwd) but `IoError` in `io` and
   `fs`.
+- `sqlserver` (stage T1 of design/tds.md): no parameters (RPC), only the
+  first result set of a batch, no dates, decimals, money, guid or
+  sql_variant, varchar only in UTF-8 collations, no cancellation of a
+  running query (ATTENTION), no pool, no streaming, Encrypt=strict and
+  integrated authentication not supported.
 - `mssql`: no MARS (one open result per connection), no output or
   table-valued parameters, no bulk copy, no streaming of a long value (it
   is read whole, up to maxValue); a NULL parameter costs a server round trip
