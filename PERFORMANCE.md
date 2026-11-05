@@ -42,7 +42,7 @@ host-dependent: use them to compare the columns, not as portable constants.
 | trees | 24 ms | 19 ms | 0.78 | binary trees |
 | tokens | 18 ms | 12 ms | 0.63 | byte scanning and hashing |
 | sieve | 170 ms | 116 ms | 0.68 | the sieve of Eratosthenes to 10 million, ten rounds |
-| maps | 246 ms | 301 ms | 1.22 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
+| maps | 242 ms | 291 ms | 1.20 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
 
 Native fib runs the same 4,305M instructions as after the nineteenth pass,
 in 1,855M cycles instead of the 1,550M it took then: the code placement
@@ -89,9 +89,16 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   3669M and 1456M, via C 1835M and 953M to 2180M and 1011M. 2 million
   hashes of a 6-byte key: native 109M to 186M cycles, C 91M to 125M; of a
   60-byte key native 466M to 511M, C 420M to 283M (SipHash takes 8 bytes a
-  step, FNV one). The native code reads each byte through a checked
-  `strByte`, 8 per word; a word-load intrinsic would remove most of the
-  gap. Elsewhere the cost is in the noise: the self-build 1991M to 1980M
+  step, FNV one). The native code read each byte through a checked
+  `strByte`, 8 per word. Branch `maphash` adds the internal intrinsic
+  `strWord(s, i)` (8 bytes as a little-endian u64, one range check per
+  block; inline `mov r64, [base+idx]` natively, memcpy in C) and
+  `sipKeyedStr` uses it for its blocks (hash values unchanged). maps
+  (`perf stat`, best of 5): native 2671M instructions and 1190M cycles to
+  2218M and 1159M, via C 2187M and 998M to 1785M and 908M; bench.py -n 11:
+  246 to 242 ms via C, 301 to 291 ms native (1.22 to 1.20). The cycle gain
+  is small because the instructions removed were cheap (IPC 2.24 to 1.91);
+  the tail (under 8 bytes) is still byte by byte. Elsewhere the cost is in the noise: the self-build 1991M to 1980M
   cycles (4891M to 5018M instructions), eza `-T` 210M to 209M native and
   180M to 181M via C, tokens unchanged; compiling the compiler with the
   gcc-built `obxc --native`, 1662M to 1695M cycles (2%; `sipKeyedStr` is

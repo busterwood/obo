@@ -1127,9 +1127,9 @@ fn (o: &Opt) lends(form: int, p: int, x: int, args: int, j: int): bool {
 
 // The runtime functions that only read their arguments and write no memory (READS: a str
 // argument read, not kept).
-const CALM: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_dup", "rt_str_drop", "rt_idx",
+const CALM: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_word", "rt_str_dup", "rt_str_drop", "rt_idx",
     "rt_add_int", "rt_sub_int", "rt_mul_int"]
-const READS: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_dup"]
+const READS: []str = ["rt_str_eq", "rt_str_cmp", "rt_str_byte", "rt_str_word", "rt_str_dup"]
 
 fn named(names: &[str], n: str): bool {
     for m in names {
