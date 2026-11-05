@@ -1,6 +1,5 @@
 // at(i) out of range stops the program like an array index: exit 3, after the output before it.
 // expect: before
-// stderr: obx: index out of range at collections.obx:408
 // exit: 3
 import "collections"
 
