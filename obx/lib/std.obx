@@ -340,10 +340,18 @@ pub fn (a: float) toStr(): str {
 
 // ------------------------------------------------------------ float math
 // libm, as methods on float (methods of a primitive live in std); the math
-// module adds constants, classification, parsing and fixed formatting.
+// module adds constants, classification, parsing and fixed formatting. The
+// functions are the runtime's own, not the C library's: sqrt, floor, ceil,
+// trunc, roundEven, round, abs, copySign and fma are single instructions
+// (SSE4.1, FMA3); the others are musl's (MIT; exp, exp2, log, log2 and pow are
+// Arm's optimized-routines), within 1 ULP, the same bits on both backends.
 
 extern "c" fn sqrt(x: float): float
 extern "c" fn cbrt(x: float): float
+extern "c" fn exp2(x: float): float
+extern "c" fn expm1(x: float): float
+extern "c" fn log1p(x: float): float
+extern "c" fn fma(x: float, y: float, z: float): float
 extern "c" fn pow(x: float, y: float): float
 extern "c" fn exp(x: float): float
 extern "c" fn log(x: float): float
@@ -375,6 +383,14 @@ pub fn (x: float) cbrt(): float { return cbrt(x) }
 pub fn (x: float) pow(y: float): float { return pow(x, y) }
 pub fn (x: float) powi(n: int): float { return pow(x, float(n)) }
 pub fn (x: float) exp(): float { return exp(x) }
+// 2 raised to x.
+pub fn (x: float) exp2(): float { return exp2(x) }
+// exp(x) - 1, exact for small x.
+pub fn (x: float) expm1(): float { return expm1(x) }
+// ln(1 + x), exact for small x.
+pub fn (x: float) ln1p(): float { return log1p(x) }
+// x * y + z with one rounding (a single instruction, FMA3).
+pub fn (x: float) fma(y: float, z: float): float { return fma(x, y, z) }
 // The natural logarithm.
 pub fn (x: float) ln(): float { return log(x) }
 pub fn (x: float) log2(): float { return log2(x) }

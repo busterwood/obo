@@ -609,7 +609,32 @@ static void rt_segv(int sig, void* si, void* uc) {
     SYS4(S_RT_SIGACTION, sig, &sa, 0, 8);
 }
 
+/* The CPU check, once at startup: obx programs need SSE4.1, AVX and FMA3 (x86-64 Haswell, 2013, or
+   later). One CPUID (leaf 1) and, when AVX is there, one XGETBV; on a miss, one line on stderr and
+   exit code 16. */
+static void rt_cpu_check(void) {
+    unsigned a = 1, b, c = 0, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "+c"(c), "=d"(d));
+    const char* miss = 0;
+    if (!(c >> 19 & 1)) miss = "SSE4.1";
+    else if (!(c >> 12 & 1)) miss = "FMA3";
+    else if (!(c >> 28 & 1) || !(c >> 27 & 1)) miss = "AVX";
+    else {
+        unsigned lo, hi;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        if ((lo & 6) != 6) miss = "AVX (the OS does not enable YMM state)";
+    }
+    if (!miss) return;
+    static const char m1[] = "obx: this CPU lacks ";
+    static const char m2[] = "; obx programs need x86-64 with SSE4.1, AVX and FMA3 (Haswell, 2013, or later)\n";
+    size_t n = 0;
+    while (miss[n]) n++;
+    SYS(S_WRITE, 2, m1, sizeof m1 - 1); SYS(S_WRITE, 2, miss, n); SYS(S_WRITE, 2, m2, sizeof m2 - 1);
+    sys_exit(16);
+}
+
 void rt_init(int argc, char** argv) {
+    rt_cpu_check();
     static char alt[1 << 16];
     struct { void* sp; int flags; size_t size; } ss = {alt, 0, sizeof alt};
     struct { unsigned long cur, max; } rl;
@@ -1581,89 +1606,20 @@ void* obx_getcwd(void) {
     return sysret(SYS(S_GETCWD, buf, sizeof buf, 0)) < 0 ? 0 : buf;
 }
 
-/* ------------------------------------------------------------ the exact part of libm
-   The functions of std's libm externs whose result is exact (correctly rounded), so that
-   they match glibc bit for bit. The others (pow, exp, log, sin, ...) need the real libm
-   (dynamic linking, a later phase). */
-static double m_of(uint64_t b) { union { uint64_t b; double d; } u; u.b = b; return u.d; }
-static uint64_t m_bits(double d) { union { uint64_t b; double d; } u; u.d = d; return u.b; }
-double fabs(double x) { return m_of(m_bits(x) & ~((uint64_t)1 << 63)); }
-double copysign(double x, double y) {
-    return m_of((m_bits(x) & ~((uint64_t)1 << 63)) | (m_bits(y) & ((uint64_t)1 << 63)));
-}
-double sqrt(double x) {
-    double r;
-    __asm__("sqrtsd %1, %0" : "=x"(r) : "x"(x));
-    return r;
-}
-double trunc(double x) {
-    uint64_t b = m_bits(x);
-    int e = (int)(b >> 52 & 0x7ff) - 1023;
-    if (e >= 52) return x + 0.0 == x ? x : x + x;     /* integral, inf, or nan (quieted) */
-    if (e < 0) return m_of(b & ((uint64_t)1 << 63));
-    return m_of(b & ~(((uint64_t)1 << (52 - e)) - 1));
-}
-double floor(double x) {
-    double t = trunc(x);
-    return t > x ? t - 1.0 : t;
-}
-double ceil(double x) {
-    double t = trunc(x);
-    if (t < x) t += 1.0;
-    return t == 0 ? copysign(0.0, x) : t;
-}
-double round(double x) {
-    double t = trunc(x);
-    if (fabs(x - t) >= 0.5) t += copysign(1.0, x);
-    return t;
-}
-double rint(double x) {
-    if (!(fabs(x) < 4503599627370496.0)) return x + 0.0 == x ? x : x + x;
-    volatile double big = x < 0 ? -4503599627370496.0 : 4503599627370496.0;
-    double r = (x + big) - big;
-    return r == 0 ? copysign(0.0, x) : r;
-}
-double fmod(double x, double y) {
-    uint64_t ux = m_bits(x), uy = m_bits(y), i;
-    int ex = (int)(ux >> 52 & 0x7ff), ey = (int)(uy >> 52 & 0x7ff), sx = (int)(ux >> 63);
-    if (uy << 1 == 0 || y != y || ex == 0x7ff) return (x * y) / (x * y);
-    if (ux << 1 <= uy << 1) return ux << 1 == uy << 1 ? 0 * x : x;
-    if (!ex) {
-        for (i = ux << 12; i >> 63 == 0; ex--, i <<= 1) {}
-        ux <<= -ex + 1;
-    } else {
-        ux &= (uint64_t)-1 >> 12;
-        ux |= (uint64_t)1 << 52;
-    }
-    if (!ey) {
-        for (i = uy << 12; i >> 63 == 0; ey--, i <<= 1) {}
-        uy <<= -ey + 1;
-    } else {
-        uy &= (uint64_t)-1 >> 12;
-        uy |= (uint64_t)1 << 52;
-    }
-    for (; ex > ey; ex--) {
-        i = ux - uy;
-        if (i >> 63 == 0) {
-            if (i == 0) return 0 * x;
-            ux = i;
-        }
-        ux <<= 1;
-    }
-    i = ux - uy;
-    if (i >> 63 == 0) {
-        if (i == 0) return 0 * x;
-        ux = i;
-    }
-    for (; ux >> 52 == 0; ux <<= 1, ex--) {}
-    if (ex > 0) {
-        ux -= (uint64_t)1 << 52;
-        ux |= (uint64_t)ex << 52;
-    } else {
-        ux >>= -ex + 1;
-    }
-    return m_of(ux | (uint64_t)sx << 63);
-}
+/* ------------------------------------------------------------ libm
+   The libm of obx programs: obxprim.inc (the single instructions) and obxmath.inc (musl's
+   src/math, MIT; see its header), the text the C backend compiles too, so that both give the
+   same bits. The functions of std's libm externs are these wrappers; a program that calls
+   them links no libm and no libc. */
+#include "../obxprim.inc"
+#include "../obxmath.inc"
+#define M1(n) double n(double x) { return obx_##n(x); }
+#define M2(n) double n(double x, double y) { return obx_##n(x, y); }
+M1(sqrt) M1(fabs) M1(floor) M1(ceil) M1(trunc) M1(rint) M1(round)
+M1(exp) M1(exp2) M1(log) M1(log2) M1(log10) M1(log1p) M1(expm1) M1(cbrt)
+M1(sin) M1(cos) M1(tan) M1(asin) M1(acos) M1(atan) M1(sinh) M1(cosh) M1(tanh)
+M2(pow) M2(atan2) M2(hypot) M2(fmod) M2(copysign)
+double fma(double x, double y, double z) { return obx_fma(x, y, z); }
 
 /* ------------------------------------------------------------ more of libc
    C functions that programs declare with `extern "c"` and that need no dynamic linking. */

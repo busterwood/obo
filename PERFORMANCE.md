@@ -1007,3 +1007,31 @@ and long eza listings:
 The fib row's obx figures are from `2ce4860`; the rest are from the day of
 the comparison. `python3 obx/bench/bench.py --obo` adds obo's column to the benchmarks
 (build `archive/obo/obo` first with `make -C archive/obo`).
+
+## Math (2026-11-05)
+
+The float math functions are the runtime's own (musl 1.2.5, one C text for both
+backends, `obx/compiler/obxmath.inc`), not libm's. sqrt, floor, ceil, trunc,
+round, rint, fabs, copysign and fma are single instructions (sqrtsd, roundsd,
+masks, vfmadd213sd). On a loop of sqrt, floor, ceil, trunc and round: native
+393 ms to 340 ms, C backend 200 ms to 100 ms. A native program that uses math
+is a static ELF (33 KB against 29 KB dynamic) and starts in 1.12 ms instead of
+1.38 ms with libm and libc loaded; the CPU check at startup costs about 0.5 us.
+The C backend's gcc needs 0.23 s more for a program that calls the ported
+functions (0.74 s against 0.51 s: 170 KB of C text).
+
+5M iterations of one call in a loop (ms, best of 7; libm of glibc 2.39 before,
+the runtime's own after): exp C 21 to 8, native 32 to 33; log C 19 to 13,
+native 32 to 32; sin C 36 to 19, native 46 to 37; pow C 42 to 38, native 60 to 54;
+atan C 33 to 26, native 54 to 36; tan C 45 to 40, native 76 to 58. The
+polynomials of exp, exp2, log, log2, pow, sin and cos use explicit fma. The
+same text compiled with FMA contraction everywhere is 10 to 35% faster still in a
+throughput loop (exp 1.4 ns, log 1.9, pow 6.6, atan 3.1, tan 6.5 per call) but
+its bits would depend on the gcc, so the rest stays plain; explicit fma in more
+kernels (atan, tan, expm1) is the deterministic way to get it.
+
+The native backend moved xmm0 to xmm1 with `movsd xmm1, xmm0`, which merges and
+so waits for the old xmm1; after a call that was the last write inside the callee,
+which tied each iteration of a float loop to the callee's whole latency (the
+first port of exp ran at half the speed of glibc's for that reason). It uses
+`movapd` now.

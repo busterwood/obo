@@ -96,10 +96,11 @@ for leaks.
 - `print`, `println`, `eprint`, `eprintln` (one `Show` argument; stdout is
   buffered and flushed at exit and before stderr writes).
 - **float**: `toStr` is the shortest text that reads back as the same value
-  (`0.1`, `1e25`, `1.5e-7`, `5e-324`, `-0`, `inf`, `NaN`). Methods over libm:
-  `sqrt cbrt pow powi exp ln log2 log10 sin cos tan asin acos atan atan2 sinh
-  cosh tanh floor ceil trunc round roundEven abs mod hypot copySign isNaN
-  isInf isFinite`.
+  (`0.1`, `1e25`, `1.5e-7`, `5e-324`, `-0`, `inf`, `NaN`). Math methods, which
+  are the runtime's own, not the C library's (see **math** below):
+  `sqrt cbrt pow powi exp exp2 expm1 ln ln1p log2 log10 sin cos tan asin acos
+  atan atan2 sinh cosh tanh floor ceil trunc round roundEven abs mod hypot
+  copySign fma isNaN isInf isFinite`.
 - **StrBuf**: `newStrBuf`, `add` (one copy of the string's bytes,
   `appendStr`), `addByte`, `addInt`, `addLine`, `size`, `clear`, `toStr`. Strings: `substr`, `indexOf(s, sub, from)`, `startsWith`,
   `endsWith`, `contains`, `split(s, sep: byte)`, `trim`, `isSpace`, `isDigit`,
@@ -157,6 +158,41 @@ mode)`, `fromMinor(units)`, `zero()`, `parse[C](s): Result`. Methods:
 the shortest decimal form half to even: `fixed(2.675, 2)` is `"2.68"`),
 `toDecimal(x): Option[Decimal]` (exact, from the shortest form), `near(a, b,
 tol)`.
+
+The float methods need no libm and no libc: a native program that uses them is
+a static ELF, and a C-backend program links no `-lm`.
+
+- **Single instructions** (bit for bit what C's libm returns, on both
+  backends): `sqrt` (sqrtsd: a negative gives NaN), `floor ceil trunc
+  roundEven` (roundsd; `roundEven` is rint, halves to even; -0 and the sign of
+  a zero result are kept: `ceil(-0.5)` is -0; infinities and NaN come back
+  unchanged, a signaling NaN quiet), `round` (halves away from zero:
+  trunc(x + copysign(0.49999999999999994, x)); `round(-0.3)` is -0),
+  `abs` (clears the sign bit, so `abs(-0)` is 0 and a NaN keeps its payload),
+  `copySign` (the magnitude of x with the sign bit of y, also for NaN and
+  zeros), and `x.fma(y, z)` (x * y + z with one rounding: vfmadd213sd, FMA3;
+  NaN and infinity as in IEEE 754).
+- **The rest** is musl 1.2.5's `src/math` (MIT; NOTICE) in
+  `compiler/obxmath.inc`, one C text that both the C backend and the native
+  runtime compile, so both give the same bits: `exp exp2 log log2 pow` are
+  Arm's optimized-routines (about 0.51 ULP; they use `fma`), `sin cos tan asin
+  acos atan atan2 sinh cosh tanh expm1 log1p log10 cbrt hypot` are FreeBSD
+  msun (the table below) and `mod` (fmod) is exact. Results can differ
+  from glibc's in the last bit for the msun ones (sin, cos, tan, asin, acos, atan, atan2, tanh, cbrt,
+  hypot, sinh), for 1 to 55 of 100 inputs; exp, exp2, log, log2, log1p and pow
+  agree with glibc on 99.9% or more. Special values (NaN, infinities, zeros,
+  signs, pow's edge cases) are the C99 ones. `obx/tools/mathulp.c` measures
+  the error against libquadmath (1M random inputs per function; glibc 2.39 in
+  brackets): exp 0.51 (0.51), exp2 0.51 (0.51), log 0.50 (0.50), log2 0.50
+  (0.50), pow 0.51 (0.51), log10 0.57 (1.48), log1p 0.51 (0.51), expm1 0.76
+  (0.76), cbrt 0.67 (3.10), sin 0.78 (0.52), cos 0.76 (0.52), tan 0.85
+  (0.57), asin 0.84 (0.51), acos 0.88 (0.52), atan 0.83 (0.51), atan2 1.45
+  (0.52), hypot 0.92 (0.53), sinh 1.51 (1.54), cosh 0.99 (1.49), tanh 2.02
+  (2.02). sin, cos and tan are good to 1e22 (musl's argument reduction).
+  Specials: 0 of 6,650 differ from glibc in kind (NaN, inf, zero, sign).
+- Programs need an x86-64 CPU with SSE4.1, AVX and FMA3 (Haswell, 2013, or
+  later); the runtime checks this once at startup (CPUID leaf 1, XGETBV) and
+  exits with code 16 and one line on stderr when a feature is missing.
 
 ### collections
 
@@ -1435,9 +1471,11 @@ prefilters), `appendStr(mut &bytes, s)` (the bytes of `s` at the end of a
 `fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
 or `Frozen` value in the runtime's structures.
 
-C functions through `extern "c"`: libm (`sqrt cbrt pow exp log log2 log10 sin
-cos tan asin acos atan atan2 sinh cosh tanh floor ceil trunc round rint fabs
-fmod hypot copysign`), libc (`strerror close opendir readdir closedir mkdir
+C functions through `extern "c"`: the math functions std declares (`sqrt cbrt
+pow exp exp2 expm1 log log1p log2 log10 sin cos tan asin acos atan atan2 sinh
+cosh tanh floor ceil trunc round rint fabs fmod hypot copysign fma`) are the
+runtime's own (compiler/obxmath.inc), not libm's; any other libm function is
+libm's, linked dynamically. libc (`strerror close opendir readdir closedir mkdir
 rmdir unlink rename symlink chmod setenv unsetenv getpid chdir usleep`), and
 these helpers in `compiler/rt.h` for what the language cannot express (a C struct,
 errno, a static buffer):

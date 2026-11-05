@@ -1103,6 +1103,9 @@ exits with:
 | 13 | a task parked inside `Shared.with`, or a nested `with` on the same value (section 16) |
 | 14 | deadlock: every task is parked, with no socket waited on and no timer pending (section 16) |
 | 15 | `task.workers` cannot fork safely: the helper pool has started, another task exists, or the event loop holds a registration (section 16) |
+| 16 | the CPU lacks SSE4.1, AVX or FMA3 (checked once at startup; the message names the feature and is the only output) |
+
+Obx programs run on x86-64 CPUs with SSE4.1, AVX and FMA3 (Intel Haswell, AMD Excavator/Zen, 2013 or later); AVX2 is not required. The runtime checks the CPU once at startup (CPUID leaf 1; XGETBV for the OS's YMM state) and stops with code 16 and a line naming the missing feature.
 
 For codes 13, 14 and 15 the location is the program's call of a `task`
 function (its call site, section 15), and for code 13 the open `with` is

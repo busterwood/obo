@@ -3562,7 +3562,7 @@ fn (g: mut &Gen) pairF(a: int, b: int) {
     let s = g.temp(8, 8)
     g.a.movsdStore(rbp(s), 0)
     g.gen(b)
-    g.a.sse(x64.MOVSD, 1, 0)
+    g.a.sse66(0x28, 1, 0)       // movapd: movsd xmm, xmm would wait for the old xmm1
     g.a.movsdLoad(0, rbp(s))
 }
 
@@ -4326,6 +4326,73 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
 
 // ---------------------------------------------------------------- calls
 
+// The libm call e of floats that is generated as the instructions that compute it exactly
+// (bit for bit as libm: sqrt, floor, ceil, trunc, rint: sqrtsd and roundsd; fabs and copysign:
+// sign-bit masks; round: trunc(x + copysign(0.49999999999999994, x)); fma: vfmadd213sd), else
+// false. The caller has checked the name and the all-float types.
+fn (g: mut &Gen) inlineMath(e: int, name: str): bool {
+    let args = g.u.nodes[e].b
+    let nargs = g.u.listLen(args)
+    var imm = -1
+    if name == "floor" { imm = 9 } else if name == "ceil" { imm = 10 } else if name == "trunc" { imm = 11 } else if name == "rint" { imm = 12 }
+    if nargs == 1 {
+        if imm < 0 && name != "sqrt" && name != "fabs" && name != "round" { return false }
+        g.gen(g.u.listAt(args, 0))
+        if name == "sqrt" {
+            g.a.sse(x64.SQRTSD, 0, 0)
+        } else if name == "fabs" {
+            g.a.movRI(RCX, 9223372036854775807)
+            g.a.movqXR(1, RCX)
+            g.a.sse66(0x54, 0, 1)
+        } else if name == "round" {
+            g.a.movqRX(RCX, 0)
+            g.a.movRI(RDX, -9223372036854775807 - 1)
+            g.a.alu(x64.AND, 8, RCX, RDX)
+            g.a.movRI(RAX, 4602678819172646911)         // 0.49999999999999994
+            g.a.alu(x64.OR, 8, RAX, RCX)
+            g.a.movqXR(1, RAX)
+            g.a.sse(x64.ADDSD, 1, 0)
+            g.a.roundsd(0, 1, 11)
+        } else {
+            g.a.roundsd(0, 0, imm)
+        }
+        return true
+    }
+    if nargs == 2 && name == "copysign" {
+        g.pairF(g.u.listAt(args, 0), g.u.listAt(args, 1))
+        g.a.movqRX(RAX, 0)
+        g.a.movqRX(RCX, 1)
+        g.a.movRI(RDX, -9223372036854775807 - 1)
+        g.a.alu(x64.AND, 8, RCX, RDX)
+        g.a.movRI(RDX, 9223372036854775807)
+        g.a.alu(x64.AND, 8, RAX, RDX)
+        g.a.alu(x64.OR, 8, RAX, RCX)
+        g.a.movqXR(0, RAX)
+        return true
+    }
+    if nargs == 3 && name == "fma" {
+        g.pairF(g.u.listAt(args, 0), g.u.listAt(args, 1))
+        let t0 = g.temp(8, 8)
+        let t1 = g.temp(8, 8)
+        g.a.movsdStore(rbp(t0), 0)
+        g.a.movsdStore(rbp(t1), 1)
+        g.gen(g.u.listAt(args, 2))
+        g.a.sse66(0x28, 2, 0)
+        g.a.movsdLoad(0, rbp(t0))
+        g.a.movsdLoad(1, rbp(t1))
+        g.a.vfmadd213sd(0, 1, 2)
+        return true
+    }
+    return false
+}
+
+fn (g: &Gen) allF(pts: &[]int): bool {
+    for t in pts {
+        if !g.isF(t) { return false }
+    }
+    return true
+}
+
 fn (g: mut &Gen) genCall(e: int) {
     // where the aggregate result goes, if the caller said (callDest), and whether it may be
     // the hidden result pointer (the place is new: nothing reads it during the call)
@@ -4341,6 +4408,11 @@ fn (g: mut &Gen) genCall(e: int) {
     var direct = -1
     if g.u.nk(callee) == ir.E_DECAY && g.u.nk(g.u.nodes[callee].a) == ir.E_FUNC {
         direct = g.u.nodes[g.u.nodes[callee].a].a
+    }
+    if direct >= 0 && g.u.funcs[direct].body < 0 && len(pts) >= 1 && len(pts) <= 3 && g.allF(&pts) && g.isF(rt) &&
+        g.inlineMath(e, g.u.funcs[direct].asmName) {
+        g.destUsed = false
+        return
     }
     if direct >= 0 && g.u.funcs[direct].body < 0 && !g.u.funcs[direct].isExtern &&
         g.inlineRt(e, g.u.funcs[direct].name) {
