@@ -28,8 +28,9 @@ OUT = os.path.join(HERE, 'rtx.obx')
 # -falign-loops=32: the runtime's loops (copies, hashing, the allocator's scans) stay in one 32-byte
 # block wherever the code before them changes.
 # -march=x86-64-v3: the CPU level programs require; -ffp-contract=off: the math port's floats keep
-# their bits (no a * b + c fused unless written as fma).
-CFLAGS = ['-O2', '-march=x86-64-v3', '-ffp-contract=off', '-falign-functions=64', '-falign-loops=32', '-std=gnu11', '-ffreestanding', '-fno-builtin', '-nostdlib', '-fno-pic', '-fno-pie',
+# their bits (no a * b + c fused unless written as fma). -mmove-max/-mstore-max=128: no ymm struct
+# copies, whose loads straight after narrower stores stall store forwarding (see main.obx gccCmd).
+CFLAGS = ['-O2', '-march=x86-64-v3', '-mmove-max=128', '-mstore-max=128', '-ffp-contract=off', '-falign-functions=64', '-falign-loops=32', '-std=gnu11', '-ffreestanding', '-fno-builtin', '-nostdlib', '-fno-pic', '-fno-pie',
           '-fno-stack-protector', '-fno-asynchronous-unwind-tables', '-fno-tree-loop-distribute-patterns',
           '-fcf-protection=none', '-fno-common', '-ffunction-sections', '-fdata-sections',
           '-Wall', '-Wno-builtin-declaration-mismatch', '-Werror']
