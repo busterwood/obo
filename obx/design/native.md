@@ -231,7 +231,10 @@ libraries. A value has the same bytes as in the C backend:
   `rdi`; an argument that needs two registers when only one is left goes to
   the stack whole;
 - `obx_str` (16 bytes) is passed in two integer registers and returned in
-  `rax:rdx`; `__int128` likewise; `double` in `xmm` registers.
+  `rax:rdx`; `__int128` likewise; `double` in `xmm` registers. A shared
+  `&str` is an `obx_str` too (the header by value, uncounted: SPEC 4.1), passed
+  the same way; a `mut &str` is a pointer. A view (`&s[a..b]`) is
+  `rt_str_view`: the same block, no count taken.
 
 ## 4. Code generation
 
@@ -380,7 +383,8 @@ for its cost: section 8):
 - str headers out of loops (the fifteenth pass): a loop's reads of a str's
   bytes (`rt_str_byte(s, i, w)`) and length (`(int64)s.len`, what `len(s)`
   lowers to) whose root cannot change in the loop (the array headers'
-  rules: a local str, or what a borrowed `&str` parameter points to; not a
+  rules: a local str, or a shared `&str` parameter (the header itself, by
+  value: SPEC 4.1), or what a `mut &str` parameter points to; not a
   member of a record whose other members the loop writes: the root is the
   whole local or pointee) read locals declared just before the loop: the
   length as an int64 `sl` (an earlier `let n = len(s)` of the same block,

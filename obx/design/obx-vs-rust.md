@@ -21,9 +21,11 @@ rules, and a compiler small enough to be written in the language itself (it
 is: about 23,700 lines of obx, compiling itself to a fixed point). Memory is
 managed by single ownership with moves and drops, no collector. Borrows
 (`&T`, `mut &T`) exist but are *second class*: they may be a parameter, a
-`let` or a function result, and nothing else. Because a borrow can never be
-stored, the checker needs no lifetimes and works on one function at a time
-with six rules. Strings are reference counted and behave as copy values.
+`let`, a function result, or a field or element of a value that is then second
+class too (a *borrow-class* value: a view, a token, an iterator). Because no
+such value can outlive the function that made it or the caller that passed
+it, the checker needs no lifetimes and works on one function at a time with
+seven rules. Strings are reference counted and behave as copy values.
 Generics are checked where they are written and compiled per instance.
 Concurrency is cooperative tasks on one thread, plus worker processes; there
 are no threads in obx code. The compiler emits C (built by gcc) or native
@@ -46,9 +48,9 @@ needs more concepts; obx accepts fewer and needs fewer.
 | Feature | obx | Rust | Notes |
 |---|---|---|---|
 | Memory management | ownership, drops, no GC | ownership, drops, no GC | same family |
-| Borrows | `&T`, `mut &T`, second class | `&T`, `&mut T`, first class | obx cannot store a borrow |
+| Borrows | `&T`, `mut &T`, second class | `&T`, `&mut T`, first class | obx stores borrows only in second-class values |
 | Lifetimes | none | explicit, inferred, elided | |
-| Borrow check scope | one function, six rules | whole program through signatures | |
+| Borrow check scope | one function, seven rules | whole program through signatures | |
 | Borrow region | lexical (to end of block) | non-lexical (to last use) | obx rejects more |
 | Integers | `int`(64), `i32 u32 u64 byte i128 u128` | `i8..i128`, `u8..u128`, `isize`, `usize` | |
 | Overflow | traps (exit 10); `+% -% *%` wrap | panics in debug, wraps in release | obx always checks |
@@ -64,7 +66,7 @@ needs more concepts; obx accepts fewer and needs fewer.
 | Interfaces / traits | structural, constraints only | nominal `impl`, also dyn | obx has no interface values yet |
 | Dynamic dispatch | none | `dyn Trait` | obx **(planned)** |
 | Closures | non-escaping `&fn` only | `Fn`/`FnMut`/`FnOnce`, escaping | obx **(planned)** escaping |
-| Iterators | none (index loops, closure-taking helpers) | `Iterator` and adapters | obx **(proposal)** for borrow-holding types |
+| Iterators | `for x in it` over any `next(): Option[T]`; no lazy closure adapters | `Iterator` and adapters | obx items never borrow the iterator |
 | Errors | `Result` + `try`; traps and `panic` exit | `Result` + `?`; panic with unwinding | |
 | Concurrency | tasks on one thread, worker processes | threads, `Send`/`Sync`, `async` | |
 | Unsafe | no `unsafe`; `extern` private to a module | `unsafe` blocks, FFI | |
@@ -431,31 +433,42 @@ Differences:
 
 This is the centre of the design difference.
 
-### 6.1 obx: second-class borrows and six rules
+### 6.1 obx: second-class borrows and seven rules
 
-A borrow `&T` (read) or `mut &T` (write) may appear only as a parameter, a
-receiver, a `let` binding or a function result. It cannot be stored in a
-field, an element, a global or a `var`, and it cannot be a type argument.
-Because borrows never outlive the function that holds them, the compiler
-checks them within one function. The rules (spec section 10):
+A borrow `&T` (read) or `mut &T` (write) may appear as a parameter, a
+receiver, a `let` binding or a function result, and as a field of a value
+record or value closed type, an array element, or the argument of a type
+parameter declared `borrow` (`Option[&str]`). A type that holds a borrow is
+second class too: it cannot be a global, a field of a boxed type, a closure's
+result, a task's argument, or a key or value of a `Map`. Because no borrow can
+outlive the function that holds it, the compiler checks them within one
+function. The rules (spec section 10):
 
-1. **Second class.** Borrow types appear only as parameter, receiver, `let` or
-   result types.
+1. **Second class.** Borrows and the types that hold them appear only in the
+   places above; a value that holds borrows (not a plain borrow) may also be
+   a `var`.
 2. **Roots.** Every borrow expression has a root: the local or parameter its
    place starts from. Borrowing a global, or a temporary into a `let`, is an
-   error.
+   error. A value that holds borrows has the roots of everything in it (a join
+   when it was built from several).
 3. **Calls.** While a call's arguments are evaluated, places already borrowed
    or to be moved are held; a later argument may not mutably borrow, assign
    or move a place that overlaps. (Borrows of a receiver or argument are
    "taken at the call", so `p.node(K, p.block())` is accepted, which resembles
    Rust's two-phase borrows.)
-4. **Frozen roots.** While a `let` borrow is in scope, its root cannot be
-   assigned, moved or mutably borrowed. `for x in xs` freezes `xs` for the
-   loop body.
+4. **Frozen roots.** While a `let` borrow, or a variable holding borrows, is
+   in scope, its roots cannot be assigned, moved or mutably borrowed.
+   `for x in xs` freezes `xs` for the loop body.
 5. **Results.** A function returning a borrow must have exactly one borrowed
-   parameter, and every `return` must borrow a place rooted at it.
+   parameter, and every `return` must borrow a place rooted at it. A result
+   that holds borrows may come from several such *sources*, and has the join
+   of their roots at the call; a parameter that itself holds borrows lends
+   what it holds, not itself (this is Swift's `copy` dependence, and why an
+   iterator's items outlive the next call to `next`).
 6. **Mutation.** Assigning through `p`, or calling a `mut &Self` method,
    requires `p` to be a `var`, or rooted at a `mut &` borrow.
+7. **Variables.** A `var` holding borrows keeps the roots of the first value
+   stored in it; every later store must borrow from them.
 
 Rule 4 is lexical: a borrow freezes its root until the end of its block, not
 until its last use. Use an inner block to end it sooner.
@@ -477,7 +490,8 @@ fn longer(a: &str, b: &str): &str { ... }
    -> longer returns a borrow, so it needs exactly one borrowed parameter, not 2
 
 type Holder = record { name: &str }
-   -> a borrow type cannot be a field: borrows are second class
+   -> field name of Holder is &str, which holds borrows: only a value record
+      or value closed type can hold them
 
 var xs: []int = [1]
 let first = &xs[0]
@@ -513,7 +527,13 @@ impl<'a> Iterator for Tokens<'a> {
 
 Only in Rust (not expressible in obx today):
 
-- A struct, enum or iterator that holds a borrow (`struct Parser<'a>`).
+- A struct or iterator that holds a borrow and outlives its creator's
+  caller, or sits in a heap structure (`Box<Parser<'a>>`,
+  `HashMap<&'a str, i32>`). obx's borrow-holding values are value records
+  and arrays on the stack of the function that has the roots.
+- A lending iterator (items that borrow the iterator), and a function that
+  stores views of one parameter into another (`fn into<'a>(s: &'a str,
+  out: &mut Vec<&'a str>)`): obx has no annotation to say so.
 - A function returning a borrow of one of several inputs, with the lifetime
   relationships stated (`longer`). obx requires exactly one borrowed
   parameter.
@@ -534,6 +554,9 @@ Only (or more simply) in obx:
 - Per-function checking is easier to reason about and cheaper to compile.
 - A `for` loop over an array borrows it automatically (rule 4) without an
   iterator object.
+- Types that hold borrows need no lifetime parameter: `type Token = value
+  record { text: &str; kind: int }` and `[]Token` are checked through the
+  roots of the values, not a `'a` in every signature.
 - Borrows of a receiver and its arguments are "taken at the call", so
   `p.node(K, p.block())` is accepted. Rust's two-phase borrows accept the
   same shape for a method receiver (`v.push(v.len())`).
@@ -545,16 +568,33 @@ local needs a copy type, so the checker writes long `pg.types[d].tparams[i]`
 paths in full (about 250 of them in the semantic analysis), and loops that
 intern while walking a list copy the list first.
 
-### 6.4 Proposal: borrow-class types
+### 6.4 Borrow-class types
 
-The author is prototyping, on the branch `borrow-types`, a way for a type
-that holds borrows to exist while keeping the second-class rules for it
-**(proposal, not on main)**. Its goal, from the author's notes, is the
-shapes Rust uses iterators for: `split`, token streams, iterators. The only
-commit on that branch changes the compiler so that a shared borrow of a
-`str` is the string header itself (no address, no count), "so a substring view
-can be stored where a borrow may be". There is no design document for it on
-main or on that branch yet, so its final shape is not described here.
+A type that holds borrows inherits the second-class rules (design note
+`design/borrow-types.md`; spec sections 4.5, 6.1 and 10). A shared `&str` is
+the string's header by value, uncounted, so a substring view costs no count:
+
+```obx
+type Token = value record { text: &str; kind: int }
+type Lexer = value record { src: &str; pos: int }
+fn (lx: mut &Lexer) next(): Option[Token] { ... }   // items borrow what lx borrows
+
+var toks: []Token = []
+for t in Lexer{src: &src, pos: 0} { append(mut &toks, t) }   // src frozen while toks lives
+for line in strings.lines(&text) { ... }                       // views, not copies
+```
+
+```rust
+struct Token<'a> { text: &'a str, kind: u8 }
+struct Lexer<'a> { src: &'a str, pos: usize }
+impl<'a> Iterator for Lexer<'a> { type Item = Token<'a>; fn next(&mut self) -> Option<Token<'a>> { ... } }
+```
+
+The obx version names no lifetime; the price is the limits listed in 6.3
+(no heap containers of views, no lending iterators, no mixed sources) and
+lexical freezes. Measured gain: a word-statistics program over 100 MB using
+`strings.lines` and `fieldsViews` instead of `splitOn` and `fields` runs
+-50% instructions (C backend) and -30% (native).
 
 ## 7. Generics and constraints versus traits
 
@@ -737,31 +777,35 @@ values and an owned argument rather than a closure (section 14).
 
 ## 10. Iterators
 
-obx has no iterator protocol. The loop forms are:
+The loop forms are:
 
 - `for i in a..b`: counts over `int`.
 - `for x in xs`: walks an array or slice; `x` is a copy of each element if the
   element is a copy type, and a `&T` borrow otherwise. The array is frozen
   for the loop.
+- `for x in it`: any value with a `fn (mut &Self) next(): Option[T]` method
+  (spec section 8). An iterator that holds borrows (`strings.lines(&text)`,
+  `m.iter()` over a `Map`, a user `Lexer`) freezes what it borrows for the
+  loop, and its items borrow that, not the iterator, so they can be kept.
 - `while`.
 
 Bulk operations are library functions that take a closure: `collections.filter`,
 `mapTo`, `findBy`, `count`, `any`, `all`, `retain`, `sortBy`; `Map.each` and
-`Set.each`. They build whole arrays; nothing is lazy. There is no `zip`,
-`enumerate`, `chain`, `take_while` or `collect`, and no way for a user type
-to be "iterable" in a `for` loop.
+`Set.each`. They build whole arrays; nothing is lazy. There is no library
+`zip`, `enumerate`, `chain`, `take_while` or `collect`. Adapters that store
+only an iterator can be written by users with an interface constraint on a
+`borrow` type parameter (`type Enumerate[I: borrow + Iter[X], X: borrow]`,
+lib/tests/run/borrow_types_enumerate.obx; `X` must be written at the call,
+`enumerate[Words, &str](...)`). Lazy `map` and `filter` would store a
+closure, and closures are second class: not possible.
 
 ```obx
 let ages = [10, 20, 30]
 let adults = collections.filter(&ages, fn(a) { return a >= 18 })   // [20, 30]
 ```
 
-The reason is the borrow rules: an iterator over a collection is a value
-that holds a borrow of it, and obx cannot store a borrow in a value.
-**(Proposal)** The `borrow-types` branch (section 6.4) is aimed at this gap:
-types that hold borrows and inherit the second-class rules, so that
-splitting, token streams and iterators could be written as ordinary types.
-Nothing of that is on main yet.
+An iterator over a collection is a value that holds a borrow of it; such a
+value is borrow-class (section 6.4) and lives only as long as its roots.
 
 In Rust, iterators and their adapters (`map`, `filter`, `zip`, `rev`, `fold`)
 are the usual way to write loops, are lazy, compose, and compile to the same
@@ -1175,14 +1219,14 @@ and grep, so no broader claim is made here.
 ## 20. What Rust has that obx doesn't
 
 - First-class borrows and lifetimes: structs and iterators that hold
-  references, non-lexical borrow regions, and signatures that relate several
-  lifetimes.
+  references in heap structures or beyond their creator, lending iterators,
+  non-lexical borrow regions, and signatures that relate several lifetimes.
 - Traits with explicit `impl`, associated types and consts, blanket impls,
   const generics, `impl Trait`, trait objects (`dyn`), operator traits, and
   `derive`.
 - Closures that escape (`Box<dyn Fn>`, `impl Fn`, `move`), and
   `Fn`/`FnMut`/`FnOnce`.
-- The iterator protocol and lazy adapters.
+- Lazy iterator adapters that take closures, and a library of adapters.
 - Rich patterns: nested, guards, ranges, `if let`, `while let`, `let else`.
 - Macros (declarative and procedural), attributes, `derive`, `format!`.
 - `const fn` and compile-time computation.
@@ -1201,12 +1245,12 @@ and grep, so no broader claim is made here.
 The obx documents give reasons for most of the places where it does less than
 Rust. Seen as trade-offs:
 
-1. **Second-class borrows.** Nothing can hold a borrow, so nothing needs a
-   lifetime, and the checker is six rules applied to one function. The price
-   is the programs rejected in section 6.3 and a library without lazy
-   iterators. The author found the price real while writing the compiler
-   (PLAN.md backlog items 7, 8, 10 and 11), and the `borrow-types` work
-   **(proposal)** is the attempt to buy back iterators and views without
+1. **Second-class borrows.** Only second-class values hold borrows, so
+   nothing needs a lifetime, and the checker is seven rules applied to one
+   function. The price is the programs rejected in section 6.3 and a library
+   without lazy adapters. The author found the price real while writing the
+   compiler (PLAN.md backlog items 7, 8, 10 and 11); borrow-class types
+   (section 6.4) buy back views, token streams and iterators without
    lifetimes.
 2. **Counted strings.** One string type, copy semantics, free substrings.
    The price is a reference count on copy and parent retention by
@@ -1261,5 +1305,4 @@ call, a mutation inside `for`, two `mut` slices of one array, `try` on an
 Not verified by a program: the claim that a substring keeps its parent
 alive (read from "shares the bytes" and "freed with its last copy"); that
 a panic skips destructors (the spec does not say); the exact final shape of
-the `borrow-types` proposal (the branch has one compiler commit and no design
-document).
+the `borrow-types` proposal (now design/borrow-types.md and spec section 10).

@@ -1,8 +1,10 @@
 # Borrow-class types: borrows inside values
 
-Status: research note and prototype, 2026-11-04, branch `borrow-types` (not
-merged). The proposed spec text below is a proposal: SPEC.md is unchanged, and
-the decisions in section 9 are the user's.
+Status: decided 2026-11-05 (D1-D10 as recommended in section 9), implemented
+on branch `borrow-types-v2` (rebased on main, the prototype's gaps closed;
+section 11). SPEC.md now has the rules (sections 4.1, 4.5, 6.1, 7.8, 8, 9.4,
+10, 16); section 4 below is the proposal they came from. The first prototype
+is branch `borrow-types` (section 10), kept as it was.
 
 ## 1. Motivation
 
@@ -310,10 +312,24 @@ fn id[T: borrow](x: T): T { return x }
 let o: Option[&str] = Some(&line[0..1])
 ```
 
-Adapters such as `enumerate` work in principle (`type Enumerate[I: borrow] =
-value record { inner: I; i: int }`) but need an interface constraint for
-`next` on a borrow type parameter; they were not prototyped. `filter` and `map`
-adapters would store a closure, and closures stay second class: not possible.
+An `enumerate` adapter is expressible with an interface constraint on a
+borrow type parameter (lib/tests/run/borrow_types_enumerate.obx):
+
+```
+type Iter[X: borrow] = interface { fn (mut &Self) next(): Option[X] }
+type Indexed[X: borrow] = value record { index: int; item: X }
+type Enumerate[I: borrow + Iter[X], X: borrow] = value record { inner: I; i: int }
+fn (e: mut &Enumerate[I, X]) next(): Option[Indexed[X]] { ... }
+fn enumerate[I: borrow + Iter[X], X: borrow](it: I): Enumerate[I, X] { ... }
+
+for e in enumerate[Words, &str](Words{src: &s, pos: 0}) { ... }
+```
+
+`X` is named only in `I`'s constraint, so it is not inferred: the call writes
+both type arguments. Inferring it from the constraint (the argument's `next`)
+would make `enumerate(it)` work; not done. It is not in std. `filter` and
+`map` adapters would store a closure, and closures stay second class: not
+possible.
 
 ## 7. What stays impossible
 
@@ -346,7 +362,7 @@ adapters would store a closure, and closures stay second class: not possible.
   invisible to users, and does nothing for tokenizers or iterators. Measured
   gain is the same ceiling as section 10's (only the counting goes).
 
-## 9. Open decisions (recommendations)
+## 9. Decisions (taken 2026-11-05: each as recommended)
 
 - **D1 Multiple roots.** A value built from several roots gets their join, and
   freezes all of them. Recommended: keep (Swift's conjoined dependence;
@@ -426,7 +442,7 @@ three for cycles):
 Both use `indexOf` for the separator, which dominates; the saving is the
 counting of 4 M pieces, about 58 instructions each.
 
-Known gaps of the prototype (not of the design):
+Known gaps of the prototype (not of the design; all closed in section 11):
 
 - A value holding borrows passed by value is not held while the call's later
   arguments run (rule 3): `f(splitRef(&a, ","), take(move(a)))` with an owned
@@ -438,3 +454,102 @@ Known gaps of the prototype (not of the design):
   literal's brace is taken for the loop body (an existing grammar limit).
 - Drop methods on borrow-class types are not rejected (D8).
 - The pseudo root of a parameter is named `*p` in messages.
+
+## 11. borrow-types-v2
+
+Branch `borrow-types-v2`: the prototype rebased on main (with perf15's str
+hoisting and perf19), the gaps of section 10 closed, D4 and D8 done, error
+messages reviewed, the experimental views API in `strings`, and two programs
+converted.
+
+**Rebase.** perf15 (loops.obx) hoists a str's header when its root is a
+local; a `&str` parameter is now that local itself, so hoisting fires as
+before or more (the compiler: 211 hoisted headers on both; the trap test
+lib/tests/run/str_hoist_trap.obx 3 against 2). rt.obx and rtx.obx were
+regenerated from main's with `rt_str_view` added.
+
+**Gaps closed.**
+
+- `if` and `match` expressions give a value holding borrows the join of
+  their branches' roots (lib/tests/run/borrow_types_ifx.obx). A plain borrow
+  as the result stays rejected (SPEC 7.8 already said so).
+- Rule 3: a value holding borrows passed by value holds its roots while the
+  later arguments run (lib/tests/error/borrow_types_call_hold.obx: "'words'
+  cannot be moved here: it overlaps a borrow held by the call being
+  evaluated").
+- D8: "Cursor cannot have a drop method: it holds borrows (a type that holds
+  borrows cannot have one)"; also for a type with a `borrow` type parameter
+  ("its type parameter T is declared borrow, so it may hold borrows").
+- D4: `Result[T: borrow, E: borrow]`. A `try` on a result holding borrows
+  keeps its root, and the `Err` it returns must be rooted at the function's
+  sources (lib/tests/run/borrow_types_result.obx,
+  lib/tests/error/borrow_types_try_err.obx).
+- Messages: a parameter's pseudo root reads "what 'sp' borrows", a join
+  "'a' and 'b'", a loop's hidden iterator "the iterator of the for loop at
+  line N"; temporaries say to bind the temporary first; a parameter store
+  says the caller fixes what a parameter borrows; a lending method says a
+  value holding borrows lends what it holds, not itself.
+- `for t in Lexer{src: &s, pos: 0}` parses: in a `for` header a name followed
+  by `{` and `field:` is a literal (a statement cannot start with `f:`).
+
+**Compile cost** (tools/perfsuite.py, frozen inputs, best of 5, against main
+4c796a4): compile suite +0.52% instructions (+1.0% cycles, best of 9); run
+suite -0.09% (maps -1.35%,
+the rest unchanged). The representation change alone (shared `&str` by
+value) costs +0.05% (`--emit-c`) and +0.12% (`--native`) compiling the
+compiler; the rest is the checker's root tracking, spread over the front end
+(no single hot spot found; computing call sources only when the callee's
+result may hold borrows and making holes only for bare type parameters took
+it from about +0.9% to +0.5%).
+
+**Views API** (lib/strings.obx, experimental): `splitViews`, `fieldsViews`,
+`lines`, `fieldsIter`. A word-statistics program over text100.txt (100 MB;
+lines, words, the longest word, lines whose third word is "omega"), best of 7:
+
+| version | C instr | C cycles | native instr | native cycles |
+|---|---|---|---|---|
+| `splitOn` + `fields` | 7 313 M | 2 440 M | 8 055 M | 2 063 M |
+| `lines` + `fields` | 4 481 M | 1 682 M | 6 503 M | 1 791 M |
+| `lines` + `fieldsViews` | 3 650 M | 1 393 M | 5 681 M | 1 562 M |
+| change, first to last | -50.1% | -42.9% | -29.5% | -24.3% |
+
+Part of the `lines` step is `memchr` (`strFindByte`) against `splitOn`'s
+byte loop; `fields` to `fieldsViews` alone is -18.5% / -17.2% (C) and
+-12.6% / -12.8% (native).
+
+**zoxide import** (cmd/zoxide.obx, `strings.lines` instead of `splitOn`; the
+pieces of a line are views until the path is kept): 300 000 z-format lines,
+best of 5, same database: -10.8% instructions / -9.4% cycles (C), -6.5% /
+-5.7% (native).
+
+**The compiler's lexer: not converted.** A token's text is not always a
+slice of the source: escaped string literals are built (`StrBuf`), integer
+literals are normalised to decimal (`toDecimal`), and symbols use the `SYMS`
+table, so `Tok.s: &str` would need a second root (a table of built strings)
+and one root per value (rule 7) rules that out without an index-based
+redesign. The `Parser` that holds the tokens is a boxed `record` that also
+owns the `Ast`; it would have to become a value record. And the gain is
+small: the parser copies every name it keeps into an owned `Node.s`, so only
+the token's own count goes. The compiler and the std modules it reads are
+about 300 000 tokens, about 120 000 of them names, keywords or strings
+counted today; at the roughly 20-60 instructions a counted piece costs
+(section 10's bench) that is 2-7 M instructions of the 2 350 M it takes to
+compile itself, 0.1-0.3%, not worth the redesign.
+
+**grep, sort and wc** were not converted: they already work on byte offsets
+into one buffer (sort and wc on `[]byte`, grep on positions in one `str`),
+which is what views would give them.
+
+**Decisions taken beyond D1-D10** (each the conservative option):
+
+- A plain borrow as the result of an `if` or `match` expression stays an
+  error; only values holding borrows get the join.
+- D8 also forbids a drop method on a type with a `borrow` type parameter.
+- `splitViews` takes its separator as `str`: a string literal is not a view
+  where `&str` is expected (it would need `&"..."`).
+- `X` in `enumerate[I: borrow + Iter[X], X: borrow]` is not inferred from
+  the constraint.
+
+**Left.** D6 (an override annotation) when real code needs one; inferring
+type arguments named only in constraints; library adapters (`enumerate`) if
+wanted; a `lines` that also drops a `"\r"`; the remaining compile cost.
