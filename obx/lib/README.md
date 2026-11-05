@@ -36,10 +36,11 @@ for leaks.
 | `postgres.obx` | 690 | PostgreSQL through libpq, asynchronous for tasks: Conn, Rows, Pool, Lease |
 | `mssql.obx` | 1,050 | Microsoft SQL Server through ODBC (libodbc): Conn, Stmt, strict UTF-8/UTF-16 |
 | `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
-| `net.obx` | 630 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
+| `net.obx` | 910 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
+| `tls.obx` | 950 | TLS 1.2 and 1.3 through OpenSSL 3: an engine over memory buffers, and connections over net sockets for tasks; verification, pins, client certificates, ALPN |
 | `proc.obx` | 614 | other programs: start with pipes, a Command's environment, directory and streams; wait on a pidfd as a task; output, communicate, run; cancellation sends SIGTERM then SIGKILL; PATH lookup in the child's environment; optional process group |
 | `url.obx` | 550 | URLs for http and https (RFC 3986): parse, resolve, percent-encoding, queries |
-| `http.obx` | 1,550 | an HTTP/1.1 client (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
+| `http.obx` | 1,690 | an HTTP/1.1 client for http and https (pool, strict framing, redirects, retries, deadlines) and the head parsing the server shares |
 | `httpserver.obx` | 2,940 | an HTTP/1.1 server: Go 1.22 routing, middleware, streaming bodies, strict parsing, every limit and timeout, cancellation on hangup, request ids, access log, graceful drain |
 | `regex.obx` | 2,130 | regular expressions (RE2 syntax, linear time; a port of Go's regexp): compile, find, findAll, captures, replace, split, quote |
 | `regex_dfa.obx` | 1,420 | the regex engine's lazy DFA (after RE2's) and literal searches (after Rust's regex) |
@@ -433,7 +434,11 @@ meanwhile, and a plain program (its main task) uses the same calls.
   (libc's resolver needs nsswitch); programs that do not stay static.
 - `Conn.readNow(buf)`: one read that never parks (`EAGAIN` when nothing is
   there); the http pool uses it to see whether an idle connection was
-  closed.
+  closed. `Conn.writeNow(data)`: one write that never parks (the count
+  written, 0 when the socket's buffer is full), usable in a `drop` or
+  inside `with` (`tls` sends close_notify with it). `Conn.take()` moves the
+  socket out of a `Conn` (left closed), for a wrapper that gives its socket
+  back (`tls.Conn.detach`).
 - `Conn`: `read(buf: mut &[byte]): Result[int, IoError]` (0: the peer has
   closed), `write(data: &[byte]): Result[Unit, IoError]` (all of it, parking
   while the socket's buffer is full), `writeStr(s)`, `closeWrite()`
@@ -558,6 +563,68 @@ let exit = child.wait().unwrap()                     // Exit.Code(0)
   its child stopped. A process with a live `Child` has descriptors in the
   event loop, so `task.workers` refuses to fork then (exit 15).
 
+### tls
+
+TLS 1.2 and 1.3 through the system's OpenSSL 3 (`libssl.so.3`,
+`libcrypto.so.3`, by externs: no headers, no C shim), design/tls.md.
+
+```
+let ctx = try tls.client(tls.defaults())           // once: loads the system's trust store
+var c = try ctx.connect(try net.dial("example.com:443"), "example.com")
+try c.writeStr("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+let n = try c.read(mut &buf)                        // 0: the peer closed
+try c.close()                                       // close_notify
+```
+
+- `Options` (`defaults()`): `caFile`, `caDir` (trust these instead of the
+  system's store), `insecureSkipVerify` (false), `pins` (SHA-256
+  fingerprints, hex, comma-separated: the peer's certificate must be one),
+  `certFile`, `keyFile` (a server's certificate, or a client's),
+  `clientCaFile` (a server asks for and verifies client certificates),
+  `minVersion` `Version.Tls12`, `maxVersion` `Version.Tls13`, `alpn`
+  ("h2,http/1.1"; a client's offer).
+- `Context` (`client(o)`, `server(o)`): an SSL_CTX, owned, freed by its
+  drop; `share()` gives another handle on it (to move into a task or a
+  pool). `engine(serverName)`, `connect(sock, serverName)`,
+  `accept(sock)`.
+- A client verifies by default: the chain against the trust store, the
+  name given to `connect` (`SSL_set1_host`; an IP literal is checked as an
+  address, `[::1]` brackets dropped), SNI for a name. A name is required
+  unless verification is off. Renegotiation is refused. Pins apply with
+  or without verification.
+- `Conn` (a socket): `read(buf)` (0 at close_notify, or the socket's end
+  at a record boundary; the end inside a record is `Protocol`),
+  `readNow(buf)` (never parks: `WANT_INPUT` when nothing is there),
+  `write(data)`, `writeStr(s)`, `handshake()`, `shutdown()` (close_notify,
+  reading goes on), `close()`, `detach(): Detached {sock, rest}` (TLS ends
+  without close_notify; the socket and what arrived after the last
+  record), `version()`, `cipher()`, `alpn()`, `peer()`, `closeNotified()`,
+  `engine()`, `peerAddr()`, `localAddr()`, `setNoDelay(on)`; `over(e,
+  sock)` puts an engine (from memory mode) over a socket. Calls park their
+  task on the socket; dropping an open `Conn` sends close_notify if the
+  socket takes it at once (never parks).
+- `Engine` (memory mode, for protocols that carry TLS in their own
+  packets): `feed(ciphertext)`, `handshake(): Result[bool]` (true when
+  done), `pending()`, `output(buf)`, `takeOutput()` (send these after every
+  call), `read(buf)` (`WANT_INPUT`: feed more), `write(data)`,
+  `shutdown()`, `unread()` (fed but not used), `isOpen()`, `version()`,
+  `cipher()`, `alpn()`, `peer(): Option[Cert]` (`Cert {subject, issuer,
+  notBefore, notAfter, sha256}`), `verifyResult()`, `verifyText()`,
+  `resumed()`, `closeNotified()`.
+- `Error {kind, msg, code, peer, cause}`, `toStr()` `tls: KIND: msg
+  (peer)`; `Kind`: `Config`, `Handshake`, `Verify` (code is X509's verify
+  result: 10 expired, 20 unknown issuer, 62 name mismatch, 64 address
+  mismatch), `Protocol`, `Io`, `Timeout`, `Cancelled` (cause is the
+  socket's `IoError`). msg is OpenSSL's error queue, which every call
+  clears before and reads after, on the program's thread.
+- `openHandles()` counts live contexts and engines (tests check it
+  returns to 0); `libVersion()`.
+
+Tests: `tests/run/tls_*.obx` (against `openssl s_server`, two engines in
+memory, and a server in the program, with a PKI made by the `openssl`
+command at test time; skipped without it or without libssl) and
+`http_tls.obx`.
+
 ### url
 
 URLs for http and https (RFC 3986), strict (design/http-client.md, H1).
@@ -586,9 +653,9 @@ URLs for http and https (RFC 3986), strict (design/http-client.md, H1).
 
 ### http
 
-An HTTP/1.1 client for tasks over plain TCP, and the head parsing servers
-share (design/http-client.md, H1; https is H2). A reply with any status is
-`Ok`; `r.ok()` says whether it is 2xx.
+An HTTP/1.1 client for tasks over TCP and TLS (https, through `tls`), and the
+head parsing servers share (design/http-client.md, H1 and H2). A reply
+with any status is `Ok`; `r.ok()` says whether it is 2xx.
 
 ```
 let r = try http.get("http://api.example.com/v1/rates?ccy=EUR")
@@ -611,7 +678,12 @@ let r = try c.send(&rq)
 - `Options` (`defaults()`): `maxPerHost` 16, `timeoutMs` 30000 (the whole
   call, redirects included, and then the body's reads; 0: none), `maxBody`
   16 MiB (for `text` and `bytes`), `redirects` true, `maxRedirects` 10,
-  `allowHttpsToHttp` false, `idleTimeoutMs` 90000, `userAgent` "obx".
+  `allowHttpsToHttp` false, `idleTimeoutMs` 90000, `userAgent` "obx",
+  `tls` (`tls.Options` for https): `tls.defaults()` with `alpn`
+  "http/1.1", so the server's certificate is verified against the system's
+  store and its name against the URL's host. `o.tls.caFile = "ca.pem"`
+  trusts another CA; `o.tls.insecureSkipVerify = true` turns verification
+  off; pins and a client certificate are `tls` options too.
 - `Client` (`newClient(o)`) is a copy handle over a `task.Shared` pool:
   copies share it. `send(&rq)`, `get(u)`, `head(u)`,
   `post(u, contentType, body)`, `put(...)`, `delete(u)`; `options()`,
@@ -650,8 +722,14 @@ let r = try c.send(&rq)
   replies, a 4 KiB chunk-size line.
 - A client used in another process than the one that made it (after a
   fork) refuses with `Process`: make clients inside each worker.
-- https is refused with `Tls` until H2 (the connection's stream is a sum
-  with one TCP case now, the place a TLS case goes).
+- https: a client makes one `tls.Context` from `o.tls` at its first https
+  request (bad options fail with `Tls` before connecting); each connection
+  does its own handshake (no session resumption yet). A certificate that
+  does not verify, a failed handshake and a damaged record are `Tls`
+  errors whose msg names the reason (`verify: certificate has expired`,
+  `handshake: unsupported protocol`); socket errors during the handshake
+  are `Connect` (or `Timeout`, `Cancelled`). Pools are per scheme, host
+  and port, so http and https connections to one host are separate.
 - Shared parsing, used by `httpserver`: `headEnd`, `parseFields`,
   `contentLength`, `parseRequest` (`RequestHead {method, target, minor,
   headers}`, `keepAlive()`, `bodyLength()`), `equalFold`, `isToken`,
@@ -659,7 +737,8 @@ let r = try c.send(&rq)
   `remove`, `hasToken`, ...).
 
 Tests: `tests/run/url_*.obx`, `http_*.obx` (against the route and scripted
-servers of `tests/support/httptest.obx`; `http_live.obx` only with
+servers of `tests/support/httptest.obx`; `http_tls.obx` against an https
+server of `tests/support/tlstest.obx`; `http_live.obx` only with
 `OBX_HTTP_LIVE=1`, else it exits 77), and `tests/httpgen.py`, which
 generates reply framings and checks every body on both backends.
 

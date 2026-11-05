@@ -3,8 +3,9 @@
 Status: H1 is built (2026-11-03): `lib/url.obx`, `net.resolve` and
 `net.dial`, `lib/http.obx`, and `httpd` on the shared parser. Section 8
 says what was built, how it differs from this plan, and what it measured.
-H2 (https) is next. No language change was needed: everything is library
-code on `task`, `net` and externs.
+H2 (https) is built (2026-11-05) on `lib/tls.obx` (design/tls.md); section
+9. No language change was needed: everything is library code on `task`,
+`net` and externs.
 
 ## 0. Goal
 
@@ -28,7 +29,7 @@ Out of scope: HTTP/2 and HTTP/3 (section 7), cookies, a browser-like cache.
 | a load client | `cmd/httpload.obx` (fixed request, no parsing beyond lengths) |
 | **host names** | missing: `net.connect` takes IP literals and `localhost` only |
 | **URLs** | missing |
-| **TLS** | missing. `libssl.so.3` is installed (OpenSSL 3.0.13); an `extern "ssl"` links it by path without the -dev package |
+| **TLS** | missing at H1 (built in H2 as `lib/tls.obx`). `libssl.so.3` is installed (OpenSSL 3.0.13); an `extern "ssl"` links it by path without the -dev package |
 | **gzip** | missing; `libz` is installed |
 | **JSON** | missing (most HTTP APIs need it; section 6) |
 
@@ -283,9 +284,7 @@ was already dynamic (libpq); `httpload` is dynamic since `--client`.
 **The TLS seam.** A connection's transport is
 `Stream = value closed { Tcp(net.Conn); Gone }` with `read`, `write`,
 `writeStr` and `quiet`; everything above it (framing, pool, retries) only
-sees a `Stream`. H2 adds a `Tls` case wrapping the socket and the `SSL*`,
-whose reads and writes park on `SSL_ERROR_WANT_READ/WRITE`. Until then an
-https URL is refused with `Kind.Tls` before any connection is made.
+sees a `Stream`. H2 added a `Tls` case (section 9).
 
 **Pool and retries.** A `Client` is a copy handle on a
 `task.Shared[PoolState]` (as `postgres.Pool`): per `scheme://authority`
@@ -370,4 +369,57 @@ the tests under ASan and UBSan, report no leaks.
 **Left for H2.** The OpenSSL binding (the `Tls` stream case),
 certificate and host-name checks, SNI and ALPN, and the https tests. The
 https-to-http redirect rule and the `Tls` kind are already in place.
+
+## 9. H2 as built
+
+**The binding is its own module**, `lib/tls.obx` (design/tls.md), not part
+of http. It does not use `SSL_set_fd` as section 2 planned: an engine over
+memory BIOs, driven over a `net.Conn` by `tls.Conn`, so the same engine
+also serves protocols that wrap TLS in their own packets (TDS). The task
+parks in `net`'s read and write; no OpenSSL call waits.
+
+**The stream.** `Stream = value closed { Tcp(net.Conn); Tls(tls.Conn);
+Gone }`. A match on a place binds its payload read-only, and `tls.Conn`'s
+calls change it, so each `Tls` call takes the connection out
+(`replace(s, Stream.Gone)`), calls it and puts it back: the connection
+belongs to the request's task alone meanwhile. Stream calls return `SErr
+{errno, io, tls}`: a socket's error as before (so the retry rule on
+`ECONNRESET` and `EPIPE` still sees errnos), or TLS's own reason, which
+becomes `Kind.Tls` ("verify: certificate has expired"). `quiet()` on a
+TLS stream is `tls.Conn.readNow`: nothing there, or only a TLS 1.3 session
+ticket, is quiet; close_notify or data is not.
+
+**Options.** `Options.tls: tls.Options`, `tls.defaults()` with ALPN
+`http/1.1`: verification against the system's store, the URL's host
+checked (names and IP literals), SNI. `o.tls.caFile`, `caDir`, `pins`,
+`certFile`/`keyFile` (client certificates) and `insecureSkipVerify` are
+there. A client makes one `tls.Context` at its first https request,
+before connecting, so bad options are a `Tls` error with no connection
+made; the context is shared by all its connections (`share()`).
+
+**Errors.** A refused certificate or failed handshake is `Kind.Tls`; a
+socket error during the handshake is `Connect` (it happens while the
+connection is being made), and a deadline `Timeout`.
+
+**Not done.** Session resumption (each connection does a full handshake;
+kept-alive connections make this matter less), OCSP, HTTP proxies
+(CONNECT), and an https server in `httpserver`.
+
+**Tests.** `http_tls.obx`, against an https server in the test
+(`tests/support/tlstest.obx`, certificates made by the `openssl` command
+at test time):
+- requests on one kept-alive connection, a body both ways, 1 MiB,
+  `Connection: close`;
+- refused: the system's store (the test CA is not in it), an expired
+  certificate, another name;
+- the address form of the URL;
+- `insecureSkipVerify`, a CA file that does not exist (no connection made);
+- redirects from http to https (followed) and back (refused, then allowed);
+- pools per scheme;
+- 50 requests in tasks over at most 8 connections.
+
+`http_basic.obx` now expects a handshake error from an https URL to a
+plain server. `http_live.obx` (with `OBX_HTTP_LIVE=1`) fetches
+https://example.com verified against the system's store. Measurements are
+in PERFORMANCE.md ("TLS").
 
