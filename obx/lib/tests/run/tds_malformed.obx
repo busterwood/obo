@@ -2,7 +2,9 @@
 // full reply, thousands of one- and few-byte mutations of it, malformed
 // token streams, PRELOGIN answers, packet headers and UTF-16. Each must be
 // an error (or, for a mutation, possibly a different valid reply), never a
-// trap or a hang.
+// trap or a hang. The same for T2's reply (exact and civil types,
+// RETURNVALUE, RETURNSTATUS), whose decoded cells must also format, and for
+// parameter type names and uniqueidentifier text from a caller.
 // needs: ssl
 // expect: truncations: 0
 // expect: mutations: 4000 decoded, unexpected codes 0, some ok true, some errors true
@@ -20,13 +22,26 @@
 // expect: short PLP chunk: error 1022: tds: a value of column a: 1000 bytes needed, 15 left
 // expect: ENVCHANGE past the end: error 1022: tds: ENVCHANGE: 40 bytes needed, 14 left
 // expect: ERROR too short: error 1022: tds: ERROR/INFO: 2 bytes needed, 0 left
-// expect: RETURNVALUE: error 1022: tds: RETURNVALUE is not supported yet
+// expect: RETURNVALUE short: error 1022: tds: RETURNVALUE: 2 bytes needed, 1 left
+// expect: RETURNVALUE encrypted: error 1022: tds: an encrypted RETURNVALUE
+// expect: RETURNVALUE unknown type: error 1022: tds: unknown data type 0x99
+// expect: RETURNVALUE bigint of 3 bytes: Failed(an integer of 3 bytes)
+// expect: RETURNSTATUS short: error 1022: tds: RETURNSTATUS: 4 bytes needed, 2 left
+// expect: decimal of 18 bytes: error 1022: tds: a value of column c: 18 bytes for a size of 17
+// expect: decimal precision 39: error 1022: tds: decimal(39, 0)
+// expect: decimal of length 6: error 1022: tds: decimal with length 6
+// expect: time scale 8: error 1022: tds: time with scale 8
+// expect: t2 truncations: 0
+// expect: t2 mutations: 4000 decoded, unexpected codes 0, some ok true, some errors true, some failed cells true
+// expect: type names: 3000 tried, some ok true, unexpected codes 0
+// expect: guids: 3000 tried, some ok true, round trips broken 0
 // expect: header length 7: error 1022: tds: a packet length of 7
 // expect: header length 65535: ok
 // expect: header short: error 1022: tds: a packet header needs 8 bytes
 
 import "tds"
 import "sqldialect"
+import "strings"
 import "../support/tdstest" as tt
 
 var SEED: int = 12345
@@ -69,6 +84,39 @@ fn withIntColumn(rest: str): str {
     b.u8(4)
     b.name("a")
     b.raw(rest)
+    return b.str()
+}
+
+// A reply's one column of the given type and TYPE_INFO, then a ROW of data.
+fn withColumn(ty: int, info: str, data: str): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(1)
+    b.col("c", ty)
+    b.raw(info)
+    b.name("c")
+    b.u8(tds.TK_ROW)
+    b.raw(data)
+    return b.str()
+}
+
+// A RETURNVALUE @o with the given flags, type and TYPE_INFO + value bytes.
+fn retval(flags: int, ty: int, rest: str): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_RETURNVALUE)
+    b.u16(1)
+    b.bvarchar("@o")
+    b.u8(1)
+    b.u32(0)
+    b.u16(flags)
+    b.u8(ty)
+    b.raw(rest)
+    return b.str()
+}
+
+fn zeros(n: int): str {
+    var b = tt.bytesOf()
+    for i in 0..n { b.u8(0) }
     return b.str()
 }
 
@@ -182,7 +230,97 @@ fn main() {
     msg.u16(6)
     msg.raw("\x01\x00\x00\x00\x01\x10")
     println("ERROR too short: " + code(tds.decode(msg.str() + done(), 10)))
-    println("RETURNVALUE: " + code(tds.decode("\xac\x00\x00" + done(), 10)))
+    println("RETURNVALUE short: " + code(tds.decode("\xac\x00", 10)))
+    println("RETURNVALUE encrypted: " + code(tds.decode(retval(0x0801, tds.T_INTN, "\x08\x08\x2a\x00\x00\x00\x00\x00\x00\x00") + done(), 10)))
+    println("RETURNVALUE unknown type: " + code(tds.decode(retval(1, 0x99, "\x00") + done(), 10)))
+    let three = tds.decode(retval(1, tds.T_INTN, "\x08\x03\x01\x02\x03") + done(), 10).unwrap()
+    match three.returnValues[0].value {
+        tds.Cell.Failed(m) { println("RETURNVALUE bigint of 3 bytes: Failed(" + m + ")") }
+        else { println("RETURNVALUE bigint of 3 bytes: decoded") }
+    }
+    println("RETURNSTATUS short: " + code(tds.decode("\x79\x00\x00", 10)))
+    println("decimal of 18 bytes: " + code(tds.decode(withColumn(tds.T_DECIMALN, "\x11\x26\x00", "\x12" + zeros(18)) + done(), 10)))
+    println("decimal precision 39: " + code(tds.decode(withColumn(tds.T_DECIMALN, "\x11\x27\x00", "\x00") + done(), 10)))
+    println("decimal of length 6: " + code(tds.decode(withColumn(tds.T_DECIMALN, "\x06\x26\x00", "\x00") + done(), 10)))
+    println("time scale 8: " + code(tds.decode(withColumn(tds.T_TIMEN, "\x08", "\x00") + done(), 10)))
+
+    // ---- T2's reply: truncations, mutations; every decoded cell formats
+    let full2 = tt.stream2()
+    var bad2 = 0
+    for n in 0..len(full2) {
+        match tds.decode(full2[0..n], 1000) {
+            Ok(_) { bad2 += 1 }
+            Err(e) { if e.code != sqldialect.E_PROTOCOL { bad2 += 1 } }
+        }
+    }
+    println("t2 truncations: " + bad2.toStr())
+    var oks2 = 0
+    var errs2 = 0
+    var odd2 = 0
+    var failed = 0
+    for i in 0..4000 {
+        let m = mutate(full2, 1 + rand(3))
+        match tds.decode(m, 1000) {
+            Ok(r) {
+                oks2 += 1
+                for set in r.results {
+                    for cells in set.rows {
+                        for k in 0..len(cells) {
+                            if k < len(set.columns) {
+                                let t = tds.cellText(&set.columns[k], &cells[k])
+                                if t.isNone() { failed += 1 }
+                            }
+                        }
+                    }
+                }
+                for v in r.returnValues { let t = tds.cellText(&v.column, &v.value) }
+            }
+            Err(e) {
+                errs2 += 1
+                if !known(e.code) { odd2 += 1 }
+            }
+        }
+    }
+    println("t2 mutations: 4000 decoded, unexpected codes " + odd2.toStr() + ", some ok " + (oks2 > 0).toStr() +
+            ", some errors " + (errs2 > 0).toStr() + ", some failed cells " + (failed > 0).toStr())
+
+    // ---- parameter type names and uniqueidentifiers from a caller
+    let coll = tds.Collation{lcid: 0x0409, flags: 1, version: 0, sortId: 52}
+    let pieces = ["int", "decimal", "numeric", "nvarchar", "varbinary", "time", "datetime2", "datetimeoffset", "char", "max",
+                  "(", ")", ",", " ", "0", "7", "38", "39", "4000", "8000", "-1", "99999999999999999999", "x", "xml", "bit"]
+    var tok = 0
+    var todd = 0
+    for i in 0..3000 {
+        var t = ""
+        for k in 0..1 + rand(5) { t = t + pieces[rand(len(pieces))] }
+        match tds.nullParam(t, &coll) {
+            Ok(_) { tok += 1 }
+            Err(e) { if e.code != sqldialect.E_INPUT { todd += 1 } }
+        }
+    }
+    println("type names: 3000 tried, some ok " + (tok > 0).toStr() + ", unexpected codes " + todd.toStr())
+    let hexd = "0123456789abcdefABCDEF0123456789abcdefABCDEF0123456789abcdefABCDEF0123456789abcdefABCDEFg-{} "
+    var gok = 0
+    var gbad = 0
+    for i in 0..3000 {
+        var g = ""
+        let n = if rand(4) != 0 { 36 } else { rand(40) }
+        for k in 0..n {
+            let at = rand(len(hexd))
+            g = g + hexd[at..at + 1]
+        }
+        if rand(8) != 0 && n == 36 {
+            g = g[0..8] + "-" + g[9..13] + "-" + g[14..18] + "-" + g[19..23] + "-" + g[24..]
+        }
+        match tds.guidBytes(g) {
+            Some(b) {
+                gok += 1
+                if strings.toLower(tds.guidText(b)) != strings.toLower(g) { gbad += 1 }
+            }
+            None {}
+        }
+    }
+    println("guids: 3000 tried, some ok " + (gok > 0).toStr() + ", round trips broken " + gbad.toStr())
 
     // ---- packet headers
     println("header length 7: " + code(tds.parseHeader(&strToBytes("\x04\x01\x00\x07\x00\x00\x01\x00"))))

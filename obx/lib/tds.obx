@@ -14,19 +14,31 @@
 //     MS-TDS 2.2.6.4 says, and sent inside TLS).
 //   - SQLBatch (sqlBatch: ALL_HEADERS with the transaction descriptor, then
 //     the text in UTF-16LE).
+//   - RPC to sp_executesql (executeSql) with typed parameters (Param:
+//     intParam, floatParam, bitParam, textParam, bytesParam, decimalParam,
+//     nullParam and typeInfoOf from a SQL type name), OUTPUT ones too.
+//   - Transaction Manager requests (tmRequest): begin, commit, rollback.
 //   - the reply's tokens (decode): COLMETADATA, ROW, NBCROW, DONE,
-//     DONEPROC, DONEINPROC, ERROR, INFO, LOGINACK, ENVCHANGE, FEATUREEXTACK,
-//     ORDER, RETURNSTATUS, and the ones skipped by their length (COLINFO,
-//     TABNAME, SSPI, SESSIONSTATE, FEDAUTHINFO, OFFSET).
+//     DONEPROC, DONEINPROC (every row count kept), ERROR, INFO, LOGINACK,
+//     ENVCHANGE, FEATUREEXTACK, ORDER, RETURNSTATUS, RETURNVALUE, and the
+//     ones skipped by their length (COLINFO, TABNAME, SSPI, SESSIONSTATE,
+//     FEDAUTHINFO, OFFSET).
 //   - the values: tinyint, smallint, int, bigint (and INTN), real and float
 //     (FLTN, exact), bit (BITN), nchar and nvarchar (UTF-16LE, strict),
-//     char and varchar with a UTF-8 collation, binary and varbinary as bytes;
-//     (max) types (PLP chunks) and text, ntext and image too. A varchar of
-//     another code page, and every other type, decode to Cell.Failed with a
-//     message naming the code page or the type: reading that cell is an
-//     error, the rest of the row is not.
-//   - Session: a logged-in connection (open, batch), its state (database,
-//     collation, packet size, transaction descriptor) kept from ENVCHANGE.
+//     char and varchar with a UTF-8 collation or code page 1252 or
+//     ISO-8859-1, binary and varbinary as bytes; (max) types (PLP chunks)
+//     and text, ntext and image too; decimal and numeric (Decimal, from the
+//     sign and magnitude), money and smallmoney (Decimal of scale 4), date,
+//     time(n), datetime2(n), datetimeoffset(n) (time's civil types),
+//     datetime and smalldatetime, uniqueidentifier (canonical text), xml
+//     (text). A varchar of another code page, sql_variant, UDTs and every
+//     other type decode to Cell.Failed with a message naming the code page
+//     or the type: reading that cell is an error, the rest of the row is
+//     not. cellText gives a cell's text as SQL Server and ODBC write it.
+//   - Session: a logged-in connection (open, batch, executeSql, transact),
+//     its state (database, language, collation, packet size, transaction
+//     descriptor, ...) kept from ENVCHANGE, and the last call's ERRORs and
+//     INFOs.
 //
 // The decoder never traps on what the server sends: every length and count
 // is checked against the bytes there are before it is used, nothing is
@@ -48,6 +60,7 @@ import "strings"
 import "sqldialect"
 import "math"
 import "codepage"
+import "time"
 
 pub type Error = sqldialect.DbError
 
@@ -515,11 +528,7 @@ fn field(h: mut &[]byte, data: mut &[]byte, at: int, u: &[]byte) {
 pub fn sqlBatch(sql: str, txn: str): Result[str, Error] {
     if len(txn) != 8 { return Err(sqldialect.inputError("a transaction descriptor is 8 bytes")) }
     var b: []byte = []
-    put32(mut &b, 22)          // ALL_HEADERS' total length
-    put32(mut &b, 18)          // this header's length
-    put16(mut &b, 2)           // transaction descriptor
-    appendStr(mut &b, txn)
-    put32(mut &b, 1)           // outstanding requests
+    allHeaders(mut &b, txn)
     let text = match toUtf16(sql) {
         Ok(x) { x }
         Err(e) { return Err(sqldialect.inputError("SQL text: " + e)) }
@@ -529,6 +538,345 @@ pub fn sqlBatch(sql: str, txn: str): Result[str, Error] {
 }
 
 pub fn noTransaction(): str { return "\x00\x00\x00\x00\x00\x00\x00\x00" }
+
+fn allHeaders(b: mut &[]byte, txn: str) {
+    put32(b, 22)          // ALL_HEADERS' total length
+    put32(b, 18)          // this header's length
+    put16(b, 2)           // transaction descriptor
+    appendStr(b, txn)
+    put32(b, 1)           // outstanding requests
+}
+
+// ---------------------------------------------------------------- RPC
+
+pub const PROC_EXECUTESQL = 10
+pub const MAX_PARAMS = 2098            // SQL Server's 2100, less sp_executesql's @stmt and @params
+
+// A parameter of an RPC as it is sent: its name ("" for a positional one),
+// whether it is an OUTPUT parameter, the type sp_executesql's @params
+// declares for it ("bigint", "nvarchar(4000)", "decimal(12,2)"), its TYPE_INFO
+// and its value (TYPE_VARBYTE), both as bytes.
+pub type Param = value record {
+    pub name: str
+    pub output: bool
+    pub declared: str
+    pub typeInfo: str
+    pub data: str
+}
+
+// The 5 bytes of a collation.
+pub fn collationBytes(c: &Collation): str {
+    var b: []byte = []
+    put32(mut &b, (c.lcid & 0xFFFFF) | ((c.flags & 0xFF) << 20) | ((c.version & 0xF) << 28))
+    put8(mut &b, c.sortId)
+    return strFromBytes(&b)
+}
+
+fn param(declared: str, ti: &[]byte, data: &[]byte): Param {
+    return Param{name: "", output: false, declared: declared, typeInfo: strFromBytes(ti), data: strFromBytes(data)}
+}
+
+// A bigint parameter (INTN of 8 bytes).
+pub fn intParam(n: int): Param {
+    var d: []byte = []
+    put8(mut &d, 8)
+    for k in 0..8 { put8(mut &d, (n >> (8 * k)) & 0xff) }
+    return param("bigint", &[byte(T_INTN), byte(8)], &d)
+}
+
+// A bit parameter.
+pub fn bitParam(v: bool): Param { return param("bit", &[byte(T_BITN), byte(1)], &[byte(1), byte(if v { 1 } else { 0 })]) }
+
+// The IEEE 754 double bits of f, exactly (f finite).
+pub fn bitsOfFloat(f: float): int {
+    if f == 0.0 { return if f.toStr() == "-0" { -9223372036854775807 - 1 } else { 0 } }
+    let neg = f < 0.0
+    var x = if neg { -f } else { f }
+    var e = 0
+    let top = float(1 << 53)
+    let low = float(1 << 52)
+    while x >= top {
+        x = x / 2.0
+        e += 1
+    }
+    while x < low {
+        x = x * 2.0
+        e -= 1
+    }
+    var m = int(x)                     // 2^52 <= m < 2^53: x * 2^e is f
+    var be = e + 1075
+    var bits = 0
+    if be <= 0 {
+        bits = m >> (1 - be)           // subnormal: exact, its low bits are zero
+    } else {
+        bits = (be << 52) | (m - (1 << 52))
+    }
+    if neg { bits = bits | (-9223372036854775807 - 1) }
+    return bits
+}
+
+// A float parameter (FLTN of 8 bytes, the exact bits). E_NONFINITE for NaN
+// and the infinities, which SQL Server's float has not.
+pub fn floatParam(f: float): Result[Param, Error] {
+    if !f.isFinite() { return Err(sqldialect.dbError(sqldialect.E_NONFINITE, "SQL Server float has no NaN or Infinity")) }
+    let bits = bitsOfFloat(f)
+    var d: []byte = []
+    put8(mut &d, 8)
+    for k in 0..8 { put8(mut &d, (bits >> (8 * k)) & 0xff) }
+    return Ok(param("float", &[byte(T_FLTN), byte(8)], &d))
+}
+
+// PLP data: the total length, one chunk, the terminator.
+fn plp(d: mut &[]byte, s: str) {
+    for k in 0..8 { put8(d, (len(s) >> (8 * k)) & 0xff) }
+    if len(s) > 0 {
+        put32(d, len(s))
+        appendStr(d, s)
+    }
+    put32(d, 0)
+}
+
+// An nvarchar parameter: nvarchar(4000) up to 4,000 UTF-16 units, else
+// nvarchar(max) (PLP). E_INPUT for text that is not UTF-8.
+pub fn textParam(s: str, coll: &Collation): Result[Param, Error] {
+    let u = match toUtf16(s) {
+        Ok(x) { x }
+        Err(e) { return Err(sqldialect.inputError("text value: " + e)) }
+    }
+    var ti: []byte = []
+    put8(mut &ti, T_NVARCHAR)
+    var d: []byte = []
+    let max = len(u) > 8000
+    put16(mut &ti, if max { 0xFFFF } else { 8000 })
+    appendStr(mut &ti, collationBytes(coll))
+    if max {
+        plp(mut &d, strFromBytes(&u))
+    } else {
+        put16(mut &d, len(u))
+        for x in u { append(mut &d, x) }
+    }
+    return Ok(param(if max { "nvarchar(max)" } else { "nvarchar(4000)" }, &ti, &d))
+}
+
+// A varbinary parameter: varbinary(8000) up to 8,000 bytes, else
+// varbinary(max) (PLP).
+pub fn bytesParam(b: str): Param {
+    var ti: []byte = []
+    put8(mut &ti, T_BIGVARBIN)
+    var d: []byte = []
+    let max = len(b) > 8000
+    put16(mut &ti, if max { 0xFFFF } else { 8000 })
+    if max {
+        plp(mut &d, b)
+    } else {
+        put16(mut &d, len(b))
+        appendStr(mut &d, b)
+    }
+    return param(if max { "varbinary(max)" } else { "varbinary(8000)" }, &ti, &d)
+}
+
+// The bytes of a decimal(p, s) value after its sign: 4, 8, 12 or 16.
+fn decimalBytes(p: int): int {
+    if p <= 9 { return 4 }
+    if p <= 19 { return 8 }
+    if p <= 28 { return 12 }
+    return 16
+}
+
+// A decimal(p, s) parameter with p and s from the value: s its display
+// scale (or more, when it has more fraction digits), p its digits from the
+// first nonzero integer digit to the last fraction digit, at least s and at
+// least 1. E_DEC_RANGE when that is more than 38 digits.
+pub fn decimalParam(d: Decimal): Result[Param, Error] {
+    let t = try sqldialect.decimalText(d, 38)
+    let body = if len(t) > 0 && t[0] == '-' { t[1..] } else { t }
+    let dot = strings.indexOfByte(body, '.', 0)
+    let ip = if dot < 0 { body } else { body[..dot] }
+    let fp = if dot < 0 { "" } else { body[dot + 1..] }
+    var lead = 0
+    while lead < len(ip) && ip[lead] == '0' { lead += 1 }
+    let s = len(fp)
+    let p = max(len(ip) - lead + s, max(s, 1))
+    if p > 38 || s > 38 { return Err(sqldialect.dbError(sqldialect.E_DEC_RANGE, d.toStr() + " does not fit SQL Server's decimal(38)")) }
+    var m: u128 = 0
+    let digits = ip[lead..] + fp
+    for i in 0..len(digits) {
+        let c = digits[i]
+        if c < '0' || c > '9' { return Err(sqldialect.dbError(sqldialect.E_DEC_RANGE, d.toStr() + " does not fit SQL Server's decimal(38)")) }
+        m = m * 10 + u128(c - '0')
+    }
+    return Ok(decimalParamOf(d.isNeg(), m, p, s))
+}
+
+fn decimalParamOf(neg: bool, m: u128, p: int, s: int): Param {
+    let n = decimalBytes(p)
+    var d: []byte = []
+    put8(mut &d, n + 1)
+    put8(mut &d, if neg { 0 } else { 1 })
+    for k in 0..n { append(mut &d, byte(int((m >> (8 * k)) & 0xff))) }
+    return param("decimal(" + p.toStr() + "," + s.toStr() + ")", &[byte(T_DECIMALN), byte(17), byte(p), byte(s)], &d)
+}
+
+// A NULL parameter of the declared SQL type `declared` ("int",
+// "varbinary(max)", "decimal(10,2)", "datetime2(7)", ...: the names
+// typeInfoOf knows). E_INPUT for another.
+pub fn nullParam(declared: str, coll: &Collation): Result[Param, Error] {
+    let ti = try typeInfoOf(declared, coll)
+    var d: []byte = []
+    let t = int(ti[0])
+    let isMax = len(ti) >= 3 && ti[1] == 0xFF && ti[2] == 0xFF
+    if isMax || t == T_XML {
+        for k in 0..8 { put8(mut &d, 0xFF) }        // PLP NULL
+    } else if t == T_BIGVARCHR || t == T_BIGCHAR || t == T_NVARCHAR || t == T_NCHAR || t == T_BIGVARBIN || t == T_BIGBINARY {
+        put16(mut &d, 0xFFFF)
+    } else {
+        put8(mut &d, 0)
+    }
+    return Ok(Param{name: "", output: false, declared: declared, typeInfo: ti, data: strFromBytes(&d)})
+}
+
+// The TYPE_INFO for a parameter of the SQL type named t (lower or upper
+// case; the database's collation for text types): bit, tinyint, smallint,
+// int, bigint, real, float, decimal(p,s) and numeric(p,s), money,
+// smallmoney, date, time(n), datetime2(n), datetimeoffset(n), datetime,
+// smalldatetime, uniqueidentifier, char(n), varchar(n|max), nchar(n),
+// nvarchar(n|max), binary(n), varbinary(n|max), xml. E_INPUT for another.
+pub fn typeInfoOf(t: str, coll: &Collation): Result[str, Error] {
+    let low = strings.toLower(trim(t))
+    let open = strings.indexOfByte(low, '(', 0)
+    let base = trim(if open < 0 { low } else { low[..open] })
+    var args: []str = []
+    if open >= 0 {
+        if low[len(low) - 1] != ')' { return Err(sqldialect.inputError("a type name without its ')': " + t)) }
+        for a in strings.split(low[open + 1..len(low) - 1], ",") { append(mut &args, trim(a)) }
+    }
+    let bad = sqldialect.inputError("a type that parameters cannot have yet: " + t)
+    var b: []byte = []
+    let n0 = if len(args) > 0 { parseInt(args[0]) } else { None }
+    match base {
+        "bit" { for x in [T_BITN, 1] { put8(mut &b, x) } }
+        "tinyint" { for x in [T_INTN, 1] { put8(mut &b, x) } }
+        "smallint" { for x in [T_INTN, 2] { put8(mut &b, x) } }
+        "int" { for x in [T_INTN, 4] { put8(mut &b, x) } }
+        "bigint" { for x in [T_INTN, 8] { put8(mut &b, x) } }
+        "real" { for x in [T_FLTN, 4] { put8(mut &b, x) } }
+        "float" { for x in [T_FLTN, 8] { put8(mut &b, x) } }
+        "money" { for x in [T_MONEYN, 8] { put8(mut &b, x) } }
+        "smallmoney" { for x in [T_MONEYN, 4] { put8(mut &b, x) } }
+        "datetime" { for x in [T_DATETIMN, 8] { put8(mut &b, x) } }
+        "smalldatetime" { for x in [T_DATETIMN, 4] { put8(mut &b, x) } }
+        "uniqueidentifier" { for x in [T_GUID, 16] { put8(mut &b, x) } }
+        "date" { put8(mut &b, T_DATEN) }
+        "xml" { for x in [T_XML, 0] { put8(mut &b, x) } }
+        "decimal", "numeric" {
+            let p = if len(args) > 0 { n0.unwrapOr(-1) } else { 18 }
+            let s = if len(args) > 1 { parseInt(args[1]).unwrapOr(-1) } else { 0 }
+            if p < 1 || p > 38 || s < 0 || s > p || len(args) > 2 { return Err(bad) }
+            for x in [T_DECIMALN, 17, p, s] { put8(mut &b, x) }
+        }
+        "time", "datetime2", "datetimeoffset" {
+            let s = if len(args) > 0 { n0.unwrapOr(-1) } else { 7 }
+            if s < 0 || s > 7 || len(args) > 1 { return Err(bad) }
+            put8(mut &b, if base == "time" { T_TIMEN } else if base == "datetime2" { T_DATETIME2N } else { T_DATETIMEOFFSETN })
+            put8(mut &b, s)
+        }
+        "char", "varchar", "nchar", "nvarchar", "binary", "varbinary" {
+            let wide = base == "nchar" || base == "nvarchar"
+            let isVar = base == "varchar" || base == "nvarchar" || base == "varbinary"
+            let limit = if wide { 4000 } else { 8000 }
+            var size = 1
+            if len(args) == 1 && args[0] == "max" {
+                if !isVar { return Err(bad) }
+                size = 0xFFFF
+            } else if len(args) == 1 {
+                let n = n0.unwrapOr(-1)
+                if n < 1 || n > limit { return Err(bad) }
+                size = if wide { 2 * n } else { n }
+            } else if len(args) > 1 {
+                return Err(bad)
+            } else if wide {
+                size = 2
+            }
+            let code = match base {
+                "char" { T_BIGCHAR }
+                "varchar" { T_BIGVARCHR }
+                "nchar" { T_NCHAR }
+                "nvarchar" { T_NVARCHAR }
+                "binary" { T_BIGBINARY }
+                else { T_BIGVARBIN }
+            }
+            put8(mut &b, code)
+            put16(mut &b, size)
+            if base != "binary" && base != "varbinary" { appendStr(mut &b, collationBytes(coll)) }
+        }
+        else { return Err(bad) }
+    }
+    return Ok(strFromBytes(&b))
+}
+
+// The RPC payload that runs sp_executesql (ProcID 10) on sql, with @params
+// declaring each parameter (named, in order) and then the parameters. E_INPUT
+// for SQL text that is not UTF-8 and for more than MAX_PARAMS parameters.
+pub fn executeSql(sql: str, params: &[Param], txn: str, coll: &Collation): Result[str, Error] {
+    if len(txn) != 8 { return Err(sqldialect.inputError("a transaction descriptor is 8 bytes")) }
+    if len(params) > MAX_PARAMS { return Err(sqldialect.inputError("more than " + MAX_PARAMS.toStr() + " parameters")) }
+    var b: []byte = []
+    allHeaders(mut &b, txn)
+    put16(mut &b, 0xFFFF)
+    put16(mut &b, PROC_EXECUTESQL)
+    put16(mut &b, 0)                                   // OptionFlags
+    let stmt = match textParam(sql, coll) {
+        Ok(p) { p }
+        Err(e) { return Err(sqldialect.inputError("SQL text: " + e.msg)) }
+    }
+    rpcParam(mut &b, &stmt)
+    var decl = newStrBuf()
+    for i in 0..len(params) {
+        if i > 0 { decl.add(", ") }
+        decl.add(params[i].name + " " + params[i].declared)
+        if params[i].output { decl.add(" OUTPUT") }
+    }
+    let ds = try textParam(decl.toStr(), coll)
+    rpcParam(mut &b, &ds)
+    for p in params {
+        if len(p.name) == 0 || len(p.name) > 127 { return Err(sqldialect.inputError("a parameter's name must be 1 to 127 characters")) }
+        rpcParam(mut &b, &p)
+    }
+    return Ok(strFromBytes(&b))
+}
+
+fn rpcParam(b: mut &[]byte, p: &Param) {
+    let u = toUtf16(p.name).unwrapOr([])
+    put8(b, len(u) / 2)
+    for x in u { append(b, x) }
+    put8(b, if p.output { 1 } else { 0 })            // fByRefValue
+    appendStr(b, p.typeInfo)
+    appendStr(b, p.data)
+}
+
+// ---------------------------------------------------------------- transactions
+
+pub const PT_TRANSACTION = 14
+pub const TM_BEGIN_XACT = 5
+pub const TM_COMMIT_XACT = 7
+pub const TM_ROLLBACK_XACT = 8
+
+// A Transaction Manager request (packet type 14): TM_BEGIN_XACT (with the
+// isolation level unchanged), TM_COMMIT_XACT or TM_ROLLBACK_XACT (with no
+// new transaction after it), for the transaction descriptor txn.
+pub fn tmRequest(kind: int, txn: str): str {
+    var b: []byte = []
+    allHeaders(mut &b, txn)
+    put16(mut &b, kind)
+    if kind == TM_BEGIN_XACT {
+        put8(mut &b, 0)            // isolation level: the session's
+        put8(mut &b, 0)            // name: none
+    } else {
+        put8(mut &b, 0)            // name: none
+        put8(mut &b, 0)            // fBeginXact: no new transaction
+    }
+    return strFromBytes(&b)
+}
 
 // ---------------------------------------------------------------- reading
 
@@ -785,6 +1133,12 @@ fn typeInfo(c: mut &Cur, col: mut &Column): Result[Unit, Error] {
             col.size = try c.u8(what)
             col.precision = try c.u8(what)
             col.scale = try c.u8(what)
+            if col.size != 5 && col.size != 9 && col.size != 13 && col.size != 17 {
+                return Err(proto(col.typeName() + " with length " + col.size.toStr()))
+            }
+            if col.precision < 1 || col.precision > 38 || col.scale > col.precision {
+                return Err(proto(col.typeName() + "(" + col.precision.toStr() + ", " + col.scale.toStr() + ")"))
+            }
         }
         T_DATEN {
             col.framing = F_BYTE
@@ -853,9 +1207,15 @@ pub type Cell = value closed {
     Null
     Int(int)          // the integer types and bit
     Float(float)      // real and float, exact
-    Text(str)         // nchar, nvarchar, ntext; char, varchar, text in UTF-8
+    Text(str)         // nchar, nvarchar, ntext; char, varchar, text (by their collation); xml
     Bytes(str)        // binary, varbinary, image
-    Failed(str)       // a value that could not be decoded: why ("code page 1252 ...", "type datetime2 ...")
+    Dec(Decimal)      // decimal and numeric (display scale: the column's), money and smallmoney (scale 4)
+    Date(time.Date)                       // date
+    Time(time.TimeOfDay)                  // time(n)
+    DateTime(time.LocalDateTime)          // datetime2(n), datetime, smalldatetime
+    Offset(time.OffsetDateTime)           // datetimeoffset(n): the local date-time and its offset
+    Guid(str)         // uniqueidentifier: the canonical text, "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+    Failed(str)       // a value that could not be decoded: why ("code page 1251 ...", "type sql_variant ...")
 }
 
 // The float with IEEE 754 double bits b.
@@ -995,7 +1355,227 @@ fn decodeValue(col: &Column, b: str): Cell {
             return Cell.Text(b)
         }
         T_BIGVARBIN, T_BIGBINARY, T_IMAGE, T_VARBINARY, T_BINARY { return Cell.Bytes(b) }
+        T_DECIMAL, T_NUMERIC, T_DECIMALN, T_NUMERICN { return decimalCell(b, col.scale) }
+        T_MONEY, T_MONEY4, T_MONEYN { return moneyCell(b) }
+        T_DATEN {
+            if len(b) != 3 { return Cell.Failed("a date of " + len(b).toStr() + " bytes") }
+            match dateOf3(b, 0) {
+                Some(d) { return Cell.Date(d) }
+                None { return Cell.Failed("a date out of range") }
+            }
+        }
+        T_TIMEN, T_DATETIME2N, T_DATETIMEOFFSETN { return timeCell(t, b, col.scale) }
+        T_DATETIME, T_DATETIM4, T_DATETIMN { return datetimeCell(b) }
+        T_GUID {
+            if len(b) != 16 { return Cell.Failed("a uniqueidentifier of " + len(b).toStr() + " bytes") }
+            return Cell.Guid(guidText(b))
+        }
+        T_XML {
+            // UTF-16LE, possibly after a byte order mark
+            let x = if len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE { b[2..] } else { b }
+            match fromUtf16(x) {
+                Ok(s) { return Cell.Text(s) }
+                Err(e) { return Cell.Failed(e) }
+            }
+        }
         else { return unsupported(col) }
+    }
+}
+
+// ---------------------------------------------------------------- exact and civil values
+
+// Days from 1970-01-01 back to 0001-01-01 (date, datetime2) and to
+// 1900-01-01 (datetime, smalldatetime).
+const DAYS_0001 = -719162
+const DAYS_1900 = -25567
+const MAX_DAY = 3652058          // 9999-12-31, in days since 0001-01-01
+
+// The unsigned little-endian integer of b[at..at + n] (n at most 7).
+fn leOf(b: str, at: int, n: int): int {
+    var v = 0
+    for k in 0..n { v = v | (int(b[at + k]) << (8 * k)) }
+    return v
+}
+
+fn pow10i(n: int): int {
+    var v = 1
+    for i in 0..n { v = v * 10 }
+    return v
+}
+
+// decimal and numeric (MS-TDS 2.2.5.5.1.6): a sign byte (1 positive, 0
+// negative), then the magnitude, 4, 8, 12 or 16 bytes little-endian, the
+// value magnitude * 10^-scale. The magnitude goes straight into a Decimal
+// with the column's scale as its display scale.
+fn decimalCell(b: str, scale: int): Cell {
+    let n = len(b) - 1
+    if n != 4 && n != 8 && n != 12 && n != 16 { return Cell.Failed("a decimal of " + len(b).toStr() + " bytes") }
+    if scale < 0 || scale > 38 { return Cell.Failed("a decimal with scale " + scale.toStr()) }
+    var m: u128 = 0
+    for k in 0..n { m = m | (u128(b[1 + k]) << (8 * k)) }
+    let most: u128 = 99999999999999999999999999999999999999
+    if m > most { return Cell.Failed("a decimal of more than 38 digits") }
+    let units = if b[0] == 0 { -i128(m) } else { i128(m) }
+    return Cell.Dec(fromFraction(units, scale))
+}
+
+// money: the high 32 bits (signed) then the low 32 bits of a count of
+// 1/10,000; smallmoney: a signed 32-bit count. Display scale 4.
+fn moneyCell(b: str): Cell {
+    if len(b) == 4 {
+        var v = leOf(b, 0, 4)
+        if v >= 0x80000000 { v -= 0x100000000 }
+        return Cell.Dec(Decimal.fromUnits(v, 4))
+    }
+    if len(b) != 8 { return Cell.Failed("a money value of " + len(b).toStr() + " bytes") }
+    var hi = leOf(b, 0, 4)
+    if hi >= 0x80000000 { hi -= 0x100000000 }
+    return Cell.Dec(Decimal.fromUnits((hi << 32) | leOf(b, 4, 4), 4))
+}
+
+// The date of 3 bytes at b[at..]: days since 0001-01-01, at most 9999-12-31.
+fn dateOf3(b: str, at: int): Option[time.Date] {
+    let days = leOf(b, at, 3)
+    if days > MAX_DAY { return None }
+    return Some(time.dateOfDays(days + DAYS_0001))
+}
+
+// The bytes of time(n), and of the time part of datetime2(n) and
+// datetimeoffset(n): 3 for n 0 to 2, 4 for 3 and 4, 5 for 5 to 7.
+pub fn timeBytes(scale: int): int {
+    if scale <= 2 { return 3 }
+    if scale <= 4 { return 4 }
+    return 5
+}
+
+// time(n), datetime2(n) and datetimeoffset(n) (MS-TDS 2.2.5.5.1.8): a count
+// of 10^-n seconds since midnight, then for datetime2 the date (3 bytes),
+// for datetimeoffset the date and a signed 2-byte offset in minutes. A
+// datetimeoffset's time and date are UTC; the local date-time is UTC plus
+// the offset.
+fn timeCell(t: int, b: str, scale: int): Cell {
+    if scale < 0 || scale > 7 { return Cell.Failed("a time with scale " + scale.toStr()) }
+    let tn = timeBytes(scale)
+    let want = if t == T_TIMEN { tn } else if t == T_DATETIME2N { tn + 3 } else { tn + 5 }
+    if len(b) != want { return Cell.Failed("a " + (if t == T_TIMEN { "time" } else if t == T_DATETIME2N { "datetime2" } else { "datetimeoffset" }) +
+                                        "(" + scale.toStr() + ") of " + len(b).toStr() + " bytes") }
+    let units = leOf(b, 0, tn)
+    if units >= 86400 * pow10i(scale) { return Cell.Failed("a time of day past midnight") }
+    let tod = time.TimeOfDay{nanos: units * pow10i(9 - scale)}
+    if t == T_TIMEN { return Cell.Time(tod) }
+    let d = match dateOf3(b, tn) {
+        Some(x) { x }
+        None { return Cell.Failed("a date out of range") }
+    }
+    let l = time.LocalDateTime{date: d, time: tod}
+    if t == T_DATETIME2N { return Cell.DateTime(l) }
+    var off = leOf(b, tn + 3, 2)
+    if off >= 0x8000 { off -= 0x10000 }
+    match l.atUtc().atOffset(off) {
+        Some(o) { return Cell.Offset(o) }
+        None { return Cell.Failed("an offset of " + off.toStr() + " minutes") }
+    }
+}
+
+// datetime: signed days since 1900-01-01 (4 bytes), then 1/300 seconds since
+// midnight (4 bytes); smalldatetime: unsigned days since 1900-01-01 and
+// minutes since midnight (2 bytes each).
+//
+// datetime's ticks become milliseconds rounded to the nearest, (ticks * 10
+// + 1) / 3: .000, .003, .007, .010, ... This is the server's own text for
+// the value (CONVERT style 121, and what ODBC gives), and writing that text
+// back gives the same tick. (CAST to datetime2(7) rounds to 100 ns instead:
+// .0033333 for one tick.)
+fn datetimeCell(b: str): Cell {
+    if len(b) == 4 {
+        let mins = leOf(b, 2, 2)
+        if mins >= 1440 { return Cell.Failed("a smalldatetime of " + mins.toStr() + " minutes") }
+        return Cell.DateTime(time.LocalDateTime{date: time.dateOfDays(leOf(b, 0, 2) + DAYS_1900),
+                                                time: time.TimeOfDay{nanos: mins * 60000000000}})
+    }
+    if len(b) != 8 { return Cell.Failed("a datetime of " + len(b).toStr() + " bytes") }
+    var days = leOf(b, 0, 4)
+    if days >= 0x80000000 { days -= 0x100000000 }
+    let ticks = leOf(b, 4, 4)
+    if days < -53690 || days > 2958463 || ticks >= 25920000 { return Cell.Failed("a datetime out of range") }
+    let ms = (ticks * 10 + 1) / 3
+    return Cell.DateTime(time.LocalDateTime{date: time.dateOfDays(days + DAYS_1900), time: time.TimeOfDay{nanos: ms * 1000000}})
+}
+
+const HEXU = "0123456789ABCDEF"
+
+// The canonical text of a uniqueidentifier's 16 bytes: the first three
+// groups are little-endian integers (4, 2 and 2 bytes), the last two the
+// bytes in order.
+pub fn guidText(b: str): str {
+    let order = [3, 2, 1, 0, -1, 5, 4, -1, 7, 6, -1, 8, 9, -1, 10, 11, 12, 13, 14, 15]
+    var out = newStrBuf()
+    for k in order {
+        if k < 0 {
+            out.addByte('-')
+        } else {
+            let v = int(b[k])
+            out.addByte(HEXU[v >> 4])
+            out.addByte(HEXU[v & 15])
+        }
+    }
+    return out.toStr()
+}
+
+// The 16 bytes of a uniqueidentifier's text (as guidText writes it, either
+// case, braces allowed); None when it is not one.
+pub fn guidBytes(s: str): Option[str] {
+    var t = s
+    if len(t) == 38 && t[0] == '{' && t[37] == '}' { t = t[1..37] }
+    if len(t) != 36 || t[8] != '-' || t[13] != '-' || t[18] != '-' || t[23] != '-' { return None }
+    let hexDigits = t[0..8] + t[9..13] + t[14..18] + t[19..23] + t[24..36]
+    let raw = match sqldialect.unhex(hexDigits) {
+        Some(x) { x }
+        None { return None }
+    }
+    let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15]
+    var out = array(16, byte(0))
+    for i in 0..16 { out[i] = raw[order[i]] }
+    return Some(strFromBytes(&out))
+}
+
+fn pad(n: int, width: int): str { return strings.padLeft(n.toStr(), width, '0') }
+
+// "13:45:07" and n digits of fraction: "13:45:07.1234567" for n = 7.
+fn timeText(t: &time.TimeOfDay, n: int): str {
+    var s = pad(t.hour(), 2) + ":" + pad(t.minute(), 2) + ":" + pad(t.second(), 2)
+    if n > 0 { s = s + "." + pad(t.nano() / pow10i(9 - n), n) }
+    return s
+}
+
+// The text of a non-NULL cell of col as SQL Server writes it (CONVERT style
+// 121, which is also ODBC's): decimals with the column's scale, "2026-11-05",
+// "13:45:07.1234567" (time(n) with n fraction digits), "2026-11-05
+// 13:45:07.1234567" (datetime2(n)), "2026-11-05 13:45:07.1234567 +01:30"
+// (datetimeoffset(n)), "2026-11-05 13:45:07.003" (datetime: always 3
+// digits), "2026-11-05 13:45:00" (smalldatetime), the uniqueidentifier's
+// canonical text; integers' and floats' digits; text as it is. None for
+// NULL, binary and a cell that failed.
+pub fn cellText(col: &Column, c: &Cell): Option[str] {
+    match c {
+        Cell.Text(t) { return Some(t) }
+        Cell.Int(n) { return Some(n.toStr()) }
+        Cell.Float(f) { return Some(f.toStr()) }
+        Cell.Dec(d) { return Some(d.toStr()) }
+        Cell.Date(d) { return Some(d.toStr()) }
+        Cell.Time(t) { return Some(timeText(&t, col.scale)) }
+        Cell.DateTime(l) {
+            let t = col.tdsType
+            let n = if t == T_DATETIME2N { col.scale } else if t == T_DATETIM4 || (t == T_DATETIMN && col.size == 4) { 0 } else { 3 }
+            return Some(l.date.toStr() + " " + timeText(&l.time, n))
+        }
+        Cell.Offset(o) {
+            let a = if o.offset < 0 { -o.offset } else { o.offset }
+            return Some(o.local.date.toStr() + " " + timeText(&o.local.time, col.scale) + (if o.offset < 0 { " -" } else { " +" }) +
+                        pad(a / 60, 2) + ":" + pad(a % 60, 2))
+        }
+        Cell.Guid(g) { return Some(g) }
+        else { return None }
     }
 }
 
@@ -1055,20 +1635,43 @@ pub type Reply = record {
     pub loginAck: Option[LoginAck]
     pub features: []Feature
     pub dones: []Done
-    pub returnStatus: Option[int]
+    pub returnStatus: Option[int]   // the last RETURNSTATUS
+    pub statuses: []int             // every RETURNSTATUS, in order
+    pub returnValues: []ReturnValue
+    pub counts: []StatementCount    // every DONE, DONEPROC and DONEINPROC with a row count, in order
     pub affected: int       // the count of the last DONE that ends no result set, or -1
     open: bool              // the last result set has had no DONE yet
 }
 
+// A statement's row count (a DONE token with DONE_COUNT): the rows its
+// result set has, or the rows it changed.
+pub type StatementCount = value record {
+    pub token: int          // TK_DONE, TK_DONEPROC or TK_DONEINPROC
+    pub rows: int
+    pub resultSet: int      // the index in Reply.results of the result set it ends, or -1
+}
+
+// A RETURNVALUE token: an output parameter of an RPC (status 1), or the
+// value of a user-defined function (status 2).
+pub type ReturnValue = record {
+    pub ordinal: int
+    pub name: str
+    pub status: int
+    pub column: Column      // its type (name: the parameter's)
+    pub value: Cell
+}
+
 pub fn emptyReply(): Reply {
     return Reply{results: [], errors: [], infos: [], envs: [], loginAck: None, features: [], dones: [],
-                 returnStatus: None, affected: -1, open: false}
+                 returnStatus: None, statuses: [], returnValues: [], counts: [], affected: -1, open: false}
 }
 
 // Decodes a reply's token stream, up to and including its final DONE (one
 // without DONE_MORE). E_PROTOCOL for anything malformed: a length or count
 // past the end, an unknown token or type, a ROW before any COLMETADATA,
 // bytes after the final DONE, no final DONE. E_LIMIT past maxCells cells.
+// A reply ends with a DONE without DONE_MORE, or (an RPC's) with a DONEPROC
+// without DONE_MORE.
 pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
     var r = emptyReply()
     var c = cursor(data)
@@ -1076,7 +1679,9 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
     var haveCols = false
     var cells = 0
     var final = false
+    var procEnd = false
     while c.left() > 0 {
+        procEnd = false
         if final { return Err(proto(c.left().toStr() + " bytes after the final DONE")) }
         let tok = try c.u8("a token")
         match tok {
@@ -1105,6 +1710,8 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
                 var done = d
                 done.count = if n > 9223372036854775807 { -1 } else { int(n) }
                 if (done.status & DONE_COUNT) != 0 {
+                    append(mut &r.counts, StatementCount{token: tok, rows: done.count,
+                                                         resultSet: if r.open { len(r.results) - 1 } else { -1 }})
                     if r.open {
                         let k = len(r.results) - 1
                         r.results[k].count = done.count
@@ -1115,6 +1722,7 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
                 r.open = false
                 append(mut &r.dones, done)
                 if tok == TK_DONE && (done.status & DONE_MORE) == 0 { final = true }
+                if tok == TK_DONEPROC && (done.status & DONE_MORE) == 0 { procEnd = true }
             }
             TK_ERROR, TK_INFO {
                 let m = try message(mut &c)
@@ -1130,7 +1738,17 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
                     append(mut &r.features, Feature{id: id, data: try c.take(n, "FEATUREEXTACK")})
                 }
             }
-            TK_RETURNSTATUS { r.returnStatus = Some(try c.le(4, true, "RETURNSTATUS")) }
+            TK_RETURNSTATUS {
+                let v = try c.le(4, true, "RETURNSTATUS")
+                r.returnStatus = Some(v)
+                append(mut &r.statuses, v)
+            }
+            TK_RETURNVALUE {
+                cells += 1
+                if cells > maxCells { return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tds: a reply of more than " +
+                                                 maxCells.toStr() + " values")) }
+                append(mut &r.returnValues, try returnValue(mut &c))
+            }
             TK_ORDER, TK_COLINFO, TK_TABNAME, TK_SSPI {
                 let n = try c.u16("a token's length")
                 try c.skip(n, "token 0x" + strings.hex(tok))
@@ -1140,14 +1758,33 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
                 try c.skip(n, "token 0x" + strings.hex(tok))
             }
             TK_OFFSET { try c.skip(4, "OFFSET") }
-            TK_RETURNVALUE { return Err(proto("RETURNVALUE is not supported yet")) }
             TK_ALTMETADATA, TK_ALTROW { return Err(proto("COMPUTE results (ALTMETADATA, ALTROW) are not supported")) }
             TK_DATACLASSIFICATION { return Err(proto("DATACLASSIFICATION is not supported (it was not asked for)")) }
             else { return Err(proto("unknown token 0x" + strings.padLeft(strings.hex(tok), 2, '0'))) }
         }
     }
-    if !final { return Err(proto("the reply ended before its final DONE")) }
+    if !final && !procEnd { return Err(proto("the reply ended before its final DONE")) }
     return Ok(r)
+}
+
+// RETURNVALUE (MS-TDS 2.2.7.18): ordinal, name, status, user type, flags,
+// TYPE_INFO, the value. Encrypted values (Always Encrypted) are E_PROTOCOL:
+// the client never asks for them.
+fn returnValue(c: mut &Cur): Result[ReturnValue, Error] {
+    let what = "RETURNVALUE"
+    let ordinal = try c.u16(what)
+    let name = try c.bvarchar(what)
+    let status = try c.u8(what)
+    let userType = try c.u32(what)
+    let flags = try c.u16(what)
+    if (flags & 0x0800) != 0 { return Err(proto("an encrypted RETURNVALUE")) }
+    var col = column(try c.u8(what))
+    col.userType = userType
+    col.flags = flags
+    col.name = name
+    try typeInfo(mut &c, mut &col)
+    let v = try readValue(mut &c, &col)
+    return Ok(ReturnValue{ordinal: ordinal, name: name, status: status, column: col, value: v})
 }
 
 fn colMetadata(c: mut &Cur): Result[[]Column, Error] {
@@ -1473,6 +2110,14 @@ pub type Session = record {
     pub broken: bool             // a request failed on the wire: no more requests
     txn: str                     // the transaction descriptor, 8 bytes
     pub infos: []Message         // the INFO messages of the last request (login: "Changed database context ...")
+    pub errors: []Message        // the ERROR messages of the last request
+    pub language: str            // ENVCHANGE 2: "us_english"
+    pub charset: str             // ENVCHANGE 3 (TDS 7 servers send none)
+    pub sortLocale: str          // ENVCHANGE 5: the Unicode sorting locale id
+    pub sortFlags: str           // ENVCHANGE 6: the Unicode comparison flags
+    pub mirrorPartner: str       // ENVCHANGE 13: the database mirroring partner
+    pub userInstance: str        // ENVCHANGE 19
+    pub resets: int              // ENVCHANGE 18: RESETCONNECTION acknowledged, so many times
 }
 
 fn addrOf(host: str, port: int): str {
@@ -1538,9 +2183,14 @@ pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
     }
     var s = Session{t: t, encryption: enc, tdsVersion: ack.tdsVersion, serverName: ack.progName,
                     serverVersion: ack.version, preloginVersion: pre.version, database: "", collation: noCollation(),
-                    utf8: false, maxReply: MAX_REPLY, broken: false, txn: noTransaction(), infos: replace(mut &r.infos, [])}
+                    utf8: false, maxReply: MAX_REPLY, broken: false, txn: noTransaction(), infos: replace(mut &r.infos, []),
+                    errors: [], language: "", charset: "", sortLocale: "", sortFlags: "", mirrorPartner: "",
+                    userInstance: "", resets: 0}
     for f in r.features {
         if f.id == FEATURE_UTF8 && len(f.data) >= 1 && f.data[0] != 0 { s.utf8 = true }
+    }
+    for e in r.envs {
+        if e.kind == ENV_ROUTING { return Err(ioErr("the server redirects the connection elsewhere (routing), which is not supported yet")) }
     }
     try s.apply(&r.envs)
     return Ok(s)
@@ -1589,11 +2239,24 @@ fn hostName(): str {
     return "localhost"
 }
 
-// Applies ENVCHANGE tokens: database, collation, packet size, transactions.
+// Applies ENVCHANGE tokens (MS-TDS 2.2.7.9): the database, language,
+// collation and packet size, and the transaction descriptor (begin, commit,
+// rollback, enlist and defect, transaction ended) are applied; the
+// character set, Unicode sort locale and flags, the mirroring partner, the
+// user instance and RESETCONNECTION's acknowledgement are kept. Routing (20)
+// at login is refused by open; promotion (15) and the DTC manager's address
+// (16) are distributed transactions, which this client does not ask for.
 fn (s: mut &Session) apply(envs: &[]EnvChange): Result[Unit, Error] {
     for e in envs {
         match e.kind {
             ENV_DATABASE { s.database = e.newValue }
+            ENV_LANGUAGE { s.language = e.newValue }
+            ENV_CHARSET { s.charset = e.newValue }
+            5 { s.sortLocale = e.newValue }
+            6 { s.sortFlags = e.newValue }
+            13 { s.mirrorPartner = e.newValue }
+            19 { s.userInstance = e.newValue }
+            ENV_RESETACK { s.resets += 1 }
             ENV_COLLATION { if len(e.newValue) == 5 { s.collation = try parseCollation(e.newValue) } }
             ENV_PACKETSIZE {
                 let n = match parseInt(e.newValue) {
@@ -1603,11 +2266,11 @@ fn (s: mut &Session) apply(envs: &[]EnvChange): Result[Unit, Error] {
                 if n < MIN_PACKET || n > MAX_PACKET { return Err(proto("a packet size of " + n.toStr())) }
                 s.t.packetSize = n
             }
-            ENV_BEGINTRAN {
+            ENV_BEGINTRAN, 11 {
                 if len(e.newValue) != 8 { return Err(proto("a transaction descriptor of " + len(e.newValue).toStr() + " bytes")) }
                 s.txn = e.newValue
             }
-            ENV_COMMITTRAN, ENV_ROLLBACKTRAN, ENV_TRANENDED { s.txn = noTransaction() }
+            ENV_COMMITTRAN, ENV_ROLLBACKTRAN, ENV_TRANENDED, 12 { s.txn = noTransaction() }
             else {}
         }
     }
@@ -1620,13 +2283,32 @@ pub fn (s: &Session) packetSize(): int { return s.t.packetSize }
 pub fn (s: &Session) inTransaction(): bool { return s.txn != noTransaction() }
 
 // Runs a batch: sends SQLBatch and decodes the whole reply. The reply's
-// ERROR tokens are in reply.errors, not an Err: the caller decides. Err is
-// E_INPUT for SQL text that is not UTF-8, or a failure on the wire, after
-// which the session is broken.
+// ERROR tokens are in reply.errors (and Session.errors), not an Err: the
+// caller decides. Err is E_INPUT for SQL text that is not UTF-8, or a
+// failure on the wire, after which the session is broken.
 pub fn (s: mut &Session) batch(sql: str, w: Where): Result[Reply, Error] {
     if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
     let payload = try sqlBatch(sql, s.txn)
-    let r = s.roundTrip(PT_SQLBATCH, payload, w)
+    return s.request(PT_SQLBATCH, payload, w)
+}
+
+// Runs sql through sp_executesql with the parameters (named by the caller:
+// @p1, @p2, ...), as batch does otherwise.
+pub fn (s: mut &Session) executeSql(sql: str, params: &[Param], w: Where): Result[Reply, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    let payload = try executeSql(sql, params, s.txn, &s.collation)
+    return s.request(PT_RPC, payload, w)
+}
+
+// Sends a Transaction Manager request: TM_BEGIN_XACT, TM_COMMIT_XACT or
+// TM_ROLLBACK_XACT, for the current transaction.
+pub fn (s: mut &Session) transact(kind: int, w: Where): Result[Reply, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    return s.request(PT_TRANSACTION, tmRequest(kind, s.txn), w)
+}
+
+fn (s: mut &Session) request(ptype: int, payload: str, w: Where): Result[Reply, Error] {
+    let r = s.roundTrip(ptype, payload, w)
     match r {
         Ok(_) {}
         Err(_) { s.broken = true }
@@ -1634,6 +2316,8 @@ pub fn (s: mut &Session) batch(sql: str, w: Where): Result[Reply, Error] {
     let reply = try r
     s.infos = []
     for m in reply.infos { append(mut &s.infos, m) }
+    s.errors = []
+    for m in reply.errors { append(mut &s.errors, m) }
     try s.apply(&reply.envs)
     return Ok(reply)
 }
