@@ -1515,7 +1515,8 @@ fn cmpHalf(r: U256, d: U256): int {
     return cmpU(U256{hi: (r.hi << 1) | (r.lo >> 127), lo: r.lo << 1}, d)
 }
 
-// n / d and n % d for d > 0: native when both fit 128 bits, else binary long division.
+// n / d and n % d for d > 0: native when both fit 128 bits, else long division
+// by 64-bit digits.
 fn divModU(n: U256, d: U256): DivMod {
     if n.hi == 0 && d.hi == 0 {
         return DivMod{q: u256(n.lo / d.lo), r: u256(n.lo % d.lo)}
@@ -1525,25 +1526,108 @@ fn divModU(n: U256, d: U256): DivMod {
         let s = divSmall(n, d.lo)
         return DivMod{q: s.q, r: u256(s.r)}
     }
-    var q = u256(0)
-    var r = u256(0)
-    var i = 255
-    while i >= 0 && bitU(n, i) == 0 { i -= 1 }
-    while i >= 0 {
-        let top = r.hi >> 127 != 0
-        r = U256{hi: (r.hi << 1) | (r.lo >> 127), lo: (r.lo << 1) | bitU(n, i)}
-        if top || cmpU(r, d) >= 0 {
-            r = subU(r, d)
-            if i >= 128 { q.hi = q.hi | (u128(1) << (i - 128)) } else { q.lo = q.lo | (u128(1) << i) }
-        }
-        i -= 1
-    }
-    return DivMod{q: q, r: r}
+    return divLong(n, d)
 }
 
-fn bitU(a: U256, i: int): u128 {
-    if i >= 128 { return (a.hi >> (i - 128)) & 1 }
-    return (a.lo >> i) & 1
+// The four 64-bit digits of a, least significant first.
+fn digits64(a: U256): []u64 {
+    return [u64(a.lo & M64), u64(a.lo >> 64), u64(a.hi & M64), u64(a.hi >> 64)]
+}
+
+// The number of leading zero bits of x != 0.
+fn clz64(x: u64): int {
+    var n = 0
+    var y = x
+    if y >> 32 == 0 { n += 32; y = y << 32 }
+    if y >> 48 == 0 { n += 16; y = y << 16 }
+    if y >> 56 == 0 { n += 8; y = y << 8 }
+    if y >> 60 == 0 { n += 4; y = y << 4 }
+    if y >> 62 == 0 { n += 2; y = y << 2 }
+    if y >> 63 == 0 { n += 1 }
+    return n
+}
+
+// n / d and n % d for n >= d >= 2^64: Knuth's algorithm D (TAOCP 4.3.1) in base
+// 2^64, as in Hacker's Delight's divmnu64. Each quotient digit is estimated from
+// the top two digits of the remainder and the top digit of the normalized
+// divisor (one 128-by-64-bit division), corrected at most twice by the next
+// divisor digit, then multiplied out and subtracted, with an add-back in the
+// rare case the estimate was still one too large.
+fn divLong(n: U256, d: U256): DivMod {
+    let u = digits64(n)
+    let v = digits64(d)
+    var dn = 4
+    while v[dn - 1] == 0 { dn -= 1 }
+    var un = 4
+    while u[un - 1] == 0 { un -= 1 }
+    // normalize: the divisor's top digit gets its top bit set
+    let sh = clz64(v[dn - 1])
+    var vn = array(dn, u64(0))
+    var w = array(un + 1, u64(0))
+    if sh == 0 {
+        for i in 0..dn { vn[i] = v[i] }
+        for i in 0..un { w[i] = u[i] }
+    } else {
+        for i in 0..dn {
+            vn[i] = v[i] << sh
+            if i > 0 { vn[i] = vn[i] | (v[i - 1] >> (64 - sh)) }
+        }
+        w[un] = u[un - 1] >> (64 - sh)
+        for i in 0..un {
+            w[i] = u[i] << sh
+            if i > 0 { w[i] = w[i] | (u[i - 1] >> (64 - sh)) }
+        }
+    }
+    var q = array(4, u64(0))
+    let vtop = u128(vn[dn - 1])
+    let vnext = u128(vn[dn - 2])
+    var j = un - dn
+    while j >= 0 {
+        let num = (u128(w[j + dn]) << 64) | u128(w[j + dn - 1])
+        var qhat = num / vtop
+        var rhat = num -% qhat *% vtop
+        while qhat >> 64 != 0 || qhat *% vnext > ((rhat << 64) | u128(w[j + dn - 2])) {
+            qhat -= 1
+            rhat += vtop
+            if rhat >> 64 != 0 { break }
+        }
+        // w[j..j+dn] -= qhat * vn
+        var borrow: u128 = 0
+        for i in 0..dn {
+            let pr = (qhat & M64) *% u128(vn[i]) +% borrow
+            let lo = u64(pr & M64)
+            borrow = pr >> 64
+            let x = w[i + j]
+            w[i + j] = x -% lo
+            if x < lo { borrow += 1 }
+        }
+        let top = w[j + dn]
+        w[j + dn] = top -% u64(borrow)
+        var qd = u64(qhat & M64)
+        if top < u64(borrow) {
+            // one too large: add the divisor back
+            qd -= 1
+            var c: u128 = 0
+            for i in 0..dn {
+                let t = u128(w[i + j]) + u128(vn[i]) + c
+                w[i + j] = u64(t & M64)
+                c = t >> 64
+            }
+            w[j + dn] = w[j + dn] +% u64(c)
+        }
+        q[j] = qd
+        j -= 1
+    }
+    // the remainder: w[0..dn] shifted back
+    var r = array(4, u64(0))
+    for i in 0..dn {
+        r[i] = w[i] >> sh
+        if sh > 0 { r[i] = r[i] | (w[i + 1] << (64 - sh)) }
+    }
+    return DivMod{
+        q: U256{hi: (u128(q[3]) << 64) | u128(q[2]), lo: (u128(q[1]) << 64) | u128(q[0])},
+        r: U256{hi: (u128(r[3]) << 64) | u128(r[2]), lo: (u128(r[1]) << 64) | u128(r[0])}
+    }
 }
 
 // x * y mod m for x, y < m.
