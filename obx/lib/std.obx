@@ -1468,18 +1468,16 @@ fn subU(a: U256, b: U256): U256 {
     return U256{hi: a.hi -% b.hi -% borrow, lo: a.lo -% b.lo}
 }
 
-// The full product of two 128-bit numbers, from 64-bit halves.
+// The full product of two 128-bit numbers, from 64-bit halves. No step can overflow, so the
+// operations wrap (no checks); the factors are written out as halves (`a & M64`, `a >> 64`) so
+// that the native backend sees each product is 64 by 64 bits: one widening multiply.
 fn mul128(a: u128, b: u128): U256 {
-    let a0 = a & M64
-    let a1 = a >> 64
-    let b0 = b & M64
-    let b1 = b >> 64
-    let p00 = a0 * b0
-    let p01 = a0 * b1
-    let p10 = a1 * b0
-    let p11 = a1 * b1
-    let mid = (p00 >> 64) + (p01 & M64) + (p10 & M64)
-    return U256{hi: p11 + (p01 >> 64) + (p10 >> 64) + (mid >> 64), lo: (p00 & M64) | (mid << 64)}
+    let p00 = (a & M64) *% (b & M64)
+    let p01 = (a & M64) *% (b >> 64)
+    let p10 = (a >> 64) *% (b & M64)
+    let p11 = (a >> 64) *% (b >> 64)
+    let mid = (p00 >> 64) +% (p01 & M64) +% (p10 & M64)
+    return U256{hi: p11 +% (p01 >> 64) +% (p10 >> 64) +% (mid >> 64), lo: (p00 & M64) | (mid << 64)}
 }
 
 // a * m for m < 2^64; Err(e) on overflow.

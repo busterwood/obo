@@ -4212,6 +4212,13 @@ fn (g: &Gen) rotl(e: int): int {
 fn (g: mut &Gen) inlineU128(e: int, op: str, nargs: int): bool {
     let n = g.u.nodes[e]
     let a = g.u.listAt(n.b, 0)
+    if (op == "wmul" && nargs == 2 || op == "mul" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2))) &&
+        g.below64(a) && g.below64(g.u.listAt(n.b, 1)) {
+        // both factors below 2^64: one widening multiply, and the product cannot overflow
+        g.pair128(a, g.u.listAt(n.b, 1))
+        g.a.unary(x64.MUL, 8, R8)
+        return true
+    }
     if (op == "wadd" || op == "wsub" || op == "wmul") && nargs == 2 {
         g.pair128(a, g.u.listAt(n.b, 1))
         if op == "wadd" {
@@ -4245,6 +4252,23 @@ fn (g: mut &Gen) inlineU128(e: int, op: str, nargs: int): bool {
         g.gen(a)
         g.shift128I(if op == "shl" { ir.OP_SHL } else { ir.OP_SHR }, false, c)
         return true
+    }
+    return false
+}
+
+// Whether the 128-bit value of e is below 2^64 by its form: an unsigned value of 64 bits or
+// fewer widened, a constant, an AND with such a value, or a shift right by 64 or more.
+fn (g: &Gen) below64(e: int): bool {
+    let n = g.u.nodes[e]
+    let k = g.const128(e)
+    if k.ok { return k.hi == 0 }
+    if n.k == ir.E_CAST && g.is128(n.ty) {
+        let s = g.u.nodes[n.a].ty
+        return g.u.isInt(s) && !g.u.isSigned(s) && !g.is128(s)
+    }
+    if n.k == ir.E_BIN && n.v == ir.OP_AND && g.is128(n.ty) { return g.below64(n.a) || g.below64(n.b) }
+    if n.k == ir.E_CALL && g.rtName(e) == "rt_shr_u128" && g.u.listLen(n.b) == 3 {
+        return g.shiftConst(g.u.listAt(n.b, 1)) >= 64
     }
     return false
 }
