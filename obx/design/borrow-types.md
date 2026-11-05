@@ -547,7 +547,7 @@ which is what views would give them.
 **Decisions taken beyond D1-D10** (each the conservative option):
 
 - A plain borrow as the result of an `if` or `match` expression stays an
-  error; only values holding borrows get the join.
+  error; only values holding borrows get the join. (Lifted in section 12.1.)
 - D8 also forbids a drop method on a type with a `borrow` type parameter.
 - (Superseded below: string literals are now accepted as `&str`, and the
   separators are `&str`.)
@@ -601,3 +601,48 @@ What the rules made awkward:
   `str` parameter, std's `indexOf`) takes one; strings' own functions use the
   `strFind` intrinsic, which reads the header without a count.
 
+## 12. borrow-limits: lifting the remaining limits
+
+Branch `borrow-limits` (2026-11-05) lifts the four limits listed at the end of
+section 11, one commit each. Soundness first: each relaxation keeps rejecting
+every program that could leave a borrow dangling (the error tests named below,
+and an adversarial pass at the end).
+
+### 12.1 Plain borrows from if and match expressions
+
+`let v: &str = if b { "lit" } else { &s }` and `if b { &a } else { &c }` are
+accepted (SPEC 7.8). The expression gives a borrow when the expected type is a
+borrow or a slice, or, with no expected type, when a branch is written `&p` or
+`mut &p` (or is itself such an expression); every branch must then be a
+borrow, and a string literal branch is a view of static bytes. The result's
+root is the join of the branches' roots (the same join values holding borrows
+already had), a literal adds none, and a `mut &` result must borrow the same
+variable in every branch. The result is rooted at the join with an empty path:
+a call holds each member whole while its later arguments run (`hold` now
+expands a join; `frozen` too), and `let` freezes all of them.
+
+Slices come with it: a slice is a borrow with the same root and the same
+second-class rules, so `total(if b { &xs[0..1] } else { &ys })` needed only the
+same join. Closures stay rejected: a closure's environment is built in the
+branch (a C block-local struct), and its captures are a list held per capture,
+not a root, so a join would neither keep the environment alive nor merge the
+capture lists.
+
+Two holes found on the way, in the existing join for values holding borrows,
+are closed by the same check (`branchRoot`):
+
+- an arm giving a borrow of a variable it binds (`match f() { Some(x) {
+  Some(&x) } ... }` as an `Option[&str]`: `x` is dropped when the arm ends;
+  heap-use-after-free under ASan before);
+- a branch giving a borrow of a temporary it made (`show(if b { Some(&mk()) }
+  else { None })`: the branch drops its temporaries when it ends).
+
+Also: a function without sources now gives its static borrow result no root
+(SPEC 10 rule 5 said so), so `let k = kind(2)` binds it.
+
+Tests: lib/tests/run/borrow_ifx_plain.obx; lib/tests/error/borrow_ifx_*
+(return_root, mut_two_roots, assign_root, call_move, temp, value_temp, mixed),
+borrow_matchx_* (mut_two_roots, arm_binding, arm_binding_plain). Two
+conformance error tests (x1_ifx_borrow, x1_ifx_slice) and red-team round 4's
+i20 rejected what is now allowed; they now test the mut-two-roots and
+temporary cases.

@@ -1,0 +1,7 @@
+// error: but the if expression gives a borrow: every branch must be a borrow
+fn mk(): str { return "x" + "y" }
+fn main() {
+    let b = len(mk()) > 1
+    let v: &str = if b { "lit" } else { mk() }
+    println(v)
+}

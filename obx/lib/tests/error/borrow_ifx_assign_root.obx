@@ -1,0 +1,9 @@
+// The join freezes every root while the borrow is used (SPEC 10 rule 4).
+// error: 'a' is borrowed by 'v' and cannot be assigned
+fn main() {
+    var a = "alpha"
+    let c = "gamma"
+    let v = if len(a) > 2 { &a } else { &c }
+    a = "zeta"
+    println(v)
+}

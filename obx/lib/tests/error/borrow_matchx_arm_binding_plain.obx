@@ -1,0 +1,9 @@
+// error: a match arm cannot give a borrow of 'x': the arm binds it
+fn f(o: Option[str]): str {
+    let w: &str = match o {
+        Some(x) { &x }
+        None { "none" }
+    }
+    return w
+}
+fn main() { println(f(Some("a"))) }

@@ -1,0 +1,77 @@
+// An if or match expression may give a borrow (SPEC 7.8): its root is the join of the branches'
+// roots, and a string literal branch is a view of static bytes with no root.
+// expect: lit
+// expect: world
+// expect: hello
+// expect: zero
+// expect: many
+// expect: he
+// expect: dflt
+// expect: or
+// expect: 10
+// expect: 1
+// expect: 2 2
+// expect: world
+// expect: el
+fn kind(k: int): &str { return if k == 0 { "zero" } else { "many" } }
+
+fn pick(s: &str, short: bool): &str { return if short { &s[0..2] } else { s } }
+
+fn firstOr(o: &Option[str]): &str {
+    return match o {
+        Some(x) { x }
+        None { "dflt" }
+    }
+}
+
+type Box = record { v: int }
+
+fn total(xs: &[int]): int {
+    var n = 0
+    for x in xs { n += x }
+    return n
+}
+
+fn main() {
+    let s = "hello"
+    let t = "world"
+    let b = len(s) > 3
+    let v: &str = if b { "lit" } else { &s }
+    println(v)
+    let w = if !b { &s } else { &t }
+    println(w)
+    let u = if b { &s } else { "other" }
+    println(u)
+    println(kind(0))
+    let k = kind(2)          // a function without sources returns static borrows: no root
+    println(k)
+    println(pick(&s, true))
+    let o: Option[str] = None
+    println(firstOr(&o))
+    let m = match len(t) {
+        5 { &t[1..3] }
+        else { &s }
+    }
+    println(m)
+    var x = Box{v: 1}
+    let y = Box{v: 2}
+    {
+        let r = if b { mut &x } else { mut &x }      // one root: allowed
+        r.v = 10
+    }
+    let q = if b { &x } else { &y }
+    println(intToStr(q.v))
+    let xs = [1, 2, 3]
+    let ys = [4, 5]
+    println(intToStr(total(if b { &xs[0..1] } else { &ys })))
+    let sl = if b { &xs[1..3] } else { &ys }
+    println(intToStr(sl[0]) + " " + intToStr(len(sl)))
+    let n = if b { if len(t) > 9 { &s } else { &t } } else { "x" }
+    println(n)
+    let o2: Option[&str] = Some(&s[1..3])
+    let z: &str = match o2 {
+        Some(p) { p }        // a view bound by the arm keeps the root of what it views
+        None { "none" }
+    }
+    println(if len(z) > 0 { z } else { "?" })
+}

@@ -1,8 +1,10 @@
-// error: cannot give a borrow
+// error: must borrow the same variable in every branch
+// A mut borrow has one root: an if expression may not choose between two (SPEC 7.8).
 type D = record { v: int }
 fn main() {
     let c = true
-    let a = D{v: 1}
-    let b = D{v: 2}
-    let r = if c { &a } else { &b }
+    var a = D{v: 1}
+    var b = D{v: 2}
+    let r = if c { mut &a } else { mut &b }
+    r.v = 3
 }

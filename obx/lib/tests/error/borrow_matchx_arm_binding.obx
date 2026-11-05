@@ -1,0 +1,10 @@
+// A variable an arm binds is dropped when the arm ends: the arm cannot give a borrow of it.
+// error: a match arm cannot give a borrow of 'x': the arm binds it
+fn f(): Option[str] { return Some(intToStr(123456) + "abcdefghijklmnopqrstuvwxyz") }
+fn main() {
+    let w: Option[&str] = match f() {
+        Some(x) { Some(&x) }
+        None { None }
+    }
+    match w { Some(y) { println(y) } None {} }
+}

@@ -661,12 +661,24 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   loop around the statement and cannot appear in a `while` condition; in a
   closure, `return` leaves the closure. A move on such a path is allowed even
   inside `&&`, `||` or a `while` condition, since the path leaves.
-- The result is a value, copy or owned; it may not be a borrow, a slice or a
-  closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
-  is an `int`, and a field bound as a borrow by a match arm can be read but
-  not be the result when it is owned (moving out of a borrow). The result may
-  hold borrows (`if c { Some(&a) } else { None }` as an `Option[&str]`): it
-  then has the roots of all branches (section 10, rule 2).
+- The result is a value, copy or owned, or a borrow; it may not be a closure.
+  It is a **borrow** (or a slice) when the expected type is one, or, with no
+  expected type, when a branch is written `&p` or `mut &p` (or is itself such
+  an if or match expression): `let v: &str = if c { "none" } else { &s }`,
+  `if c { &a } else { &b }`. Every branch must then be a borrow of that type;
+  a string literal branch is a view of static bytes (section 4.1). The result
+  has the roots of all branches (a literal adds none; section 10, rule 2),
+  which it freezes while it is used (rule 4) and which a call holds while its
+  later arguments run (rule 3). A `mut &` result must borrow the same variable
+  in every branch. Otherwise a borrow branch is read: `if c { r } else { 0 }`
+  with `r: &int` is an `int`, and a field bound as a borrow by a match arm can
+  be read but not be the result when it is owned (moving out of a borrow).
+  The result may also hold borrows (`if c { Some(&a) } else { None }` as an
+  `Option[&str]`), with the roots of all branches in the same way.
+- A branch or arm cannot give a borrow of a temporary (the branch drops its
+  temporaries when it ends: bind it to a variable before the expression), and
+  an arm cannot give a borrow of a variable it binds (dropped when the arm
+  ends), whether as the borrow itself or held in a value.
 
 ## 8. Statements
 

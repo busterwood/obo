@@ -321,7 +321,9 @@ type MatchX = record {
     r: int
     t: int
     lits: []int     // (line index, node, indent) triples
-    cr: int         // a value holding borrows: the join of the arms' roots (R_FREE: none yet)
+    cr: int         // a value holding borrows, or a borrow: the join of the arms' roots (R_FREE: none yet)
+    bm: bool        // it gives a borrow (SPEC 7.8)
+    d: int          // the depth of its arms' scopes: a variable an arm binds has depth >= d
 }
 
 pub type Checker = record {
@@ -1205,6 +1207,10 @@ fn (c: mut &Checker) block(b: int, scope: bool, top: bool) {
 
 fn (c: mut &Checker) frozen(root: int, kind: int, line: int) {
     if root < 0 { return }
+    if c.vars[root].jn >= 0 {
+        for x in c.members(root) { c.frozen(x, kind, line) }
+        return
+    }
     if c.vars[root].cap >= 0 && kind != FR_READ {
         if kind == FR_MOVE { c.err(line, "a closure cannot move the captured variable '" + c.vars[root].name + "'") }
         c.vars[root].capmut = true
@@ -1250,6 +1256,10 @@ fn (c: mut &Checker) holdRoots(r: int, m: bool, cid: int, line: int) {
 fn (c: mut &Checker) hold(v: Val, m: int, cid: int, line: int) {
     let root = v.root
     if root == -1 || root <= -2 { return }
+    if c.vars[root].jn >= 0 {      // a borrow joined from several roots (SPEC 7.8) holds each of them whole
+        for x in c.members(root) { c.hold(rvAt(-1, sema.T_VOID, x, ""), m, cid, line) }
+        return
+    }
     let mut1 = m == HM_MUT
     for p in c.cx.pending {
         let pm = p.m == HM_MUT
@@ -3605,22 +3615,100 @@ type Branch = record {
     v: Val
     lines: []int
     snap: []int
-    cr: int         // a value holding borrows: their root (R_FREE: none)
+    cr: int         // a value holding borrows: their root; a borrow: its root (R_FREE: none)
 }
 
-fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
+// Whether x gives a borrow as the branch or arm of an if or match expression: a borrow (&p, mut &p),
+// or an if or match expression with such a branch.
+fn (c: &Checker) borrowish(x: int): bool {
+    let k = c.kind(x)
+    if k == sx.N_BORROW { return true }
+    if k == sx.N_IFX { return c.borrowish(c.nd(x).b) || c.borrowish(c.nd(x).c) }
+    if k == sx.N_MATCHX {
+        for arm in c.items(c.nd(x).b) {
+            if c.borrowish(c.nd(arm).d) { return true }
+        }
+    }
+    return false
+}
+
+// Whether an if or match expression with branches (or arm bodies) xs and expected type exp gives a
+// borrow or a slice (SPEC 7.8): exp is one, or (exp unknown) a branch is.
+fn (c: &Checker) giveBorrow(xs: &[]int, exp: int): bool {
+    let ek = c.ek(exp)
+    if ek == sema.TK_REF || ek == sema.TK_SLICE { return true }
+    if exp != -1 { return false }
+    for x in xs {
+        if c.borrowish(x) { return true }
+    }
+    return false
+}
+
+// The expected type of a branch of an if or match expression giving a borrow: want, or for a string
+// literal with no type yet, &str (a view of static bytes).
+fn (c: mut &Checker) branchWant(x: int, want: int): int {
+    return if want == -1 && c.kind(x) == sx.N_STR { c.pg.mkRef(sema.T_STR, false) } else { want }
+}
+
+// The root of the borrow (or of the borrows held by the value) v that a branch or arm of an if or
+// match expression gives: R_FREE, a variable, a join, or -1 when unknown. A borrow of a temporary
+// is an error (the branch drops its temporaries when it ends), and so is a borrow of a variable the
+// arm binds (depth >= d: dropped when the arm ends).
+fn (c: mut &Checker) branchRoot(v: Val, d: int, line: int, what: str): int {
+    let k = c.pg.tk(v.t)
+    let isB = k == sema.TK_REF || k == sema.TK_SLICE
+    var r = -1
+    if isB {
+        r = if v.root == R_FREE { R_FREE } else if v.root >= 0 { c.ultimate(v.root) } else { -1 }
+    } else {
+        r = c.crOf(v)
+    }
+    if isTmpRoot(r) || (isB && r == -1) {
+        c.err(line, what + " cannot give a borrow of a temporary: the temporary is dropped when the " +
+            (if what == "a match arm" { "arm" } else { "branch" }) + " ends (bind it to a variable first)")
+    }
+    for m in c.members(r) {
+        if m >= 0 && c.vars[m].kind == VK_LOCAL && c.vars[m].depth >= d {
+            c.err(line, what + " cannot give a borrow of " + c.varDesc(m) + ": the arm binds it, and it is " +
+                "dropped when the arm ends")
+        }
+    }
+    return r
+}
+
+// The joined root r of an if or match expression giving a mut borrow (type t) must be one variable.
+fn (c: &Checker) oneMutRoot(r: int, t: int, line: int, what: str) {
+    if t >= 0 && c.pg.isBorrow(t) && c.pg.tm(t) && len(c.members(r)) != 1 {
+        c.err(line, what + " giving a mut borrow must borrow the same variable in every branch, not " +
+            c.rootDesc(r) + " (a mut borrow has one root)")
+    }
+}
+
+fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int, bm: bool): Branch {
     c.restore(snap)
     let saved = replace(mut &c.cx.lines, [])
     c.cx.dead = false
     c.cx.ind += 1
     c.pushFrame()
-    var v = c.expr(x, want)
+    var v = c.expr(x, if bm { c.branchWant(x, want) } else { want })
     let k = c.pg.tk(v.t)
-    if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
-        c.err(c.line(x), "an if expression cannot give a borrow, a slice or a closure")
+    var bcr = R_FREE
+    if bm {
+        if !v.noreturn {
+            if k != sema.TK_REF && k != sema.TK_SLICE {
+                c.err(c.line(x), "this branch is " + c.tstr(v.t) + ", but the if expression gives a borrow: " +
+                    "every branch must be a borrow")
+            }
+            if want >= 0 { v = c.coerce(v, want, c.line(x), "this branch") }
+            bcr = c.branchRoot(v, len(c.cx.scopes), c.line(x), "an if branch")
+        }
+    } else {
+        if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
+            c.err(c.line(x), "an if expression cannot give a borrow, a slice or a closure")
+        }
+        v = c.rd(v)
+        if !v.noreturn && c.pg.isBorrowClass(v.t) { bcr = c.branchRoot(v, len(c.cx.scopes), c.line(x), "an if branch") }
     }
-    v = c.rd(v)
-    let bcr = if !v.noreturn && c.pg.isBorrowClass(v.t) { c.crOf(v) } else { R_FREE }
     let fr = c.popFrame()
     if !v.noreturn {
         v = rv(c.consume(v, c.line(x)), v.t)
@@ -3643,21 +3731,22 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     let n = c.nd(e)
     let cv = c.rd(c.expr(n.a, sema.T_BOOL))
     if cv.t != sema.T_BOOL { c.err(c.line(n.a), "a condition must be bool, not " + c.tstr(cv.t)) }
-    let ek = c.ek(exp)
-    if ek == sema.TK_REF || ek == sema.TK_SLICE || ek == sema.TK_CLO {
-        c.err(n.line, "an if expression cannot give a borrow, a slice or a closure")
-    }
+    if c.ek(exp) == sema.TK_CLO { c.err(n.line, "an if expression cannot give a closure") }
+    let bm = c.giveBorrow(&[n.b, n.c], exp)
     let snap = c.snapshot()
     let rn = c.fresh("ifx")
     let r = c.nm(rn)
     var a = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
     var b = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
-    if exp == -1 && isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) {     // a literal takes the other's type
-        b = c.ifBranch(n.c, -1, &snap, r)
-        a = c.ifBranch(n.b, if b.v.noreturn { -1 } else { b.v.t }, &snap, r)
+    // a literal takes the other's type; so does a branch that is not a borrow when the other is one
+    let swap = exp == -1 && (if bm { !c.borrowish(n.b) && c.borrowish(n.c) } else {
+        isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) })
+    if swap {
+        b = c.ifBranch(n.c, -1, &snap, r, bm)
+        a = c.ifBranch(n.b, if b.v.noreturn { -1 } else { b.v.t }, &snap, r, bm)
     } else {
-        a = c.ifBranch(n.b, exp, &snap, r)
-        b = c.ifBranch(n.c, if exp != -1 { exp } else if a.v.noreturn { -1 } else { a.v.t }, &snap, r)
+        a = c.ifBranch(n.b, exp, &snap, r, bm)
+        b = c.ifBranch(n.c, if exp != -1 { exp } else if a.v.noreturn { -1 } else { a.v.t }, &snap, r, bm)
     }
     let t = if a.v.noreturn { b.v.t } else { a.v.t }
     if !a.v.noreturn && !b.v.noreturn && a.v.t != b.v.t {
@@ -3674,10 +3763,12 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         k += 1
     }
     if !b.v.noreturn { c.ifxDrops(mut &b, &drops[k], r) }
-    // a value holding borrows has the roots of both branches (design/borrow-types.md)
-    let jcr = if c.pg.isBorrowClass(t) { c.joinRoots(a.cr, b.cr) } else { -1 }
+    // a borrow, or a value holding borrows, has the roots of both branches (design/borrow-types.md)
+    let jcr = if bm || c.pg.isBorrowClass(t) { c.joinRoots(a.cr, b.cr) } else { -1 }
+    if bm { c.oneMutRoot(jcr, t, n.line, "an if expression") }
     if len(a.lines) == 0 && len(b.lines) == 0 {
         let text = c.x.par(c.x.cond(cv.c, a.v.c, b.v.c))
+        if bm { return rvAt(text, t, jcr, "") }
         var rx = if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
         if jcr != -1 { rx.cr = jcr }
         return rx
@@ -3705,6 +3796,7 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         c.cx.dead = false
         return voidVal(true)
     }
+    if bm { return rvAt(r, t, jcr, "") }
     var rx = c.tmpval(r, t)
     if jcr != -1 { rx.cr = jcr }
     return rx
@@ -3727,13 +3819,28 @@ fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: int) {
 fn (c: mut &Checker) mxBody(x: int) {
     let top = len(c.mxs) - 1
     c.pushFrame()
-    var v = c.expr(x, c.mxs[top].t)
+    let bm = c.mxs[top].bm
+    let want = c.mxs[top].t
+    var v = c.expr(x, if bm { c.branchWant(x, want) } else { want })
     let k = c.pg.tk(v.t)
-    if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
-        c.err(c.line(x), "a match expression cannot give a borrow, a slice or a closure")
+    if bm {
+        if !v.noreturn {
+            if k != sema.TK_REF && k != sema.TK_SLICE {
+                c.err(c.line(x), "this arm is " + c.tstr(v.t) + ", but the match expression gives a borrow: " +
+                    "every arm must be a borrow")
+            }
+            if want >= 0 { v = c.coerce(v, want, c.line(x), "this arm") }
+            c.mxs[top].cr = c.joinRoots(c.mxs[top].cr, c.branchRoot(v, c.mxs[top].d, c.line(x), "a match arm"))
+        }
+    } else {
+        if c.kind(x) == sx.N_BORROW || k == sema.TK_SLICE || k == sema.TK_CLO {
+            c.err(c.line(x), "a match expression cannot give a borrow, a slice or a closure")
+        }
+        v = c.rd(v)
+        if !v.noreturn && c.pg.isBorrowClass(v.t) {
+            c.mxs[top].cr = c.joinRoots(c.mxs[top].cr, c.branchRoot(v, c.mxs[top].d, c.line(x), "a match arm"))
+        }
     }
-    v = c.rd(v)
-    if !v.noreturn && c.pg.isBorrowClass(v.t) { c.mxs[top].cr = c.joinRoots(c.mxs[top].cr, c.crOf(v)) }
     let fr = c.popFrame()
     if v.noreturn {
         c.cx.dead = true
@@ -3764,14 +3871,14 @@ fn (c: mut &Checker) mxArm(x: int) {
 
 fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     let n = c.nd(e)
-    let ek = c.ek(exp)
-    if ek == sema.TK_REF || ek == sema.TK_SLICE || ek == sema.TK_CLO {
-        c.err(n.line, "a match expression cannot give a borrow, a slice or a closure")
-    }
+    if c.ek(exp) == sema.TK_CLO { c.err(n.line, "a match expression cannot give a closure") }
+    var bodies: []int = []
+    for arm in c.items(n.b) { append(mut &bodies, c.nd(arm).d) }
+    let bm = c.giveBorrow(&bodies, exp)
     let rn = c.fresh("mx")
     let r = c.nm(rn)
     let at = len(c.cx.lines)
-    append(mut &c.mxs, MatchX{r: r, t: exp, lits: [], cr: R_FREE})
+    append(mut &c.mxs, MatchX{r: r, t: exp, lits: [], cr: R_FREE, bm: bm, d: len(c.cx.scopes)})
     c.sMatch(e, true)
     let top = len(c.mxs) - 1
     let lits = copyInts(&c.mxs[top].lits)
@@ -3815,6 +3922,10 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     }
     if at == len(c.cx.lines) { append(mut &nl, dl) }
     c.cx.lines = nl
+    if bm {
+        c.oneMutRoot(mx.cr, t, n.line, "a match expression")
+        return rvAt(r, t, mx.cr, "")
+    }
     var rx = c.tmpval(r, t)
     if c.pg.isBorrowClass(t) { rx.cr = mx.cr }
     return rx
@@ -4674,7 +4785,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         if nb == 1 && !c.inherits(c.pg.subst(params[bi], &bind)) {
             return rvAt(c.nm(n), ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*"))
         }
-        if nb == 0 { return rvAt(c.nm(n), ret, -1, "") }
+        if nb == 0 { return rvAt(c.nm(n), ret, R_FREE, "") }     // only static borrows (SPEC 10 rule 5)
         return rvAt(c.nm(n), ret, rroot, pathAdd("", "*"))
     }
     let r = c.holdtmp(text, ret)

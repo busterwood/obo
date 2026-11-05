@@ -1,7 +1,9 @@
-// error: cannot give a borrow
+// error: cannot give a borrow of a temporary
+// A slice of an array the branch makes would outlive it (SPEC 7.8).
 fn sum(s: &[int]): int { return 0 }
+fn mk(): []int { return [1, 2, 3] }
 fn main() {
     let c = true
     let xs = [1, 2, 3]
-    println(sum(if c { xs[0..1] } else { xs[1..2] }))
+    println(intToStr(sum(if c { &mk()[0..1] } else { xs[1..2] })))
 }
