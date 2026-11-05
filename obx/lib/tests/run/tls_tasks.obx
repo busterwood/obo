@@ -1,0 +1,241 @@
+// tls over sockets in tasks, against a TLS server in the same program
+// (tls.server, Context.accept): 200 connections at once, each echoing 8
+// KiB; a server slow to start its handshake while another task keeps
+// ticking (the scheduler is not blocked); close_notify both ways; a server
+// that dies inside a record and one that ends at a record boundary without
+// close_notify; a server that never answers, under task.within; detach
+// giving the socket back.
+// needs: ssl
+// expect: 200 connections: 200 ok, distinct ports 200
+// expect: slow handshake: TLSv1.3, other task ticked during it: true
+// expect: server closes: bye then 0, close_notify true
+// expect: client closes: the server read 0, close_notify true
+// expect: dies inside a record: tls: protocol: the connection closed inside a TLS record (localhost)
+// expect: ends without close_notify: tail then 0, close_notify false
+// expect: never answers: timeout (read)
+// expect: detach: over TLS. plain text after TLS
+// expect: handles 0
+import "tls"
+import "net"
+import "task"
+import "strings"
+import "../support/tlstest" as tt
+
+const ECHO = 0
+const SLOW = 1
+const BYE = 2
+const READ_END = 3
+const DIE = 4
+const TRUNCATE = 5
+const SILENT = 6
+const DETACH = 7
+
+type Serve = record { ctx: tls.Context; ln: net.Listener; mode: int }
+type One = record { ctx: tls.Context; c: net.Conn; mode: int }
+
+var SERVER_SAW: str = ""
+
+fn serve(s: Serve): int {
+    let Serve{ctx: ctx, ln: ln, mode: mode} = move(s)
+    task.scope(fn(sc: mut &task.Scope) {
+        while true {
+            match ln.accept() {
+                Ok(c) { sc.spawn(one, One{ctx: ctx.share(), c: c, mode: mode}) }
+                Err(_) { break }
+            }
+        }
+    })
+    return 0
+}
+
+fn one(o: One): int {
+    let One{ctx: ctx, c: sock, mode: mode} = move(o)
+    if mode == SILENT {
+        let r = task.sleep(5000)
+        return 0
+    }
+    if mode == SLOW { task.sleep(300).unwrap() }
+    var c = match ctx.accept(sock) {
+        Ok(x) { x }
+        Err(e) { return 0 }
+    }
+    var buf = array(16384, byte(0))
+    if mode == ECHO || mode == SLOW {
+        while true {
+            let n = match c.read(mut &buf) {
+                Ok(k) { k }
+                Err(_) { return 0 }
+            }
+            if n == 0 { return 0 }
+            match c.write(&buf[0..n]) {
+                Ok(_) {}
+                Err(_) { return 0 }
+            }
+        }
+    } else if mode == BYE {
+        c.writeStr("bye").unwrap()
+        c.close().unwrap()
+    } else if mode == READ_END {
+        let n = c.read(mut &buf).unwrap()
+        SERVER_SAW = "the server read " + intToStr(n) + ", close_notify " + c.closeNotified().toStr()
+    } else if mode == DIE {
+        // a record of 1000 bytes, only half of it sent
+        let n = c.read(mut &buf).unwrap()
+        let tls.Detached{sock: raw, rest: _} = c.detach()
+        var rec = array(300, byte(0))        // an application data record header announcing 1022 bytes, and 295 of them
+        rec[0] = byte(23)
+        rec[1] = byte(3)
+        rec[2] = byte(3)
+        rec[3] = byte(3)
+        rec[4] = byte(254)
+        raw.write(&rec).unwrap()
+    } else if mode == TRUNCATE {
+        let n = c.read(mut &buf).unwrap()
+        c.writeStr("tail").unwrap()
+        let d = c.detach()                   // the socket closes with d, without close_notify
+    } else if mode == DETACH {
+        let n = c.read(mut &buf).unwrap()
+        c.writeStr("over TLS.").unwrap()
+        let d = c.detach()
+        d.sock.writeStr("plain text after TLS").unwrap()
+        d.sock.closeWrite().unwrap()
+        let k = d.sock.read(mut &buf)            // until the client closes (or the server is cancelled)
+    }
+    return 0
+}
+
+// Starts a server in mode; its address. Dropping the servers' futures stops them.
+fn start(sc: mut &task.Scope, servers: mut &[]task.Future[int], ctx: &tls.Context, mode: int): str {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let addr = ln.localAddr()
+    append(servers, sc.start(serve, Serve{ctx: ctx.share(), ln: ln, mode: mode}))
+    return addr
+}
+
+type Job = record { ctx: tls.Context; addr: str; i: int }
+
+fn client(j: Job): str {
+    let Job{ctx: ctx, addr: addr, i: i} = move(j)
+    var c = ctx.connect(net.connect(addr).unwrap(), "localhost").unwrap()
+    let msg = repeat(intToStr(i) + ",", 8192)[0..8192]
+    c.writeStr(msg).unwrap()
+    var got = array(8192, byte(0))
+    var have = 0
+    while have < len(got) {
+        let n = c.read(mut &got[have..len(got)]).unwrap()
+        if n == 0 { break }
+        have += n
+    }
+    if strFromBytes(&got[0..have]) != msg { return "bad" }
+    let local = c.localAddr()
+    c.close().unwrap()
+    return local
+}
+
+var TICKS: int = 0
+
+fn ticker(n: int): int {
+    for i in 0..n {
+        match task.sleep(10) {
+            Ok(_) { TICKS += 1 }
+            Err(_) { return 0 }
+        }
+    }
+    return 0
+}
+
+fn readAll(c: mut &tls.Conn): str {
+    var buf = array(64, byte(0))
+    var s = ""
+    while true {
+        let n = c.read(mut &buf).unwrap()
+        if n == 0 { break }
+        s = s + strFromBytes(&buf[0..n])
+    }
+    return s
+}
+
+fn main() {
+    tt.pki()
+    {
+        let sctx = tt.serverContext("srv")
+        let cctx = tls.client(tt.clientOptions()).unwrap()
+        task.scope(fn(sc: mut &task.Scope) {
+            var servers: []task.Future[int] = []
+            let echo = start(sc, mut &servers, &sctx, ECHO)
+            var fs: []task.Future[str] = []
+            for i in 0..200 { append(mut &fs, sc.start(client, Job{ctx: cctx.share(), addr: echo, i: i})) }
+            let rs = task.all(fs).unwrap()
+            var ok = 0
+            var ports: Map[str, bool] = newMap()
+            for r in rs {
+                if r != "bad" {
+                    ok += 1
+                    ports.put(r, true)
+                }
+            }
+            println("200 connections: " + intToStr(ok) + " ok, distinct ports " + intToStr(ports.size()))
+
+            let slow = start(sc, mut &servers, &sctx, SLOW)
+            let t = sc.start(ticker, 60)
+            let before = TICKS
+            let c = cctx.connect(net.connect(slow).unwrap(), "localhost").unwrap()
+            let during = TICKS - before
+            println("slow handshake: " + c.version() + ", other task ticked during it: " + (during >= 10).toStr())
+
+            let bye = start(sc, mut &servers, &sctx, BYE)
+            var b = cctx.connect(net.connect(bye).unwrap(), "localhost").unwrap()
+            let text = readAll(mut &b)
+            var buf = array(8, byte(0))
+            println("server closes: " + text + " then " + intToStr(b.read(mut &buf).unwrap()) + ", close_notify " +
+                    b.closeNotified().toStr())
+
+            let rend = start(sc, mut &servers, &sctx, READ_END)
+            let r = cctx.connect(net.connect(rend).unwrap(), "localhost").unwrap()
+            r.close().unwrap()
+            while len(SERVER_SAW) == 0 { task.sleep(5).unwrap() }
+            println("client closes: " + SERVER_SAW)
+
+            let die = start(sc, mut &servers, &sctx, DIE)
+            var d = cctx.connect(net.connect(die).unwrap(), "localhost").unwrap()
+            d.writeStr("go").unwrap()
+            match d.read(mut &buf) {
+                Ok(n) { println("dies inside a record: read " + intToStr(n)) }
+                Err(e) { println("dies inside a record: " + e.toStr()) }
+            }
+
+            let tr = start(sc, mut &servers, &sctx, TRUNCATE)
+            var u = cctx.connect(net.connect(tr).unwrap(), "localhost").unwrap()
+            u.writeStr("go").unwrap()
+            let tail = readAll(mut &u)
+            println("ends without close_notify: " + tail + " then 0, close_notify " + u.closeNotified().toStr())
+
+            let silent = start(sc, mut &servers, &sctx, SILENT)
+            let to = task.within(150, fn(): Result[tls.Conn, tls.Error] {
+                return cctx.connect(net.connect(silent).unwrap(), "localhost")
+            })
+            match to {
+                Ok(_) { println("never answers: connected") }
+                Err(e) { println("never answers: " + e.kind.toStr() + " (" + e.cause.op + ")") }
+            }
+
+            let det = start(sc, mut &servers, &sctx, DETACH)
+            var dc = cctx.connect(net.connect(det).unwrap(), "localhost").unwrap()
+            dc.writeStr("go").unwrap()
+            var first = array(9, byte(0))
+            var have = 0
+            while have < 9 { have += dc.read(mut &first[have..9]).unwrap() }
+            let dd = dc.detach()
+            var plain = array(64, byte(0))
+            var got = strFromBytes(&first) + " " + strFromBytes(&dd.rest)
+            while true {
+                let n = dd.sock.read(mut &plain).unwrap()
+                if n == 0 { break }
+                got = got + strFromBytes(&plain[0..n])
+            }
+            println("detach: " + got)
+            servers = []                         // cancels the servers
+        })
+    }
+    println("handles " + intToStr(tls.openHandles()))
+}

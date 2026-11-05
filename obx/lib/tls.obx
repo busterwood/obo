@@ -1,0 +1,932 @@
+// tls: TLS 1.2 and 1.3 through OpenSSL 3 (libssl.so.3 and libcrypto.so.3;
+// a program that uses it is dynamically linked to them). design/tls.md.
+//
+//     let ctx = try tls.client(tls.defaults())           // trust store, versions: once, shared
+//     let sock = try net.dial("example.com:443")
+//     var c = try ctx.connect(sock, "example.com")       // handshake; the task parks meanwhile
+//     try c.writeStr("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+//     var buf = array(16384, byte(0))
+//     let n = try c.read(mut &buf)                        // 0: the peer closed
+//     try c.close()                                       // close_notify
+//
+// One engine, two ways to drive it. An Engine is an OpenSSL SSL object
+// over two memory BIOs: the caller feeds it the ciphertext that arrived
+// (feed), takes the ciphertext it made (output, takeOutput) and sends it
+// itself, so a protocol can carry the handshake inside its own packets
+// (TDS pre-login). A Conn is an Engine over a net.Conn: it moves the
+// ciphertext between the two, and its task parks on the socket while the
+// engine wants input or the socket's buffer is full, so no call blocks the
+// program's thread. Every OpenSSL call runs on the program's thread (none
+// is a blocking extern): its error queue is read right after the call, on
+// the same thread, and one SSL object is never used by two threads.
+//
+// Secure by default (defaults()): TLS 1.2 or newer; the server's
+// certificate is verified against the system's trust store, and its name
+// against the name given to connect (SSL_set1_host; an IP literal is
+// checked as an address); SNI is sent for a name (not for an address).
+// Options can trust another CA file or directory instead, pin certificates
+// by their SHA-256 fingerprint, present a client certificate, offer ALPN
+// protocols, and, named for what it does, turn verification off
+// (insecureSkipVerify: test servers, SQL Server's TrustServerCertificate).
+//
+// Resources: a Context owns an SSL_CTX, an Engine an SSL (and its BIOs), a
+// Conn its Engine and its socket; each is freed by its drop. Dropping an
+// open Conn sends close_notify if the socket takes it at once (a drop never
+// parks); close() sends it and parks until it is written. openHandles()
+// counts live Contexts and Engines, for tests.
+//
+// Errors are Error {kind, msg, code, peer, cause}: Config (options, files),
+// Handshake (the handshake failed: a protocol version, an alert, a closed
+// connection), Verify (the certificate: code is X509's verify result, msg
+// its text; a pin), Protocol (after the handshake: a bad record, a
+// connection closed inside a record), Io, Timeout, Cancelled (the socket;
+// cause is net's IoError). msg is OpenSSL's error queue, read and cleared
+// at each call.
+
+import "io"
+import "net"
+import "ffi"
+import "time"
+
+extern "ssl" fn TLS_client_method(): ptr
+extern "ssl" fn TLS_server_method(): ptr
+extern "ssl" fn SSL_CTX_new(m: ptr): ptr
+extern "ssl" fn SSL_CTX_free(c: ptr)
+extern "ssl" fn SSL_CTX_up_ref(c: ptr): i32
+extern "ssl" fn SSL_CTX_ctrl(c: ptr, cmd: i32, larg: int, parg: ptr): int
+extern "ssl" fn SSL_CTX_set_options(c: ptr, op: u64): u64
+extern "ssl" fn SSL_CTX_set_verify(c: ptr, mode: i32, cb: ptr)
+extern "ssl" fn SSL_CTX_set_default_verify_paths(c: ptr): i32
+extern "ssl" fn SSL_CTX_load_verify_file(c: ptr, f: str): i32
+extern "ssl" fn SSL_CTX_load_verify_dir(c: ptr, d: str): i32
+extern "ssl" fn SSL_CTX_use_certificate_chain_file(c: ptr, f: str): i32
+extern "ssl" fn SSL_CTX_use_PrivateKey_file(c: ptr, f: str, kind: i32): i32
+extern "ssl" fn SSL_CTX_check_private_key(c: ptr): i32
+extern "ssl" fn SSL_CTX_set_alpn_protos(c: ptr, p: &[]byte, n: u32): i32
+extern "ssl" fn SSL_new(c: ptr): ptr
+extern "ssl" fn SSL_free(s: ptr)
+extern "ssl" fn SSL_set_bio(s: ptr, r: ptr, w: ptr)
+extern "ssl" fn SSL_set_connect_state(s: ptr)
+extern "ssl" fn SSL_set_accept_state(s: ptr)
+extern "ssl" fn SSL_ctrl(s: ptr, cmd: i32, larg: int, parg: str): int
+extern "ssl" fn SSL_set1_host(s: ptr, h: str): i32
+extern "ssl" fn SSL_do_handshake(s: ptr): i32
+extern "ssl" fn SSL_read(s: ptr, b: mut &[byte], n: i32): i32
+extern "ssl" fn SSL_write(s: ptr, b: &[byte], n: i32): i32
+extern "ssl" fn SSL_shutdown(s: ptr): i32
+extern "ssl" fn SSL_get_shutdown(s: ptr): i32
+extern "ssl" fn SSL_get_error(s: ptr, r: i32): i32
+extern "ssl" fn SSL_get_verify_result(s: ptr): int
+extern "ssl" fn SSL_get_version(s: ptr): str
+extern "ssl" fn SSL_get_current_cipher(s: ptr): ptr
+extern "ssl" fn SSL_CIPHER_get_name(c: ptr): str
+extern "ssl" fn SSL_get1_peer_certificate(s: ptr): ptr
+extern "ssl" fn SSL_get0_alpn_selected(s: ptr, d: mut &ptr, n: mut &int)
+extern "ssl" fn SSL_session_reused(s: ptr): i32
+extern "ssl" fn SSL_has_pending(s: ptr): i32
+extern "crypto" fn BIO_s_mem(): ptr
+extern "crypto" fn BIO_new(m: ptr): ptr
+extern "crypto" fn BIO_read(b: ptr, d: mut &[byte], n: i32): i32
+extern "crypto" fn BIO_write(b: ptr, d: &[byte], n: i32): i32
+extern "crypto" fn BIO_ctrl(b: ptr, cmd: i32, larg: int, parg: ptr): int
+extern "crypto" fn ERR_get_error(): u64
+extern "crypto" fn ERR_clear_error()
+extern "crypto" fn ERR_error_string_n(e: u64, buf: mut &[]byte, n: int)
+extern "crypto" fn ERR_reason_error_string(e: u64): str
+extern "crypto" fn X509_verify_cert_error_string(n: int): str
+extern "crypto" fn X509_free(x: ptr)
+extern "crypto" fn X509_get_subject_name(x: ptr): ptr
+extern "crypto" fn X509_get_issuer_name(x: ptr): ptr
+extern "crypto" fn X509_NAME_oneline(n: ptr, buf: mut &[]byte, size: i32): ptr
+extern "crypto" fn X509_get0_notBefore(x: ptr): ptr
+extern "crypto" fn X509_get0_notAfter(x: ptr): ptr
+extern "crypto" fn ASN1_TIME_to_tm(t: ptr, tm: mut &[]i32): i32
+extern "crypto" fn X509_digest(x: ptr, md: ptr, out: mut &[]byte, n: mut &int): i32
+extern "crypto" fn EVP_sha256(): ptr
+extern "crypto" fn OpenSSL_version(t: i32): str
+
+// OpenSSL's constants (ssl.h, bio.h, prov_ssl.h of 3.0). Several "functions"
+// are macros over SSL_ctrl and SSL_CTX_ctrl: each such call below names the
+// macro it stands for.
+const SSL_ERROR_SSL = 1
+const SSL_ERROR_WANT_READ = 2
+const SSL_ERROR_WANT_WRITE = 3
+const SSL_ERROR_SYSCALL = 5
+const SSL_ERROR_ZERO_RETURN = 6
+const SSL_CTRL_SET_TLSEXT_HOSTNAME = 55        // SSL_set_tlsext_host_name(s, name)
+const TLSEXT_NAMETYPE_host_name = 0
+const SSL_CTRL_SET_MIN_PROTO_VERSION = 123     // SSL_CTX_set_min_proto_version(c, v)
+const SSL_CTRL_SET_MAX_PROTO_VERSION = 124     // SSL_CTX_set_max_proto_version(c, v)
+const BIO_CTRL_PENDING = 10                    // BIO_ctrl_pending(b)
+const TLS1_2_VERSION = 0x0303
+const TLS1_3_VERSION = 0x0304
+const SSL_VERIFY_NONE = 0
+const SSL_VERIFY_PEER = 1
+const SSL_VERIFY_FAIL_IF_NO_PEER_CERT = 2
+const SSL_FILETYPE_PEM = 1
+const SSL_RECEIVED_SHUTDOWN = 2
+const SSL_OP_NO_RENEGOTIATION: u64 = 1073741824    // SSL_OP_BIT(30)
+const X509_V_OK = 0
+
+const ST_HANDSHAKE = 0    // an Engine's state
+const ST_OPEN = 1
+const ST_FAILED = 2       // a fatal error: nothing more is sent (no close_notify)
+const ST_SHUT = 3         // close_notify sent (reading still works)
+const ST_DETACHED = 4     // a Conn whose socket was taken back (detach)
+
+const BUF = 17408         // a Conn's ciphertext buffer: one full record and its overhead
+const CHUNK = 16384       // plaintext encrypted and sent at a time (one record)
+const MAX_IO = 1073741824
+const EAGAIN = 11
+
+// Engine.read and Conn.readNow: the engine needs more input (feed it, or
+// wait for the socket) before it can give plaintext.
+pub const WANT_INPUT = -1
+
+var OPEN: int = 0
+
+// The number of Context and Engine values (a Conn holds one Engine) not
+// yet dropped.
+pub fn openHandles(): int { return OPEN }
+
+// OpenSSL's version text, "OpenSSL 3.0.13 30 Jan 2024".
+pub fn libVersion(): str { return OpenSSL_version(0) }
+
+// ---------------------------------------------------------------- errors
+
+pub type Kind = value closed { Config; Handshake; Verify; Protocol; Io; Timeout; Cancelled }
+
+pub fn (k: Kind) toStr(): str {
+    match k {
+        Kind.Config { return "config" }
+        Kind.Handshake { return "handshake" }
+        Kind.Verify { return "verify" }
+        Kind.Protocol { return "protocol" }
+        Kind.Io { return "i/o" }
+        Kind.Timeout { return "timeout" }
+        Kind.Cancelled { return "cancelled" }
+    }
+}
+
+pub fn (a: Kind) eq(b: &Kind): bool { return a.toStr() == b.toStr() }
+
+pub type Error = value record {
+    pub kind: Kind
+    pub msg: str
+    pub code: int          // Verify: X509's verify result (10 expired, 62 host name mismatch, ...);
+                           // Io, Timeout, Cancelled: the errno; else OpenSSL's first error code, or 0
+    pub peer: str          // the name the engine was made for ("" on a server)
+    pub cause: io.IoError  // Io, Timeout, Cancelled: the socket's error
+}
+
+// "tls: verify: certificate has expired (localhost)"
+pub fn (e: Error) toStr(): str {
+    if len(e.peer) == 0 { return "tls: " + e.kind.toStr() + ": " + e.msg }
+    return "tls: " + e.kind.toStr() + ": " + e.msg + " (" + e.peer + ")"
+}
+
+pub fn (e: Error) isTimeout(): bool { return e.kind == Kind.Timeout }
+pub fn (e: Error) isCancelled(): bool { return e.kind == Kind.Cancelled }
+
+fn noCause(): io.IoError { return io.ioError(0, "", "") }
+
+fn fail(k: Kind, msg: str, code: int, peer: str): Error {
+    return Error{kind: k, msg: msg, code: code, peer: peer, cause: noCause()}
+}
+
+// The error of a socket call.
+fn ioFail(e: io.IoError, peer: str): Error {
+    let k = if e.isTimeout() { Kind.Timeout } else if e.isCancelled() { Kind.Cancelled } else { Kind.Io }
+    return Error{kind: k, msg: e.toStr(), code: e.errno, peer: peer, cause: e}
+}
+
+// OpenSSL's error queue as text (the reasons, oldest first, without
+// repeats), emptied; what when it is empty.
+type Queue = value record { text: str; code: int }
+
+fn drainQueue(what: str): Queue {
+    var text = ""
+    var first = 0
+    var buf = array(256, byte(0))
+    while true {
+        let e = ERR_get_error()
+        if e == 0 { break }
+        if first == 0 { first = int(e & 2147483647) }
+        var r = ERR_reason_error_string(e)
+        if len(r) == 0 {
+            ERR_error_string_n(e, mut &buf, len(buf))
+            var n = 0
+            while n < len(buf) && buf[n] != 0 { n += 1 }
+            r = strFromBytes(&buf[0..n])          // "error:80000002:system library::No such file or directory"
+            var k = len(r)
+            while k > 0 && r[k - 1] != ':' { k -= 1 }
+            r = r[k..]
+        }
+        if !contains(text, r) { text = if len(text) == 0 { r } else { text + "; " + r } }
+    }
+    if len(text) == 0 { text = what }
+    return Queue{text: text, code: first}
+}
+
+fn queueFail(k: Kind, what: str, peer: str): Error {
+    let q = drainQueue(what)
+    return fail(k, q.text, q.code, peer)
+}
+
+// ---------------------------------------------------------------- options
+
+// The lowest or highest protocol version to use. Older versions than 1.2
+// cannot be chosen.
+pub type Version = value closed { Tls12; Tls13 }
+
+fn versionCode(v: Version): int {
+    match v {
+        Version.Tls12 { return TLS1_2_VERSION }
+        Version.Tls13 { return TLS1_3_VERSION }
+    }
+}
+
+// What a Context does. defaults() gives the usual values; change fields of
+// the result: `var o = tls.defaults(); o.caFile = "ca.pem"`.
+pub type Options = value record {
+    pub caFile: str                // PEM file of the CAs to trust, instead of the system's store
+    pub caDir: str                 // a directory of CAs (hashed names, `openssl rehash`), instead of the system's
+    pub insecureSkipVerify: bool   // client: accept any certificate and name (pins still apply)
+    pub pins: str                  // SHA-256 fingerprints of accepted peer certificates, hex (colons
+                                   // allowed), separated by commas: the peer's must be one of them
+    pub certFile: str              // own certificate chain, PEM (a server's; a client's, optional)
+    pub keyFile: str               // its private key, PEM ("" : in certFile)
+    pub clientCaFile: str          // server: ask clients for a certificate and verify it against these CAs
+    pub minVersion: Version
+    pub maxVersion: Version
+    pub alpn: str                  // client: protocols offered (ALPN), separated by commas: "h2,http/1.1"
+}
+
+// Verification on against the system's trust store, TLS 1.2 to 1.3, no
+// client certificate, no pins, no ALPN.
+pub fn defaults(): Options {
+    return Options{caFile: "", caDir: "", insecureSkipVerify: false, pins: "", certFile: "", keyFile: "",
+                   clientCaFile: "", minVersion: Version.Tls12, maxVersion: Version.Tls13, alpn: ""}
+}
+
+// "AB:cd:..." fingerprints as lowercase hex without colons, joined by ",".
+fn normalPins(s: str): Result[str, str] {
+    var out = ""
+    for part in split(s, ',') {
+        var b = newStrBuf()
+        for i in 0..len(part) {
+            let c = part[i]
+            if c >= 'A' && c <= 'F' {
+                b.addByte(c + 32)
+            } else if (c >= 'a' && c <= 'f') || (c >= '0' && c <= '9') {
+                b.addByte(c)
+            } else if c != ':' && c != ' ' && c != '\t' {
+                return Err("a pin with a character that is not hex: " + part)
+            }
+        }
+        let p = b.toStr()
+        if len(p) == 0 { continue }
+        if len(p) != 64 { return Err("a pin that is not a SHA-256 fingerprint (64 hex digits): " + part) }
+        out = if len(out) == 0 { p } else { out + "," + p }
+    }
+    return Ok(out)
+}
+
+// ALPN's wire form: each protocol after its length byte.
+fn alpnWire(s: str): Result[[]byte, str] {
+    var b: []byte = []
+    for part in split(s, ',') {
+        let p = trim(part)
+        if len(p) == 0 { continue }
+        if len(p) > 255 { return Err("an ALPN protocol name over 255 bytes") }
+        append(mut &b, byte(len(p)))
+        for i in 0..len(p) { append(mut &b, p[i]) }
+    }
+    return Ok(b)
+}
+
+// ---------------------------------------------------------------- contexts
+
+// The settings and trust store that connections share (an SSL_CTX).
+// Loading the system's trust store takes milliseconds, so make one and use
+// it for many connections; share() gives another handle on the same one.
+pub type Context = record {
+    ctx: ptr
+    server: bool
+    verify: bool       // the peer's certificate is checked (client: always unless insecureSkipVerify)
+    pins: str          // normalized
+}
+
+fn (c: mut &Context) drop() {
+    if !isNull(c.ctx) {
+        SSL_CTX_free(c.ctx)
+        OPEN -= 1
+    }
+}
+
+// A context for clients.
+pub fn client(o: Options): Result[Context, Error] { return newContext(&o, false) }
+
+// A context for servers: certFile (and keyFile) are required.
+pub fn server(o: Options): Result[Context, Error] { return newContext(&o, true) }
+
+fn newContext(o: &Options, server: bool): Result[Context, Error] {
+    let pins = match normalPins(o.pins) {
+        Ok(p) { p }
+        Err(m) { return Err(fail(Kind.Config, m, 0, "")) }
+    }
+    if versionCode(o.minVersion) > versionCode(o.maxVersion) {
+        return Err(fail(Kind.Config, "minVersion is above maxVersion", 0, ""))
+    }
+    ERR_clear_error()
+    let h = SSL_CTX_new(if server { TLS_server_method() } else { TLS_client_method() })
+    if isNull(h) { return Err(queueFail(Kind.Config, "SSL_CTX_new failed", "")) }
+    OPEN += 1
+    var c = Context{ctx: h, server: server, verify: false, pins: pins}   // freed by its drop on an error below
+    if SSL_CTX_ctrl(h, i32(SSL_CTRL_SET_MIN_PROTO_VERSION), versionCode(o.minVersion), nullPtr()) != 1 ||
+       SSL_CTX_ctrl(h, i32(SSL_CTRL_SET_MAX_PROTO_VERSION), versionCode(o.maxVersion), nullPtr()) != 1 {
+        return Err(queueFail(Kind.Config, "cannot set the protocol versions", ""))
+    }
+    let old = SSL_CTX_set_options(h, SSL_OP_NO_RENEGOTIATION)
+    if !server && !o.insecureSkipVerify {
+        if len(o.caFile) == 0 && len(o.caDir) == 0 {
+            if SSL_CTX_set_default_verify_paths(h) != 1 {
+                return Err(queueFail(Kind.Config, "cannot load the system's trust store", ""))
+            }
+        }
+        try loadCas(h, o.caFile, o.caDir)
+        SSL_CTX_set_verify(h, i32(SSL_VERIFY_PEER), nullPtr())
+        c.verify = true
+    } else if server && len(o.clientCaFile) > 0 {
+        try loadCas(h, o.clientCaFile, "")
+        SSL_CTX_set_verify(h, i32(SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT), nullPtr())
+        c.verify = true
+    } else {
+        SSL_CTX_set_verify(h, i32(SSL_VERIFY_NONE), nullPtr())
+    }
+    if len(o.certFile) > 0 {
+        if SSL_CTX_use_certificate_chain_file(h, o.certFile) != 1 {
+            return Err(queueFail(Kind.Config, "cannot load the certificate", "certificate file " + o.certFile))
+        }
+        let key = if len(o.keyFile) > 0 { o.keyFile } else { o.certFile }
+        if SSL_CTX_use_PrivateKey_file(h, key, i32(SSL_FILETYPE_PEM)) != 1 {
+            return Err(queueFail(Kind.Config, "cannot load the private key", "key file " + key))
+        }
+        if SSL_CTX_check_private_key(h) != 1 {
+            return Err(queueFail(Kind.Config, "the private key does not match the certificate", "key file " + key))
+        }
+    } else if server {
+        return Err(fail(Kind.Config, "a server needs a certificate (certFile)", 0, ""))
+    }
+    if len(o.alpn) > 0 && !server {
+        let wire = match alpnWire(o.alpn) {
+            Ok(b) { b }
+            Err(m) { return Err(fail(Kind.Config, m, 0, "")) }
+        }
+        if SSL_CTX_set_alpn_protos(h, &wire, u32(len(wire))) != 0 {    // 0 is success here
+            return Err(queueFail(Kind.Config, "cannot set the ALPN protocols", ""))
+        }
+    }
+    ERR_clear_error()
+    return Ok(c)
+}
+
+fn loadCas(h: ptr, file: str, dir: str): Result[Unit, Error] {
+    if len(file) > 0 && SSL_CTX_load_verify_file(h, file) != 1 {
+        return Err(queueFail(Kind.Config, "cannot load the CA file", "CA file " + file))
+    }
+    if len(dir) > 0 && SSL_CTX_load_verify_dir(h, dir) != 1 {
+        return Err(queueFail(Kind.Config, "cannot load the CA directory", "CA directory " + dir))
+    }
+    return Ok(Unit{})
+}
+
+// Another handle on the same context (OpenSSL counts the references), to
+// move into a task or keep in a pool.
+pub fn (c: &Context) share(): Context {
+    let r = SSL_CTX_up_ref(c.ctx)
+    OPEN += 1
+    return Context{ctx: c.ctx, server: c.server, verify: c.verify, pins: c.pins}
+}
+
+pub fn (c: &Context) isServer(): bool { return c.server }
+
+// Whether h is an IPv4 or IPv6 address literal (no SNI is sent for one).
+fn isIpLiteral(h: str): bool {
+    if contains(h, ":") { return true }
+    var dots = 0
+    for i in 0..len(h) {
+        let c = h[i]
+        if c == '.' { dots += 1 } else if c < '0' || c > '9' { return false }
+    }
+    return dots == 3
+}
+
+// A new engine (one connection's TLS state) in memory mode. A client's
+// serverName is the name sent as SNI and checked against the certificate
+// (an IP address is checked as one, and sends no SNI); "" only with
+// insecureSkipVerify. A server's serverName is only used in errors.
+pub fn (c: &Context) engine(serverName: str): Result[Engine, Error] {
+    var host = serverName
+    if len(host) > 1 && host[0] == '[' && host[len(host) - 1] == ']' { host = host[1..len(host) - 1] }
+    if !c.server && c.verify && len(host) == 0 {
+        return Err(fail(Kind.Config, "a server name is needed to verify the server's certificate", 0, ""))
+    }
+    ERR_clear_error()
+    let ssl = SSL_new(c.ctx)
+    if isNull(ssl) { return Err(queueFail(Kind.Config, "SSL_new failed", host)) }
+    let rb = BIO_new(BIO_s_mem())
+    let wb = BIO_new(BIO_s_mem())
+    if isNull(rb) || isNull(wb) { panic("tls: out of memory (BIO_new)") }
+    SSL_set_bio(ssl, rb, wb)        // the SSL owns them now
+    OPEN += 1
+    let e = Engine{ssl: ssl, rbio: rb, wbio: wb, host: host, pins: c.pins, state: ST_HANDSHAKE, server: c.server,
+                   verify: c.verify}
+    if c.server {
+        SSL_set_accept_state(ssl)
+    } else {
+        SSL_set_connect_state(ssl)
+        if len(host) > 0 {
+            if !isIpLiteral(host) &&
+               SSL_ctrl(ssl, i32(SSL_CTRL_SET_TLSEXT_HOSTNAME), TLSEXT_NAMETYPE_host_name, host) != 1 {
+                return Err(queueFail(Kind.Config, "cannot set the server name (SNI)", host))
+            }
+            if c.verify && SSL_set1_host(ssl, host) != 1 {
+                return Err(queueFail(Kind.Config, "cannot set the name to verify", host))
+            }
+        }
+    }
+    return Ok(e)
+}
+
+// A client connection over sock: the handshake, the task parked on the
+// socket meanwhile. serverName as for engine.
+pub fn (c: &Context) connect(sock: net.Conn, serverName: str, w: Where): Result[Conn, Error] {
+    let e = try c.engine(serverName)
+    var conn = over(e, sock)
+    try conn.handshake(w)
+    return Ok(conn)
+}
+
+// A server connection over an accepted sock: the handshake, parked.
+pub fn (c: &Context) accept(sock: net.Conn, w: Where): Result[Conn, Error] {
+    if !c.server { return Err(fail(Kind.Config, "accept on a client context", 0, "")) }
+    let e = try c.engine("")
+    var conn = over(e, sock)
+    try conn.handshake(w)
+    return Ok(conn)
+}
+
+// ---------------------------------------------------------------- engines
+
+// One connection's TLS in memory mode: ciphertext in by feed, out by
+// output or takeOutput, plaintext by read and write. After every call,
+// send what output gives: the handshake, alerts and close_notify are
+// output too.
+pub type Engine = record {
+    ssl: ptr
+    rbio: ptr          // owned by ssl: what arrived
+    wbio: ptr          // owned by ssl: what is to be sent
+    host: str
+    pins: str
+    state: int
+    server: bool
+    verify: bool
+}
+
+fn (e: mut &Engine) drop() {
+    if !isNull(e.ssl) {
+        SSL_free(e.ssl)
+        e.ssl = nullPtr()
+        OPEN -= 1
+    }
+}
+
+fn (e: &Engine) err(k: Kind, msg: str): Error { return fail(k, msg, 0, e.host) }
+
+// Gives ciphertext that arrived from the peer to the engine.
+pub fn (e: mut &Engine) feed(data: &[byte]) {
+    var off = 0
+    while off < len(data) {
+        let n = min(len(data) - off, MAX_IO)
+        let r = BIO_write(e.rbio, data[off..off + n], i32(n))
+        if r <= 0 { panic("tls: out of memory (BIO_write)") }
+        off += int(r)
+    }
+}
+
+// The number of ciphertext bytes waiting to be sent.
+pub fn (e: &Engine) pending(): int { return BIO_ctrl(e.wbio, i32(BIO_CTRL_PENDING), 0, nullPtr()) }
+
+// Moves up to len(buf) bytes of ciphertext to send into buf: the count, 0
+// when there is none.
+pub fn (e: mut &Engine) output(buf: mut &[byte]): int {
+    if len(buf) == 0 { return 0 }
+    let r = BIO_read(e.wbio, buf, i32(min(len(buf), MAX_IO)))
+    return if r > 0 { int(r) } else { 0 }
+}
+
+// All the ciphertext waiting to be sent.
+pub fn (e: mut &Engine) takeOutput(): []byte {
+    var b = array(e.pending(), byte(0))
+    var have = 0
+    while have < len(b) {
+        let n = e.output(mut &b[have..len(b)])
+        if n == 0 { break }
+        have += n
+    }
+    return b
+}
+
+// The ciphertext fed but not used yet (a partial record), taken out: when
+// TLS ends in the middle of a stream, what follows it.
+pub fn (e: mut &Engine) unread(): []byte {
+    let n = BIO_ctrl(e.rbio, i32(BIO_CTRL_PENDING), 0, nullPtr())
+    var b = array(n, byte(0))
+    if n > 0 { let r = BIO_read(e.rbio, mut &b, i32(n)) }
+    return b
+}
+
+fn (e: &Engine) unreadCount(): int { return BIO_ctrl(e.rbio, i32(BIO_CTRL_PENDING), 0, nullPtr()) }
+
+// Whether part of a record has arrived: fed and not used, or read by
+// OpenSSL into its own buffer and not yet complete.
+fn (e: &Engine) partial(): bool { return e.unreadCount() > 0 || SSL_has_pending(e.ssl) == 1 }
+
+// Whether the handshake has finished (and the engine has not failed).
+pub fn (e: &Engine) isOpen(): bool { return e.state == ST_OPEN || e.state == ST_SHUT }
+
+// Advances the handshake with what was fed: Ok(true) when it is done,
+// Ok(false) when it needs more input (send the output first; a client's
+// first call makes its ClientHello). An error is final; its alert, if any,
+// is in the output.
+pub fn (e: mut &Engine) handshake(): Result[bool, Error] {
+    if e.state == ST_OPEN || e.state == ST_SHUT { return Ok(true) }
+    if e.state != ST_HANDSHAKE { return Err(e.err(Kind.Handshake, "the connection has failed or was detached")) }
+    ERR_clear_error()
+    let r = SSL_do_handshake(e.ssl)
+    if r == 1 {
+        ERR_clear_error()
+        try e.checkPins()
+        e.state = ST_OPEN
+        return Ok(true)
+    }
+    let k = int(SSL_get_error(e.ssl, r))
+    if k == SSL_ERROR_WANT_READ { return Ok(false) }
+    e.state = ST_FAILED
+    let v = SSL_get_verify_result(e.ssl)
+    if e.verify && v != X509_V_OK {
+        ERR_clear_error()
+        return Err(fail(Kind.Verify, X509_verify_cert_error_string(v), v, e.host))
+    }
+    return Err(queueFail(Kind.Handshake, "the handshake failed (SSL error " + intToStr(k) + ")", e.host))
+}
+
+fn (e: mut &Engine) checkPins(): Result[Unit, Error] {
+    if len(e.pins) == 0 { return Ok(Unit{}) }
+    let got = match e.peer() {
+        Some(c) { c.sha256 }
+        None { "" }
+    }
+    for p in split(e.pins, ',') {
+        if p == got { return Ok(Unit{}) }
+    }
+    e.state = ST_FAILED
+    return Err(fail(Kind.Verify, "the certificate is not one of the pinned ones (sha256 " + got + ")", 0, e.host))
+}
+
+// Plaintext into buf: Ok(n > 0) bytes, Ok(0) when the peer has sent
+// close_notify, Ok(WANT_INPUT) when it needs more input (finishing the
+// handshake first if it is not done).
+pub fn (e: mut &Engine) read(buf: mut &[byte]): Result[int, Error] {
+    if e.state == ST_HANDSHAKE {
+        let done = try e.handshake()
+        if !done { return Ok(WANT_INPUT) }
+    }
+    if e.state != ST_OPEN && e.state != ST_SHUT { return Err(e.err(Kind.Protocol, "read on a failed or detached connection")) }
+    if len(buf) == 0 { return Ok(0) }
+    ERR_clear_error()
+    let n = SSL_read(e.ssl, buf, i32(min(len(buf), MAX_IO)))
+    if n > 0 { return Ok(int(n)) }
+    let k = int(SSL_get_error(e.ssl, n))
+    if k == SSL_ERROR_WANT_READ { return Ok(WANT_INPUT) }
+    if k == SSL_ERROR_ZERO_RETURN { return Ok(0) }
+    e.state = ST_FAILED
+    return Err(queueFail(Kind.Protocol, "read failed (SSL error " + intToStr(k) + ")", e.host))
+}
+
+// Encrypts all of data into the output. The handshake must be done.
+pub fn (e: mut &Engine) write(data: &[byte]): Result[Unit, Error] {
+    if e.state == ST_HANDSHAKE { return Err(e.err(Kind.Protocol, "write before the handshake is done")) }
+    if e.state != ST_OPEN { return Err(e.err(Kind.Protocol, "write on a closed or failed connection")) }
+    var off = 0
+    while off < len(data) {
+        let n = min(len(data) - off, MAX_IO)
+        ERR_clear_error()
+        let r = SSL_write(e.ssl, data[off..off + n], i32(n))
+        if r <= 0 {
+            let k = int(SSL_get_error(e.ssl, r))
+            e.state = ST_FAILED
+            return Err(queueFail(Kind.Protocol, "write failed (SSL error " + intToStr(k) + ")", e.host))
+        }
+        off += int(r)
+    }
+    return Ok(Unit{})
+}
+
+// Puts close_notify into the output (once; nothing on an engine whose
+// handshake did not finish or that failed). Reading still works: the
+// peer's close_notify reads as 0.
+pub fn (e: mut &Engine) shutdown() {
+    if e.state != ST_OPEN { return }
+    ERR_clear_error()
+    let r = SSL_shutdown(e.ssl)
+    ERR_clear_error()
+    e.state = ST_SHUT
+}
+
+// Whether the peer has sent close_notify.
+pub fn (e: &Engine) closeNotified(): bool { return (int(SSL_get_shutdown(e.ssl)) & SSL_RECEIVED_SHUTDOWN) != 0 }
+
+// The protocol version: "TLSv1.3", "TLSv1.2" (before the handshake, the
+// highest the engine offers).
+pub fn (e: &Engine) version(): str { return SSL_get_version(e.ssl) }
+
+// The cipher suite, "TLS_AES_256_GCM_SHA384" ("" before the handshake).
+pub fn (e: &Engine) cipher(): str {
+    let c = SSL_get_current_cipher(e.ssl)
+    if isNull(c) { return "" }
+    return SSL_CIPHER_get_name(c)
+}
+
+// The protocol ALPN chose ("" if none).
+pub fn (e: &Engine) alpn(): str {
+    var p = nullPtr()
+    var n = 0
+    SSL_get0_alpn_selected(e.ssl, mut &p, mut &n)
+    if isNull(p) { return "" }
+    return ffi.bytes(p, n & 255)
+}
+
+// X509's verification result of the peer's certificate (0: ok; also
+// computed with insecureSkipVerify, which only ignores it) and its text.
+pub fn (e: &Engine) verifyResult(): int { return SSL_get_verify_result(e.ssl) }
+pub fn (e: &Engine) verifyText(): str { return X509_verify_cert_error_string(SSL_get_verify_result(e.ssl)) }
+
+// Whether the session was resumed.
+pub fn (e: &Engine) resumed(): bool { return SSL_session_reused(e.ssl) == 1 }
+
+// The name the engine was made for.
+pub fn (e: &Engine) serverName(): str { return e.host }
+
+// A certificate, for diagnostics.
+pub type Cert = value record {
+    pub subject: str      // "/CN=localhost/O=Test"
+    pub issuer: str
+    pub notBefore: int    // Unix seconds
+    pub notAfter: int
+    pub sha256: str       // the fingerprint of the whole certificate (DER), lowercase hex, as pins take it
+}
+
+// The peer's certificate, once the handshake has received it.
+pub fn (e: &Engine) peer(): Option[Cert] {
+    let x = SSL_get1_peer_certificate(e.ssl)
+    if isNull(x) { return None }
+    let c = certOf(x)
+    X509_free(x)
+    return Some(c)
+}
+
+fn nameText(n: ptr): str {
+    if isNull(n) { return "" }
+    var buf = array(1024, byte(0))
+    let p = X509_NAME_oneline(n, mut &buf, i32(len(buf)))
+    if isNull(p) { return "" }
+    var k = 0
+    while k < len(buf) && buf[k] != 0 { k += 1 }
+    return strFromBytes(&buf[0..k])
+}
+
+fn timeOf(t: ptr): int {
+    if isNull(t) { return 0 }
+    var tm = array(14, i32(0))     // struct tm: sec min hour mday mon year ...
+    if ASN1_TIME_to_tm(t, mut &tm) != 1 { return 0 }
+    let d = time.Date{year: int(tm[5]) + 1900, month: int(tm[4]) + 1, day: int(tm[3])}
+    return time.daysOfDate(d) * 86400 + int(tm[2]) * 3600 + int(tm[1]) * 60 + int(tm[0])
+}
+
+fn certOf(x: ptr): Cert {
+    var md = array(64, byte(0))
+    var n = 0
+    var fp = ""
+    if X509_digest(x, EVP_sha256(), mut &md, mut &n) == 1 {
+        let digits = "0123456789abcdef"
+        var b = newStrBuf()
+        for i in 0..(n & 255) {
+            b.addByte(digits[int(md[i] >> 4)])
+            b.addByte(digits[int(md[i] & 15)])
+        }
+        fp = b.toStr()
+    }
+    return Cert{subject: nameText(X509_get_subject_name(x)), issuer: nameText(X509_get_issuer_name(x)),
+                notBefore: timeOf(X509_get0_notBefore(x)), notAfter: timeOf(X509_get0_notAfter(x)), sha256: fp}
+}
+
+// ---------------------------------------------------------------- over a socket
+
+// An engine over a socket: the ciphertext goes through sock, and every
+// call that waits parks its task on the socket.
+pub type Conn = record {
+    e: Engine
+    sock: net.Conn
+    buf: []byte        // ciphertext on its way in or out
+    eof: bool          // the socket's end came
+}
+
+// Puts an engine (new, or with its handshake done or started in memory
+// mode) over a socket. The handshake goes on, if it is not done, at the
+// first call (or handshake()).
+pub fn over(e: Engine, sock: net.Conn): Conn {
+    return Conn{e: e, sock: sock, buf: array(BUF, byte(0)), eof: false}
+}
+
+// Dropping an open connection sends close_notify if the socket takes it at
+// once; it never parks (close() does).
+fn (c: mut &Conn) drop() {
+    if c.e.state != ST_OPEN { return }
+    c.e.shutdown()
+    while true {
+        let n = c.e.output(mut &c.buf)
+        if n == 0 { break }
+        match c.sock.writeNow(&c.buf[0..n]) {
+            Ok(k) { if k < n { break } }
+            Err(x) { break }
+        }
+    }
+}
+
+// Sends the engine's output, parking while the socket's buffer is full.
+fn (c: mut &Conn) flush(w: Where): Result[Unit, Error] {
+    while true {
+        let n = c.e.output(mut &c.buf)
+        if n == 0 { return Ok(Unit{}) }
+        match c.sock.write(&c.buf[0..n], w) {
+            Ok(_) {}
+            Err(x) { return Err(ioFail(x, c.e.host)) }
+        }
+    }
+    return Ok(Unit{})
+}
+
+// Reads ciphertext from the socket into the engine, parking until some
+// arrives: false at the socket's end.
+fn (c: mut &Conn) fill(w: Where): Result[bool, Error] {
+    if c.eof { return Ok(false) }
+    let n = match c.sock.read(mut &c.buf, w) {
+        Ok(k) { k }
+        Err(x) { return Err(ioFail(x, c.e.host)) }
+    }
+    if n == 0 {
+        c.eof = true
+        return Ok(false)
+    }
+    c.e.feed(&c.buf[0..n])
+    return Ok(true)
+}
+
+// Finishes the handshake (connect and accept have; a Conn made by over
+// may not have).
+pub fn (c: mut &Conn) handshake(w: Where): Result[Unit, Error] {
+    while true {
+        let r = c.e.handshake()
+        let sent = c.flush(w)          // the next flight, or the alert of a failure
+        match r {
+            Ok(done) {
+                if sent.isErr() { return Err(sent.unwrapErr()) }
+                if done { return Ok(Unit{}) }
+            }
+            Err(x) { return Err(x) }
+        }
+        let more = try c.fill(w)
+        if !more {
+            c.e.state = ST_FAILED
+            return Err(c.e.err(Kind.Handshake, "the peer closed the connection during the handshake"))
+        }
+    }
+    return Ok(Unit{})
+}
+
+// Reads plaintext into buf, parking until there is some: the count, 0 when
+// the peer has closed. The peer's close_notify ends the stream cleanly
+// (closeNotified() is true); the socket's end at a record boundary without
+// one ends it too (a truncation, which the protocol above must detect, as
+// HTTP's framing does); the socket's end inside a record is a Protocol
+// error.
+pub fn (c: mut &Conn) read(buf: mut &[byte], w: Where): Result[int, Error] {
+    while true {
+        let n = try c.e.read(buf)
+        if n != WANT_INPUT { return Ok(n) }
+        try c.flush(w)
+        let more = try c.fill(w)
+        if !more {
+            if c.e.partial() {
+                c.e.state = ST_FAILED
+                return Err(c.e.err(Kind.Protocol, "the connection closed inside a TLS record"))
+            }
+            if c.e.state == ST_HANDSHAKE {
+                c.e.state = ST_FAILED
+                return Err(c.e.err(Kind.Handshake, "the peer closed the connection during the handshake"))
+            }
+            return Ok(0)
+        }
+    }
+    return Ok(0)
+}
+
+// Reads what has already arrived, without parking: Ok(n > 0) bytes, Ok(0)
+// when the peer has closed, Ok(WANT_INPUT) when nothing is there. A pool
+// checks an idle connection with it.
+pub fn (c: mut &Conn) readNow(buf: mut &[byte]): Result[int, Error] {
+    while true {
+        let n = try c.e.read(buf)
+        if n != WANT_INPUT { return Ok(n) }
+        if c.eof { return Ok(0) }
+        let k = match c.sock.readNow(mut &c.buf) {
+            Ok(x) { x }
+            Err(x) { return if x.errno == EAGAIN { Ok(WANT_INPUT) } else { Err(ioFail(x, c.e.host)) } }
+        }
+        if k == 0 {
+            c.eof = true
+            return Ok(0)
+        }
+        c.e.feed(&c.buf[0..k])
+    }
+    return Ok(0)
+}
+
+// Writes all of data, a record at a time, parking while the socket's buffer
+// is full.
+pub fn (c: mut &Conn) write(data: &[byte], w: Where): Result[Unit, Error] {
+    if c.e.state == ST_HANDSHAKE { try c.handshake(w) }
+    var off = 0
+    while off < len(data) {
+        let n = min(len(data) - off, CHUNK)
+        try c.e.write(data[off..off + n])
+        off += n
+        try c.flush(w)
+    }
+    return Ok(Unit{})
+}
+
+// write for the bytes of s.
+pub fn (c: mut &Conn) writeStr(s: str, w: Where): Result[Unit, Error] {
+    let b = strToBytes(s)
+    return c.write(&b, w)
+}
+
+// Sends close_notify (parking until it is written); reading still works,
+// until the peer's close_notify reads as 0.
+pub fn (c: mut &Conn) shutdown(w: Where): Result[Unit, Error] {
+    c.e.shutdown()
+    return c.flush(w)
+}
+
+// Sends close_notify and closes the socket. It does not wait for the
+// peer's close_notify.
+pub fn (var c: Conn) close(w: Where): Result[Unit, Error] {
+    return c.shutdown(w)
+}
+
+// What detach gives back.
+pub type Detached = record {
+    pub sock: net.Conn
+    pub rest: []byte       // bytes that arrived after the last whole TLS record (not decrypted)
+}
+
+// Ends TLS on the connection without close_notify and gives the socket
+// back, for protocols that stop encrypting part way (TDS after login with
+// encryption off).
+pub fn (var c: Conn) detach(): Detached {
+    let rest = c.e.unread()
+    c.e.state = ST_DETACHED
+    return Detached{sock: c.sock.take(), rest: rest}
+}
+
+// The engine, for its diagnostics (version, cipher, alpn, peer, ...).
+pub fn (c: &Conn) engine(): &Engine { return &c.e }
+
+pub fn (c: &Conn) version(): str { return c.e.version() }
+pub fn (c: &Conn) cipher(): str { return c.e.cipher() }
+pub fn (c: &Conn) alpn(): str { return c.e.alpn() }
+pub fn (c: &Conn) peer(): Option[Cert] { return c.e.peer() }
+pub fn (c: &Conn) closeNotified(): bool { return c.e.closeNotified() }
+pub fn (c: &Conn) peerAddr(): str { return c.sock.peerAddr() }
+pub fn (c: &Conn) localAddr(): str { return c.sock.localAddr() }
+
+// TCP_NODELAY on the socket.
+pub fn (c: &Conn) setNoDelay(on: bool): Result[Unit, Error] {
+    match c.sock.setNoDelay(on) {
+        Ok(_) { return Ok(Unit{}) }
+        Err(x) { return Err(ioFail(x, c.e.host)) }
+    }
+}

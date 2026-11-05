@@ -1,0 +1,287 @@
+// Test support for tls and https (lib/tests/run/tls_*.obx, https_*.obx):
+//
+// - pki(): a throwaway PKI made by the openssl command at test time, in
+//   ./tlspki (the test runner's temporary directory). The keys are
+//   TEST-ONLY, made fresh by every run and never committed. Without the
+//   openssl command the test exits 77 (skipped).
+// - sServer(args): `openssl s_server` on a free port of 127.0.0.1, killed
+//   when the Server is dropped.
+// - serveHttps(ctx, ln): a small https server (tasks) with keep-alive, for
+//   the http client: /hello, /echo, /big?n=N, /redirect?to=U, /close; every
+//   reply carries X-Conn, the connection's number from 1.
+import "proc"
+import "fs"
+import "io"
+import "net"
+import "tls"
+import "task"
+import "http"
+import "url"
+import "strings"
+import "os"
+
+pub const DIR = "tlspki"
+
+// The path of a file of the PKI.
+pub fn path(name: str): str { return DIR + "/" + name }
+
+// Its absolute path (for a child whose directory is DIR).
+fn abs(name: str): str { return os.cwd() + "/" + DIR + "/" + name }
+
+// Runs openssl with args in DIR; false when it fails (its output goes to
+// DIR/openssl.log).
+pub fn openssl(args: []str): bool {
+    var c = proc.command("openssl", args)
+    c.cwd = DIR
+    c.stdin = proc.Stdio.Null
+    c.stdout = proc.Stdio.Append(abs("openssl.log"))
+    c.stderr = proc.Stdio.Stdout
+    match proc.run(&c) {
+        Ok(e) { return e.ok() }
+        Err(e) {
+            if e.isNotFound() { exit(77) }
+            return false
+        }
+    }
+}
+
+// openssl's standard output for args (run in DIR).
+pub fn opensslOut(args: []str): str {
+    var c = proc.command("openssl", args)
+    c.cwd = DIR
+    c.stdin = proc.Stdio.Null
+    let r = proc.output(&c).unwrap()
+    if !r.exit.ok() { panic("openssl failed: " + r.stderrStr()) }
+    return r.stdoutStr()
+}
+
+fn must(args: []str) {
+    let text = strings.join(&args, " ")
+    if !openssl(args) { panic("openssl " + text + " failed; see " + path("openssl.log")) }
+}
+
+// A key and a certificate request for subject.
+fn request(name: str, subject: str) {
+    must(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", name + ".key",
+          "-out", name + ".csr", "-subj", subject])
+}
+
+// name.pem signed by the CA ca, for days (negative: already expired), with
+// the extensions of the file ext ("": none).
+fn sign(name: str, ca: str, days: int, ext: str) {
+    var args = ["x509", "-req", "-in", name + ".csr", "-CA", ca + ".pem", "-CAkey", ca + ".key", "-days",
+                intToStr(days), "-out", name + ".pem"]
+    if len(ext) > 0 {
+        append(mut &args, "-extfile")
+        append(mut &args, ext)
+    }
+    must(args)
+}
+
+// Makes the PKI in ./tlspki unless it is there:
+//   ca.pem                 the test CA (ca.key)
+//   srv.pem, srv.key       localhost and 127.0.0.1, signed by the CA
+//   expired.pem, .key      the same names, expired
+//   other.pem, .key        other.example only, signed by the CA
+//   rogue.pem, .key        localhost, signed by another CA (rogue-ca.pem), not trusted
+//   cli.pem, cli.key       a client certificate (CN=client), signed by the CA
+pub fn pki() {
+    if fs.exists(path("done")) { return }
+    match fs.mkdirAll(DIR) {
+        Ok(_) {}
+        Err(e) { panic(e.toStr()) }
+    }
+    io.write(path("san.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\n").unwrap()
+    io.write(path("other.ext"), "subjectAltName=DNS:other.example\n").unwrap()
+    io.write(path("cli.ext"), "extendedKeyUsage=clientAuth\n").unwrap()
+    for ca in ["ca", "rogue-ca"] {
+        must(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", ca + ".key",
+              "-out", ca + ".pem", "-days", "2", "-subj", "/CN=obx test " + ca])
+    }
+    request("srv", "/CN=localhost")
+    sign("srv", "ca", 2, "san.ext")
+    request("expired", "/CN=localhost")
+    sign("expired", "ca", -1, "san.ext")
+    request("other", "/CN=other.example")
+    sign("other", "ca", 2, "other.ext")
+    request("rogue", "/CN=localhost")
+    sign("rogue", "rogue-ca", 2, "san.ext")
+    request("cli", "/CN=client")
+    sign("cli", "ca", 2, "cli.ext")
+    io.write(path("done"), "").unwrap()
+}
+
+// Client options that trust the test CA.
+pub fn clientOptions(): tls.Options {
+    var o = tls.defaults()
+    o.caFile = path("ca.pem")
+    return o
+}
+
+// A server context with the certificate name (srv, expired, other, rogue).
+pub fn serverContext(name: str): tls.Context {
+    var o = tls.defaults()
+    o.certFile = path(name + ".pem")
+    o.keyFile = path(name + ".key")
+    return tls.server(o).unwrap()
+}
+
+// ---------------------------------------------------------------- openssl s_server
+
+pub type Server = record {
+    pub port: int
+    pub addr: str          // "127.0.0.1:port"
+    child: proc.Child
+}
+
+var SERVERS: int = 0
+
+// Starts `openssl s_server -accept 127.0.0.1:0 ...args` in DIR and waits
+// until it listens; its output goes to DIR/s_server-N.out.
+pub fn sServer(args: []str): Server {
+    SERVERS += 1
+    let out = "s_server-" + intToStr(SERVERS) + ".out"
+    var all = ["s_server", "-accept", "127.0.0.1:0"]
+    for a in args { append(mut &all, a) }
+    var c = proc.command("openssl", all)
+    c.cwd = DIR
+    c.stdin = proc.Stdio.Null
+    c.stdout = proc.Stdio.File(abs(out))
+    c.stderr = proc.Stdio.Stdout
+    let started = proc.start(&c)
+    if started.isErr() {
+        let e = started.unwrapErr()
+        if e.isNotFound() { exit(77) }
+        panic(e.toStr())
+    }
+    let child = started.unwrap()
+    for i in 0..500 {
+        let text = io.read(path(out)).unwrapOr("")
+        match strings.cut(text, "ACCEPT 127.0.0.1:") {
+            Some(x) {
+                match strings.cut(x.after, "\n") {
+                    Some(y) {
+                        let port = strings.parseInt(trim(y.before)).unwrap()
+                        return Server{port: port, addr: "127.0.0.1:" + intToStr(port), child: child}
+                    }
+                    None {}
+                }
+            }
+            None {}
+        }
+        task.sleep(10).unwrap()
+    }
+    panic("openssl s_server did not start: " + io.read(path(out)).unwrapOr(""))
+}
+
+// ---------------------------------------------------------------- an https server
+
+var CONNS: int = 0
+
+pub fn conns(): int { return CONNS }
+
+pub type Https = record {
+    pub ctx: tls.Context
+    pub ln: net.Listener
+}
+
+type Peer = record { ctx: tls.Context; c: net.Conn; id: int }
+
+// Accepts connections until cancelled, each served by a task.
+pub fn serveHttps(h: Https): int {
+    let Https{ctx: ctx, ln: ln} = move(h)
+    task.scope(fn(s: mut &task.Scope) {
+        while true {
+            match ln.accept() {
+                Ok(c) {
+                    CONNS += 1
+                    s.spawn(handle, Peer{ctx: ctx.share(), c: c, id: CONNS})
+                }
+                Err(_) { break }
+            }
+        }
+    })
+    return 0
+}
+
+fn reply(code: int, extra: str, body: str): str {
+    return "HTTP/1.1 " + intToStr(code) + " X\r\n" + extra + "Content-Length: " + intToStr(len(body)) + "\r\n\r\n" + body
+}
+
+fn handle(p: Peer): int {
+    let Peer{ctx: ctx, c: sock, id: id} = move(p)
+    var c = match ctx.accept(sock) {
+        Ok(x) { x }
+        Err(e) { return 0 }
+    }
+    var buf = array(65536, byte(0))
+    var r = 0
+    var w = 0
+    while true {
+        var e = http.headEnd(&buf, r, r, w)
+        while e < 0 {
+            if w == len(buf) { return 0 }
+            let n = match c.read(mut &buf[w..len(buf)]) {
+                Ok(k) { k }
+                Err(_) { return 0 }
+            }
+            if n == 0 { return 0 }
+            w += n
+            e = http.headEnd(&buf, r, r, w)
+        }
+        let head = http.parseRequest(strFromBytes(&buf[r..e])).unwrap()
+        r = e + 4
+        let blen = head.bodyLength().unwrap()
+        while w - r < blen {
+            let n = match c.read(mut &buf[w..len(buf)]) {
+                Ok(k) { k }
+                Err(_) { return 0 }
+            }
+            if n == 0 { return 0 }
+            w += n
+        }
+        let body = strFromBytes(&buf[r..r + blen])
+        r += blen
+        for i in 0..w - r { buf[i] = buf[r + i] }
+        w -= r
+        r = 0
+        let tag = "X-Conn: " + intToStr(id) + "\r\n"
+        var path = head.target
+        var q = ""
+        match strings.cut(head.target, "?") {
+            Some(x) {
+                path = x.before
+                q = x.after
+            }
+            None {}
+        }
+        let query = url.parseQuery(q).unwrap()
+        var out = ""
+        var closing = !head.keepAlive()
+        if path == "/hello" {
+            out = reply(200, tag, "hello")
+        } else if path == "/echo" {
+            out = reply(200, tag, head.method + " " + head.target + "\n" + body)
+        } else if path == "/big" {
+            let n = strings.parseInt(query.get("n").unwrap()).unwrap()
+            var b = array(n, byte('x'))
+            out = reply(200, tag, strFromBytes(&b))
+        } else if path == "/redirect" {
+            out = reply(302, tag + "Location: " + query.get("to").unwrap() + "\r\n", "moved")
+        } else if path == "/close" {
+            out = reply(200, tag + "Connection: close\r\n", "bye")
+            closing = true
+        } else {
+            out = reply(404, tag, "not found")
+        }
+        match c.writeStr(out) {
+            Ok(_) {}
+            Err(_) { return 0 }
+        }
+        if closing {
+            let d = c.close()
+            return 0
+        }
+    }
+    return 0
+}
