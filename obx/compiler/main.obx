@@ -146,11 +146,12 @@ fn run(words: &[]str, errFile: str): int {
 }
 
 // The gcc command of a normal build.
-fn gccCmd(exe: str, cfile: str, libs: &[]str): []str {
+fn gccCmd(exe: str, cfile: str, libs: &[]str, libm: bool): []str {
     // -falign-functions=64: a small recursive function's speed depends on where it falls in
     // the fetch blocks (bench fib: 15%), so a change in the runtime's size must not move it.
     var cmd: []str = ["gcc", "-O2", "-falign-functions=64", "-w", "-std=gnu11", "-o", exe, cfile]
     for f in libFlags(libs) { append(mut &cmd, f) }
+    if libm { append(mut &cmd, "-lm") }
     return cmd
 }
 
@@ -185,6 +186,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     var libs: []str = []
     let p = compileIr(lib, roots, src, mut &libs)
     if isNative { return buildNative(p, &libs, src, out, isRun, rest) }
+    let libm = cgen.needsLibm(&p)
     let csrc = cgen.print(p, rtText(&p))
     if emitc {
         writeFd(1, csrc)
@@ -193,7 +195,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     if json {
         var b = newStrBuf()
         b.add("{\"c\": " + jsonStr(csrc) + ", \"cmd\": [")
-        let cmd = gccCmd("@OUT@", "@SRC@", &libs)
+        let cmd = gccCmd("@OUT@", "@SRC@", &libs, libm)
         for i in 0..len(cmd) {
             if i > 0 { b.add(", ") }
             b.add(jsonStr(cmd[i]))
@@ -211,7 +213,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     }
     let exe = if len(out) > 0 { out } else if isRun { tmp + "/prog" } else {
         if endsWith(src, ".obx") { src[0..len(src) - 4] } else { src } }
-    let cmd = gccCmd(exe, cfile, &libs)
+    let cmd = gccCmd(exe, cfile, &libs, libm)
     let errf = tmp + "/gcc.err"
     if run(&cmd, errf) != 0 {
         var msg = ""

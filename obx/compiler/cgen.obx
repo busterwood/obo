@@ -60,6 +60,16 @@ pub fn usesMath(p: &ir.Ir): bool {
     return false
 }
 
+// Whether the program declares an extern that is neither the runtime's math nor its port
+// (jq's acosh, erf, lgamma, j0 ...): gcc then links -lm, as the native backend searches libm.so.6
+// for such names. The linker's --as-needed drops it again when nothing in libm is used.
+pub fn needsLibm(p: &ir.Ir): bool {
+    for f in p.funcs {
+        if f.isExtern && !builtinMath(f.asmName) { return true }
+    }
+    return false
+}
+
 fn (g: mut &Gen) line(s: str) {
     g.out.add(s)
     g.out.addByte('\n')
