@@ -1,7 +1,12 @@
-// time: the wall clock, a monotonic clock, and UTC calendar dates.
+// time: the wall clock, a monotonic clock, calendar dates, and the civil
+// date-time types databases use.
 //
 // Wall-clock times are Unix times (seconds since 1970-01-01T00:00:00Z, plus
-// nanoseconds); dates are in the proleptic Gregorian calendar, UTC only.
+// nanoseconds); dates are in the proleptic Gregorian calendar. A Time is an
+// instant. A TimeOfDay, a LocalDateTime (a date and a time of day, with no
+// zone: SQL datetime2, Postgres timestamp) and an OffsetDateTime (a local
+// date-time and its offset from UTC: SQL datetimeoffset, Postgres timestamptz)
+// are civil values; there are no leap seconds and no time zone rules.
 
 extern "c" fn clockNs(which: int): int as "obx_clock_ns"
 extern "c" fn usleep(us: u32): i32
@@ -135,18 +140,226 @@ pub fn isoDateTime(sec: int): str {
     return isoDate(sec) + "T" + pad(s / 3600, 2) + ":" + pad(s / 60 % 60, 2) + ":" + pad(s % 60, 2) + "Z"
 }
 
+// Whether the month is 1..12 and the day exists in it.
+pub fn (d: Date) valid(): bool {
+    return d.month >= 1 && d.month <= 12 && d.day >= 1 && d.day <= daysInMonth(d.year, d.month)
+}
+
 // Parses "YYYY-MM-DD" (a valid date).
 pub fn parseDate(s: str): Option[Date] {
     if len(s) != 10 || strByte(s, 4) != '-' || strByte(s, 7) != '-' { return None }
-    let y = parseInt(strSlice(s, 0, 4))
-    let m = parseInt(strSlice(s, 5, 7))
-    let d = parseInt(strSlice(s, 8, 10))
-    if y.isNone() || m.isNone() || d.isNone() { return None }
-    let date = Date{year: y.unwrap(), month: m.unwrap(), day: d.unwrap()}
-    if date.month < 1 || date.month > 12 || date.day < 1 || date.day > daysInMonth(date.year, date.month) {
+    let y = digits(s, 0, 4)
+    let m = digits(s, 5, 7)
+    let d = digits(s, 8, 10)
+    if y < 0 || m < 0 || d < 0 { return None }
+    let date = Date{year: y, month: m, day: d}
+    if !date.valid() { return None }
+    return Some(date)
+}
+
+// ---- TimeOfDay ----
+
+pub const NANOS_PER_DAY = 86400000000000
+
+// A time of day: nanoseconds since midnight, 0 to NANOS_PER_DAY - 1.
+pub type TimeOfDay = value record {
+    pub nanos: int
+}
+
+pub const MIDNIGHT: TimeOfDay = TimeOfDay{nanos: 0}
+
+// The time of day hour:minute:second plus nano nanoseconds, if each is in range.
+pub fn timeOfDay(hour: int, minute: int, second: int, nano: int): Option[TimeOfDay] {
+    if hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || nano < 0 ||
+            nano > 999999999 {
         return None
     }
-    return Some(date)
+    return Some(TimeOfDay{nanos: ((hour * 60 + minute) * 60 + second) * 1000000000 + nano})
+}
+
+pub fn (t: TimeOfDay) hour(): int { return t.nanos / 3600000000000 }
+pub fn (t: TimeOfDay) minute(): int { return t.nanos / 60000000000 % 60 }
+pub fn (t: TimeOfDay) second(): int { return t.nanos / 1000000000 % 60 }
+pub fn (t: TimeOfDay) nano(): int { return t.nanos % 1000000000 }
+
+pub fn (t: TimeOfDay) eq(o: &TimeOfDay): bool { return t.nanos == o.nanos }
+pub fn (t: TimeOfDay) cmp(o: &TimeOfDay): int { return t.nanos.cmp(&o.nanos) }
+
+// "13:45:07", "13:45:07.25": the fraction only when there is one, without trailing zeros.
+pub fn (t: TimeOfDay) toStr(): str {
+    return pad(t.hour(), 2) + ":" + pad(t.minute(), 2) + ":" + pad(t.second(), 2) + fraction(t.nano())
+}
+
+// Parses "HH:MM", "HH:MM:SS" or "HH:MM:SS.f" with 1 to 9 digits of fraction.
+pub fn parseTimeOfDay(s: str): Option[TimeOfDay] {
+    let n = len(s)
+    if n < 5 || strByte(s, 2) != ':' { return None }
+    let h = digits(s, 0, 2)
+    let m = digits(s, 3, 5)
+    var sec = 0
+    var ns = 0
+    if n > 5 {
+        if n < 8 || strByte(s, 5) != ':' { return None }
+        sec = digits(s, 6, 8)
+        if n > 8 {
+            if strByte(s, 8) != '.' || n == 9 || n > 18 { return None }
+            ns = digits(s, 9, n)
+            if ns < 0 { return None }
+            for i in 0..18 - n { ns *= 10 }
+        }
+    }
+    if h < 0 || m < 0 || sec < 0 { return None }
+    return timeOfDay(h, m, sec, ns)
+}
+
+// ---- LocalDateTime ----
+
+// A date and a time of day, with no time zone or offset.
+pub type LocalDateTime = value record {
+    pub date: Date
+    pub time: TimeOfDay
+}
+
+pub fn localDateTime(d: Date, t: TimeOfDay): LocalDateTime { return LocalDateTime{date: d, time: t} }
+
+pub fn (l: LocalDateTime) eq(o: &LocalDateTime): bool { return l.date.eq(&o.date) && l.time.eq(&o.time) }
+
+pub fn (l: LocalDateTime) cmp(o: &LocalDateTime): int {
+    let c = l.date.cmp(&o.date)
+    if c != 0 { return c }
+    return l.time.cmp(&o.time)
+}
+
+// "2026-11-05T13:45:07.25"
+pub fn (l: LocalDateTime) toStr(): str { return l.date.toStr() + "T" + l.time.toStr() }
+
+// The instant of this date-time read as UTC.
+pub fn (l: LocalDateTime) atUtc(): Time {
+    return Time{sec: daysOfDate(l.date) * 86400 + l.time.nanos / 1000000000, nsec: l.time.nanos % 1000000000}
+}
+
+// This date-time at an offset of minutes east of UTC, if the offset is within ±23:59.
+pub fn (l: LocalDateTime) withOffset(minutes: int): Option[OffsetDateTime] {
+    if minutes < -MAX_OFFSET || minutes > MAX_OFFSET { return None }
+    return Some(OffsetDateTime{local: l, offset: minutes})
+}
+
+// The UTC date and time of day of an instant.
+pub fn localOf(t: Time): LocalDateTime {
+    return LocalDateTime{date: dateOf(t.sec), time: TimeOfDay{nanos: floorMod(t.sec, 86400) * 1000000000 + t.nsec}}
+}
+
+// Parses "YYYY-MM-DDTHH:MM[:SS[.f]]"; a space or a lower-case t may separate the date and the time.
+pub fn parseLocalDateTime(s: str): Option[LocalDateTime] {
+    if len(s) < 16 { return None }
+    let sep = strByte(s, 10)
+    if sep != 'T' && sep != 't' && sep != ' ' { return None }
+    let d = parseDate(strSlice(s, 0, 10))
+    let t = parseTimeOfDay(strSlice(s, 11, len(s)))
+    if d.isNone() || t.isNone() { return None }
+    return Some(LocalDateTime{date: d.unwrap(), time: t.unwrap()})
+}
+
+// ---- OffsetDateTime ----
+
+pub const MAX_OFFSET = 1439     // minutes: ±23:59
+
+// A local date-time and its offset from UTC, in minutes east (+60 is one hour ahead of UTC).
+pub type OffsetDateTime = value record {
+    pub local: LocalDateTime
+    pub offset: int
+}
+
+// The instant: the local date-time less the offset.
+pub fn (o: OffsetDateTime) instant(): Time {
+    let u = o.local.atUtc()
+    return Time{sec: u.sec - o.offset * 60, nsec: u.nsec}
+}
+
+// The local date-time of an instant at an offset of minutes east of UTC, if within ±23:59.
+pub fn (t: Time) atOffset(minutes: int): Option[OffsetDateTime] {
+    if minutes < -MAX_OFFSET || minutes > MAX_OFFSET { return None }
+    return Some(OffsetDateTime{local: localOf(Time{sec: t.sec + minutes * 60, nsec: t.nsec}), offset: minutes})
+}
+
+// The same local date-time and offset.
+pub fn (o: OffsetDateTime) eq(p: &OffsetDateTime): bool { return o.local.eq(&p.local) && o.offset == p.offset }
+
+// The same instant, whatever the offsets.
+pub fn (o: OffsetDateTime) sameInstant(p: &OffsetDateTime): bool { return o.instant().eq(&p.instant()) }
+
+// By instant, then by offset (so 0 exactly when eq).
+pub fn (o: OffsetDateTime) cmp(p: &OffsetDateTime): int {
+    let c = o.instant().cmp(&p.instant())
+    if c != 0 { return c }
+    return o.offset.cmp(&p.offset)
+}
+
+// "2026-11-05T13:45:07.25+01:00"; an offset of 0 is "+00:00".
+pub fn (o: OffsetDateTime) toStr(): str {
+    let a = if o.offset < 0 { -o.offset } else { o.offset }
+    return o.local.toStr() + (if o.offset < 0 { "-" } else { "+" }) + pad(a / 60, 2) + ":" + pad(a % 60, 2)
+}
+
+// Parses a local date-time (as parseLocalDateTime) followed by "Z", "z", "+HH:MM", "+HHMM" or "+HH"
+// (or "-").
+pub fn parseOffsetDateTime(s: str): Option[OffsetDateTime] {
+    let n = len(s)
+    if n < 17 { return None }
+    var at = -1
+    var off = 0
+    let last = strByte(s, n - 1)
+    if last == 'Z' || last == 'z' {
+        at = n - 1
+    } else {
+        // the sign is after the time of day, which starts at 11
+        var i = n - 1
+        while i > 11 && strByte(s, i) != '+' && strByte(s, i) != '-' { i -= 1 }
+        if i <= 11 { return None }
+        at = i
+        let r = strSlice(s, i + 1, n)
+        var hh = -1
+        var mm = 0
+        if len(r) == 2 {
+            hh = digits(r, 0, 2)
+        } else if len(r) == 4 {
+            hh = digits(r, 0, 2)
+            mm = digits(r, 2, 4)
+        } else if len(r) == 5 && strByte(r, 2) == ':' {
+            hh = digits(r, 0, 2)
+            mm = digits(r, 3, 5)
+        } else {
+            return None
+        }
+        if hh < 0 || hh > 23 || mm < 0 || mm > 59 { return None }
+        off = hh * 60 + mm
+        if strByte(s, i) == '-' { off = -off }
+    }
+    match parseLocalDateTime(strSlice(s, 0, at)) {
+        Some(l) { return Some(OffsetDateTime{local: l, offset: off}) }
+        None { return None }
+    }
+}
+
+// The decimal value of s[a..b] if it is all ASCII digits (at most 18), else -1.
+fn digits(s: str, a: int, b: int): int {
+    if b <= a || b - a > 18 || b > len(s) { return -1 }
+    var v = 0
+    for i in a..b {
+        let c = strByte(s, i)
+        if c < '0' || c > '9' { return -1 }
+        v = v * 10 + int(c - '0')
+    }
+    return v
+}
+
+// ".25" for 250000000 nanoseconds; "" for none.
+fn fraction(ns: int): str {
+    if ns == 0 { return "" }
+    var s = pad(ns, 9)
+    var n = 9
+    while strByte(s, n - 1) == '0' { n -= 1 }
+    return "." + strSlice(s, 0, n)
 }
 
 fn pad(n: int, width: int): str {

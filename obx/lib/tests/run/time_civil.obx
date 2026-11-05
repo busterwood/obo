@@ -1,0 +1,100 @@
+// time: TimeOfDay, LocalDateTime and OffsetDateTime (bounds, ISO text, conversions, ordering).
+// expect: 00:00:00 23:59:59.999999999 13:45:07.25 none none none
+// expect: 13 45 7 250000000
+// expect: 09:05:00 09:05:30 09:05:30.1 09:05:30.000000001
+// expect: bad: 9:05 09-05 09:05: 09:05:3 09:05:30. 09:05:30.1234567890 24:00 09:60 09:05:60 09:05:3a
+// expect: 2026-11-05T13:45:07.25 2026-11-05T00:00:00 2026-11-05T23:59:00
+// expect: bad: 2026-02-30T00:00 2026-11-05X10:00 2026-11-05T
+// expect: 1793886307 250000000
+// expect: 1969-12-31T23:59:59.5
+// expect: -1 0 1
+// expect: 2026-11-05T13:45:07.25+01:00 2026-11-05T13:45:07.25-05:30 2026-11-05T13:45:07.25+00:00
+// expect: instant 1793882707 / 1793906107 / 1793886307
+// expect: 2026-11-05T12:45:07.25Z 2026-11-05T13:45:07.25+01:00 2026-11-06T02:15:07.25+13:30
+// expect: same true eq false cmp -1 1 0
+// expect: 2026-11-05T10:00:00+05:00 2026-11-05T10:00:00-02:00 2026-11-05T10:00:00+00:00 2026-11-05T10:00:00+05:00 2026-11-05T10:00:00.5+00:00
+// expect: bad: 2026-11-05T10:00 2026-11-05T10:00+5 2026-11-05T10:00+24:00 2026-11-05T10:00+05:60 2026-11-05T10:00+05-00 2026-11-05T10:00Q
+// expect: offsets ok none none
+// expect: valid true false false
+
+import "time"
+
+fn tod(s: str): str {
+    match time.parseTimeOfDay(s) {
+        Some(t) { return t.toStr() }
+        None { return "none" }
+    }
+}
+
+fn odt(s: str): str {
+    match time.parseOffsetDateTime(s) {
+        Some(o) { return o.toStr() }
+        None { return "none" }
+    }
+}
+
+fn badAll(xs: &[]str, f: fn(str): str): str {
+    var out = "bad:"
+    for x in xs {
+        if f(x) == "none" { out = out + " " + x } else { out = out + " [" + x + " parsed]" }
+    }
+    return out
+}
+
+fn optTod(o: Option[time.TimeOfDay]): str {
+    match o {
+        Some(t) { return t.toStr() }
+        None { return "none" }
+    }
+}
+
+fn ldt(s: str): str {
+    match time.parseLocalDateTime(s) {
+        Some(l) { return l.toStr() }
+        None { return "none" }
+    }
+}
+
+fn main() {
+    println(optTod(time.timeOfDay(0, 0, 0, 0)) + " " + optTod(time.timeOfDay(23, 59, 59, 999999999)) + " " +
+        optTod(time.timeOfDay(13, 45, 7, 250000000)) + " " + optTod(time.timeOfDay(24, 0, 0, 0)) + " " +
+        optTod(time.timeOfDay(1, 60, 0, 0)) + " " + optTod(time.timeOfDay(1, 0, 0, 1000000000)))
+    let t = time.timeOfDay(13, 45, 7, 250000000).unwrap()
+    println(t.hour().toStr() + " " + t.minute().toStr() + " " + t.second().toStr() + " " + t.nano().toStr())
+    println(tod("09:05") + " " + tod("09:05:30") + " " + tod("09:05:30.100") + " " + tod("09:05:30.000000001"))
+    println(badAll(&["9:05", "09-05", "09:05:", "09:05:3", "09:05:30.", "09:05:30.1234567890", "24:00", "09:60",
+        "09:05:60", "09:05:3a"], tod))
+
+    let d = time.parseDate("2026-11-05").unwrap()
+    let l = time.localDateTime(d, t)
+    println(l.toStr() + " " + ldt("2026-11-05 00:00") + " " + ldt("2026-11-05t23:59"))
+    println(badAll(&["2026-02-30T00:00", "2026-11-05X10:00", "2026-11-05T"], ldt))
+    let u = l.atUtc()
+    println(u.sec.toStr() + " " + u.nsec.toStr())
+    println(time.localOf(time.Time{sec: -1, nsec: 500000000}).toStr())
+    let a = time.parseLocalDateTime("2026-11-05T10:00").unwrap()
+    let b = time.parseLocalDateTime("2026-11-05T10:00:00.000000001").unwrap()
+    println(a.cmp(&b).toStr() + " " + a.cmp(&a).toStr() + " " + b.cmp(&a).toStr())
+
+    let p1 = l.withOffset(60).unwrap()
+    let p2 = l.withOffset(-330).unwrap()
+    let p0 = l.withOffset(0).unwrap()
+    println(p1.toStr() + " " + p2.toStr() + " " + p0.toStr())
+    println("instant " + p1.instant().sec.toStr() + " / " + p2.instant().sec.toStr() + " / " + p0.instant().sec.toStr())
+    let i = p1.instant()
+    println(time.localOf(i).toStr() + "Z " + i.atOffset(60).unwrap().toStr() + " " + i.atOffset(810).unwrap().toStr())
+    let q = i.atOffset(810).unwrap()
+    println("same " + p1.sameInstant(&q).toStr() + " eq " + p1.eq(&q).toStr() + " cmp " + p1.cmp(&q).toStr() + " " +
+        q.cmp(&p1).toStr() + " " + p1.cmp(&p1).toStr())
+    println(odt("2026-11-05T10:00+05:00") + " " + odt("2026-11-05T10:00-0200") + " " + odt("2026-11-05T10:00Z") + " " +
+        odt("2026-11-05 10:00:00+05") + " " + odt("2026-11-05T10:00:00.500z"))
+    println(badAll(&["2026-11-05T10:00", "2026-11-05T10:00+5", "2026-11-05T10:00+24:00", "2026-11-05T10:00+05:60",
+        "2026-11-05T10:00+05-00", "2026-11-05T10:00Q"], odt))
+    let ok = l.withOffset(time.MAX_OFFSET).isSome() && l.withOffset(-time.MAX_OFFSET).isSome()
+    let n1 = l.withOffset(1440).isNone()
+    let n2 = u.atOffset(-1440).isNone()
+    println("offsets " + (if ok { "ok" } else { "BAD" }) + " " + (if n1 { "none" } else { "BAD" }) + " " +
+        (if n2 { "none" } else { "BAD" }))
+    println("valid " + d.valid().toStr() + " " + time.Date{year: 2025, month: 2, day: 29}.valid().toStr() + " " +
+        time.Date{year: 2026, month: 13, day: 1}.valid().toStr())
+}
