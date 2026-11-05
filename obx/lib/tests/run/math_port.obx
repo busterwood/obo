@@ -1,0 +1,35 @@
+// The runtime's own math (compiler/obxmath.inc, musl) and the single-instruction functions:
+// values, signs of zeros, NaN and infinity, round/copySign/fma.
+// expect: 8 0.541324854612918 9.999950000333332e-6 1.0000000000000002 -0 -0 0 -1 3 -3 2 2 4 -4
+// expect: inf -inf NaN 1 -1 0 -0 inf NaN
+// expect: 0.8414709848078965 0.5403023058681398 1.5574077246549023 0.7853981633974483 2.718281828459045 1024
+// expect: 0.46211715726000974 1.1752011936438014 5 3 -2 0.3010299956639812 3
+// expect: 3 0
+import "math"
+
+fn f(x: float): float { return x }
+
+fn main() {
+    let one = f(1.0)
+    let zero = f(0.0)
+    let inf = math.inf()
+    println(
+        f(3.0).exp2().toStr() + " " + f(1.0).expm1().ln().toStr() + " " + f(0.00001).ln1p().toStr() + " " +
+        one.fma(one, 2.220446049250313e-16).toStr() + " " +
+        f(-0.3).round().toStr() + " " + f(-0.4).ceil().toStr() + " " + f(0.4).floor().toStr() + " " +
+        f(-0.5).round().toStr() + " " + f(2.5).round().toStr() + " " + f(-2.5).round().toStr() + " " +
+        f(2.5).roundEven().toStr() + " " + f(1.5).roundEven().toStr() + " " + f(3.5).roundEven().toStr() + " " +
+        f(-3.5).roundEven().toStr())
+    println(
+        inf.toStr() + " " + (-inf).toStr() + " " + (zero / zero).toStr() + " " + one.copySign(-zero).abs().toStr() + " " +
+        one.copySign(-zero).copySign(-one).toStr() + " " + zero.copySign(one).toStr() + " " + zero.copySign(-one).toStr() + " " +
+        inf.exp().toStr() + " " + (-one).sqrt().toStr())
+    println(
+        one.sin().toStr() + " " + one.cos().toStr() + " " + one.tan().toStr() + " " + one.atan().toStr() + " " +
+        one.exp().toStr() + " " + f(2.0).pow(10.0).toStr())
+    println(
+        f(0.5).tanh().toStr() + " " + one.sinh().toStr() + " " + f(3.0).hypot(4.0).toStr() + " " +
+        f(27.0).cbrt().toStr() + " " + f(-8.0).cbrt().toStr() + " " + f(2.0).log10().toStr() + " " +
+        f(8.0).log2().toStr())
+    println(f(7.0).mod(4.0).toStr() + " " + zero.mod(5.0).toStr())
+}
