@@ -851,6 +851,24 @@ a record literal passed as an argument is still built in a temporary and
 loaded from it; a record of 3 or 4 eightbytes returned through the hidden
 pointer is still built then copied.
 
+2026-11-05, the eighteenth performance step (branch `perf18`: better
+register allocation, cheaply; investigated, nothing built, shelved). Profile of
+the native-built compiler's self-build (4,388M instructions, sampled): stack
+stores 7.4% of instructions, stack loads 5.6%, callee-saved pushes in
+prologues 1.85% and their restores about 2%, spread thinly over many functions
+(no function above 2%). Static: 1,314 functions, 589 (45%) save all five of
+`rbx r12-r15`, so the pressure is on the callee-saved set (Gen.walk's `idx`
+parameter lives in its slot and is reloaded each use). Interprocedural register
+use would need callees whose clobbers are known: only 55 of 1,241 functions
+are leaves (the small ones are inlined) and 761 of 25,358 call sites (3%) reach
+one; every other callee calls something, so its summary is "all". Not built.
+Raising the thresholds that open a new callee-saved register (48/32 to 64/48,
+96/80) moved the self-build by -0.14% and +0.06% instructions: noise. What
+would pay is splitting a long range around its cold part (a guard's early
+return should not push five registers: shrink-wrapping, or the sites
+extended to callee-saved registers); both change the prologue/epilogue
+structure (`placeCode`, `epiJmps`) and were not tried.
+
 2026-11-04, the seventeenth performance step (branch `perf17`: the range
 facts of `loops.obx` in functions without a loop; shelved, not merged). The
 rule on the branch: a function with no loop runs the facts walk when the
