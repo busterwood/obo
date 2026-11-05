@@ -233,6 +233,17 @@ compiler begin with guards. The sampled profile (4,360M instructions) puts
 the whole of the callee-saved pushes of those functions' early exits at
 about 0.4% of the instructions (about 1% with the frame setup and
 restores); the measured gain is that.
+- **Compiling zoxide** had become 18% slower with perf15 (1,049M to 1,239M
+instructions on the frozen inputs). The cause was zoxide's generated init
+functions: 1,347 `b.add("...")` calls, the loop of `StrBuf.add` inlined at
+up to 229 of them per function, two hoisted string locals for each loop,
+and a register allocator whose check of a register scanned every local
+already given one. Two fixes: `allocRegs` keeps the given locals per
+register and `meets` builds no arrays (byte-identical code; zoxide 1,234M
+to 1,133M, the compiler -0.3%), and `zoxide_gen.py` emits one `b.add` per
+run of literal text (203 calls instead of 1,347; every rendering
+unchanged). Together, compiling zoxide from main: 1,234M to 533M
+instructions (-57%), and its binary 594 KB to 352 KB.
 
 **The runtime's memcpy.** See "Native backend progress".
 
