@@ -922,11 +922,90 @@ fn makeDec(neg: bool, c: U256, exp: int, dscale: int): Result[Decimal, DecError]
     return Ok(Decimal{coef: x, exp: e, dscale: dscale, neg: neg})
 }
 
-// The number of decimal digits of x (0 for 0).
+// The number of decimal digits of x (0 for 0): a binary search over the
+// powers of ten (one- to four-digit values first), written out as compares
+// with constants, so no table load and no loop. It is on every path: makeDec,
+// add, mul, cmp, quantize, parse.
 fn digits(x: u128): int {
-    var n = 0
-    while n < 39 && x >= pow10(n) { n += 1 }
-    return n
+    if x < 10 { return b2i(x != 0) }
+    if x < 10000 {
+        if x < 1000 {
+            if x < 100 { return 2 }
+            return 3
+        }
+        return 4
+    }
+    if x < 10000000000000000000000 {
+        if x < 10000000000000 {
+            if x < 1000000000 {
+                if x < 10000000 {
+                    if x < 1000000 {
+                        if x < 100000 { return 5 }
+                        return 6
+                    }
+                    return 7
+                }
+                if x < 100000000 { return 8 }
+                return 9
+            }
+            if x < 100000000000 {
+                if x < 10000000000 { return 10 }
+                return 11
+            }
+            if x < 1000000000000 { return 12 }
+            return 13
+        }
+        if x < 1000000000000000000 {
+            if x < 10000000000000000 {
+                if x < 1000000000000000 {
+                    if x < 100000000000000 { return 14 }
+                    return 15
+                }
+                return 16
+            }
+            if x < 100000000000000000 { return 17 }
+            return 18
+        }
+        if x < 100000000000000000000 {
+            if x < 10000000000000000000 { return 19 }
+            return 20
+        }
+        if x < 1000000000000000000000 { return 21 }
+        return 22
+    }
+    if x < 10000000000000000000000000000000 {
+        if x < 1000000000000000000000000000 {
+            if x < 10000000000000000000000000 {
+                if x < 1000000000000000000000000 {
+                    if x < 100000000000000000000000 { return 23 }
+                    return 24
+                }
+                return 25
+            }
+            if x < 100000000000000000000000000 { return 26 }
+            return 27
+        }
+        if x < 100000000000000000000000000000 {
+            if x < 10000000000000000000000000000 { return 28 }
+            return 29
+        }
+        if x < 1000000000000000000000000000000 { return 30 }
+        return 31
+    }
+    if x < 100000000000000000000000000000000000 {
+        if x < 1000000000000000000000000000000000 {
+            if x < 100000000000000000000000000000000 { return 32 }
+            return 33
+        }
+        if x < 10000000000000000000000000000000000 { return 34 }
+        return 35
+    }
+    if x < 10000000000000000000000000000000000000 {
+        if x < 1000000000000000000000000000000000000 { return 36 }
+        return 37
+    }
+    if x < 100000000000000000000000000000000000000 { return 38 }
+    return 39
 }
 
 // ---- accessors
