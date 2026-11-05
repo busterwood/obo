@@ -1,0 +1,34 @@
+// tds: sp_executesql's declaration list takes only well-formed type names and parameter names.
+// expect: ok: int bigint decimal(10, 2) numeric varchar(max) nvarchar(40) datetime2(3) time binary(16)
+// expect: refused: int(1); DROP TABLE t; --) | int(5) | int, @x int | varchar(10) collate x | decimal(10,2)) | nvarchar('x') | big int | datetime2(3)(4) | int -- | xml(1)
+// expect: names: true true true false false false false false
+// expect: executeSql: refused
+
+import "tds"
+import "strings"
+
+fn main() {
+    let c = tds.noCollation()
+    var ok: []str = []
+    for t in ["int", "bigint", "decimal(10, 2)", "numeric", "varchar(max)", "nvarchar(40)", "datetime2(3)", "time", "binary(16)"] {
+        if tds.typeInfoOf(t, &c).isOk() { append(mut &ok, t) } else { append(mut &ok, "[" + t + " refused]") }
+    }
+    println("ok: " + strings.join(&ok, " "))
+    var no: []str = []
+    for t in ["int(1); DROP TABLE t; --)", "int(5)", "int, @x int", "varchar(10) collate x", "decimal(10,2))", "nvarchar('x')",
+              "big int", "datetime2(3)(4)", "int --", "xml(1)"] {
+        if tds.typeInfoOf(t, &c).isErr() { append(mut &no, t) } else { append(mut &no, "[" + t + " accepted]") }
+    }
+    println("refused: " + strings.join(&no, " | "))
+    var ns: []str = []
+    for n in ["@p1", "@total_2", "@a#$@", "@", "p1", "@x int", "@x;--", "@" + strings.padLeft("", 128, 'a')] {
+        append(mut &ns, tds.validParamName(&n).toStr())
+    }
+    println("names: " + strings.join(&ns, " "))
+    var p = tds.intParam(1)
+    p.name = "@x int; DROP TABLE t; --"
+    match tds.executeSql("SELECT 1", &[p], "\0\0\0\0\0\0\0\0", &c) {
+        Ok(b) { println("executeSql: accepted") }
+        Err(e) { println("executeSql: refused") }
+    }
+}

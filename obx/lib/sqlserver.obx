@@ -421,8 +421,8 @@ fn (c: mut &Conn) send(sql: str, args: &[Value], outs: &[Out], w: Where): Result
     var ps: []tds.Param = []
     for i in 0..len(args) { append(mut &ps, try paramOf(&args[i], "@p" + (i + 1).toStr(), &c.s.collation)) }
     for o in outs {
-        if len(o.name) < 2 || o.name[0] != '@' {
-            return Err(sqldialect.inputError("an output parameter's name must start with @"))
+        if !tds.validParamName(&o.name) {
+            return Err(sqldialect.inputError("an output parameter's name must be @ and 1 to 127 letters, digits or _ @ # $"))
         }
         var p = try tds.nullParam(o.sqlType, &c.s.collation)
         p.name = o.name

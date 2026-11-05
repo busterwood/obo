@@ -757,6 +757,18 @@ pub fn typeInfoOf(t: str, coll: &Collation): Result[str, Error] {
         for a in strings.split(low[open + 1..len(low) - 1], ",") { append(mut &args, trim(a)) }
     }
     let bad = sqldialect.inputError("a type that parameters cannot have yet: " + t)
+    // the text goes into sp_executesql's declaration list as it is: only a type name and its
+    // numbers, never anything the server would read as more SQL
+    for i in 0..len(low) {
+        let c = strByte(low, i)
+        if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '(' || c == ')' || c == ',' || c == ' ') {
+            return Err(bad)
+        }
+    }
+    let sized = base == "decimal" || base == "numeric" || base == "time" || base == "datetime2" ||
+                base == "datetimeoffset" || base == "char" || base == "varchar" || base == "nchar" ||
+                base == "nvarchar" || base == "binary" || base == "varbinary"
+    if open >= 0 && !sized { return Err(bad) }
     var b: []byte = []
     let n0 = if len(args) > 0 { parseInt(args[0]) } else { None }
     match base {
@@ -845,10 +857,26 @@ pub fn executeSql(sql: str, params: &[Param], txn: str, coll: &Collation): Resul
     let ds = try textParam(decl.toStr(), coll)
     rpcParam(mut &b, &ds)
     for p in params {
-        if len(p.name) == 0 || len(p.name) > 127 { return Err(sqldialect.inputError("a parameter's name must be 1 to 127 characters")) }
+        if !validParamName(&p.name) {
+            return Err(sqldialect.inputError("a parameter's name must be @ and 1 to 127 letters, digits or _ @ # $"))
+        }
         rpcParam(mut &b, &p)
     }
     return Ok(strFromBytes(&b))
+}
+
+// "@" then 1 to 127 ASCII letters, digits or _ @ # $ (a regular identifier, which the name is
+// declared as in sp_executesql's parameter list).
+pub fn validParamName(n: &str): bool {
+    if len(n) < 2 || len(n) > 128 || strByte(n, 0) != '@' { return false }
+    for i in 1..len(n) {
+        let c = strByte(n, i)
+        if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '@' ||
+             c == '#' || c == '$') {
+            return false
+        }
+    }
+    return true
 }
 
 fn rpcParam(b: mut &[]byte, p: &Param) {

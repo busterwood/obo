@@ -67,7 +67,7 @@
 // expect: rpc stmt: 00 00 e7 40 1f 09 04 10 00 34 14 00 SELECT @p1
 // expect: rpc params: 00 00 e7 40 1f 09 04 10 00 34 42 00 @p1 bigint, @o nvarchar(5) OUTPUT
 // expect: rpc p1, o: 03 40 00 70 00 31 00 00 26 08 08 07 00 00 00 00 00 00 00 02 40 00 6f 00 01 e7 0a 00 09 04 10 00 34 ff ff
-// expect: rpc unnamed: error 1000: a parameter's name must be 1 to 127 characters
+// expect: rpc unnamed: error 1000: a parameter's name must be @ and 1 to 127 letters, digits or _ @ # $
 // expect: tm begin: 16 00 00 00 12 00 00 00 02 00 00 00 00 00 00 00 00 00 01 00 00 00 05 00 00 00 | commit: 07 00 00 00 | rollback: 08 00 00 00
 // expect: float bits: 0000000000000000 8000000000000000 3ff0000000000000 c004000000000000 3fb999999999999a 7fefffffffffffff 0010000000000000 0000000000000001 8000000000000bdc 419d6f3454800000
 // expect: guid: 6F9619FF-8B86-D011-B42D-00C04FC964FF | back ff 19 96 6f 86 8b 11 d0 b4 2d 00 c0 4f c9 64 ff | bad true true
