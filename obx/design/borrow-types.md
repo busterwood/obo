@@ -13,7 +13,8 @@ receiver, a `let` or a result, and nothing else. That rule makes the checker
 simple and keeps lifetimes out of the language, but three common things cannot
 be written without either copying or a callback:
 
-- **Splitting without counting.** `strings.splitOn(line, ",")` returns `[]str`:
+- **Splitting without counting.** Splitting a line into `[]str` (as strings'
+  split did before this work):
   every piece takes a reference on the line's block and gives it back when the
   array is dropped. A `[]&str` of views would cost nothing per piece, but an
   array element cannot be a borrow.
@@ -357,7 +358,7 @@ possible.
   as the *escape hatch* only (D6): the defaults here (copy for borrow-class
   sources, borrow otherwise, join for several) cover every example above.
 - **Status quo plus counting inference.** Keep borrows second class and make
-  `splitOn` cheaper: the compiler could prove a `[]str` of substrings never
+  a split into `[]str` cheaper: the compiler could prove a `[]str` of substrings never
   outlives the line and drop the counting. Fragile (any store defeats it),
   invisible to users, and does nothing for tokenizers or iterators. Measured
   gain is the same ceiling as section 10's (only the counting goes).
@@ -434,7 +435,7 @@ Measured (bench in the prototype session: a 20-field line split 200 000
 times, every piece's length summed; `perf stat`, user instructions and best of
 three for cycles):
 
-| backend | splitOn (`[]str`) | splitRef (`[]&str`) | instructions | cycles |
+| backend | split into `[]str` | splitRef (`[]&str`) | instructions | cycles |
 |---|---|---|---|---|
 | C | 1 808.6 M instr, 380.6 M cycles | 1 576.8 M instr, 338.0 M cycles | -12.8% | -11.2% |
 | native | 1 784.2 M instr, 421.4 M cycles | 1 592.0 M instr, 322.9 M cycles | -10.8% | -23.4% |
@@ -502,22 +503,25 @@ compiler; the rest is the checker's root tracking, spread over the front end
 result may hold borrows and making holes only for bare type parameters took
 it from about +0.9% to +0.5%).
 
-**Views API** (lib/strings.obx, experimental): `splitViews`, `fieldsViews`,
-`lines`, `fieldsIter`. A word-statistics program over text100.txt (100 MB;
+**Views API** (lib/strings.obx): first added beside the counted functions,
+then made the default (below): `split`, `splitN`, `fields` and `cut` give
+views, `owned` keeps them, `lines` and `fieldsIter` iterate. These numbers
+were taken with the first version, as `[]str` against `[]&str` pieces. A
+word-statistics program over text100.txt (100 MB;
 lines, words, the longest word, lines whose third word is "omega"), best of 7:
 
 | version | C instr | C cycles | native instr | native cycles |
 |---|---|---|---|---|
-| `splitOn` + `fields` | 7 313 M | 2 440 M | 8 055 M | 2 063 M |
-| `lines` + `fields` | 4 481 M | 1 682 M | 6 503 M | 1 791 M |
-| `lines` + `fieldsViews` | 3 650 M | 1 393 M | 5 681 M | 1 562 M |
+| counted split + counted fields | 7 313 M | 2 440 M | 8 055 M | 2 063 M |
+| `lines` + counted fields | 4 481 M | 1 682 M | 6 503 M | 1 791 M |
+| `lines` + `fields` (views) | 3 650 M | 1 393 M | 5 681 M | 1 562 M |
 | change, first to last | -50.1% | -42.9% | -29.5% | -24.3% |
 
-Part of the `lines` step is `memchr` (`strFindByte`) against `splitOn`'s
-byte loop; `fields` to `fieldsViews` alone is -18.5% / -17.2% (C) and
+Part of the `lines` step is `memchr` (`strFindByte`) against the counted
+split's byte loop; counted to view `fields` alone is -18.5% / -17.2% (C) and
 -12.6% / -12.8% (native).
 
-**zoxide import** (cmd/zoxide.obx, `strings.lines` instead of `splitOn`; the
+**zoxide import** (cmd/zoxide.obx, `strings.lines` instead of a counted split; the
 pieces of a line are views until the path is kept): 300 000 z-format lines,
 best of 5, same database: -10.8% instructions / -9.4% cycles (C), -6.5% /
 -5.7% (native).
@@ -545,11 +549,55 @@ which is what views would give them.
 - A plain borrow as the result of an `if` or `match` expression stays an
   error; only values holding borrows get the join.
 - D8 also forbids a drop method on a type with a `borrow` type parameter.
-- `splitViews` takes its separator as `str`: a string literal is not a view
-  where `&str` is expected (it would need `&"..."`).
+- (Superseded below: string literals are now accepted as `&str`, and the
+  separators are `&str`.)
 - `X` in `enumerate[I: borrow + Iter[X], X: borrow]` is not inferred from
   the constraint.
 
 **Left.** D6 (an override annotation) when real code needs one; inferring
 type arguments named only in constraints; library adapters (`enumerate`) if
 wanted; a `lines` that also drops a `"\r"`; the remaining compile cost.
+
+### Follow-up: literals as views, views by default (2026-11-05)
+
+Two changes approved after the first round.
+
+**A string literal is a `&str` where one is expected** (SPEC 4.1, 10). Its
+bytes are static, so it has no root (`strLit` in check.obx: the literal's
+header as a `&str` with root `R_FREE`); a `str` constant counts as a literal.
+It may be passed, stored in a value holding borrows, joined with any root
+(`if c { Some(&a) } else { Some("none") }`) and returned. A function with no
+borrowed parameter may now return a borrow or a value holding borrows when
+every one it returns is static (`fn kind(k: int): &str { return "word" }`);
+otherwise "cannot return a borrow of 'local': kindName has no borrowed
+parameter, so its result may only borrow static strings (literals and
+constants)". A `mut &` result still needs exactly one `mut &` parameter.
+Tests: lib/tests/run/borrow_types_literal.obx, error tests
+borrow_types_static_result, borrow_types_static_mut and borrow_types_no_source
+(rewritten: `[]&str` with only static pieces is now a valid sourceless
+result).
+
+**Views are strings' default.** `split(s: &str, sep: &str): []&str` replaces
+the counted split and the experimental view split; `splitN` (n < 0: all) and
+`fields` return views; `Cut`'s `before` and `after` are views; `owned(&pieces):
+[]str` keeps an array past its text; `lines` and `fieldsIter` stay. std's
+`split(s: str, sep: byte): []str` (the prelude's split at a byte) is a
+different function and is unchanged. Callers converted: cmd/zoxide.obx,
+cmd/httpload.obx, the lib tests and test support, redteam round 2.
+
+What the rules made awkward:
+
+- A text replaced by a piece of itself (`match strings.cut(&out, sep) {
+  Some(x) { out = x.before + ... } }`) is rejected: `x` freezes `out` for the
+  arm. Two places in the test support now slice by index instead.
+- Pieces kept in a loop body freeze the text for the rest of the block, so a
+  parser that splits a header and then advances its cursor (`s = s[i + 4..]`)
+  needs the pieces in an inner block (lib/tests/support/srvtest.obx).
+- Splitting a temporary (`strings.split(&io.read(p).unwrap(), "\n")` in a
+  `for` header) needs the text bound to a `let` first.
+- `join` takes `&[str]`, so joining views goes through `owned` (or a loop).
+  A `join` over `&[]&str` would need a second function or a generic one.
+- A view does not get a count, but converting it to `str` (an argument of a
+  `str` parameter, std's `indexOf`) takes one; strings' own functions use the
+  `strFind` intrinsic, which reads the header without a count.
+

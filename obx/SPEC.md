@@ -190,6 +190,13 @@ converts to `str` where a `str` is expected (an argument, a stored value),
 which takes a count of the same bytes. `mut &str` borrows a `str` variable or
 field for writing, as for any `T`.
 
+A string literal, or a `str` constant (section 5.2), where a shared `&str` is
+expected (an argument, a typed `let`, a field of a record literal, an
+`Option` or `Result` payload, an array element, a `return`) is a view of
+static bytes. It has **no root**: it may be passed, kept in a value that holds
+borrows, joined with any root, and returned from any function
+(`fn kind(k: int): &str { return "word" }`). Elsewhere it is a `str`.
+
 All primitive types are copy types.
 
 ### 4.2 Arrays
@@ -807,6 +814,8 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    field or element of such a value has that value's roots. Inside a
    function, what a parameter that holds borrows (or borrows such a value)
    holds is a root of its own, which messages call "what 'p' borrows".
+   A string literal or `str` constant used as a `&str` has no root (section
+   4.1): it adds none to a join and satisfies every rule below.
 3. **Calls.** While a call's arguments are evaluated, the places it has
    already borrowed, or will move, are held, and so are the roots of a value
    holding borrows that it was already passed: a later argument, at any depth of
@@ -827,8 +836,11 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    it. A `for x in xs` loop freezes `xs` the same way for the loop body, and
    an iterating `for` freezes the iterator's roots.
 5. **Results.** A function whose result holds borrows has as its *sources*
-   the parameters (and receiver) that are or hold borrows; it must have one,
-   and a result that is a plain borrow exactly one. Every `return` (and every
+   the parameters (and receiver) that are or hold borrows. A result that is a
+   plain borrow has at most one, and a `mut &` result exactly one, a `mut &`
+   parameter. A function without sources may return only static borrows
+   (string literals and constants), and its result has no root. Every
+   `return` (and every
    `try` that returns an `Err` holding borrows) must be rooted at its
    sources: at a borrowed parameter itself, written `return &p.f` or
    `return mut &p.f` (or a borrow returned by such a call), or, when that

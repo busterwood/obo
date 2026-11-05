@@ -593,7 +593,7 @@ impl<'a> Iterator for Lexer<'a> { type Item = Token<'a>; fn next(&mut self) -> O
 The obx version names no lifetime; the price is the limits listed in 6.3
 (no heap containers of views, no lending iterators, no mixed sources) and
 lexical freezes. Measured gain: a word-statistics program over 100 MB using
-`strings.lines` and `fieldsViews` instead of `splitOn` and `fields` runs
+`strings.lines` and view-returning `fields` instead of counted pieces runs
 -50% instructions (C backend) and -30% (native).
 
 ## 7. Generics and constraints versus traits
@@ -914,8 +914,8 @@ deadlocks. Rust achieves this with `#[track_caller]`.
 ```obx
 let s = "hello, world"
 let w = s[7..]                      // "world", shares s's bytes
-let parts = strings.splitOn(s, ", ")
-println(strings.join(&parts, "|"))  // hello|world
+let parts = strings.split(&s, ", ")                   // views of s
+println(strings.join(&strings.owned(&parts), "|"))   // hello|world (join takes &[str])
 ```
 
 ```rust
@@ -1292,7 +1292,7 @@ handles.
 Programs compiled and run at `624b22f` with `OBX_LIB=obx/lib`
 `obx/compiler/out/obxc` (built from the C seed with `compiler/build.sh`):
 records, closed types, match, `try` and `Result`, `Map`, generics
-with `Ord`, closures, a mutable capture, substrings, `strings.splitOn`/`join`,
+with `Ord`, closures, a mutable capture, substrings, `strings.split`/`join`,
 decimals and floats, `const` tables, `once` globals, a `drop` method,
 destructuring, extern `getpid`/`strlen`, and a task program with `Shared`
 (also native). Programs that the compiler rejected, with the message quoted
