@@ -8,23 +8,19 @@ obx builds a program in two ways:
 - **via C**: `obxc`, which writes C and runs `gcc -O2`.
 
 Both are built from the same IR and must behave identically; the gate checks
-that on 1,616 programs. This page measures what each costs. Measured on 3
-November 2026 at `2ce4860`, after the fifth native performance pass
-(inlining in the IR), on a quiet machine. The loop and array rows, the
-compiler's `--native` cost and the sixth pass's row are from the sixth
-native performance pass (loops; branch `perf6`), measured the same day; the
-blocking-call rows are from concurrency stage C1c (branch `c1c`), the sieve
-row and the seventh pass's row from the seventh (branch `sieve`), the
-eighth pass's row from the eighth (branch `perf8`) and the regex table from
-regex phase R2 (branch `r2`), all on 3 November. The compiler table, the
-binary sizes and the HTTP tables were measured again on 4 November. The numbers are
+that on every test program. This page measures what each costs. Every table
+was measured again on 5 November 2026 at `d14a04f` (the math functions, the
+borrow-class types and TDS stage T2 all merged), on a quiet machine, unless
+it says otherwise. The native backend's progress tables, the passes tried
+and shelved, the Math section's before-and-after figures and the obo record
+are history, each with its own date or commit. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
 
 ## Host and method
 
 - AMD Ryzen 7 8745HS (16 threads), WSL2, Linux 6.18, gcc 13, glibc 2.39.
-- Wall clock, best of N runs (11 for the benchmarks, 9 for eza and the
-  compiler), warm cache, output to `/dev/null`. Timings vary by 5–10%
+- Wall clock, best of N runs (11 for the benchmarks and the compiler, 9
+  for eza), warm cache, output to `/dev/null`. Timings vary by 5–10%
   between runs on this machine; below about 50 ms, process start-up is part
   of the figure.
 - Every row checks its outputs first: both builds of each benchmark print the
@@ -37,19 +33,24 @@ host-dependent: use them to compare the columns, not as portable constants.
 
 | benchmark | via C | native | native/C | what it does |
 |---|---:|---:|---:|---|
-| fib | 331 ms | 330 ms | 1.00 | recursive calls |
-| loop | 267 ms | 213 ms | 0.80 | two overflow-checked operations per iteration |
-| array | 104 ms | 91 ms | 0.88 | checked indexing |
-| alloc | 122 ms | 65 ms | 0.54 | 20 million records allocated and freed |
-| lists | 36 ms | 31 ms | 0.85 | linked list build, sum, drop |
-| strings | 76 ms | 47 ms | 0.62 | concatenation and `toStr` |
-| trees | 24 ms | 20 ms | 0.86 | binary trees |
-| tokens | 16 ms | 12 ms | 0.74 | byte scanning and hashing |
-| sieve | 182 ms | 127 ms | 0.70 | the sieve of Eratosthenes to 10 million, ten rounds |
-| maps | 256 ms | 351 ms | 1.37 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
+| fib | 325 ms | 400 ms | 1.23 | recursive calls (native: code placement, see below) |
+| loop | 265 ms | 212 ms | 0.80 | two overflow-checked operations per iteration |
+| array | 102 ms | 90 ms | 0.88 | checked indexing |
+| alloc | 122 ms | 61 ms | 0.50 | 20 million records allocated and freed |
+| lists | 36 ms | 29 ms | 0.82 | linked list build, sum, drop |
+| strings | 78 ms | 42 ms | 0.54 | concatenation and `toStr` |
+| trees | 24 ms | 19 ms | 0.78 | binary trees |
+| tokens | 18 ms | 12 ms | 0.63 | byte scanning and hashing |
+| sieve | 170 ms | 116 ms | 0.68 | the sieve of Eratosthenes to 10 million, ten rounds |
+| maps | 246 ms | 301 ms | 1.22 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
+
+Native fib runs the same 4,305M instructions as after the nineteenth pass,
+in 1,855M cycles instead of the 1,550M it took then: the code placement
+described below (the runtime and the code before fib changed size with the
+math functions), not more work.
 
 The sieve also has a hand-written C version with no checks
-(`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 135 ms in
+(`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 125 ms in
 the same run. Native obx runs as many instructions as it (1,414M) and about
 as many cycles (497M against 508M, best of 11 under `perf stat`); through C
 obx runs 1,428M and 741M, because gcc keeps the overflow and bounds checks
@@ -61,7 +62,7 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   the loop). Its freestanding runtime has a size-class
   allocator with no locks or libc bookkeeping, and the string and index
   checks are generated inline.
-- **Tight loops are now native's too** (loop, array; fib is level). Since
+- **Tight loops are now native's too** (loop, array; fib was level until code placement moved it, below). Since
   the sixth pass the native backend tests at the bottom of loops and
   aligns their bodies, reads array headers once per loop, and drops the
   bounds and overflow checks that conditions, passed checks and induction
@@ -114,8 +115,7 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
 ## Regex
 
 `python3 obx/bench/regex/bench.py -n 7` ([obx/bench/regex/](obx/bench/regex/bench.py)),
-the benchmark set of [design/regex.md](obx/design/regex.md) section 4, at
-the end of phase R2 (branch `r2`, 3 November 2026). The corpus is 3.2 MB written by
+the benchmark set of [design/regex.md](obx/design/regex.md) section 4. The corpus is 3.2 MB written by
 `gen_corpus.py` from a fixed seed (prose with the names the patterns look
 for, a log, C-like source; ASCII). Each driver times its own searches after
 reading the file: the best of 5 searches, best of 7 runs, in ms. "Matches"
@@ -127,21 +127,21 @@ reference point, not a like-for-like figure.
 
 | pattern | matches | obx native | obx via C | Go | Rust | rg |
 |---|---:|---:|---:|---:|---:|---:|
-| `Sherlock Holmes` | 926 | 0.16 | 0.21 | 0.47 | 0.08 | 1.6 |
-| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 1.34 | 0.94 | 134.48 | 0.42 | 2.8 |
-| `\w+` (all matches) | 669,532 | 68.89 | 38.14 | 136.78 | 17.23 | 41.0 |
-| `(?i)sherlock` | 4,280 | 1.13 | 0.81 | 70.88 | 0.46 | 3.2 |
-| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 0.22 | 0.12 | 78.55 | 0.09 | 1.8 |
-| `(?m)^ERROR .*timeout$` | 197 | 0.28 | 0.33 | 31.83 | 0.59 | 2.0 |
-| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 4.67 | 3.33 | 72.66 | 1.28 | 7.8 |
-| `(a*)*b` over 100,000 `a`s | 0 | 0.00 | 0.00 | 3.33 | 0.00 | 1.6 |
+| `Sherlock Holmes` | 926 | 0.16 | 0.20 | 0.46 | 0.07 | 1.6 |
+| `Sherlock\|Holmes\|Watson\|Irene` | 7,350 | 1.35 | 0.91 | 133.08 | 0.41 | 2.7 |
+| `\w+` (all matches) | 669,532 | 61.31 | 36.87 | 138.18 | 16.76 | 39.8 |
+| `(?i)sherlock` | 4,280 | 1.11 | 0.80 | 69.94 | 0.45 | 3.1 |
+| `[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}` | 848 | 0.20 | 0.12 | 75.93 | 0.09 | 1.7 |
+| `(?m)^ERROR .*timeout$` | 197 | 0.26 | 0.33 | 31.34 | 0.58 | 1.8 |
+| `(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})` (captures) | 10,755 | 4.13 | 3.27 | 70.63 | 1.26 | 7.7 |
+| `(a*)*b` over 100,000 `a`s | 0 | 0.00 | 0.00 | 3.31 | 0.00 | 1.5 |
 
 - **obx and Rust.** The engine has RE2's lazy DFA and Rust's literal
   searches (design/regex.md, "R2 as built"). Through C, obx takes 1.3 times Rust's
   time on the email pattern, 1.8 on `(?i)`, 2.2 on the alternation and
-  `\w+`, 2.6 on the literal and the captures, and about half Rust's time on
+  `\w+`, 2.6 on the captures, 2.9 on the literal, and about half Rust's time on
   the `ERROR` lines (a prefilter on `ERROR ` and the suffix check on
-  `timeout`); natively 2.0 to 4.0 times Rust's time, and again about half
+  `timeout`); natively 2.2 to 3.7 times Rust's time, and again about half
   on the `ERROR` lines. These are
   the cases the plan aimed at; none is past three times through C.
 - **Where the gap is.** The literal: Rust's memchr uses AVX2 (32 bytes a
@@ -149,7 +149,7 @@ reference point, not a like-for-like figure.
   costs (670,000 and 10,755 matches): each match is a forward and a reverse
   DFA run plus, for captures, the backtracker on the span; Rust's inner
   loops are tighter (unchecked indexing, a byte DFA with no rune decode).
-  The native build loses most on these DFA loops (1.8 times its C build on
+  The native build loses most on these DFA loops (1.7 times its C build on
   `\w+`): the native backend's bounds and overflow checks in the inner loop
   (see below), not the library.
 - **`(a*)*b`** takes no time: the text has no `b`, and every match ends
@@ -182,8 +182,8 @@ common subset of eza 0.23.3. `LC_ALL=C TZ=UTC`; the long listings use
 
 | listing | output | via C | native |
 |---|---:|---:|---:|
-| `-T /usr/share` (tree) | 2.1 MB | 105 ms | 117 ms |
-| `-T -l /usr/share` (long tree) | 3.7 MB | 200 ms | 201 ms |
+| `-T /usr/share` (tree) | 2.1 MB | 103 ms | 107 ms |
+| `-T -l /usr/share` (long tree) | 3.7 MB | 191 ms | 193 ms |
 | `-l /usr/lib/x86_64-linux-gnu` | 51 KB | 4 ms | 4 ms |
 
 The golden suite (`python3 obx/cmd/eza_gate.py -j 12`) passes on both
@@ -194,18 +194,19 @@ builds: 482 cases, 72 live-only cases skipped.
 [obx/cmd/grep.obx](obx/cmd/grep.obx) against GNU grep 3.11 on 100 MB of
 generated text (1.8 million lines; the generator is in
 [obx/cmd/README.md](obx/cmd/README.md)). Best of 5, output to a pipe,
-measured on 4 November 2026 (branch `grepfast`):
+`LC_ALL=C` (under `C.UTF-8` GNU grep's `-w` takes 2.3 times as long; the obx
+port has no locale):
 
 | search | GNU | native | via C | native at `1c6d06c` |
 |---|---:|---:|---:|---:|
-| `needle5007` (a literal) | 26 ms | 14 ms | 14 ms | 90 ms |
-| `-c omega` | 84 ms | 61 ms | 59 ms | 151 ms |
-| `-c '[0-9]*7 alpha'` | 70 ms | 15 ms | 15 ms | 352 ms |
-| `-c -w eta` | 204 ms | 190 ms | 180 ms | 1,123 ms |
-| `-c -v '^0'` (every line) | 47 ms | 48 ms | 42 ms | 468 ms |
-| `-c -E 'a.*z.*e'` | 210 ms | 106 ms | 91 ms | 455 ms |
-| `-n omega` | 224 ms | 194 ms | 160 ms | 376 ms |
-| `-o -w eta` | 386 ms | 330 ms | 298 ms | 1,653 ms |
+| `needle5007` (a literal) | 25 ms | 15 ms | 15 ms | 90 ms |
+| `-c omega` | 84 ms | 59 ms | 59 ms | 151 ms |
+| `-c '[0-9]*7 alpha'` | 69 ms | 16 ms | 16 ms | 352 ms |
+| `-c -w eta` | 202 ms | 186 ms | 177 ms | 1,123 ms |
+| `-c -v '^0'` (every line) | 47 ms | 47 ms | 42 ms | 468 ms |
+| `-c -E 'a.*z.*e'` | 208 ms | 114 ms | 92 ms | 455 ms |
+| `-n omega` | 254 ms | 167 ms | 151 ms | 376 ms |
+| `-o -w eta` | 383 ms | 335 ms | 302 ms | 1,653 ms |
 
 What made the difference:
 
@@ -260,35 +261,36 @@ and 7,451M to 672M (`-v '^0'`).
 ### On 1 GB
 
 The same generator run to 10^9 bytes (18.2 million lines), the cases above
-and more pattern shapes, at `c80b952`. Best of 3, output piped to `md5sum`,
-the file in the page cache; two other builds were running on the machine,
-so treat differences under about 10% as noise. ripgrep (14.1.1, one file)
-is for reference. On every case the native and C builds printed exactly
-what GNU grep printed.
+and more pattern shapes. Best of 3, output piped to `md5sum`, the file in
+the page cache, `LC_ALL=C` (GNU grep's `-w` takes 2.3 times as long under
+`C.UTF-8`). ripgrep (14.1.1, one file; `-E` dropped, since rg's regexes
+are extended already) is for reference; it has no `-x` and its `-f` was
+not measured. On every case the native and C builds printed exactly what
+GNU grep printed, and so did ripgrep.
 
 | search | GNU | ripgrep | native | via C |
 |---|---:|---:|---:|---:|
-| `needle5007` (a literal, one line) | 261 ms | 35 ms | 137 ms | 140 ms |
-| `-c zzz` (no match) | 335 ms | 30 ms | 139 ms | 138 ms |
-| `-c omega` | 859 ms | 348 ms | 605 ms | 605 ms |
-| `-v -c omega` | 991 ms | 564 ms | 723 ms | 741 ms |
-| `-c '[0-9]*7 alpha'` | 719 ms | 49 ms | 148 ms | 148 ms |
-| `-c -E '(alpha\|beta) gamma'` | 1,097 ms | 383 ms | 629 ms | 599 ms |
-| `-c -i NEEDLE` | 746 ms | 72 ms | 181 ms | 163 ms |
-| `-c -i 'OMEGA BETA'` | 1,316 ms | 414 ms | 196 ms | 175 ms |
-| `-c -w eta` | 4,819 ms | 1,704 ms | 1,995 ms | 1,839 ms |
-| `-c -v '^0'` (every line) | 574 ms | 628 ms | 448 ms | 417 ms |
-| `-c -E 'a.*z.*e'` | 2,151 ms | 1,708 ms | 1,115 ms | 955 ms |
-| `-c -E 'needle(1\|2)[0-9]{3}7'` | 557 ms | 35 ms | 179 ms | 162 ms |
-| `-c -E '^[0-9]+7[0-9]'` | 438 ms | 782 ms | 573 ms | 530 ms |
-| `-c -E '(alpha\|omega) .*(beta\|psi)$'` | 2,580 ms | 950 ms | 1,257 ms | 1,131 ms |
-| `-c -x '[0-9]* alpha beta gamma delta'` | 390 ms | 31 ms | 143 ms | 138 ms |
-| `-c -F -f` five fixed strings | 1,308 ms | 395 ms | 1,734 ms | 1,656 ms |
-| `-n omega` | 2,417 ms | 1,382 ms | 2,129 ms | 1,864 ms |
-| `omega` (prints 8.8 million lines) | 1,842 ms | 825 ms | 1,522 ms | 1,366 ms |
-| `-o 'needle[0-9]*'` | 570 ms | 46 ms | 147 ms | 143 ms |
-| `-o -w eta` | 6,826 ms | 2,942 ms | 3,504 ms | 3,057 ms |
-| `-n -w eta` | 7,267 ms | 3,193 ms | 3,539 ms | 3,179 ms |
+| `needle5007` (a literal, one line) | 257 ms | 29 ms | 137 ms | 139 ms |
+| `-c zzz` (no match) | 325 ms | 24 ms | 132 ms | 132 ms |
+| `-c omega` | 842 ms | 340 ms | 593 ms | 600 ms |
+| `-v -c omega` | 960 ms | 541 ms | 704 ms | 726 ms |
+| `-c '[0-9]*7 alpha'` | 698 ms | 43 ms | 143 ms | 145 ms |
+| `-c -E '(alpha\|beta) gamma'` | 1,071 ms | 372 ms | 595 ms | 581 ms |
+| `-c -i NEEDLE` | 605 ms | 65 ms | 173 ms | 160 ms |
+| `-c -i 'OMEGA BETA'` | 660 ms | 405 ms | 193 ms | 171 ms |
+| `-c -w eta` | 2,025 ms | 1,652 ms | 1,892 ms | 1,785 ms |
+| `-c -v '^0'` (every line) | 551 ms | 605 ms | 434 ms | 402 ms |
+| `-c -E 'a.*z.*e'` | 2,079 ms | 1,647 ms | 1,147 ms | 920 ms |
+| `-c -E 'needle(1\|2)[0-9]{3}7'` | 528 ms | 26 ms | 174 ms | 150 ms |
+| `-c -E '^[0-9]+7[0-9]'` | 430 ms | 765 ms | 547 ms | 504 ms |
+| `-c -E '(alpha\|omega) .*(beta\|psi)$'` | 2,493 ms | 903 ms | 1,197 ms | 1,088 ms |
+| `-c -x '[0-9]* alpha beta gamma delta'` | 374 ms | — | 134 ms | 133 ms |
+| `-c -F -f` five fixed strings | 1,261 ms | — | 1,613 ms | 1,571 ms |
+| `-n omega` | 2,169 ms | 1,301 ms | 1,977 ms | 1,760 ms |
+| `omega` (prints 8.8 million lines) | 1,530 ms | 793 ms | 1,472 ms | 1,327 ms |
+| `-o 'needle[0-9]*'` | 539 ms | 37 ms | 139 ms | 133 ms |
+| `-o -w eta` | 3,780 ms | 2,766 ms | 3,371 ms | 2,969 ms |
+| `-n -w eta` | 3,770 ms | 3,075 ms | 3,341 ms | 2,996 ms |
 
 The times scale with the file: each is about ten times its 100 MB figure,
 so nothing in the obx port grows worse than linearly.
@@ -296,8 +298,8 @@ so nothing in the obx port grows worse than linearly.
 **Against GNU grep:** obx is ahead on 19 of 21 cases, often by 2 to 5 times.
 
 **Still behind GNU:**
-- `-F -f` with several fixed strings, 1.3 times slower. Each string becomes a branch of one regex, where GNU and ripgrep use a multi-string search (Aho-Corasick, Teddy).
-- `^[0-9]+7[0-9]`, also 1.3 times slower.
+- `-F -f` with several fixed strings, 1.25 times slower. Each string becomes a branch of one regex, where GNU and ripgrep use a multi-string search (Aho-Corasick, Teddy).
+- `^[0-9]+7[0-9]`, 1.2 times slower.
 
 **Against ripgrep:** ripgrep is faster wherever a literal or a rare
 required string can be found with SIMD (`needle`, `zzz`, `-x`, `-o`).
@@ -309,9 +311,8 @@ close on `-w`.
 
 [obx/cmd/jq.obx](obx/cmd/jq.obx), the jq 1.7.1 port, against jq 1.7.1
 built from its release tarball (`./configure --with-oniguruma=builtin`,
-the default `-O2`). Measured on 5 November 2026 (branch `jq`), best of
-3 or 5 wall times, on a machine shared with other agents: figures vary by
-10–20% between runs.
+the default `-O2`). Best of 3 (large input) or 5 (computation) wall
+times; figures vary by 5–10% between runs.
 
 **Large input.** `python3 obx/bench/json/bench.py`, run on an 80 MB file
 of 182,290 generated records. The output goes to a file, and the three
@@ -319,12 +320,12 @@ outputs of each filter must be identical.
 
 | filter | jq 1.7.1 | native | via C |
 |---|---:|---:|---:|
-| `.` | 2.48 s | 1.86 s | 1.93 s |
-| `-c .` | 2.20 s | 1.71 s | 1.67 s |
-| `length` | 1.42 s | 1.15 s | 1.09 s |
-| `[.[].items[].qty] \| add` | 1.77 s | 1.30 s | 1.23 s |
-| `map(select(.active and .score > 0) \| {id, city: .address.city})` | 1.69 s | 1.36 s | 1.44 s |
-| `group_by(.address.city) \| map({city: .[0].address.city, n: length})` | 1.97 s | 1.92 s | 1.82 s |
+| `.` | 2.41 s | 1.68 s | 1.69 s |
+| `-c .` | 2.18 s | 1.59 s | 1.62 s |
+| `length` | 1.49 s | 1.14 s | 1.04 s |
+| `[.[].items[].qty] \| add` | 1.81 s | 1.28 s | 1.20 s |
+| `map(select(.active and .score > 0) \| {id, city: .address.city})` | 1.79 s | 1.39 s | 1.41 s |
+| `group_by(.address.city) \| map({city: .[0].address.city, n: length})` | 2.10 s | 1.97 s | 1.74 s |
 
 **Computation.** Programs with no input (`jq -n`); the outputs are
 identical.
@@ -332,13 +333,13 @@ identical.
 | program | jq 1.7.1 | native | via C |
 |---|---:|---:|---:|
 | `1` (start-up) | 2 ms | 4 ms | 3 ms |
-| `reduce range(3000000) as $i (0; . + $i)` | 475 ms | 479 ms | 333 ms |
-| `[range(1000000)] \| map(. * 2) \| add` | 388 ms | 267 ms | 233 ms |
-| `[range(200000) \| tostring] \| sort \| length` | 112 ms | 82 ms | 64 ms |
-| `def fib: ...; 25 \| fib` (recursive, 250,000 calls) | 57 ms | 110 ms | 87 ms |
-| `[limit(100000; repeat(1))] \| length` | 43 ms | 10 ms | 8 ms |
-| `[range(100000) \| {a: ., b: "x\(.)"}] \| group_by(.a % 10) \| map(length)` | 207 ms | 271 ms | 226 ms |
-| `[range(50000) \| tostring \| test("7$")] \| map(select(.)) \| length` | 70 ms | 78 ms | 59 ms |
+| `reduce range(3000000) as $i (0; . + $i)` | 493 ms | 503 ms | 346 ms |
+| `[range(1000000)] \| map(. * 2) \| add` | 411 ms | 269 ms | 244 ms |
+| `[range(200000) \| tostring] \| sort \| length` | 117 ms | 82 ms | 62 ms |
+| `def fib: ...; 25 \| fib` (recursive, 250,000 calls) | 59 ms | 113 ms | 91 ms |
+| `[limit(100000; repeat(1))] \| length` | 44 ms | 11 ms | 8 ms |
+| `[range(100000) \| {a: ., b: "x\(.)"}] \| group_by(.a % 10) \| map(length)` | 223 ms | 281 ms | 245 ms |
+| `[range(50000) \| tostring \| test("7$")] \| map(select(.)) \| length` | 71 ms | 79 ms | 58 ms |
 
 **Where the port wins.** It is faster wherever JSON is parsed or written.
 jq builds a decNumber for every literal, and its writer goes through
@@ -377,16 +378,22 @@ The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:
 
 | | gcc-built | native-built |
 |---|---:|---:|
-| self-build to an executable (`--native`) | 472 ms | 529 ms |
-| self-build to C (`--emit-c`) | 288 ms | 297 ms |
+| self-build to an executable (`--native`) | 522 ms | 588 ms |
+| self-build to C (`--emit-c`) | 338 ms | 344 ms |
 | full build through gcc | 17 s, nearly all of it gcc | — |
-| compiler binary | 2,000,616 bytes (dynamic, glibc) | 2,507,065 bytes (static, no libc) |
+| compiler binary | 2,724,960 bytes (dynamic, glibc) | 2,917,065 bytes (static, no libc) |
 
-Measured on 4 November on branch `perf13` (after the thirteenth pass, best
-of 11 on a machine other builds were loading; at `1ccdc03` just before it the
+Best of 11. The compiler's source is a third larger than at the last
+measurement (1.64 MB of `.obx` against 1.24 MB on branch `perf13`; 322 KB
+of it is the math port's runtime text, carried as string tables in `rt.obx`
+and `rtx.obx`), and the gcc-built `--native` self-build runs 4,214M
+instructions against 3,706M: 14% more work for 32% more input. On 4
+November on branch `perf13` (after the thirteenth pass, best of 11 on a
+machine other builds were loading) the four times were 472, 529, 288 and
+297 ms; at `1ccdc03` just before it the
 same runs gave 542, 589, 309 and 307 ms, and the gcc-built compiler ran the
 `--native` self-build in 3,706M instructions and 1,758M cycles against
-3,985M and 2,068M). At `fd6f747` (after the ninth pass) the times were 509,
+3,985M and 2,068M. At `fd6f747` (after the ninth pass) the times were 509,
 570, 286 and 300 ms; after the eighth, 493, 589, 274 and 310 ms on 270 fewer
 lines of compiler. At
 `5900ba3` (bounds checks compared in place) the change is below the timing
@@ -654,14 +661,18 @@ Also tried on `grepfast` (in the library and the runtime), not committed:
 
 [obx/cmd/cmark.obx](obx/cmd/cmark.obx) (the `markdown` library) against cmark
 0.31.2 (`-O3` release build, cmake), rendering 10 MB documents with `--unsafe`
-to a pipe. Best of 3, seconds, 5 November 2026 (`python3 obx/tests/markdown.py
---perf`):
+to a pipe. Best of 3, seconds (`python3 obx/tests/markdown.py --perf`):
 
 | document | cmark | obx native | obx via C |
 |---|---:|---:|---:|
-| the spec, repeated to 10 MB | 0.37 | 0.59 | 0.45 |
-| the repo's Markdown files, repeated to 11 MB | 0.37 | 0.67 | 0.58 |
-| the spec's examples, repeated to 10 MB | 1.58 | 1.54 | 2.59 |
+| the spec, repeated to 10 MB | 0.17 | 0.22 | 0.19 |
+| the repo's Markdown files, repeated to 11 MB | 0.23 | 0.27 | 0.25 |
+| the spec's examples, repeated to 10 MB | 0.58 | 0.73 | 0.62 |
+
+The obx renderer takes 1.1 to 1.3 times cmark's time. The earlier table
+(0.37 to 2.59 s) was timed with the wall clock, `time.time()`, which WSL2
+steps when it syncs with the host, on a loaded machine; the script now
+uses `time.perf_counter()` and fails a run that exits with an error.
 
 cmark's pathological inputs (nested emphasis, brackets and block quotes
 30,000 to 100,000 deep, a million backticks, unclosed constructs) all finish
@@ -674,14 +685,16 @@ takes 114 MB of memory at its peak (cmark: 68 MB).
 
 | program | via C | native |
 |---|---:|---:|
-| empty program | 53,680 bytes (dynamic, glibc) | 12,288 bytes (static) |
-| hello | 53,896 bytes | 16,416 bytes (static) |
-| `import "regex"`, one call (`regex.quote`) | 54,080 bytes | 20,512 bytes |
-| eza | 233,256 bytes (dynamic, glibc) | 250,344 bytes (static) |
-| HTTP server (`cmd/httpd.obx`) | 316,584 bytes | 439,160 bytes (dynamic) |
-| compiler | 2,000,616 bytes (dynamic, glibc) | 2,507,065 bytes (static) |
+| empty program | 58,840 bytes (dynamic, glibc) | 12,288 bytes (static) |
+| hello | 59,008 bytes | 16,416 bytes (static) |
+| `import "regex"`, one call (`regex.quote`) | 63,288 bytes | 16,416 bytes |
+| eza | 238,352 bytes (dynamic, glibc) | 242,152 bytes (static) |
+| HTTP server (`cmd/httpd.obx`) | 321,592 bytes | 381,824 bytes (dynamic) |
+| compiler | 2,724,960 bytes (dynamic, glibc) | 2,917,065 bytes (static) |
 
-(4 November 2026, at `da520fe`; eza at `fd6f747`, the compiler on branch `perf13`.) The native backend generates only the functions and globals
+Every C build carries the start-up CPU check and the inline math
+primitives of `rt.h` (about 5 KB); a C build that calls a ported math
+function also carries that function's C. The native backend generates only the functions and globals
 reachable from `main` (design/native.md section 5, "Reachability"), as gcc
 drops a C program's unused static functions: an imported module costs only
 what the program uses of it. The runtime is linked the same way, by
@@ -710,19 +723,19 @@ The cost of the concurrency primitives (`lib/task.obx`, `lib/net.obx`, SPEC
 
 | operation | via C | native |
 |---|---:|---:|
-| task switch (`task.yield`) | 6.5 | 12.5 |
-| start a task (stack reused) | 36 | 21 |
-| start plus a wait that parks (round trip) | 95 | 75 |
-| the same inside `task.within` (a timer set and removed) | 108 | 90 |
-| wait on a finished task | 23 | 14 |
-| promise complete | 11 | 11 |
-| `Shared.with` | 3.4 | 6.4 |
-| a `task.sleep(1)` that fires, beyond a yield | 46–153 | 37–74 |
-| a socket read that finds data (no park) | 699 | 692 |
-| a one-byte round trip between two tasks over loopback TCP | 193,000 | 183,000 |
-| a `blocking` extern call run inline (no other task could run) | 3.3 | 3.5 |
-| the same through the helper pool (another task is parked) | 310–590 | 640–660 |
-| the same through the pool, the process on one CPU | 7,900 | 5,300 |
+| task switch (`task.yield`) | 7.0 | 12.5 |
+| start a task (stack reused) | 42 | 22 |
+| start plus a wait that parks (round trip) | 103 | 73 |
+| the same inside `task.within` (a timer set and removed) | 119 | 93 |
+| wait on a finished task | 26 | 14 |
+| promise complete | 11 | 12 |
+| `Shared.with` | 3.4 | 6.2 |
+| a `task.sleep(1)` that fires, beyond a yield | 73–309 | −182–75 |
+| a socket read that finds data (no park) | 748 | 730 |
+| a one-byte round trip between two tasks over loopback TCP | 213,000 | 199,000 |
+| a `blocking` extern call run inline (no other task could run) | 3.2 | 4.0 |
+| the same through the helper pool (another task is parked) | 286–323 | 398–437 |
+| the same through the pool, the process on one CPU | 8,200 | 6,500 |
 
 The task operations are far below a system call. The event loop added about
 6 ns to a native park (the deadline and timer checks) and nothing measurable
@@ -757,7 +770,7 @@ query that reads the disk does not notice.
 (design/http-server.md, stage S1): a keep-alive HTTP/1.1 server on one
 thread, one task per connection, with every limit and timeout of the design
 on, the hangup cancellation armed around each handler, the request parsed
-strictly and the reply built by the library. Measured on 4 November 2026 by
+strictly and the reply built by the library. Measured by
 `python3 obx/cmd/http_gate.py --servers native,c,go,node`: the server on
 CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 1.
 10,000 idle keep-alive connections are opened first and stay open during
@@ -768,14 +781,14 @@ to the next.
 
 | | obx native | obx via C | Go net/http | Node 24 |
 |---|---:|---:|---:|---:|
-| RSS per idle connection | 15.5 KB | 14.9 KB | 19.8 KB | 10.3 KB |
-| RSS with 10,000 idle connections | 155 MiB | 148 MiB | 195 MiB | 147 MiB |
-| 1 client: requests/s | 4,140 | 4,470 | 4,070 | 3,850 |
-| 10 clients: requests/s | 36,500 | 37,600 | 35,200 | 33,700 |
-| 100 clients: requests/s | 62,800 | 66,300 | 44,400 | 43,800 |
-| 1 client: latency p50 / p99 | 224 / 442 µs | 215 / 380 µs | 237 / 380 µs | 246 / 421 µs |
-| 10 clients: latency p50 / p99 | 261 / 418 µs | 257 / 398 µs | 268 / 461 µs | 285 / 467 µs |
-| 100 clients: latency p50 / p99 | 1.56 / 2.85 ms | 1.48 / 2.78 ms | 2.13 / 6.56 ms | 2.09 / 4.75 ms |
+| RSS per idle connection | 15.5 KB | 14.9 KB | 19.7 KB | 9.6 KB |
+| RSS with 10,000 idle connections | 155 MiB | 148 MiB | 195 MiB | 140 MiB |
+| 1 client: requests/s | 4,240 | 4,090 | 3,860 | 4,200 |
+| 10 clients: requests/s | 36,700 | 34,500 | 32,200 | 30,200 |
+| 100 clients: requests/s | 64,600 | 61,300 | 40,400 | 38,100 |
+| 1 client: latency p50 / p99 | 224 / 422 µs | 232 / 421 µs | 248 / 409 µs | 222 / 443 µs |
+| 10 clients: latency p50 / p99 | 263 / 414 µs | 278 / 486 µs | 288 / 567 µs | 313 / 585 µs |
+| 100 clients: latency p50 / p99 | 1.50 / 2.92 ms | 1.57 / 2.87 ms | 2.29 / 7.83 ms | 2.39 / 5.73 ms |
 
 What a request costs the server beyond reading and writing the socket: the
 router's lookup (the router is a `task.Frozen`, read by every connection's
@@ -808,16 +821,16 @@ above.
 
 | connections | raw, native | client, native | raw, via C | client, via C |
 |---:|---:|---:|---:|---:|
-| 1: requests/s | 4,430 | 4,390 | 4,560 | 4,380 |
-| 100: requests/s | 66,200 | 59,000 | 65,200 | 61,000 |
-| 1,000: requests/s | 56,000 | 48,600 | 53,400 | 49,500 |
-| 1: latency p50 / p99 | 214 / 401 µs | 218 / 406 µs | 212 / 378 µs | 217 / 402 µs |
-| 100: latency p50 / p99 | 1.49 / 2.11 ms | 1.69 / 2.53 ms | 1.50 / 2.24 ms | 1.60 / 2.19 ms |
-| 1,000: latency p50 / p99 | 17.6 / 22.1 ms | 19.9 / 24.3 ms | 18.2 / 23.0 ms | 19.5 / 24.1 ms |
+| 1: requests/s | 4,270 | 4,140 | 4,120 | 4,100 |
+| 100: requests/s | 65,400 | 57,200 | 64,000 | 55,100 |
+| 1,000: requests/s | 52,500 | 43,900 | 49,500 | 43,500 |
+| 1: latency p50 / p99 | 223 / 407 µs | 233 / 404 µs | 232 / 411 µs | 233 / 418 µs |
+| 100: latency p50 / p99 | 1.49 / 2.86 ms | 1.71 / 3.21 ms | 1.50 / 2.76 ms | 1.76 / 3.21 ms |
+| 1,000: latency p50 / p99 | 18.4 / 24.9 ms | 21.9 / 31.2 ms | 19.1 / 26.0 ms | 22.0 / 30.3 ms |
 
 The client does more work per request than the raw loop: it builds a full
 request, parses every reply header, works out the framing and goes through
-the pool. With the loader's core full, that is 87 % to 94 % of the raw
+the pool. With the loader's core full, that is 84 % to 88 % of the raw
 throughput from 100 connections on; with one connection the loopback round
 trip is the limit and they are level. The design's gate asked for parity,
 so it is not met (design/http-client.md, section 8).
@@ -835,12 +848,12 @@ Postgres driver installed here.
 
 | | native, pool 4 | via C, pool 4 | native, pool 16 | via C, pool 16 |
 |---|---:|---:|---:|---:|
-| 1 client: requests/s | 3,050 | 3,050 | 2,930 | 2,720 |
-| 10 clients: requests/s | 21,600 | 23,300 | 19,900 | 19,400 |
-| 100 clients: requests/s | 22,000 | 22,700 | 22,600 | 23,700 |
-| 1 client: latency p50 / p99 | 315 / 541 µs | 316 / 514 µs | 322 / 598 µs | 344 / 655 µs |
-| 10 clients: latency p50 / p99 | 451 / 666 µs | 422 / 593 µs | 499 / 704 µs | 506 / 806 µs |
-| 100 clients: latency p50 / p99 | 4.39 / 6.34 ms | 4.32 / 5.78 ms | 4.25 / 6.88 ms | 4.11 / 5.91 ms |
+| 1 client: requests/s | 2,810 | 2,790 | 2,820 | 2,780 |
+| 10 clients: requests/s | 21,300 | 21,400 | 18,700 | 19,400 |
+| 100 clients: requests/s | 20,600 | 21,100 | 23,000 | 23,600 |
+| 1 client: latency p50 / p99 | 336 / 633 µs | 341 / 626 µs | 337 / 607 µs | 344 / 606 µs |
+| 10 clients: latency p50 / p99 | 458 / 674 µs | 454 / 676 µs | 530 / 751 µs | 508 / 733 µs |
+| 100 clients: latency p50 / p99 | 4.70 / 6.68 ms | 4.60 / 6.48 ms | 4.23 / 6.21 ms | 4.14 / 5.99 ms |
 
 One client pays two round trips, the HTTP one and the server's to
 PostgreSQL (about 100 µs: a lone connection does 11,000 queries a second).
@@ -886,15 +899,15 @@ p50 / p99 in ms:
 
 | workers | native `/` | via C `/` | native `/db` | via C `/db` |
 |---:|---:|---:|---:|---:|
-| 1 | 58,800; 4.28 / 6.44 | 57,400; 4.38 / 6.63 | 18,700; 13.4 / 17.5 | 19,900; 12.3 / 15.3 |
-| 2 | 95,500; 2.56 / 5.15 | 96,000; 2.52 / 6.07 | 33,000; 7.64 / 10.3 | 34,400; 7.31 / 10.2 |
-| 4 | 128,200; 1.71 / 5.85 | 116,200; 1.87 / 6.58 | 49,700; 4.88 / 11.5 | 50,300; 4.72 / 12.0 |
-| 8 | 123,500; 1.68 / 7.01 | 129,600; 1.60 / 6.60 | 63,500; 3.77 / 9.90 | 66,000; 3.83 / 9.72 |
+| 1 | 54,700; 4.58 / 7.04 | 57,500; 4.42 / 6.48 | 19,100; 13.1 / 16.3 | 18,400; 13.6 / 17.5 |
+| 2 | 97,700; 2.45 / 5.46 | 98,100; 2.52 / 5.27 | 32,800; 7.60 / 9.93 | 31,600; 7.87 / 10.5 |
+| 4 | 124,300; 1.75 / 6.06 | 119,200; 1.82 / 6.56 | 48,300; 4.72 / 12.4 | 47,500; 4.93 / 11.9 |
+| 8 | 126,200; 1.65 / 6.66 | 124,600; 1.66 / 6.78 | 62,800; 3.81 / 9.92 | 64,200; 3.75 / 9.63 |
 
-`/` scales about 1.6 times at 2 workers and 2.0 to 2.2 at 4, then stops:
+`/` scales 1.7 to 1.8 times at 2 workers and 2.1 to 2.3 at 4, then stops:
 the ceiling is the machine's, the loopback TCP of both sides and the WSL2
 virtual machine's cross-CPU wake-ups, not the workers (at 4 workers neither
-side is busy all the time). `/db` keeps scaling to 8 workers (3.3 to 3.4
+side is busy all the time). `/db` keeps scaling to 8 workers (3.3 to 3.5
 times): each request is mostly waiting for PostgreSQL, whose backends run
 on whatever CPUs are free, and 8 workers keep 32 queries in flight. A
 listener of its own in each worker (`httpd ... WORKERS reuseport`,
@@ -903,12 +916,12 @@ because connections waiting in a killed worker's own accept queue are reset
 with its socket.
 
 The kill test (4 workers, `/`, the load reconnecting after an error): a
-third of the way in, `SIGKILL` to one worker. Natively the worker held 45
-connections and 45 requests were lost (via C 112 and 112): exactly the ones
-in flight on its connections, one each. The supervisor started it again
-after 109 ms (the 100 ms backoff; `http.workerPolicy`: a crash after the
+third of the way in, `SIGKILL` to one worker. Natively the worker held 42
+connections and 40 requests were lost (via C 68 and 67): the ones in flight
+on its connections, at most one each. The supervisor started it again
+after 105 ms (the 100 ms backoff; `http.workerPolicy`: a crash after the
 worker is ready never counts toward giving up), it accepted from the same
-queue, and the run kept 124,000 req/s natively (129,700 via C) over the 5 s.
+queue, and the run kept 123,900 req/s natively (120,400 via C) over the 5 s.
 The `/shutdown` that follows ends every worker drained, exit 0, the restart
 counted.
 
@@ -919,7 +932,7 @@ builds and Go, and parses them with llhttp, in about 160 s.
 ## TLS
 
 `obx/lib/tls.obx` over OpenSSL 3.0.13 (design/tls.md), and https in the
-http client. Measured on 5 November 2026 by `python3 obx/cmd/tls_bench.py`.
+http client. Measured by `python3 obx/cmd/tls_bench.py`.
 
 Setup:
 - `obx/cmd/tlsbench.obx`, built natively and via C, against OpenSSL's own
@@ -940,12 +953,12 @@ Workloads:
 
 | | obx native | obx via C | OpenSSL / curl |
 |---|---:|---:|---:|
-| handshakes/s (s_server is the limit) | 722 | 723 | 522 (`openssl s_time -new`) |
-| client CPU per handshake | 516 µs | 515 µs | 590 µs (`s_time`) |
-| GET 1 GiB: MB/s | 1,866 | 1,934 | 1,788 (curl) |
-| GET 1 GiB: client CPU | 0.41 s | 0.43 s | 0.47 s (curl) |
-| requests/s, 1 connection | 3,240 | 4,030 | 2,900 (curl) |
-| requests/s, 10 connections | 28,400 | 28,000 | |
+| handshakes/s (s_server is the limit) | 760 | 753 | 538 (`openssl s_time -new`) |
+| client CPU per handshake | 521 µs | 528 µs | 593 µs (`s_time`) |
+| GET 1 GiB: MB/s | 1,933 | 2,034 | 1,959 (curl) |
+| GET 1 GiB: client CPU | 0.43 s | 0.44 s | 0.49 s (curl) |
+| requests/s, 1 connection | 4,010 | 3,740 | 3,040 (curl) |
+| requests/s, 10 connections | 29,100 | 29,300 | |
 
 **Handshakes.** A handshake's client side costs what OpenSSL's own client
 costs. Most of the 0.5 ms is in OpenSSL 3.0:
@@ -963,8 +976,8 @@ client CPU for 1 GiB. The engine's extra copy (socket to BIO to the
 caller's buffer) shows as a little less CPU than curl's, not more.
 
 **Requests.** The one-connection row is the loopback round trip, and it
-moves by 15 % from run to run (3,240 to 3,550 natively in other runs). For
-scale, plain http to `httpd` reaches about 4,400 per second on one
+moves by 15 to 25 % from run to run (3,240 to 4,010 natively across runs). For
+scale, plain http to `httpd` reaches about 4,200 per second on one
 connection (above).
 
 These runs are also the H2 gate's "1,000 https requests over kept-alive
@@ -977,6 +990,9 @@ no leak.
 ```sh
 obx/compiler/build.sh                                  # out/obxc from the seed
 python3 obx/bench/bench.py -n 11
+python3 obx/bench/regex/bench.py -n 7                  # the regex table (Go, Rust and rg built by it)
+python3 obx/bench/json/bench.py --jq JQ                # the JSON library and jq large-input tables
+python3 obx/tests/markdown.py --perf --ref CMARK      # the Markdown table
 python3 obx/cmd/eza_gate.py -j 12                      # eza correctness on both builds
 obx/compiler/out/obxc obx/cmd/eza.obx --native -o eza  # and without --native for the C build
 obx/tools/native_selfbuild.sh                          # the natively built compiler

@@ -115,12 +115,12 @@ def run(exe, args, data, timeout=30, check=True):
     env = dict(os.environ)
     if check:
         env['OBX_CHECK'] = '1'
-    t = time.time()
+    t = time.perf_counter()
     try:
         r = subprocess.run([exe] + args, input=data, capture_output=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
-        return None, b'timeout', time.time() - t
-    return r.stdout, r.stderr + (b'' if r.returncode == 0 else b'exit %d' % r.returncode), time.time() - t
+        return None, b'timeout', time.perf_counter() - t
+    return r.stdout, r.stderr + (b'' if r.returncode == 0 else b'exit %d' % r.returncode), time.perf_counter() - t
 
 
 def show(b):
@@ -266,6 +266,8 @@ def perf(exes, ref, reps):
             best = None
             for _ in range(reps):
                 out, err, t = run(exe, ['--unsafe'], data, timeout=300, check=False)
+                if out is None or err.endswith(b'timeout') or b'exit ' in err[-12:]:
+                    sys.exit('%s failed on %s: %s' % (n, name, err[-200:].decode('utf-8', 'replace')))
                 best = t if best is None else min(best, t)
             row.append(best)
         print('%-34s %8.1f' % (name, len(data) / 1e6) + ''.join('%12.3f' % t for t in row))
