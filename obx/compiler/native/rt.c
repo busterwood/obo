@@ -149,12 +149,15 @@ static int str_eqn(const char* a, const char* b, size_t n) {
 }
 
 /* ---- the heap: size classes on mmap'd chunks, one free list per class; a large block is
-   its own mapping. Every block has a 16-byte header (its class, or its mapping size), so
-   blocks are 16-byte aligned like malloc's. Memory of the small classes is reused, never
-   unmapped. The last large block freed, up to KEEP bytes, is kept for the next large malloc
-   it fits (at most twice the size asked for): a program that allocates and frees one big array
-   in a loop then faults its pages in once, not each round. glibc does the same with its
-   dynamic mmap threshold, up to 32 MiB. */
+   its own mapping. Every block has an 8-byte header just below it: its class (below NCLASS),
+   or for a large block its mapping size. The small classes are 8 bytes short of a multiple of
+   16 (8, 24, 40, ...) and a chunk's first block starts 8 bytes in, so header and block fill a
+   multiple of 16 and blocks are 16-byte aligned like malloc's (a 70-byte string takes 80 bytes,
+   as with glibc, not 96). A large block starts 16 bytes into its mapping. Memory of the small
+   classes is reused, never unmapped. The last large block freed, up to KEEP bytes, is kept for
+   the next large malloc it fits (at most twice the size asked for): a program that allocates
+   and frees one big array in a loop then faults its pages in once, not each round. glibc does
+   the same with its dynamic mmap threshold, up to 32 MiB. */
 
 #define NCLASS 40
 static size_t class_size[NCLASS];
@@ -164,7 +167,7 @@ static size_t chunk_left;
 #define CHUNK (1 << 20)
 #define LARGE (1 << 16)
 #define KEEP ((size_t)32 << 20)
-static size_t* large_kept;          /* the header of the kept mapping, or 0 */
+static size_t* large_kept;          /* the kept mapping (its size in word 1), or 0 */
 
 static void* sys_mmap(size_t n) {
     i64 r = sys6(S_MMAP, 0, (i64)n, 3, 0x22, -1, 0);       /* PROT_READ|WRITE, MAP_PRIVATE|ANONYMOUS */
@@ -172,15 +175,15 @@ static void* sys_mmap(size_t n) {
     return (void*)r;
 }
 static void heap_init(void) {
-    size_t s = 16;
+    size_t s = 8;
     for (int i = 0; i < NCLASS; i++) {
         class_size[i] = s;
-        s = s < 128 ? s + 16 : s + s / 4;
-        s = (s + 15) & ~(size_t)15;
+        s = s < 120 ? s + 16 : s + s / 4;
+        s = ((s + 7) & ~(size_t)15) + 8;        /* the next 16k + 8 at or above s */
     }
 }
 static int class_of(size_t n) {
-    if (n <= 128) return n ? (int)((n + 15) >> 4) - 1 : 0;     /* classes 0-7: 16, 32, ..., 128 */
+    if (n <= 120) return (int)((n + 7) >> 4);       /* classes 0-7: 8, 24, ..., 120 */
     for (int i = 8; i < NCLASS; i++)
         if (class_size[i] >= n) return i;
     return -1;
@@ -190,24 +193,23 @@ __attribute__((noinline)) static void* malloc_large(size_t need) {
     size_t m = (need + 16 + 4095) & ~(size_t)4095;
     if (m < need) return 0;
     size_t* k = large_kept;
-    if (k && k[0] >= m && k[0] / 2 <= m) {
+    if (k && k[1] >= m && k[1] / 2 <= m) {
         large_kept = 0;
-        return (char*)k + 16;       /* k[0] stays its mapping size, k[1] 1 */
+        return (char*)k + 16;       /* k[1] stays its mapping size */
     }
     char* p = sys_mmap(m);
     if (!p) return 0;
-    ((size_t*)p)[0] = m;
-    ((size_t*)p)[1] = 1;        /* large */
+    ((size_t*)p)[1] = m;
     return p + 16;
 }
-__attribute__((noinline)) static void free_large(size_t* h) {
-    if (h[0] <= KEEP) {
+__attribute__((noinline)) static void free_large(size_t* k) {
+    if (k[1] <= KEEP) {
         size_t* old = large_kept;
-        large_kept = h;
-        h = old;
-        if (!h) return;
+        large_kept = k;
+        k = old;
+        if (!k) return;
     }
-    SYS(S_MUNMAP, h, h[0], 0);
+    SYS(S_MUNMAP, k, k[1], 0);
 }
 void* malloc(size_t n) {
     if (!class_size[0]) heap_init();
@@ -219,45 +221,44 @@ void* malloc(size_t n) {
         free_list[c] = *(void**)f;
         return f;
     }
-    size_t bs = class_size[c] + 16;
+    size_t bs = class_size[c] + 8;
     if (chunk_left < bs) {
         char* p = sys_mmap(CHUNK);
         if (!p) return 0;
-        chunk_at = p;
-        chunk_left = CHUNK;
+        chunk_at = p + 8;
+        chunk_left = CHUNK - 8;
     }
     char* b = chunk_at;
     chunk_at += bs;
     chunk_left -= bs;
     ((size_t*)b)[0] = (size_t)c;
-    ((size_t*)b)[1] = 0;
-    return b + 16;
+    return b + 8;
 }
 static size_t block_size(void* p) {
-    size_t* h = (size_t*)((char*)p - 16);
-    return h[1] ? h[0] - 16 : class_size[h[0]];
+    size_t h = ((size_t*)p)[-1];
+    return h < NCLASS ? class_size[h] : h - 16;
 }
 void free(void* p) {
     if (!p) return;
-    size_t* h = (size_t*)((char*)p - 16);
-    if (__builtin_expect(h[1] != 0, 0)) {
-        free_large(h);
+    size_t h = ((size_t*)p)[-1];
+    if (__builtin_expect(h >= NCLASS, 0)) {
+        free_large((size_t*)((char*)p - 16));
         return;
     }
-    *(void**)p = free_list[h[0]];
-    free_list[h[0]] = p;
+    *(void**)p = free_list[h];
+    free_list[h] = p;
 }
 void* realloc(void* p, size_t n) {
     if (!p) return malloc(n);
     size_t have = block_size(p);
     if (n <= have) return p;
-    size_t* h = (size_t*)((char*)p - 16);
-    if (h[1]) {                     /* a large block grows by moving its pages, not its bytes */
+    if (((size_t*)p)[-1] >= NCLASS) {       /* a large block grows by moving its pages, not its bytes */
+        size_t* k = (size_t*)((char*)p - 16);
         size_t m = (n + 16 + 4095) & ~(size_t)4095;
         if (m < n) return 0;
-        i64 r = sys6(S_MREMAP, (i64)h, (i64)h[0], (i64)m, 1, 0, 0);    /* MREMAP_MAYMOVE */
+        i64 r = sys6(S_MREMAP, (i64)k, (i64)k[1], (i64)m, 1, 0, 0);    /* MREMAP_MAYMOVE */
         if (r < 0 && r > -4096) return 0;
-        ((size_t*)r)[0] = m;
+        ((size_t*)r)[1] = m;
         return (char*)r + 16;
     }
     void* q = malloc(n);
