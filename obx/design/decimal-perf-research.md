@@ -268,8 +268,9 @@ money-like values with 2 decimal places.
 
 ## 5. Instruction-set decisions the user needs to make
 
-Required today (the start-up check, exit 16): SSE4.1, AVX and FMA3. Anything else (BMI2, ADX,
-LZCNT, AVX2, AVX-512) needs the user's approval.
+Required since 2026-11-05 (the start-up check, exit 16): x86-64-v3, that is AVX2, BMI1, BMI2,
+FMA3, F16C, LZCNT and MOVBE with SSE4.1 and AVX. So BSR, LZCNT, MULX, SHLX/SHRX and AVX2 may be
+used without further approval. ADX and AVX-512 are not in v3 and still need the user's approval.
 
 1. BSR (bit scan reverse). Baseline x86-64; no approval needed. Recommended for item 1.
 2. LZCNT. Needs ABM, which is not on the approved list. Recommend BSR instead.
@@ -281,8 +282,8 @@ LZCNT, AVX2, AVX-512) needs the user's approval.
 6. 128-by-64 `DIV` with RDX:RAX. Baseline; no approval. Needed for item 6 (or a C helper in rt.c).
 7. SSE4.1 or AVX SIMD digit conversion (Muła style). Within the baseline (no approval needed).
    Helps bulk toStr only. Recommend defer.
-8. AVX2 or AVX-512 IFMA (Lemire 2026): not approved; IFMA runs only on Zen 4+ and Ice Lake server+.
-   Recommend not proposing now.
+8. AVX-512 IFMA (Lemire 2026): not in x86-64-v3, not approved; IFMA runs only on Zen 4+ and Ice
+   Lake server+. Recommend not proposing now. (AVX2 is in v3 and allowed.)
 9. FMA3: no integer use in Decimal. Not needed.
 
 Representation decision (not an instruction set): caching the digit count in the Decimal record

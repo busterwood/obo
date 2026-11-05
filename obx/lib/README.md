@@ -190,9 +190,10 @@ a static ELF, and a C-backend program links no `-lm`.
   (0.52), hypot 0.92 (0.53), sinh 1.51 (1.54), cosh 0.99 (1.49), tanh 2.02
   (2.02). sin, cos and tan are good to 1e22 (musl's argument reduction).
   Specials: 0 of 6,650 differ from glibc in kind (NaN, inf, zero, sign).
-- Programs need an x86-64 CPU with SSE4.1, AVX and FMA3 (Haswell, 2013, or
-  later); the runtime checks this once at startup (CPUID leaf 1, XGETBV) and
-  exits with code 16 and one line on stderr when a feature is missing.
+- Programs need an x86-64-v3 CPU (AVX2, BMI1, BMI2, FMA3, F16C, LZCNT, MOVBE;
+  Intel Haswell, 2013, AMD Excavator, 2015, or later); the runtime checks this
+  once at startup (CPUID, XGETBV) and exits with code 16 and one line on
+  stderr when a feature is missing.
 
 ### collections
 
