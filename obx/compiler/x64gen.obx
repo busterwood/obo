@@ -996,7 +996,9 @@ fn (g: mut &Gen) allocRegs(f: int) {
         }
         order[i] = l
     }
-    var given: []int = []
+    // the locals given each register so far, by register number (regFree looks at one register's)
+    var given: [][]int = []
+    for i in 0..16 { append(mut &given, []) }
     var nSaved = 0
     for l in order {
         var r = -1
@@ -1018,7 +1020,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
         }
         if r >= 0 {
             g.reg[l] = r
-            append(mut &given, l)
+            append(mut &given[r], l)
         } else if !g.inner[l] && g.weight[l] >= 64 && len(g.sites) > 0 {
             g.spillReg(mut &given, l, &innerSite, &loudBefore)
         }
@@ -1029,7 +1031,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
 // positions where it is live, and the statements that hold all of the range of each local given
 // the register that meets its own. The register for which those sites weigh least (sites in
 // sites dropped), if the uses of l outweigh twice that (a store and a load at each), else none.
-fn (g: mut &Gen) spillReg(given: mut &[]int, l: int, innerSite: &[]int, loudBefore: &[]int) {
+fn (g: mut &Gen) spillReg(given: mut &[][]int, l: int, innerSite: &[]int, loudBefore: &[]int) {
     // the ranges that sites must hold, [a, b] pairs: the loud positions (at most MAX_SITES: the
     // search is bounded, and each site costs a store and a load)
     var loudNeed: []int = []
@@ -1047,10 +1049,9 @@ fn (g: mut &Gen) spillReg(given: mut &[]int, l: int, innerSite: &[]int, loudBefo
     }
     // ... and the ranges of the locals given each register that meet l's
     var conflicts: [][]int = [[], [], [], []]
-    for o in given {
-        let r = g.reg[o]
-        for qi in 0..len(QUIET_REGS) {
-            if r == QUIET_REGS[qi] && len(conflicts[qi]) <= 2 * MAX_SITES && g.meets(o, l) {
+    for qi in 0..len(QUIET_REGS) {
+        for o in given[QUIET_REGS[qi]] {
+            if len(conflicts[qi]) <= 2 * MAX_SITES && g.meets(o, l) {
                 let so = g.spans(o)
                 append(mut &conflicts[qi], so[0])
                 append(mut &conflicts[qi], so[len(so) - 1])
@@ -1107,7 +1108,7 @@ fn (g: mut &Gen) spillReg(given: mut &[]int, l: int, innerSite: &[]int, loudBefo
     }
     if best < 0 { return }
     g.reg[l] = best
-    append(given, l)
+    append(mut &given[best], l)
     append(mut &g.spill, l)
     for s in bestSites { append(mut &g.sites[s].locals, l) }
 }
@@ -1127,9 +1128,9 @@ fn (g: &Gen) spillsHere(s: int): bool {
 }
 
 // Whether register r is free over the live range of local l (no local given it overlaps).
-fn (g: &Gen) regFree(given: &[]int, r: int, l: int): bool {
-    for o in given {
-        if g.reg[o] == r && g.meets(o, l) { return false }
+fn (g: &Gen) regFree(given: &[][]int, r: int, l: int): bool {
+    for o in given[r] {
+        if g.meets(o, l) { return false }
     }
     return true
 }
@@ -1139,12 +1140,21 @@ fn (g: &Gen) meets(o: int, l: int): bool {
     if g.first[o] > g.last[l] || g.first[l] > g.last[o] { return false }
     // the ranges around them meet: compare the positions of inner locals
     if !g.inner[o] && !g.inner[l] { return true }
-    let a = g.spans(o)
-    let b = g.spans(l)
-    for i in 0..len(a) / 2 {
-        for j in 0..len(b) / 2 {
-            if a[2 * i] <= b[2 * j + 1] && b[2 * j] <= a[2 * i + 1] { return true }
+    // an inner local is live at its positions only (spans without making them)
+    if !g.inner[o] { return g.ptsIn(l, g.first[o], g.last[o]) }
+    if !g.inner[l] { return g.ptsIn(o, g.first[l], g.last[l]) }
+    for p in g.pts[o] {
+        for q in g.pts[l] {
+            if p == q { return true }
         }
+    }
+    return false
+}
+
+// Whether a position of local l is in [a, b].
+fn (g: &Gen) ptsIn(l: int, a: int, b: int): bool {
+    for p in g.pts[l] {
+        if p >= a && p <= b { return true }
     }
     return false
 }

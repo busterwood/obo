@@ -76,16 +76,25 @@ class Gen:
         self.lines = []
         self.consts = {}
         self.vars = set()
+        self.pending = ""       # literal text not yet emitted: one b.add per run of text
+        self.pdepth = 0
+
+    def flush(self):
+        if self.pending:
+            self.lines.append("    " * self.pdepth + "b.add(" + lit(self.pending) + ")")
+            self.pending = ""
 
     def emit(self, depth, s):
+        self.flush()
         self.lines.append("    " * depth + s)
 
     def text(self, depth, s):
-        parts = s.split("\n")
-        for k, p in enumerate(parts):
-            piece = p + ("\n" if k < len(parts) - 1 else "")
-            if piece:
-                self.emit(depth, "b.add(" + lit(piece) + ")")
+        # consecutive text (and constants) becomes one literal: each b.add is a loop that the
+        # compiler may inline, and the generated functions would otherwise hold over a thousand
+        if self.pending and depth != self.pdepth:
+            self.flush()
+        self.pending += s
+        self.pdepth = depth
 
     def cond(self, c):
         c = c.strip()
@@ -185,9 +194,11 @@ class Gen:
         cond = self.cond(s[2:].strip())
         self.i += 1
         while True:
+            self.flush()
             saved = self.lines
             self.lines = []
             self.block(depth + 1, ("endif", "else"))
+            self.flush()
             body = self.lines
             self.lines = saved
             branches.append((cond, body))
@@ -276,6 +287,7 @@ def main():
         src = open("%s/%s.txt" % (d, s), encoding="utf8").read()
         g = Gen(tokenize(src))
         g.block(1, ())
+        g.flush()
         print()
         print("fn %s(o: &InitOpts, b: mut &StrBuf) {" % s)
         print("\n".join(g.lines))
