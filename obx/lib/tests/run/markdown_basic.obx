@@ -1,0 +1,46 @@
+// markdown: CommonMark to HTML (the spec's examples and cmark's behaviour are
+// tested exhaustively by tests/markdown.py; these are a sample and the options).
+// expect: <h1>Hello</h1>|<p><em>world</em> and <strong>more</strong></p>|
+// expect: <ul>|<li>a</li>|<li>b</li>|</ul>|<ol start="3">|<li>c</li>|<li>d</li>|</ol>|
+// expect: <ul>|<li>|<p>a</p>|<p>b</p>|</li>|<li>|<p>c</p>|</li>|</ul>|
+// expect: <pre><code class="language-obx">let x = 1 &lt; 2|</code></pre>|
+// expect: <p><a href="/u%20v?a=1&amp;b=2" title="t">link</a> <img src="i.png" alt="alt" /></p>|
+// expect: <p>&amp;© &lt;</p>|<p>© &amp;#X</p>|
+// expect: <p><!-- raw HTML omitted -->x<!-- raw HTML omitted --></p>|<p><a href="">bad</a> <a href="/ok">good</a></p>|
+// expect: <p><b>x</b></p>|<div>|raw|</div>|
+// expect: <p>“quoted” ‘it’s’ a–b—c…</p>|
+// expect: <p data-sourcepos="1:1-2:2">ab<br />|cd</p>|<hr data-sourcepos="4:1-4:3" />|
+// expect: <p>a<br />|b c</p>| <p>a b c</p>|
+// expect: <p><a href="/url">foo bar</a> <a href="/url">ss</a></p>|
+import "markdown"
+import "strings"
+
+fn show(s: str): str { return strings.replaceAll(s, "\n", "|") }
+
+fn render(src: str, o: markdown.Options): str { return show(markdown.toHtml(src, o)) }
+
+fn main() {
+    let d = markdown.defaults()
+    var u = markdown.defaults()
+    u.unsafe = true
+    var sm = markdown.defaults()
+    sm.smart = true
+    var sp = markdown.defaults()
+    sp.sourcepos = true
+    var hb = markdown.defaults()
+    hb.hardbreaks = true
+    var nb = markdown.defaults()
+    nb.nobreaks = true
+    println(render("# Hello\n\n*world* and **more**\n", d))
+    println(render("- a\n- b\n\n3. c\n4. d\n", d))
+    println(render("- a\n\n  b\n- c\n", d))
+    println(render("``` obx extra\nlet x = 1 < 2\n```\n", d))
+    println(render("[link](</u v?a=1&b=2> \"t\") ![alt](i.png)\n", d))
+    println(render("&amp;&copy; <\n\n&copy; &#X\n", d))
+    println(render("<b>x</b>\n\n[bad](javascript:alert(1)) [good](/ok)\n", d))
+    println(render("<b>x</b>\n\n<div>\nraw\n</div>\n", u))
+    println(render("\"quoted\" 'it's' a--b---c...\n", sm))
+    println(render("ab  \ncd\n\n***\n", sp))
+    println(render("a\nb c\n", hb) + " " + render("a\nb c\n", nb))
+    println(render("[foo]: /url\n\n[FOO bar]: /url\n[ẞ]: /url\n\n[foo bar] [ss]\n", d))
+}

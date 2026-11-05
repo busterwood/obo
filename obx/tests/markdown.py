@@ -172,7 +172,7 @@ def report(label, res, verbose):
     return not res.fail
 
 
-def gen_cases():
+def gen_cases(count=400):
     """Generated differential inputs: (name, text)."""
     cases = []
     import random
@@ -181,9 +181,17 @@ def gen_cases():
              '\t', ' ', '\n', '\n\n', '> ', '- ', '* * *', '---', '===', '```', '~~~', '<div>', '</div>', '<!--', '-->',
              '[a]: /u "t"', '[a]', 'foo', 'bar', 'a b', '\\', '&amp;', '&#35;', '&bogus;', '<http://x.y>', '<a@b.co>',
              'é', '"', "'", '...', '--', '|', '<b>', '</b>', '<a href="x">', '  \n', '\\\n']
-    for i in range(400):
+    for i in range(count):
         k = rnd.randint(3, 40)
         cases.append(('rand%03d' % i, ''.join(rnd.choice(frags) for _ in range(k))))
+    prefixes = ['', '', '', '  ', '   ', '    ', '\t', '> ', '>', '>> ', '- ', '* ', '+ ', '1. ', '10) ', '-', '  - ', '    - ',
+                '> - ', '- > ', '1. - ', '- 1. ', '```', '~~~', '````', '#', '### ', '---', '===', '***', '___', '- - -',
+                '<div>', '</div>', '<pre>', '</pre>', '<!--', '-->', '<?', '?>', '<![CDATA[', ']]>', '<a>', '[x]: /u', '[x]:']
+    words = ['foo', 'bar baz', '*em*', '**st**', '`c`', '[l](u)', '[x]', '![i](u "t")', '<http://a.b>', '&amp;', '\\*',
+             '', '', '  ', 'a  ', 'a\\', '  b', '\tc', '=', '-', '#']
+    for i in range(count // 2):
+        k = rnd.randint(1, 14)
+        cases.append(('blk%03d' % i, '\n'.join(rnd.choice(prefixes) + rnd.choice(words) for _ in range(k)) + rnd.choice(['', '\n', '\n\n'])))
     for c in range(33, 127):
         ch = chr(c)
         cases.append(('href%02x' % c, '[a](<x%sx>) ![b](<y%sy> "t%s")\n' % (ch, ch, ch)))
@@ -247,6 +255,7 @@ def main():
     ap.add_argument('-k', default='')
     ap.add_argument('-v', action='store_true')
     ap.add_argument('--no-patho', action='store_true')
+    ap.add_argument('--rand', type=int, default=400, help='number of random differential inputs')
     a = ap.parse_args()
     ref = a.ref
     work = tempfile.mkdtemp(prefix='obx-md-')
@@ -271,7 +280,7 @@ def main():
                     ok &= report('hardbreaks', suite_examples(pool, exe, spec, ['--unsafe', '--hardbreaks'], 'hardbreaks', a.v, ref), a.v)
                     ok &= report('nobreaks', suite_examples(pool, exe, spec, ['--unsafe', '--nobreaks'], 'nobreaks', a.v, ref), a.v)
                 if a.k in ('', 'diff'):
-                    cases = [(n, t.encode('utf-8', 'surrogatepass')) for n, t in gen_cases()]
+                    cases = [(n, t.encode('utf-8', 'surrogatepass')) for n, t in gen_cases(a.rand)]
                     for p in real_docs():
                         with open(p, 'rb') as f:
                             cases.append((os.path.relpath(p, ROOT), f.read()))
@@ -304,4 +313,5 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
 
 
-main()
+if __name__ == "__main__":
+    main()

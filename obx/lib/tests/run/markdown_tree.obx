@@ -1,0 +1,63 @@
+// markdown: the tree (kinds, links between nodes, walker, data of nodes), and
+// documents that are deep or have many pieces (nothing recurses).
+// expect: document(block_quote(heading2(text) paragraph(text emph(text) text softbreak code text link(text))) list(item(paragraph(text))) code_block html_block thematic_break)
+// expect: 2 Title | list ordered=true start=4 tight=true delim=.
+// expect: link dest=/u title=T | info=obx
+// expect: deep 50000 50000 true
+// expect: refs 3 ok
+import "markdown"
+import "strings"
+
+fn tree(d: &markdown.Doc): str {
+    var out = ""
+    var w = d.walker(d.root())
+    while w.next(d) {
+        let k = d.kind(w.node)
+        if w.entering {
+            if len(out) > 0 && out[len(out) - 1] != '(' { out += " " }
+            out += k.name()
+            if k == markdown.Kind.Heading { out += d.level(w.node).toStr() }
+            if !k.isLeaf() { out += "(" }
+        } else if !k.isLeaf() {
+            out += ")"
+        }
+    }
+    return out
+}
+
+fn main() {
+    let src = "> ## Title\n> a *b* c\n> `x` [l](/u \"T\")\n\n4. one\n\n```obx\ncode\n```\n<div>\n\n***\n"
+    let d = markdown.parse(src, markdown.defaults())
+    println(tree(&d))
+    // the first block quote's heading, the list and the link
+    let bq = d.firstChild(d.root())
+    let h = d.firstChild(bq)
+    let list = d.next(bq)
+    println(d.level(h).toStr() + " " + d.text(d.firstChild(h)) + " | list ordered=" + d.at(list).ordered.toStr() +
+            " start=" + d.at(list).start.toStr() + " tight=" + d.at(list).tight.toStr() + " delim=" + strings.fromRune(int(d.at(list).delim)))
+    var link = d.firstChild(d.next(h))
+    while d.kind(link) != markdown.Kind.Link { link = d.next(link) }
+    let cb = d.next(list)
+    println("link dest=" + d.dest(link) + " title=" + d.title(link) + " | info=" + d.info(cb))
+
+    // 50,000 nested block quotes and 100,000 nested emphasis levels
+    let deep = markdown.parse(repeat("> ", 50000) + "x\n", markdown.defaults())
+    var depth = 0
+    var n = deep.root()
+    while deep.firstChild(n) >= 0 {
+        n = deep.firstChild(n)
+        depth += 1
+    }
+    let html = markdown.toHtml(repeat("*a ", 50000) + "b" + repeat(" a*", 50000), markdown.defaults())
+    println("deep " + (depth - 2).toStr() + " " + strings.count(html, "<em>").toStr() + " " + (depth > 50000).toStr())
+
+    // many reference definitions, each used
+    var refs = ""
+    var uses = ""
+    for i in 0..3 {
+        refs += "[r" + i.toStr() + "]: /u" + i.toStr() + "\n"
+        uses += "[r" + i.toStr() + "] "
+    }
+    let r = markdown.toHtml(refs + "\n" + uses + "\n", markdown.defaults())
+    println("refs " + strings.count(r, "<a href").toStr() + " ok")
+}
