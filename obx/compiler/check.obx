@@ -1206,6 +1206,14 @@ fn (c: mut &Checker) newCid(): int {
     return c.cids
 }
 
+// Register the roots r (a root of borrow-class value: a variable or a join) as borrowed by call cid.
+fn (c: mut &Checker) holdRoots(r: int, m: bool, cid: int, line: int) {
+    if r < 0 { return }
+    for x in c.members(r) {
+        if x >= 0 && c.vars[x].kind != VK_PSEUDO { c.hold(rvAt(-1, sema.T_VOID, x, ""), hm(m), cid, line) }
+    }
+}
+
 // Register a borrowed argument of call cid (SPEC 10 rule 3, and nested calls).
 fn (c: mut &Checker) hold(v: Val, m: int, cid: int, line: int) {
     let root = v.root
@@ -4327,6 +4335,9 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         append(mut &srcs, -1)
         append(mut &isSrc, false)
     }
+    // whether the result may hold borrows: sig.ret is borrow-class before substitution exactly when it
+    // may be after (only a `borrow` type parameter takes a type argument that holds borrows)
+    let mayBC = c.pg.isBorrowClass(sig.ret)
     let cid = c.newCid()
     let mark = len(c.cx.pending)
     var lates: []Late = []
@@ -4428,7 +4439,12 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             if !c.pg.unify(pt, v.t, mut &bind, &tps) {
                 c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
             }
-            if c.pg.tk(v.t) == sema.TK_REF { c.hold(v, hm(c.pg.tm(v.t)), cid, line) }
+            if c.pg.tk(v.t) == sema.TK_REF {
+                c.hold(v, hm(c.pg.tm(v.t)), cid, line)
+            } else if c.pg.isBorrowClass(v.t) {
+                // SPEC 10 rule 3: what a value holding borrows borrows is held while the call runs
+                c.holdRoots(c.crOf(v), c.pg.holdsMut(v.t), cid, line)
+            }
             var later = false
             for p in pos + 1..len(effs) {
                 if effs[p] { later = true }
@@ -4437,10 +4453,12 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             if v.cat == CAT_PLACE && !c.isCopy(v.t) { c.hold(v, HM_MOVE, cid, line) }
             vals[i] = CArg{b: false, v: v}
         }
-        let pbc = c.pg.subst(pt, &bind)
-        if ptk != sema.TK_CLO && c.pg.isBorrowClass(pbc) {
-            isSrc[i] = true
-            srcs[i] = c.srcRoot(pbc, vals[i].v)
+        if mayBC && ptk != sema.TK_CLO {
+            let pbc = c.pg.subst(pt, &bind)
+            if c.pg.isBorrowClass(pbc) {
+                isSrc[i] = true
+                srcs[i] = c.srcRoot(pbc, vals[i].v)
+            }
         }
         var rb = false
         for r in rechecks {
