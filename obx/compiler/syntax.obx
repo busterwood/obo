@@ -759,6 +759,7 @@ pub type Parser = record {
     toks: []Tok
     i: int
     nolit: int
+    forIn: int      // the nolit level of a for header (a record literal Name{f: ... may be its iterator), or -1
     depth: int
     dots: bool      // the last params() ended in ... (an extern's C varargs)
     ast: Ast
@@ -766,7 +767,7 @@ pub type Parser = record {
 
 // The tree of a module, or the first syntax error (which stops the program).
 pub fn parse(src: str, fname: str): Ast {
-    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, depth: 0, dots: false,
+    var p = Parser{toks: lex(src, fname), i: 0, nolit: 0, forIn: -1, depth: 0, dots: false,
                    ast: Ast{fname: fname, nodes: [], items: [], imports: -1, decls: -1}}
     p.module()
     let Parser{ast} = move(p)
@@ -1343,6 +1344,10 @@ fn (p: &Parser) prevBrace(): bool {
     return p.toks[p.i - 1].k == T_SYM && p.toks[p.i - 1].op == S_RBRACE
 }
 
+// In a for header, `Name{f: ...` is a record literal (the iterator), not the loop body: a statement
+// cannot begin with `f:`.
+fn (p: &Parser) forLit(): bool { return p.nolit == p.forIn && p.kind(1) == T_ID && p.isSym(2, S_COLON) }
+
 fn (p: mut &Parser) cond(): int {
     p.nolit += 1
     let e = p.expr()
@@ -1384,7 +1389,10 @@ fn (p: mut &Parser) stmt1(): int {
                 p.next()
                 let name = p.ident()
                 p.expect(T_KW, K_IN)
+                let saveIn = p.forIn
+                p.forIn = p.nolit + 1
                 let a = p.cond()
+                p.forIn = saveIn
                 var b = -1
                 if p.atSym(S_DOTDOT) {
                     p.next()
@@ -1676,7 +1684,7 @@ fn (p: mut &Parser) postfix(start: int): int {
             p.sym(S_RBRACKET)
         } else if p.atSym(S_LPAREN) {
             e = p.node(N_CALL, w, "", e, p.args(S_LPAREN, S_RPAREN), -1)
-        } else if p.atSym(S_LBRACE) && p.nolit == 0 && p.namelike(e) {
+        } else if p.atSym(S_LBRACE) && (p.nolit == 0 || p.forLit()) && p.namelike(e) {
             e = p.node(N_LIT, w, "", e, p.inits(), -1)
         } else {
             return e
