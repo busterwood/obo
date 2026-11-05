@@ -1,0 +1,185 @@
+// sqlserver against a live SQL Server ($MSSQL_TEST_DSN or ~/.obo-mssql-dsn,
+// the ODBC string mssql takes; never printed, and neither are the server's
+// or TLS's messages on a failed connect, which can name the login or host:
+// only codes). Exits 77, skipped, without one. Login under Encrypt=yes and
+// Encrypt=no, a wrong password, batches with row counts, PRINT as a
+// diagnostic, server errors, every T1 type at its limits, varchar in a UTF-8
+// and in a code-page collation, nvarchar(max) longer than a packet, a long
+// batch, 20000 rows, transactions by batch, USE and the type not supported
+// yet.
+// needs: ssl
+// expect: encrypt=yes: full tds 0x74000004 idle true collation true
+// expect: encrypt=no: true
+// expect: wrong password: error 18456
+// expect: insert: 3
+// expect: update none: 0
+// expect: set nocount: -1
+// expect: select: 4 rows, id int, name nvarchar | 1 'a' | 3 NULL
+// expect: two sets: first 1 of 2, affected 1
+// expect: print: 1 0 hello café
+// expect: missing table: error 208: Invalid object name 'nope'. | idle true
+// expect: duplicate: 2627, rows now 5
+// expect: divide: error 8134
+// expect: raiserror 16: error 50000
+// expect: parameters: error 1000
+// expect: ints: 255 0 -32768 32767 -2147483648 2147483647 -9223372036854775808 9223372036854775807 true false
+// expect: floats: 0.10000000149011612 -3.3999999521443642e38 0.1 1.7976931348623157e308 0 0 1.1754943508222875e-38
+// expect: texts: '' 'café 😀 日本' 'ab  ' NULL 'naïve' error 1002 error 1002 x'00ff10' NULL
+// expect: code page: error 1002: column 5: varchar data in code page 1252 (LCID 0x0409, sort order 52): only UTF-8 collations are supported yet
+// expect: as text: café 😀 日本 | bytes of text: 17 | int of text: error 1002 | null: error 1001 | text of int: -2147483648
+// expect: max: 30000 9000 true size -1
+// expect: long batch: 5000
+// expect: packet size: 16384 batch ok 40000
+// expect: many: 20000 sum 200010000
+// expect: not yet: error 1002 error 1002 date decimal
+// expect: begin: true idle false
+// expect: rollback: false rows 0
+// expect: commit: false rows 1
+// expect: use: tempdb back ok true
+// expect: open handles: 0
+
+import "sqlserver"
+import "io"
+import "os"
+import "strings"
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrExit(d: str): sqlserver.Conn {
+    let r = sqlserver.connect(d)
+    if r.isErr() {
+        // the message may name the login or the host: only the code
+        println("connect failed: " + r.unwrapErr().code.toStr())
+        exit(1)
+    }
+    return r.unwrap()
+}
+
+fn code[T](r: Result[T, sqlserver.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+fn values(rows: &sqlserver.Rows, row: int): str {
+    var out: []str = []
+    for i in 0..rows.columnCount() {
+        match rows.value(row, i) {
+            Ok(v) { append(mut &out, v.toStr()) }
+            Err(e) { append(mut &out, "error " + e.code.toStr()) }
+        }
+    }
+    return strings.join(&out, " ")
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(x) { x }
+        None { exit(77) }
+    }
+    var c = connectOrExit(d + ";Encrypt=yes")
+    println("encrypt=yes: " + c.encryption() + " tds 0x" + strings.hex(c.tdsVersion()) + " idle " + c.idle().toStr() +
+            " collation " + (c.collation().lcid > 0).toStr())
+    var o = connectOrExit(d + ";Encrypt=no")
+    let e = o.encryption()
+    println("encrypt=no: " + (e == "full" || e == "login only").toStr())
+    o.close()
+    println("wrong password: " + code(sqlserver.connect(d + ";Encrypt=yes;PWD={not the password}")))
+
+    // batches
+    c.exec("CREATE TABLE #t(id int PRIMARY KEY, name nvarchar(40) NULL)").unwrap()
+    println("insert: " + c.run("INSERT INTO #t VALUES (1, N'a'), (2, N'b'), (3, NULL)", &[]).unwrap().toStr())
+    println("update none: " + c.run("UPDATE #t SET name = N'x' WHERE id > 100", &[]).unwrap().toStr())
+    println("set nocount: " + c.run("SET NOCOUNT ON; INSERT INTO #t VALUES (4, N'd'); SET NOCOUNT OFF", &[]).unwrap().toStr())
+    let rows = c.query("SELECT id, name FROM #t ORDER BY id", &[]).unwrap()
+    println("select: " + rows.rowCount().toStr() + " rows, " + rows.columnName(0).unwrap() + " " +
+            rows.columnTypeName(0).unwrap() + ", " + rows.columnName(1).unwrap() + " " + rows.columnTypeName(1).unwrap() +
+            " | " + values(&rows, 0) + " | " + values(&rows, 2))
+    let two = c.query("UPDATE #t SET name = N'z' WHERE id = 4; SELECT 1; SELECT 2", &[]).unwrap()
+    println("two sets: first " + values(&two, 0) + " of " + two.resultSets().toStr() + ", affected " + two.affected().toStr())
+    c.exec("PRINT N'hello café'").unwrap()
+    let dg = c.diagnostics()
+    println("print: " + len(dg).toStr() + " " + dg[0].number.toStr() + " " + dg[0].text)
+    match c.exec("SELECT * FROM nope") {
+        Ok(_) { println("missing table: ok") }
+        Err(x) { println("missing table: " + x.toStr() + " | idle " + c.idle().toStr()) }
+    }
+    match c.exec("INSERT INTO #t VALUES (5, N'e'); INSERT INTO #t VALUES (1, N'dup')") {
+        Ok(_) { println("duplicate: ok") }
+        Err(x) { println("duplicate: " + x.code.toStr() + ", rows now " + c.query("SELECT COUNT(*) FROM #t", &[]).unwrap().int(0, 0).unwrap().toStr()) }
+    }
+    println("divide: " + code(c.query("SELECT 1/0", &[])))
+    println("raiserror 16: " + code(c.exec("RAISERROR('bad %d', 16, 1, 42)")))
+    println("parameters: " + code(c.query("SELECT @p", &[sqlserver.Value.Int(1)])))
+
+    // types
+    let ints = c.query("SELECT CAST(255 AS tinyint), CAST(0 AS tinyint), CAST(-32768 AS smallint), CAST(32767 AS smallint), " +
+                       "CAST(-2147483648 AS int), CAST(2147483647 AS int), CAST(-9223372036854775808 AS bigint), " +
+                       "CAST(9223372036854775807 AS bigint), CAST(1 AS bit), CAST(0 AS bit)", &[]).unwrap()
+    println("ints: " + values(&ints, 0))
+    let fl = c.query("SELECT CAST(0.1 AS real), CAST(-3.4E38 AS real), CAST(0.1 AS float), CAST(1.7976931348623157E308 AS float), " +
+                     "CAST(-0.0 AS float), CAST(4.9E-324 AS float), CAST(1.17549435E-38 AS real)", &[]).unwrap()
+    println("floats: " + values(&fl, 0))
+    let tx = c.query("SELECT N'', N'café 😀 日本', CAST(N'ab' AS nchar(4)), CAST(NULL AS nvarchar(10)), " +
+                     "CAST(N'naïve' COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS varchar(20)), " +
+                     "CAST(N'naïve' AS varchar(20)) COLLATE SQL_Latin1_General_CP1_CI_AS, " +
+                     "CAST(N'x' AS varchar(5)) COLLATE Cyrillic_General_CI_AS, 0x00ff10, CAST(NULL AS varbinary(4))", &[]).unwrap()
+    println("texts: " + values(&tx, 0))
+    println("code page: " + tx.text(0, 5).unwrapErr().toStr())
+    println("as text: " + tx.text(0, 1).unwrap() + " | bytes of text: " + len(tx.bytes(0, 1).unwrap()).toStr() +
+            " | int of text: " + code(tx.int(0, 1)) + " | null: " + code(tx.text(0, 3)) + " | text of int: " + ints.text(0, 4).unwrap())
+    let big = c.query("SELECT REPLICATE(CAST(N'é😀' AS nvarchar(max)), 30000), REPLICATE(CAST('a' AS varchar(max)), 9000) " +
+                      "COLLATE Latin1_General_100_CI_AS_SC_UTF8, CAST(NULL AS nvarchar(max))", &[]).unwrap()
+    let bt = big.text(0, 0).unwrap()
+    println("max: " + strings.count(bt, "😀").toStr() + " " + len(big.text(0, 1).unwrap()).toStr() + " " +
+            big.isNull(0, 2).unwrap().toStr() + " size " + big.columnSize(0).unwrap().toStr())
+    var long = newStrBuf()
+    long.add("SELECT LEN(N'")
+    for i in 0..5000 { long.add("é") }
+    long.add("')")
+    match c.query(long.toStr(), &[]) {
+        Ok(lr) { println("long batch: " + lr.int(0, 0).unwrap().toStr()) }
+        Err(x) { println("long batch: error " + x.code.toStr()) }
+    }
+    var p = connectOrExit(d + ";Encrypt=yes;Packet Size=32767")
+    var pl = newStrBuf()
+    pl.add("SELECT LEN(N'")
+    for i in 0..40000 { pl.add("x") }
+    pl.add("')")
+    println("packet size: " + p.packetSize().toStr() + " batch " + code(p.query(pl.toStr(), &[])) + " " +
+            p.query(pl.toStr(), &[]).unwrap().int(0, 0).unwrap().toStr())
+    p.close()
+    let many = c.query("SELECT TOP 20000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n, N'row' AS t " +
+                       "FROM sys.all_objects a CROSS JOIN sys.all_objects b", &[]).unwrap()
+    var sum = 0
+    for i in 0..many.rowCount() { sum += many.int(i, 0).unwrap() }
+    println("many: " + many.rowCount().toStr() + " sum " + sum.toStr())
+    let dt = c.query("SELECT CAST('2026-11-05' AS date), CAST(1.5 AS decimal(5,2))", &[]).unwrap()
+    println("not yet: " + code(dt.value(0, 0)) + " " + code(dt.value(0, 1)) + " " + dt.columnTypeName(0).unwrap() + " " +
+            dt.columnTypeName(1).unwrap())
+
+    // transactions and USE
+    c.exec("BEGIN TRANSACTION").unwrap()
+    println("begin: " + c.inTransaction().toStr() + " idle " + c.idle().toStr())
+    c.exec("INSERT INTO #t VALUES (10, N'tx')").unwrap()
+    c.exec("ROLLBACK").unwrap()
+    println("rollback: " + c.inTransaction().toStr() + " rows " + c.query("SELECT COUNT(*) FROM #t WHERE id = 10", &[]).unwrap().int(0, 0).unwrap().toStr())
+    c.exec("BEGIN TRAN; INSERT INTO #t VALUES (11, N'tx'); COMMIT").unwrap()
+    println("commit: " + c.inTransaction().toStr() + " rows " + c.query("SELECT COUNT(*) FROM #t WHERE id = 11", &[]).unwrap().int(0, 0).unwrap().toStr())
+    let db = c.database()
+    c.exec("USE tempdb").unwrap()
+    println("use: " + c.database() + " back " + code(c.exec("USE [" + db + "]")) + " " + (c.database() == db).toStr())
+    c.close()
+    println("open handles: " + sqlserver.openHandles().toStr())
+}

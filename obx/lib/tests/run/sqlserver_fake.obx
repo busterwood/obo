@@ -1,0 +1,259 @@
+// sqlserver against a scripted fake server on 127.0.0.1 (a task of this
+// program), without TLS: a server that closes at once, one that answers
+// PRELOGIN with garbage, one without encryption under Encrypt=yes, one that
+// never answers (Connect Timeout), a refused login, and a session with a
+// plain login (Encrypt=no, the server NOT_SUP): the negotiated packet size
+// of 512 for a long batch, a reply split over many packets, a server error,
+// and the server closing in the middle of a reply (the connection broken).
+// needs: ssl
+// expect: closed at once: error 1023
+// expect: garbage: error 1022: tds: PRELOGIN: a truncated option
+// expect: no encryption: error 1023: tds: the server does not support encryption (Encrypt=yes needs it)
+// expect: silent: error 1021: connect: the deadline or Connect Timeout passed
+// expect: refused: error 18456: Login failed for user 'u'.
+// expect: session: encryption off database app packet 512 version 17.0.5035 info 5701 idle true
+// expect: run: 3
+// expect: rows: 300 sum 44850 last row 299 é affected -1
+// expect: server error: error 208: Invalid object name 'nope'. | idle true
+// expect: parameters: error 1000
+// expect: cut: error 1023: tds: the server closed the connection | idle false
+// expect: after: error 1023: tds: the connection is broken by an earlier error
+// expect: server: prelogin type 18 bytes 39 | silent: the client closed | login7 type 16 user u db app app fake test password scrambled true | batch type 1 packets 5 largest 512 chars 1206 starts INSERT
+// expect: open handles: 0
+
+import "sqlserver"
+import "tds"
+import "net"
+import "task"
+import "strings"
+import "../support/tdstest" as tt
+
+var ADDR: str = ""
+
+// A server's side of one connection: TDS messages in, packets out.
+type Wire = record {
+    c: net.Conn
+    pending: str
+    packets: int        // packets of the last message
+    largest: int        // its largest packet
+}
+
+fn wire(c: net.Conn): Wire { return Wire{c: c, pending: "", packets: 0, largest: 0} }
+
+fn (x: mut &Wire) fill(n: int): bool {
+    var tmp: []byte = []
+    for i in 0..4096 { append(mut &tmp, byte(0)) }
+    while len(x.pending) < n {
+        match x.c.read(mut &tmp) {
+            Ok(k) {
+                if k == 0 { return false }
+                x.pending = x.pending + strFromBytes(&tmp[0..k])
+            }
+            Err(_) { return false }
+        }
+    }
+    return true
+}
+
+type Msg = value record { ptype: int; data: str }
+
+// The next message, None at the end of the stream.
+fn (x: mut &Wire) message(): Option[Msg] {
+    var data = ""
+    var ptype = -1
+    x.packets = 0
+    x.largest = 0
+    while true {
+        if !x.fill(8) { return None }
+        let n = (int(x.pending[2]) << 8) | int(x.pending[3])
+        if n < 8 || !x.fill(n) { return None }
+        ptype = int(x.pending[0])
+        let eom = (int(x.pending[1]) & 1) != 0
+        data = data + x.pending[8..n]
+        x.pending = x.pending[n..]
+        x.packets += 1
+        x.largest = max(x.largest, n)
+        if eom { break }
+    }
+    return Some(Msg{ptype: ptype, data: data})
+}
+
+fn (x: &Wire) send(ptype: int, payload: str, size: int) {
+    let r = x.c.write(&tds.packets(ptype, payload, size))
+}
+
+fn prelogin(encryption: int): str {
+    var b = tt.bytesOf()
+    for v in [0, 0, 11, 0, 6, 1, 0, 17, 0, 1, 0xff] { b.u8(v) }
+    for v in [17, 0, 0x13, 0xab, 0, 0] { b.u8(v) }
+    b.u8(encryption)
+    return b.str()
+}
+
+fn le16(s: str, at: int): int { return int(s[at]) | (int(s[at + 1]) << 8) }
+
+// A LOGIN7 field's text.
+fn field(s: str, at: int): str {
+    let off = le16(s, at)
+    return tds.fromUtf16(s[off..off + 2 * le16(s, at + 2)]).unwrap()
+}
+
+fn done(status: int, count: int): str {
+    var b = tt.bytesOf()
+    b.done(tds.TK_DONE, status, 0xC1, count)
+    return b.str()
+}
+
+fn rowsReply(n: int): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(2)
+    b.col("id", tds.T_INTN)
+    b.u8(4)
+    b.name("id")
+    b.col("name", tds.T_NVARCHAR)
+    b.u16(80)
+    b.collation(0x0409, 1, 52)
+    b.name("name")
+    for i in 0..n {
+        b.u8(tds.TK_ROW)
+        b.u8(4)
+        b.u32(i)
+        b.utf16Value("row " + i.toStr() + " é")
+    }
+    b.raw(done(0x10, n))
+    return b.str()
+}
+
+fn serve(ln: net.Listener): str {
+    var log: []str = []
+    // 1: closes at once
+    match ln.accept() {
+        Ok(c) {}
+        Err(_) { return "accept failed" }
+    }
+    // 2: garbage for PRELOGIN
+    var g = wire(ln.accept().unwrap())
+    let m2 = g.message().unwrap()
+    append(mut &log, "prelogin type " + m2.ptype.toStr() + " bytes " + len(m2.data).toStr())
+    g.send(tds.PT_REPLY, "\x00\x00\x99", 4096)
+    // 3: no encryption, under Encrypt=yes
+    var n = wire(ln.accept().unwrap())
+    let m3 = n.message().unwrap()
+    n.send(tds.PT_REPLY, prelogin(tds.ENCRYPT_NOT_SUP), 4096)
+    // 4: silent until the client gives up
+    var s = wire(ln.accept().unwrap())
+    let m4 = s.message().unwrap()
+    match s.message() {
+        Some(_) { append(mut &log, "silent: a message") }
+        None { append(mut &log, "silent: the client closed") }
+    }
+    // 5: a refused login
+    var f = wire(ln.accept().unwrap())
+    let m5 = f.message().unwrap()
+    f.send(tds.PT_REPLY, prelogin(tds.ENCRYPT_NOT_SUP), 4096)
+    let l5 = f.message().unwrap()
+    var e = tt.bytesOf()
+    e.message(tds.TK_ERROR, 18456, 1, 14, "Login failed for user 'u'.", 1)
+    e.raw(done(0x02, 0))
+    f.send(tds.PT_REPLY, e.str(), 4096)
+    // 6: a session
+    var c = wire(ln.accept().unwrap())
+    let m6 = c.message().unwrap()
+    c.send(tds.PT_REPLY, prelogin(tds.ENCRYPT_NOT_SUP), 4096)
+    let l6 = c.message().unwrap()
+    let ld = l6.data
+    let pw = ld[le16(ld, 44)..le16(ld, 44) + 2 * le16(ld, 46)]
+    append(mut &log, "login7 type " + l6.ptype.toStr() + " user " + field(ld, 40) + " db " + field(ld, 68) + " app " +
+           field(ld, 48) + " password scrambled " + (pw == strFromBytes(&tds.scramble(&tds.toUtf16("p").unwrap()))).toStr())
+    var a = tt.bytesOf()
+    a.loginAck()
+    a.envText(1, "app", "master")
+    a.envText(4, "512", "4096")
+    a.message(tds.TK_INFO, 5701, 2, 0, "Changed database context to 'app'.", 1)
+    a.raw(done(0, 0))
+    c.send(tds.PT_REPLY, a.str(), 4096)
+    // a long batch, in packets of 512
+    let b1 = c.message().unwrap()
+    let text = tds.fromUtf16(b1.data[22..]).unwrap()
+    append(mut &log, "batch type " + b1.ptype.toStr() + " packets " + c.packets.toStr() + " largest " + c.largest.toStr() +
+           " chars " + len(text).toStr() + " starts " + text[0..6])
+    c.send(tds.PT_REPLY, done(0x10, 3), 512)
+    // rows over many packets
+    let b2 = c.message().unwrap()
+    c.send(tds.PT_REPLY, rowsReply(300), 512)
+    // a server error
+    let b3 = c.message().unwrap()
+    var er = tt.bytesOf()
+    er.message(tds.TK_ERROR, 208, 1, 16, "Invalid object name 'nope'.", 1)
+    er.raw(done(0x02, 0))
+    c.send(tds.PT_REPLY, er.str(), 512)
+    // closes in the middle of a reply
+    let b4 = c.message().unwrap()
+    let part = tds.packets(tds.PT_REPLY, rowsReply(50), 512)
+    let r = c.c.write(&part[0..700])
+    return strings.join(&log, " | ")
+}
+
+fn code[T](r: Result[T, sqlserver.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+fn connStr(extra: str): str { return "Server=tcp:" + strings.replaceAll(ADDR, ":", ",") + ";UID=u;PWD=p;Database=app;" + extra }
+
+fn main() {
+    let log = task.scoped(fn(sc: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        let srv = sc.start(serve, ln)
+        println("closed at once: " + code(sqlserver.connect(connStr(""))))
+        match sqlserver.connect(connStr("")) {
+            Ok(_) { println("garbage: ok") }
+            Err(e) { println("garbage: " + e.toStr()) }
+        }
+        match sqlserver.connect(connStr("Encrypt=yes")) {
+            Ok(_) { println("no encryption: ok") }
+            Err(e) { println("no encryption: " + e.toStr()) }
+        }
+        match sqlserver.connect(connStr("Encrypt=no;Connect Timeout=1")) {
+            Ok(_) { println("silent: ok") }
+            Err(e) { println("silent: " + e.toStr()) }
+        }
+        match sqlserver.connect(connStr("Encrypt=no")) {
+            Ok(_) { println("refused: ok") }
+            Err(e) { println("refused: " + e.toStr()) }
+        }
+        var c = sqlserver.connect(connStr("Encrypt=no;APP=fake test")).unwrap()
+        println("session: encryption " + c.encryption() + " database " + c.database() + " packet " + c.packetSize().toStr() +
+                " version " + c.serverVersion() + " info " + c.diagnostics()[0].number.toStr() + " idle " + c.idle().toStr())
+        var long = newStrBuf()
+        long.add("INSERT")
+        for i in 0..200 { long.add(" -- é") }
+        println("run: " + c.run(long.toStr(), &[]).unwrap().toStr())
+        let rows = c.query("SELECT", &[]).unwrap()
+        var sum = 0
+        for i in 0..rows.rowCount() { sum += rows.int(i, 0).unwrap() }
+        println("rows: " + rows.rowCount().toStr() + " sum " + sum.toStr() + " last " + rows.text(299, 1).unwrap() +
+                " affected " + rows.affected().toStr())
+        match c.query("SELECT * FROM nope", &[]) {
+            Ok(_) { println("server error: ok") }
+            Err(e) { println("server error: " + e.toStr() + " | idle " + c.idle().toStr()) }
+        }
+        println("parameters: " + code(c.query("SELECT ?", &[sqlserver.Value.Int(1)])))
+        match c.query("SELECT", &[]) {
+            Ok(_) { println("cut: ok") }
+            Err(e) { println("cut: " + e.toStr() + " | idle " + c.idle().toStr()) }
+        }
+        match c.exec("SELECT 1") {
+            Ok(_) { println("after: ok") }
+            Err(e) { println("after: " + e.toStr()) }
+        }
+        c.close()
+        return srv.wait().unwrap()
+    })
+    println("server: " + log)
+    println("open handles: " + sqlserver.openHandles().toStr())
+}

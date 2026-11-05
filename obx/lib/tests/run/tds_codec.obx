@@ -1,0 +1,196 @@
+// tds's encoders and decoders on byte strings, without a server: packet
+// framing, PRELOGIN both ways, the LOGIN7 layout (MS-TDS 2.2.6.4) and the
+// password scramble, SQLBatch's ALL_HEADERS, UTF-16 both ways, collations
+// and their code pages, and a token stream with every core token and type.
+// needs: ssl
+// expect: packets: 01 00 00 0d 00 00 01 00 61 62 63 64 65 | 01 01 00 0a 00 00 02 00 66 67
+// expect: empty: 0e 01 00 08 00 00 01 00
+// expect: header: type 4 status 1 length 4096 spid 55 id 1 | short: error 1022: tds: a packet length of 7
+// expect: prelogin: 00 00 1a 00 06 01 00 20 00 01 02 00 21 00 01 03 00 22 00 04 04 00 26 00 01 ff 00 01 00 00 00 00 01 00 00 00 00 00 00
+// expect: answer: version 17.0.5035.0 encryption 1 instance 0 mars 0
+// expect: bad prelogin: error 1022: tds: PRELOGIN: the option table has no terminator | error 1022: tds: PRELOGIN: option 1 is out of bounds | error 1022: tds: PRELOGIN: no ENCRYPTION option | error 1022: tds: PRELOGIN: a truncated option
+// expect: scramble a: b3 a5 | secret: 92 a5 f3 a5 93 a5 82 a5 f3 a5 e2 a5
+// expect: login7: length 172 version 04 00 00 74 packet 4096 flags e0 03 00 18 lcid 1033
+// expect: login7 fields: host 94/4 user 102/2 password 106/6 app 118/3 server 124/9 ext 142/4 lib 146/7 lang 160/0 db 160/3 sspi 166 attach 166 change 166
+// expect: login7 text: host=box1 user=sa app=obx server=127.0.0.1 lib=obx tds db=app password-scrambled=true
+// expect: login7 feature ext at 166: 0a 00 00 00 00 ff
+// expect: login7 too long: error 1000: the user name is longer than 128 characters | bad utf-8: error 1000: the password: invalid UTF-8 at byte 1
+// expect: batch: 16 00 00 00 12 00 00 00 02 00 01 02 03 04 05 06 07 08 01 00 00 00 53 00 45 00 4c 00 45 00 43 00 54 00 20 00 31 00
+// expect: utf16: 63 00 e9 00 3d d8 00 de | back: café😀 | odd: UTF-16 text has an odd number of bytes | lone: invalid UTF-16: lone surrogate at unit 1
+// expect: collations: 1252 1252 65001 utf8=true 1251 932 950 437 850 0
+// expect: describe: code page 1252 (LCID 0x0409, sort order 52)
+// expect: columns: id bigint, name nvarchar, note varchar, old varchar, f float, r real, b bit, t tinyint, s smallint, big nvarchar size -1, bin varbinary, d date
+// expect: rows 3 count 3
+// expect: row 0: Int(-5) Text(café) Text(naïve) Failed(varchar data in code page 1252 (LCID 0x0409, sort order 52): only UTF-8 collations are supported yet) Float(2.5) Float(0.10000000149011612) Int(1) Int(255) Int(-2) Text(long😀text) Bytes(0001ff) Failed(type date is not supported yet)
+// expect: row 1: Null Null Null Null Null Null Null Null Null Null Null Null
+// expect: row 2: Int(9223372036854775807) Text() Text(x) Null Float(-0) Null Int(0) Int(0) Int(-32768) Text() Bytes() Null
+// expect: messages: errors [Msg 208, Level 16, State 1, Line 3: Invalid object name 'nope'.] infos [Msg 5701, Level 10, State 2, Line 1: Changed database context to 'master'.]
+// expect: envs: 1 master<-tempdb 4 8192<-4096 7 5 bytes 8 8 bytes
+// expect: loginack: iface 1 tds 74000004 Microsoft SQL Server 17.0.5035 | features 0a:01 | return status -6 | affected 7
+// expect: dones: fd/11/3 ff/10/7 fd/0/0
+
+import "tds"
+import "strings"
+import "../support/tdstest" as tt
+
+fn hex(b: &[byte]): str {
+    var out = newStrBuf()
+    for i in 0..len(b) {
+        if i > 0 { out.add(" ") }
+        out.add(strings.padLeft(strings.hex(int(b[i])), 2, '0'))
+    }
+    return out.toStr()
+}
+
+fn hexs(s: str): str { return hex(&strToBytes(s)) }
+
+fn le16(b: &[byte], at: int): int { return int(b[at]) | (int(b[at + 1]) << 8) }
+
+fn le32(b: &[byte], at: int): int { return le16(b, at) | (le16(b, at + 2) << 16) }
+
+// The text of a LOGIN7 field whose offset and length are at b[at..].
+fn field(b: &[byte], at: int): str {
+    let off = le16(b, at)
+    return tds.fromUtf16(strFromBytes(&b[off..off + 2 * le16(b, at + 2)])).unwrap()
+}
+
+fn errText[T](r: Result[T, tds.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn cellText(c: &tds.Cell): str {
+    match c {
+        tds.Cell.Null { return "Null" }
+        tds.Cell.Int(n) { return "Int(" + n.toStr() + ")" }
+        tds.Cell.Float(f) { return "Float(" + f.toStr() + ")" }
+        tds.Cell.Text(t) { return "Text(" + t + ")" }
+        tds.Cell.Bytes(b) { return "Bytes(" + strings.replaceAll(hexs(b), " ", "") + ")" }
+        tds.Cell.Failed(m) { return "Failed(" + m + ")" }
+    }
+}
+
+fn messages(ms: &[]tds.Message): str {
+    var parts: []str = []
+    for m in ms { append(mut &parts, m.toStr()) }
+    return "[" + strings.join(&parts, "; ") + "]"
+}
+
+fn main() {
+    // ---- packets
+    let p = tds.packets(1, "abcdefg", 13)
+    println("packets: " + hex(&p[0..13]) + " | " + hex(&p[13..len(p)]))
+    println("empty: " + hex(&tds.packets(14, "", 4096)))
+    let h = tds.parseHeader(&strToBytes("\x04\x01\x10\x00\x00\x37\x01\x00")).unwrap()
+    println("header: type " + h.ptype.toStr() + " status " + h.status.toStr() + " length " + h.length.toStr() + " spid " +
+            h.spid.toStr() + " id " + h.id.toStr() + " | short: " + errText(tds.parseHeader(&strToBytes("\x04\x01\x00\x07\x00\x00\x01\x00"))))
+
+    // ---- PRELOGIN
+    println("prelogin: " + hexs(tds.preloginRequest(tds.ENCRYPT_ON)))
+    var ans = tt.bytesOf()
+    for x in [0, 0, 21, 0, 6, 1, 0, 27, 0, 1, 2, 0, 28, 0, 1, 4, 0, 29, 0, 1, 0xff] { ans.u8(x) }
+    for x in [17, 0, 0x13, 0xab, 0, 0, 1, 0, 0] { ans.u8(x) }
+    let pre = tds.parsePrelogin(ans.str()).unwrap()
+    println("answer: version " + pre.version + " encryption " + pre.encryption.toStr() + " instance " + pre.instance.toStr() +
+            " mars " + pre.mars.toStr())
+    println("bad prelogin: " + errText(tds.parsePrelogin("\x02\x00\x05\x00\x00")) + " | " +
+            errText(tds.parsePrelogin("\x01\x00\x10\x00\x01\xff")) + " | " +
+            errText(tds.parsePrelogin("\x02\x00\x06\x00\x00\xff")) + " | " + errText(tds.parsePrelogin("\x00\x00")))
+
+    // ---- LOGIN7
+    println("scramble a: " + hex(&tds.scramble(&tds.toUtf16("a").unwrap())) + " | secret: " +
+            hex(&tds.scramble(&tds.toUtf16("secret").unwrap())))
+    let l = tds.Login{hostName: "box1", userName: "sa", password: "secret", appName: "obx", serverName: "127.0.0.1",
+                      library: "obx tds", language: "", database: "app", packetSize: 4096, clientPid: 0, utf8: true}
+    let lb = strToBytes(tds.login7(&l).unwrap())
+    println("login7: length " + le32(&lb, 0).toStr() + " version " + hex(&lb[4..8]) + " packet " + le32(&lb, 8).toStr() +
+            " flags " + hex(&lb[24..28]) + " lcid " + le32(&lb, 32).toStr())
+    var f = newStrBuf()
+    let names = ["host", "user", "password", "app", "server", "ext", "lib", "lang", "db"]
+    for i in 0..9 {
+        if i > 0 { f.add(" ") }
+        f.add(names[i] + " " + le16(&lb, 36 + 4 * i).toStr() + "/" + le16(&lb, 38 + 4 * i).toStr())
+    }
+    println("login7 fields: " + f.toStr() + " sspi " + le16(&lb, 78).toStr() + " attach " + le16(&lb, 82).toStr() +
+            " change " + le16(&lb, 86).toStr())
+    let ls = strFromBytes(&lb)
+    let pwAt = le16(&lb, 44)
+    let pw = ls[pwAt..pwAt + 2 * le16(&lb, 46)]
+    println("login7 text: host=" + field(&lb, 36) + " user=" + field(&lb, 40) + " app=" + field(&lb, 48) + " server=" +
+            field(&lb, 52) + " lib=" + field(&lb, 60) + " db=" + field(&lb, 68) + " password-scrambled=" +
+            (pw == strFromBytes(&tds.scramble(&tds.toUtf16("secret").unwrap()))).toStr())
+    let extAt = le32(&lb, le16(&lb, 56))
+    println("login7 feature ext at " + extAt.toStr() + ": " + hex(&lb[extAt..len(lb)]))
+    var long = l
+    long.userName = strings.padLeft("", 129, 'u')
+    var badPw = l
+    badPw.password = "a\xff"
+    println("login7 too long: " + errText(tds.login7(&long)) + " | bad utf-8: " + errText(tds.login7(&badPw)))
+
+    // ---- SQLBatch
+    println("batch: " + hexs(tds.sqlBatch("SELECT 1", "\x01\x02\x03\x04\x05\x06\x07\x08").unwrap()))
+
+    // ---- UTF-16
+    let u = tds.toUtf16("cé😀").unwrap()
+    let us = strFromBytes(&u)
+    println("utf16: " + hex(&u) + " | back: " + tds.fromUtf16("c\x00a\x00f\x00\xe9\x00" + us[4..]).unwrap() + " | odd: " +
+            tds.fromUtf16("a\x00b").unwrapErr() + " | lone: " + tds.fromUtf16("a\x00\x3d\xd8b\x00").unwrapErr())
+
+    // ---- collations
+    let cs = [tds.Collation{lcid: 0x0409, flags: 1, version: 0, sortId: 52},
+              tds.Collation{lcid: 0x0407, flags: 1, version: 2, sortId: 0},
+              tds.Collation{lcid: 0x0409, flags: 0x41, version: 2, sortId: 0},
+              tds.Collation{lcid: 0x0419, flags: 1, version: 0, sortId: 0},
+              tds.Collation{lcid: 0x0411, flags: 1, version: 0, sortId: 0},
+              tds.Collation{lcid: 0x0404, flags: 1, version: 0, sortId: 0},
+              tds.Collation{lcid: 0x0409, flags: 1, version: 0, sortId: 32},
+              tds.Collation{lcid: 0x0409, flags: 1, version: 0, sortId: 42},
+              tds.Collation{lcid: 0x0476, flags: 1, version: 0, sortId: 0}]
+    var cp = newStrBuf()
+    for i in 0..len(cs) {
+        if i > 0 { cp.add(" ") }
+        cp.add(cs[i].codePage().toStr())
+        if i == 2 { cp.add(" utf8=" + cs[i].utf8().toStr()) }
+    }
+    println("collations: " + cp.toStr())
+    let parsed = tds.parseCollation("\x09\x04\x10\x00\x34").unwrap()
+    println("describe: " + parsed.describe())
+
+    // ---- a reply
+    let r = tds.decode(tt.stream(), 1000).unwrap()
+    let rs = &r.results[0]
+    var cn: []str = []
+    for c in rs.columns {
+        var t = c.name + " " + c.typeName()
+        if c.size < 0 { t = t + " size -1" }
+        append(mut &cn, t)
+    }
+    println("columns: " + strings.join(&cn, ", "))
+    println("rows " + len(rs.rows).toStr() + " count " + rs.count.toStr())
+    for i in 0..len(rs.rows) {
+        var cells: []str = []
+        for c in rs.rows[i] { append(mut &cells, cellText(&c)) }
+        println("row " + i.toStr() + ": " + strings.join(&cells, " "))
+    }
+    println("messages: errors " + messages(&r.errors) + " infos " + messages(&r.infos))
+    var ev: []str = []
+    for e in r.envs {
+        if e.kind == 1 || e.kind == 4 {
+            append(mut &ev, e.kind.toStr() + " " + e.newValue + "<-" + e.oldValue)
+        } else {
+            append(mut &ev, e.kind.toStr() + " " + len(e.newValue).toStr() + " bytes")
+        }
+    }
+    println("envs: " + strings.join(&ev, " "))
+    let ack = r.loginAck.unwrap()
+    var feats: []str = []
+    for x in r.features { append(mut &feats, strings.padLeft(strings.hex(x.id), 2, '0') + ":" + strings.replaceAll(hexs(x.data), " ", "")) }
+    println("loginack: iface " + ack.iface.toStr() + " tds " + strings.hex(ack.tdsVersion) + " " + ack.progName + " " +
+            ack.version + " | features " + strings.join(&feats, ",") + " | return status " + r.returnStatus.unwrap().toStr() +
+            " | affected " + r.affected.toStr())
+    var ds: []str = []
+    for d in r.dones { append(mut &ds, strings.hex(d.token) + "/" + strings.hex(d.status) + "/" + d.count.toStr()) }
+    println("dones: " + strings.join(&ds, " "))
+}

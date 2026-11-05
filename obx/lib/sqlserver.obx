@@ -37,8 +37,8 @@
 //   Driver             ignored (for ODBC)
 //
 // Keys are case-insensitive; a value may be in braces ({a;b}, `}}` for `}`)
-// or quotes. An unknown keyword is E_INPUT naming the keyword. Errors never
-// contain the password, or any value of the string.
+// or quotes. An unknown keyword is E_INPUT. Errors name the entry by its
+// position, never by its text: they contain no value of the string.
 //
 // Errors are sqldialect.DbError. A server error has its error number as the
 // code (208 "Invalid object name 'nope'.", 18456 "Login failed for user
@@ -88,13 +88,15 @@ pub fn parseConnString(s: str): Result[Settings, Error] {
     var haveServer = false
     var haveUser = false
     var i = 0
+    var nth = 0
     while i < len(s) {
         let c = s[i]
         if c == ';' || isSpace(c) {
             i += 1
             continue
         }
-        let kv = try entry(s, i)
+        nth += 1
+        let kv = try entry(s, i, nth)
         i = kv.next
         let k = kv.key
         let v = kv.value
@@ -136,7 +138,7 @@ pub fn parseConnString(s: str): Result[Settings, Error] {
                 if try yesNo(v, kv.key) { return Err(bad("integrated (Windows) authentication is not supported")) }
             }
             "driver" {}
-            else { return Err(bad("unknown keyword '" + k + "'")) }
+            else { return Err(bad("an unknown keyword" + at(nth))) }
         }
     }
     if !haveServer || len(trim(server)) == 0 { return Err(bad("no Server")) }
@@ -145,14 +147,19 @@ pub fn parseConnString(s: str): Result[Settings, Error] {
     return Ok(Settings{config: cfg, connectTimeoutMs: timeout})
 }
 
-// The keyword (lower case, inner spaces single) and value at s[i..].
-fn entry(s: str, at: int): Result[Entry, Error] {
-    var i = at
+// " (entry 3)": where an error is, without its text (a password with an
+// unescaped ';' would make part of it a keyword).
+fn at(nth: int): str { return " (entry " + nth.toStr() + ")" }
+
+// The keyword (lower case, inner spaces single) and value at s[from..], the
+// nth entry.
+fn entry(s: str, from: int, nth: int): Result[Entry, Error] {
+    var i = from
     var key = newStrBuf()
     var space = false
     while i < len(s) && s[i] != '=' {
         let c = s[i]
-        if c == ';' || c == '{' || c == '}' { return Err(bad("a keyword without '='")) }
+        if c == ';' || c == '{' || c == '}' { return Err(bad("a keyword without '='" + at(nth))) }
         if isSpace(c) {
             space = key.size() > 0
         } else {
@@ -162,9 +169,9 @@ fn entry(s: str, at: int): Result[Entry, Error] {
         }
         i += 1
     }
-    if i >= len(s) { return Err(bad("a keyword without '='")) }
+    if i >= len(s) { return Err(bad("a keyword without '='" + at(nth))) }
     let k = key.toStr()
-    if len(k) == 0 { return Err(bad("an empty keyword")) }
+    if len(k) == 0 { return Err(bad("an empty keyword" + at(nth))) }
     i += 1
     while i < len(s) && (s[i] == ' ' || s[i] == '\t') { i += 1 }
     var v = newStrBuf()
@@ -186,9 +193,9 @@ fn entry(s: str, at: int): Result[Entry, Error] {
             v.addByte(s[i])
             i += 1
         }
-        if !ended { return Err(bad("the value of " + k + " is not closed")) }
+        if !ended { return Err(bad("a value in braces or quotes is not closed" + at(nth))) }
         while i < len(s) && isSpace(s[i]) { i += 1 }
-        if i < len(s) && s[i] != ';' { return Err(bad("text after the value of " + k)) }
+        if i < len(s) && s[i] != ';' { return Err(bad("text after a value in braces or quotes" + at(nth))) }
         return Ok(Entry{key: k, value: v.toStr(), next: i})
     }
     let start = i
@@ -230,6 +237,7 @@ fn serverOf(v: str, cfg: mut &tds.Config): Result[Unit, Error] {
         if port < 1 || port > 65535 { return Err(bad("the server's port must be 1 to 65535")) }
         s = trim(s[..comma])
     }
+    if startsWith(low, "(localdb)") { return Err(bad("LocalDB is not supported")) }
     let slash = strings.indexOfByte(s, '\\', 0)
     if slash >= 0 {
         if port < 0 { return Err(bad("a named instance needs SQL Server Browser, which is not supported: give the port (host,port)")) }
@@ -238,7 +246,6 @@ fn serverOf(v: str, cfg: mut &tds.Config): Result[Unit, Error] {
     if len(s) > 1 && s[0] == '[' && s[len(s) - 1] == ']' { s = s[1..len(s) - 1] }
     let ls = strings.toLower(s)
     if ls == "." || ls == "(local)" { s = "localhost" }
-    if startsWith(ls, "(localdb)") { return Err(bad("LocalDB is not supported")) }
     if len(s) == 0 { return Err(bad("no host in Server")) }
     cfg.host = s
     if port > 0 { cfg.port = port }
@@ -257,7 +264,7 @@ pub fn masked(s: str): str {
             i += 1
             continue
         }
-        match entry(s, i) {
+        match entry(s, i, 0) {
             Ok(kv) {
                 let eq = strings.indexOfByte(s, '=', i)
                 out.add(s[i..eq + 1])

@@ -785,9 +785,13 @@ fn typeInfo(c: mut &Cur, col: mut &Column): Result[Unit, Error] {
             col.precision = try c.u8(what)
             col.scale = try c.u8(what)
         }
-        T_DATEN { col.framing = F_BYTE }
+        T_DATEN {
+            col.framing = F_BYTE
+            col.size = 3
+        }
         T_TIMEN, T_DATETIME2N, T_DATETIMEOFFSETN {
             col.framing = F_BYTE
+            col.size = if t == T_TIMEN { 5 } else if t == T_DATETIME2N { 8 } else { 10 }      // the largest, at scale 7
             col.scale = try c.u8(what)
             if col.scale > 7 { return Err(proto(col.typeName() + " with scale " + col.scale.toStr())) }
         }
@@ -910,11 +914,13 @@ fn readValue(c: mut &Cur, col: &Column): Result[Cell, Error] {
         F_BYTE {
             let n = try c.u8(what)
             if n == 0 { return Ok(Cell.Null) }
+            if n > col.size { return Err(proto(what + ": " + n.toStr() + " bytes for a size of " + col.size.toStr())) }
             return Ok(decodeValue(col, try c.take(n, what)))
         }
         F_USHORT {
             let n = try c.u16(what)
             if n == 0xFFFF { return Ok(Cell.Null) }
+            if n > col.size { return Err(proto(what + ": " + n.toStr() + " bytes for a size of " + col.size.toStr())) }
             return Ok(decodeValue(col, try c.take(n, what)))
         }
         F_TEXT {
@@ -961,11 +967,11 @@ fn decodeValue(col: &Column, b: str): Cell {
             return Cell.Int(v)
         }
         T_FLT4, T_FLT8, T_FLTN {
+            if len(b) != 4 && len(b) != 8 { return Cell.Failed("a float of " + len(b).toStr() + " bytes") }
             var v = 0
             for k in 0..len(b) { v = v | (int(b[k]) << (8 * k)) }
             if len(b) == 4 { return Cell.Float(floatOfBits32(v)) }
-            if len(b) == 8 { return Cell.Float(floatOfBits(v)) }
-            return Cell.Failed("a float of " + len(b).toStr() + " bytes")
+            return Cell.Float(floatOfBits(v))
         }
         T_NVARCHAR, T_NCHAR, T_NTEXT {
             match fromUtf16(b) {
@@ -1129,7 +1135,7 @@ pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
             TK_RETURNVALUE { return Err(proto("RETURNVALUE is not supported yet")) }
             TK_ALTMETADATA, TK_ALTROW { return Err(proto("COMPUTE results (ALTMETADATA, ALTROW) are not supported")) }
             TK_DATACLASSIFICATION { return Err(proto("DATACLASSIFICATION is not supported (it was not asked for)")) }
-            else { return Err(proto("unknown token 0x" + strings.hex(tok))) }
+            else { return Err(proto("unknown token 0x" + strings.padLeft(strings.hex(tok), 2, '0'))) }
         }
     }
     if !final { return Err(proto("the reply ended before its final DONE")) }
@@ -1330,9 +1336,20 @@ pub fn transport(sock: net.Conn): Transport {
 }
 
 // Sends one message as packets of the current packet size.
+//
+// Each packet is written by itself: under TLS, SQL Server reads a packet
+// from its own TLS records, and drops the connection when one record holds
+// the end of a packet and the start of the next.
 pub fn (t: mut &Transport) send(ptype: int, payload: str, w: Where): Result[Unit, Error] {
     let b = packets(ptype, payload, t.packetSize)
-    return t.s.write(&b, w)
+    if !t.s.isTls() { return t.s.write(&b, w) }
+    var off = 0
+    while off < len(b) {
+        let n = (int(b[off + 2]) << 8) | int(b[off + 3])
+        try t.s.write(&b[off..off + n], w)
+        off += n
+    }
+    return Ok(Unit{})
 }
 
 // Reads one message. E_LIMIT when its payload passes limit bytes (the rest
