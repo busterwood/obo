@@ -1,7 +1,8 @@
 # A mid-level IR for the native backend
 
-Status: study, 2026-11-05. Nothing in the compiler changes on this branch
-(`ssa-study`). The open decisions at the end are the user's.
+Status: study, 2026-11-05; the open decisions at the end were the user's.
+M1 was built on branch `mid-ir-m1` and missed its gate: see "M1 as built"
+at the end of section 6.
 
 The question: should obx put a MIR-like linear IR between the tree IR and
 `x64gen`? That means three-address instructions over virtual registers, in
@@ -562,6 +563,133 @@ in PERFORMANCE.md's "Tried and shelved" if:
   selection and emission);
 - M2 misses its run gain after one tuning round;
 - any stage runs past twice its line estimate before its gate passes.
+
+### M1 as built (branch `mid-ir-m1`, 2026-11-05)
+
+Built as planned, with the user's decisions: everything runs only under
+`obxc --native -O`. x64gen still generates the code, so `-O` builds are
+byte-identical to plain `--native` builds. Without `-O` nothing new runs.
+
+- `mid.obx` (1,292 lines). It holds the data structure. Lowering runs after
+  `opt` and `loops`, then `renumber` puts the blocks into layout order (a
+  reverse postorder; only back edges go backward). It also holds the
+  verifier (`OBX_CHECK=1`) and the printer (`OBX_MIR=file`).
+- `midra.obx` (1,518 lines). It has:
+  - the CFG, dominators and the loop tree, with checks against the tree's
+    structure;
+  - bit-set liveness over the vregs live across blocks;
+  - intervals with loop-end hints;
+  - linear scan after Wimmer and Mössenböck (2005), with splitting at the
+    lightest block boundary and spilling parts. Reloads are confined to
+    the using block;
+  - a repair pass that puts a split part on the stack when its moves cost
+    more than its uses;
+  - the cost model and the report (`OBX_MIR_REPORT=file`).
+
+  It was written from the papers, with MIR read only as a reference. No
+  MIR code was translated.
+- x64gen counts its own memory operands on `rbp` per function, weighted by
+  the same loop depths. It also counts its callee-saved saves. The counting
+  is on only for the report.
+- `tests/mid_check.py` is in the quick gate and takes about 11 s. It builds
+  every run, native, library and cmd program with and without `-O`, with
+  the compiler under `OBX_CHECK=1`, and requires identical bytes.
+- 3,070 lines in all, against the plan's 2,000 and the 4,000 stop line.
+
+**What the model counts.** Each stack access is weighted 10^depth, at
+most 6 deep. (The plan said ×8 per level; the M1 brief set 10.)
+
+- On the mid side: loads and stores of frame objects (aggregates and
+  address-taken locals); copies and zeroing; arguments and results passed
+  in memory; and the allocator's spill traffic.
+- Spill traffic is three things: uses in stack parts; reloads at
+  stack-to-register transitions; and stores, the cheaper of one store after
+  each definition or one at each register-to-stack transition.
+- On the x64gen side: every `rbp` memory operand of the function body. The
+  callee-saved restores and the separately built prologue and epilogues are
+  not counted.
+
+As section 3.4 planned for M1-M3, records and `str` stay in frame slots.
+
+**Gate M1.**
+
+| gate | target | measured | |
+|---|---|---|---|
+| functions lowered, self-build | ≥ 95% | 1,226 of 1,229 (99.8%); 3 not lowered: `int128 local` | met |
+| functions lowered, gate programs (run, native, lib, cmd: 550 programs) | ≥ 95% | 14,268 of 14,738 (96.8%). Not lowered: int128 operation 185, int128 local 117, int128 parameter 114, int128 value 54 | met |
+| verifier clean | | yes, on all of them, under `OBX_CHECK=1` | met |
+| cost per mid instruction (self-build, `--native -O` against `--native`) | ≤ 3K (≤ 660M) | 638M over 211,321 mid instructions: 3.02K. 639M over 192,682 (3.32K) with main's sources as input | 660M met; 3K missed by 1% |
+| weighted stack accesses, self-build | ≥ 30% fewer | 1,591,496 against 1,739,077: -8.4%. Copies and zeroing -7.7%; the rest -8.7% | missed |
+| ... the compiler at main's sources | ≥ 30% fewer | 1,012,305 against 940,935: +7.5%. Copies +33.4%; the rest -4.9% | missed |
+| ... run and native tests (392) | ≥ 30% fewer | 62,289 against 54,702: +13.9%. Copies +67.8%; the rest -2.3%. 157 programs fewer, 230 more | missed |
+| ... eza, grep, zoxide | ≥ 30% fewer | +0.3%, +21.8%, -5.8% | missed |
+| ... library tests | | -25.3%, but one program (`regex_searcher`, at depth 6) carries 95% of the weight; without it, more than x64gen | |
+| callee-saved saves | ≥ 30% fewer | self-build 3,558 against 4,572 (-22.1%); run tests -42.1%; eza -18%, grep -21%, zoxide -16% | missed except on the run tests |
+| byte-identical with `-O` | | the compiler, eza, grep, zoxide and all 550 programs | met |
+
+The cost came down over one tuning round, from 1,044M (4.9K) to 638M.
+These changes did it:
+- one liveness pass for loop-free functions;
+- pooled ranges and use lists;
+- a single address-taken scan per program;
+- a fast path for short intervals;
+- edge transitions shared between the repair pass and the cost.
+
+The allocator's own changes from the first version to the last:
+- loop-end hints;
+- reloads kept in the using block;
+- the repair pass;
+- stores counted as the cheaper of the two placements.
+
+Together they brought the stack accesses on main's compiler down to
++7.5% (the first working version was well above that).
+
+**Why the 30% is out of reach in M1.**
+
+1. **The frame objects make up most of the model's total, and they are not
+   the allocator's.** On main's compiler, memory is 842K of 1,012K. Of that,
+   409K is aggregate copies and zeroing. x64gen avoids more copies than the
+   lowering does: it evaluates into the destination (`intoAssign`,
+   `forward`, `destUsed`). The lowering takes some aggregate values through
+   a temporary, such as `E_COND` and call results. Getting level with
+   x64gen here is lowering work, and `str` and records in registers is
+   M4's scalar replacement.
+2. **The allocator's part is already close to the bound.** Take "the
+   rest": everything but copies and zeroing. On the self-build, x64gen
+   spends 1,249,648 on it. The mid model spends 1,139,831: 592,619 in
+   frame objects that no allocator removes, plus 547,212 in spills. A
+   perfect allocator (no spills) would reach -53% on this part. The linear
+   scan reaches -8.7%. Half of the spill weight sits in one depth-5
+   function (`Ra.repair`, 274K, against x64gen's 370K there). Linear scan
+   chooses by next use, not by loop weight. That is MIR's model too, and it
+   is the weak spot.
+3. **x64gen is not a naive baseline.** It keeps scalars in registers
+   weighted by loop depth. It opens callee-saved registers only past a
+   threshold, and its `remat`, `forward` and fusion already remove much of
+   what a general allocator would. Section 2.4's "nearly exhausted" holds
+   for stack traffic too.
+
+**What M2 would need.** M2 should not start on these numbers. The stop
+criterion applies: the 30% target is missed after a tuning round. To pass
+the M1 gate, a retry would need:
+- lowering that writes aggregates into their destination, as x64gen does,
+  and no temporaries for conditional and call results;
+- scalar replacement of `str` and small records (M4's item, moved first);
+- a weight-aware spill choice: spill the interval with the lowest weighted
+  use density, not the farthest next use, or a second-chance binpacking
+  pass in the hot loops.
+
+Each of these is a project of the size of M1. Only then would M2's
+selection and emission, the bulk of the cost, have something to win.
+
+**Default path.** The x64gen counters cost a test per memory operand and per
+aggregate copy; the generated code is the same. perfsuite against the branch point (`0fee39d`): compile suite +0.03% instructions (compiler --native +0.05%, eza, grep, zoxide +0.03% to +0.05%), run suite identical instructions (-0.00%); cycles moved both ways by up to 21% on identical code, as other jobs shared the machine.
+
+Reproducing, from `obx/compiler` with the native compiler `out/obxc`:
+
+    OBX_CHECK=1 OBX_MIR_REPORT=self.rep ./obxc main.obx --native -O -o x
+    perf stat -e instructions:u ./obxc main.obx --native -O -o x   # against no -O
+    python3 ../tests/mid_check.py --lib --cmd -v                    # the programs
 
 ## 7. Alternatives
 

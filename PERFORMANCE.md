@@ -613,6 +613,25 @@ for a place that is no plain load): it cost 1% of the self-build's
 instructions in the second register choice and the walk, and was dropped
 for a frame load, one load a use instead of three.
 
+`mid-ir-m1` (2026-11-05) is stage M1 of design/mid-ir.md. It adds a mid IR,
+liveness and a linear-scan allocator that decides and reports, all behind
+`--native -O`. The code is unchanged: x64gen still generates it, and `-O`
+builds are byte-identical. The stage fails its own gate:
+
+- **Cost.** 638M instructions on the self-build. That is 3.02K per mid
+  instruction against a target of 3K.
+- **Stack accesses (10^depth weights).** The target was 30% fewer than
+  x64gen. The model predicts -8.4% on the self-build, +7.5% on the compiler
+  at main's sources and +13.9% on the run tests.
+- **Callee-saved saves.** -22% on the self-build and -42% on the run tests.
+
+Aggregates stay in the frame, and x64gen already avoids more of their copies
+than the lowering does. Even a perfect allocator would only take the rest of
+the stack traffic down by about half. Details and the M2 preconditions are
+in design/mid-ir.md, "M1 as built". The default path is unchanged: perfsuite
+(`0fee39d` against the branch) gives +0.03% compile-suite instructions and
+identical run-suite instructions.
+
 What they taught:
 
 - **Fusion:** a statement placed between `bool c = ...` and its `if (c)` stops x64gen fusing the compare with the branch. That alone cost perf11's first version 0.9%.
