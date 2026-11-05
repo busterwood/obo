@@ -1,0 +1,1925 @@
+// json: JSON values (RFC 8259): parse text into a Json, build and read one,
+// write it as text. design/json.md has the reasons for the choices.
+//
+//     let v = try json.parse(`{"name": "obx", "tags": ["a", "b"], "price": 12.50}`)
+//     println(v.field("name").asStr().unwrapOr("?"))       // obx
+//     let price = v.field("price").asDecimal()              // Some(12.50), exact
+//     for t in v.field("tags").items() { println(t.asStr().unwrap()) }
+//
+//     var out = json.object()
+//     out.set("ok", json.boolean(true))
+//     out.set("ids", json.arrayOf([json.integer(1), json.integer(2)]))
+//     println(out.toStr())                                  // {"ok":true,"ids":[1,2]}
+//     print(json.write(&out, &json.pretty()))                // two spaces per level
+//
+// A Json is a value: copying one is clone(), which shares the array or
+// object (a count, no copy), and changing a shared one copies it first
+// (copy on write). So a Json can be handed around and kept freely, and
+// reading a field or an element returns an owned Json, not a borrow.
+//
+// Objects keep their keys in the order they were first set (a key set again
+// keeps its place, remove closes the gap), as jq and JavaScript do, and find
+// a key by a scan when they are small and through a hash index (SipHash,
+// keyed per process, as std's Map) when they have more than 16 keys.
+//
+// Numbers keep the text they were written with: a number parsed from
+// "1.50" or "100000000000000000001" writes back as written, and asDecimal()
+// and asInt() read that text exactly; asFloat() is the nearest double, which
+// is computed when the number is made. Numbers made from a float have no
+// text and write as the shortest text that reads back as the same double.
+//
+// Strings are bytes (str). Parsing replaces invalid UTF-8 in a string by
+// U+FFFD, as jq and Go do (ParseOptions.strictUtf8 makes it an error), and
+// writing does the same, so the output is always valid UTF-8. A parsed
+// string without escapes shares the input's bytes.
+
+// ---------------------------------------------------------------- values
+
+pub type Json = value closed {
+    Null
+    Bool(bool)
+    Num(Number)
+    Str(str)
+    Arr(Array)
+    Obj(Object)
+}
+
+// A number: its double, and the text it was written with ("" when it was
+// made from a float). The text is a valid JSON number, or with lenient
+// parsing whatever jq accepts ("nan", "1.", "+5").
+pub type Number = value record {
+    f: float
+    text: str
+}
+
+// The handles of an array and an object: counted, shared, copied on write.
+pub type Array = value record { p: ptr }
+pub type Object = value record { p: ptr }
+
+type ArrBox = record {
+    rc: int
+    items: []Json
+}
+
+type ObjBox = record {
+    rc: int
+    keys: []str
+    vals: []Json
+    index: []int    // empty, or slots of -1 / an entry, a power of two, at most half full
+}
+
+// What kind of value a Json is. toStr gives jq's names for them.
+pub type Kind = value closed { Null; Bool; Number; String; Array; Object }
+
+pub fn (k: Kind) toStr(): str {
+    match k {
+        Kind.Null { return "null" }
+        Kind.Bool { return "boolean" }
+        Kind.Number { return "number" }
+        Kind.String { return "string" }
+        Kind.Array { return "array" }
+        Kind.Object { return "object" }
+    }
+}
+
+const SMALL = 16    // objects up to this many keys have no index
+
+fn (a: mut &Array) drop() {
+    var b: ArrBox = fromPtr(a.p)
+    b.rc -= 1
+    if b.rc > 0 { let back = intoPtr(b) }
+}
+
+fn (o: mut &Object) drop() {
+    var b: ObjBox = fromPtr(o.p)
+    b.rc -= 1
+    if b.rc > 0 { let back = intoPtr(b) }
+}
+
+fn newArr(items: []Json): Json { return Json.Arr(Array{p: intoPtr(ArrBox{rc: 1, items: items})}) }
+
+fn newObj(keys: []str, vals: []Json): Json {
+    var b = ObjBox{rc: 1, keys: keys, vals: vals, index: []}
+    if len(b.keys) > SMALL { reindex(mut &b) }
+    return Json.Obj(Object{p: intoPtr(b)})
+}
+
+fn share(p: ptr): ptr {
+    var b: ArrBox = fromPtr(p)
+    b.rc += 1
+    return intoPtr(b)
+}
+
+fn shareObj(p: ptr): ptr {
+    var b: ObjBox = fromPtr(p)
+    b.rc += 1
+    return intoPtr(b)
+}
+
+// ---------------------------------------------------------------- making values
+
+pub fn null(): Json { return Json.Null }
+pub fn boolean(b: bool): Json { return Json.Bool(b) }
+pub fn string(s: str): Json { return Json.Str(s) }
+
+// An integer, exact however large (its text is kept).
+pub fn integer(n: int): Json { return Json.Num(Number{f: float(n), text: intToStr(n)}) }
+
+// A double; it has no text and writes as its shortest form (NaN and the
+// infinities write as null).
+pub fn number(f: float): Json { return Json.Num(Number{f: f, text: ""}) }
+
+// A decimal, exact: 12.50 writes as 12.50.
+pub fn decimal(d: Decimal): Json { return Json.Num(Number{f: d.toFloat(), text: d.toStr()}) }
+
+// The number a JSON number literal denotes, keeping the text ("1.0e3");
+// None when s is not one.
+pub fn numberLiteral(s: str): Option[Json] {
+    if !isNumberText(s) { return None }
+    return Some(Json.Num(Number{f: floatOf(s), text: s}))
+}
+
+// A number with the text t, when t is one lenient parsing accepts (jq's
+// program literals: "1.", ".5", "1.000"); None otherwise.
+pub fn lenientNumber(t: str): Option[Json] {
+    if !isLenientNumber(t) { return None }
+    return Some(Json.Num(Number{f: floatOf(t), text: t}))
+}
+
+pub fn emptyArray(): Json { return newArr([]) }
+pub fn arrayOf(items: []Json): Json { return newArr(items) }
+pub fn object(): Json { return newObj([], []) }
+
+// An array of strings.
+pub fn strings(xs: &[str]): Json {
+    var out: []Json = []
+    for s in xs { append(mut &out, Json.Str(s)) }
+    return newArr(out)
+}
+
+// The same value; an array or object is shared, not copied.
+pub fn (j: &Json) clone(): Json {
+    match j {
+        Json.Null { return Json.Null }
+        Json.Bool(b) { return Json.Bool(b) }
+        Json.Num(n) { return Json.Num(n) }
+        Json.Str(s) { return Json.Str(s) }
+        Json.Arr(a) { return Json.Arr(Array{p: share(a.p)}) }
+        Json.Obj(o) { return Json.Obj(Object{p: shareObj(o.p)}) }
+    }
+}
+
+// ---------------------------------------------------------------- reading
+
+pub fn (j: &Json) kind(): Kind {
+    match j {
+        Json.Null { return Kind.Null }
+        Json.Bool(_) { return Kind.Bool }
+        Json.Num(_) { return Kind.Number }
+        Json.Str(_) { return Kind.String }
+        Json.Arr(_) { return Kind.Array }
+        Json.Obj(_) { return Kind.Object }
+    }
+}
+
+pub fn (j: &Json) isNull(): bool { return j.kind() == Kind.Null }
+pub fn (j: &Json) isArray(): bool { return j.kind() == Kind.Array }
+pub fn (j: &Json) isObject(): bool { return j.kind() == Kind.Object }
+
+pub fn (j: &Json) asBool(): Option[bool] {
+    match j {
+        Json.Bool(b) { return Some(b) }
+        else { return None }
+    }
+}
+
+pub fn (j: &Json) asStr(): Option[str] {
+    match j {
+        Json.Str(s) { return Some(s) }
+        else { return None }
+    }
+}
+
+pub fn (j: &Json) asNumber(): Option[Number] {
+    match j {
+        Json.Num(n) { return Some(n) }
+        else { return None }
+    }
+}
+
+// The nearest double to a number.
+pub fn (j: &Json) asFloat(): Option[float] {
+    match j {
+        Json.Num(n) { return Some(n.f) }
+        else { return None }
+    }
+}
+
+// A number that is an integer in int's range, exactly: from its text when
+// it has one ("1e3" and "2.0" are integers, "1.5" and 1e30 are not).
+pub fn (j: &Json) asInt(): Option[int] {
+    match j {
+        Json.Num(n) { return n.toInt() }
+        else { return None }
+    }
+}
+
+// A number as an exact Decimal, from its text (or from the shortest text of
+// its double); None when it does not fit a Decimal (38 digits).
+pub fn (j: &Json) asDecimal(): Option[Decimal] {
+    match j {
+        Json.Num(n) { return n.toDecimal() }
+        else { return None }
+    }
+}
+
+pub fn (n: &Number) toFloat(): float { return n.f }
+
+// The text the number was written with, "" when it was made from a float.
+pub fn (n: &Number) literal(): str { return n.text }
+
+pub fn (n: &Number) toInt(): Option[int] {
+    if len(n.text) == 0 {
+        if n.f != n.f || n.f.trunc() != n.f || n.f < -9223372036854775808.0 || n.f >= 9223372036854775808.0 { return None }
+        return Some(int(n.f))
+    }
+    match n.toDecimal() {
+        Some(d) {
+            if d.isZero() { return Some(0) }
+            match d.toInt(Rounding.UNNECESSARY) {
+                Ok(i) { return Some(i) }
+                Err(_) { return None }
+            }
+        }
+        None { return None }
+    }
+}
+
+pub fn (n: &Number) toDecimal(): Option[Decimal] {
+    var t = n.text
+    if len(t) == 0 {
+        if !n.f.isFinite() { return None }
+        t = n.f.toStr()
+    }
+    match Decimal.parse(t) {
+        Ok(d) { return Some(d) }
+        Err(_) { return None }
+    }
+}
+
+// The number of elements of an array, keys of an object, bytes of a string;
+// 0 for the others.
+pub fn (j: &Json) size(): int {
+    match j {
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            let n = len(b.items)
+            let back = intoPtr(b)
+            return n
+        }
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            let n = len(b.keys)
+            let back = intoPtr(b)
+            return n
+        }
+        Json.Str(s) { return len(s) }
+        else { return 0 }
+    }
+}
+
+// Element i of an array (negative counts from the end); None when j is not
+// an array or i is out of range.
+pub fn (j: &Json) at(i: int): Option[Json] {
+    match j {
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            var k = i
+            if k < 0 { k += len(b.items) }
+            var r: Option[Json] = None
+            if k >= 0 && k < len(b.items) { r = Some(b.items[k].clone()) }
+            let back = intoPtr(b)
+            return r
+        }
+        else { return None }
+    }
+}
+
+// Element i, or null (jq's .[i]).
+pub fn (j: &Json) item(i: int): Json {
+    match j.at(i) {
+        Some(v) { return v }
+        None { return Json.Null }
+    }
+}
+
+// The value of key k of an object; None when j is not an object or has no k.
+pub fn (j: &Json) get(k: str): Option[Json] {
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            let e = findKey(&b, k)
+            var r: Option[Json] = None
+            if e >= 0 { r = Some(b.vals[e].clone()) }
+            let back = intoPtr(b)
+            return r
+        }
+        else { return None }
+    }
+}
+
+// The value of key k, or null (jq's .k).
+pub fn (j: &Json) field(k: str): Json {
+    match j.get(k) {
+        Some(v) { return v }
+        None { return Json.Null }
+    }
+}
+
+pub fn (j: &Json) has(k: str): bool {
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            let e = findKey(&b, k)
+            let back = intoPtr(b)
+            return e >= 0
+        }
+        else { return false }
+    }
+}
+
+// The value at a path of keys and indexes, or None: j.path(&["a", "0"])
+// reads key "a", then element 0 if that is an array, else key "0".
+pub fn (j: &Json) path(keys: &[str]): Option[Json] {
+    var cur = j.clone()
+    for k in keys {
+        var next: Option[Json] = None
+        if cur.isArray() {
+            match parseInt(k) {
+                Some(i) { next = cur.at(i) }
+                None {}
+            }
+        } else {
+            next = cur.get(k)
+        }
+        match move(next) {
+            Some(v) { cur = v }
+            None { return None }
+        }
+    }
+    return Some(cur)
+}
+
+// The elements of an array (shared, not copied); [] for the others.
+pub fn (j: &Json) items(): []Json {
+    var out: []Json = []
+    match j {
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            for x in b.items { append(mut &out, x.clone()) }
+            let back = intoPtr(b)
+        }
+        else {}
+    }
+    return out
+}
+
+// The keys of an object in order; [] for the others.
+pub fn (j: &Json) keys(): []str {
+    var out: []str = []
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            for k in b.keys { append(mut &out, k) }
+            let back = intoPtr(b)
+        }
+        else {}
+    }
+    return out
+}
+
+// Key i of an object (0 <= i < size()), in order.
+pub fn (j: &Json) keyAt(i: int): str {
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            let k = b.keys[i]
+            let back = intoPtr(b)
+            return k
+        }
+        else { panic("json: keyAt on a " + j.kind().toStr()) }
+    }
+}
+
+// Value i of an object (0 <= i < size()), in order.
+pub fn (j: &Json) valueAt(i: int): Json {
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            let v = b.vals[i].clone()
+            let back = intoPtr(b)
+            return v
+        }
+        else { panic("json: valueAt on a " + j.kind().toStr()) }
+    }
+}
+
+// Calls f on each element of an array, in order, until it returns false;
+// false when f stopped it. Nothing is copied. Other values have no elements.
+pub fn (j: &Json) eachItem(f: &fn(int, &Json): bool): bool {
+    match j {
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            var done = true
+            var i = 0
+            while i < len(b.items) {
+                if !f(i, &b.items[i]) {
+                    done = false
+                    break
+                }
+                i += 1
+            }
+            let back = intoPtr(b)
+            return done
+        }
+        else { return true }
+    }
+}
+
+// Calls f on each key and value of an object, in order, until it returns
+// false; false when f stopped it.
+pub fn (j: &Json) eachEntry(f: &fn(str, &Json): bool): bool {
+    match j {
+        Json.Obj(o) {
+            let b: ObjBox = fromPtr(o.p)
+            var done = true
+            var i = 0
+            while i < len(b.keys) {
+                if !f(b.keys[i], &b.vals[i]) {
+                    done = false
+                    break
+                }
+                i += 1
+            }
+            let back = intoPtr(b)
+            return done
+        }
+        else { return true }
+    }
+}
+
+// Calls f with the elements of an array as a slice (nothing copied), and
+// returns its result; an empty slice for the others.
+pub fn (j: &Json) withItems[R](f: &fn(&[Json]): R): R {
+    match j {
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            let r = f(&b.items)
+            let back = intoPtr(b)
+            return r
+        }
+        else {
+            let none: []Json = []
+            return f(&none)
+        }
+    }
+}
+
+// ---------------------------------------------------------------- changing
+
+// The box of an array j, unshared first (copied when another Json holds it).
+fn uniqueArr(j: mut &Json): ptr {
+    let p = arrPtr(j)
+    if isNull(p) { panic("json: not an array: " + j.kind().toStr()) }
+    let b: ArrBox = fromPtr(p)
+    if b.rc == 1 { return intoPtr(b) }
+    var items: []Json = []
+    for x in b.items { append(mut &items, x.clone()) }
+    let back = intoPtr(b)
+    j = newArr(items)
+    return arrPtr(j)
+}
+
+fn uniqueObj(j: mut &Json): ptr {
+    let p = objPtr(j)
+    if isNull(p) { panic("json: not an object: " + j.kind().toStr()) }
+    let b: ObjBox = fromPtr(p)
+    if b.rc == 1 { return intoPtr(b) }
+    var keys: []str = []
+    var vals: []Json = []
+    for k in b.keys { append(mut &keys, k) }
+    for v in b.vals { append(mut &vals, v.clone()) }
+    let back = intoPtr(b)
+    j = newObj(keys, vals)
+    return objPtr(j)
+}
+
+fn arrPtr(j: &Json): ptr {
+    match j {
+        Json.Arr(a) { return a.p }
+        else { return nullPtr() }
+    }
+}
+
+fn objPtr(j: &Json): ptr {
+    match j {
+        Json.Obj(o) { return o.p }
+        else { return nullPtr() }
+    }
+}
+
+// Adds v at the end of an array (stops the program if j is not one).
+pub fn (j: mut &Json) push(v: Json) {
+    var b: ArrBox = fromPtr(uniqueArr(j))
+    append(mut &b.items, v)
+    let back = intoPtr(b)
+}
+
+// Adds copies of the elements of the array other at the end of the array j.
+pub fn (j: mut &Json) extend(other: &Json) {
+    let items = other.items()
+    var b: ArrBox = fromPtr(uniqueArr(j))
+    for x in items { append(mut &b.items, x.clone()) }
+    let back = intoPtr(b)
+}
+
+// Replaces element i (0 <= i < size()) of an array.
+pub fn (j: mut &Json) setAt(i: int, v: Json) {
+    var b: ArrBox = fromPtr(uniqueArr(j))
+    if i < 0 || i >= len(b.items) {
+        let back = intoPtr(b)
+        panic("json: setAt: index " + intToStr(i) + " out of range")
+    }
+    replace(mut &b.items[i], v)
+    let back = intoPtr(b)
+}
+
+// Removes the last element of an array and returns it; None when empty.
+pub fn (j: mut &Json) pop(): Option[Json] {
+    var b: ArrBox = fromPtr(uniqueArr(j))
+    var r: Option[Json] = None
+    if len(b.items) > 0 { r = Some(pop(mut &b.items)) }
+    let back = intoPtr(b)
+    return r
+}
+
+// Sets key k of an object to v; a new key goes last, an existing one keeps
+// its place (stops the program if j is not an object).
+pub fn (j: mut &Json) set(k: str, v: Json) {
+    var b: ObjBox = fromPtr(uniqueObj(j))
+    putKey(mut &b, k, v)
+    let back = intoPtr(b)
+}
+
+// Removes key k of an object, keeping the order of the others; its value,
+// or None when it was not there.
+pub fn (j: mut &Json) remove(k: str): Option[Json] {
+    if !j.has(k) { return None }
+    var b: ObjBox = fromPtr(uniqueObj(j))
+    let e = findKey(&b, k)
+    let n = len(b.keys)
+    for i in e..n - 1 {
+        swap(mut &b.keys, i, i + 1)
+        swap(mut &b.vals, i, i + 1)
+    }
+    pop(mut &b.keys)
+    let v = pop(mut &b.vals)
+    if len(b.index) > 0 { reindex(mut &b) }
+    let back = intoPtr(b)
+    return Some(v)
+}
+
+// The object j with key k set to v, for building in one expression:
+// json.object().with("a", json.integer(1)).with("b", json.null()).
+pub fn (j: Json) with(k: str, v: Json): Json {
+    var o = j
+    o.set(k, v)
+    return o
+}
+
+// The array j with v added at the end.
+pub fn (j: Json) and(v: Json): Json {
+    var a = j
+    a.push(v)
+    return a
+}
+
+fn findKey(b: &ObjBox, k: str): int {
+    if len(b.index) == 0 {
+        for i in 0..len(b.keys) {
+            if b.keys[i] == k { return i }
+        }
+        return -1
+    }
+    let mask = len(b.index) - 1
+    var s = int(k.hash() & u64(mask))
+    while true {
+        let e = b.index[s]
+        if e < 0 { return -1 }
+        if b.keys[e] == k { return e }
+        s = (s + 1) & mask
+    }
+}
+
+fn putKey(b: mut &ObjBox, k: str, v: Json) {
+    let e = findKey(b, k)
+    if e >= 0 {
+        replace(mut &b.vals[e], v)
+        return
+    }
+    append(mut &b.keys, k)
+    append(mut &b.vals, v)
+    let n = len(b.keys)
+    if n > SMALL {
+        if 2 * n > len(b.index) {
+            reindex(b)
+        } else {
+            let mask = len(b.index) - 1
+            var s = int(k.hash() & u64(mask))
+            while b.index[s] >= 0 { s = (s + 1) & mask }
+            b.index[s] = n - 1
+        }
+    }
+}
+
+fn reindex(b: mut &ObjBox) {
+    let n = len(b.keys)
+    if n <= SMALL {
+        replace(mut &b.index, [])
+        return
+    }
+    var size = 64
+    while size < 4 * n { size *= 2 }
+    var idx = array(size, -1)
+    let mask = size - 1
+    for e in 0..n {
+        var s = int(b.keys[e].hash() & u64(mask))
+        while idx[s] >= 0 { s = (s + 1) & mask }
+        idx[s] = e
+    }
+    replace(mut &b.index, idx)
+}
+
+// ---------------------------------------------------------------- order
+
+fn kindRank(j: &Json): int {
+    match j {
+        Json.Null { return 0 }
+        Json.Bool(b) { return if b { 2 } else { 1 } }
+        Json.Num(_) { return 3 }
+        Json.Str(_) { return 4 }
+        Json.Arr(_) { return 5 }
+        Json.Obj(_) { return 6 }
+    }
+}
+
+// jq's order: null < false < true < numbers < strings < arrays < objects;
+// numbers by value (exactly when both have text), strings by bytes, arrays
+// element by element, objects by their sorted keys, then by the values in
+// that order. NaN is below every other number.
+pub fn (a: &Json) cmp(b: &Json): int {
+    let ra = kindRank(a)
+    let rb = kindRank(b)
+    if ra != rb { return if ra < rb { -1 } else { 1 } }
+    match a {
+        Json.Num(x) {
+            match b {
+                Json.Num(y) { return cmpNumbers(&x, &y) }
+                else { return 0 }
+            }
+        }
+        Json.Str(x) {
+            match b {
+                Json.Str(y) { return if x < y { -1 } else if x > y { 1 } else { 0 } }
+                else { return 0 }
+            }
+        }
+        Json.Arr(_) { return cmpArrays(a, b) }
+        Json.Obj(_) { return cmpObjects(a, b) }
+        else { return 0 }
+    }
+}
+
+pub fn (a: &Json) eq(b: &Json): bool { return a.cmp(b) == 0 }
+
+pub fn cmpNumbers(x: &Number, y: &Number): int {
+    let xn = x.f != x.f
+    let yn = y.f != y.f
+    if xn || yn {
+        if xn && yn { return 0 }
+        return if xn { -1 } else { 1 }
+    }
+    if x.f < y.f { return -1 }
+    if x.f > y.f { return 1 }
+    if len(x.text) == 0 || len(y.text) == 0 || x.text == y.text { return 0 }
+    return cmpDecimalText(x.text, y.text)
+}
+
+fn cmpArrays(a: &Json, b: &Json): int {
+    let n = a.size()
+    let m = b.size()
+    var i = 0
+    while i < n && i < m {
+        let c = a.item(i).cmp(&b.item(i))
+        if c != 0 { return c }
+        i += 1
+    }
+    return if n < m { -1 } else if n > m { 1 } else { 0 }
+}
+
+fn cmpObjects(a: &Json, b: &Json): int {
+    var ka = a.keys()
+    var kb = b.keys()
+    sort(mut &ka)
+    sort(mut &kb)
+    let n = len(ka)
+    let m = len(kb)
+    var i = 0
+    while i < n && i < m {
+        if ka[i] != kb[i] { return if ka[i] < kb[i] { -1 } else { 1 } }
+        i += 1
+    }
+    if n != m { return if n < m { -1 } else { 1 } }
+    for k in ka {
+        let c = a.field(k).cmp(&b.field(k))
+        if c != 0 { return c }
+    }
+    return 0
+}
+
+// A number literal as sign, significant digits (no leading or trailing
+// zeros) and the exponent of the first digit.
+type DecParts = value record {
+    neg: bool
+    digits: str     // "" for zero
+    exp: int        // the value is 0.digits * 10^exp
+    special: int    // 0, or 1 for an infinity, 2 for NaN
+}
+
+fn decParts(t: str): DecParts {
+    var neg = false
+    var i = 0
+    if i < len(t) && (t[i] == '-' || t[i] == '+') {
+        neg = t[i] == '-'
+        i += 1
+    }
+    if i < len(t) && !isDigit(t[i]) && t[i] != '.' {
+        let c = t[i] | 0x20
+        return DecParts{neg: neg, digits: "", exp: 0, special: if c == 'n' || c == 's' { 2 } else { 1 }}
+    }
+    var b = newStrBuf()
+    var pointExp = 0      // digits seen before the point
+    var seenPoint = false
+    var e = 0
+    while i < len(t) {
+        let c = t[i]
+        if c == '.' {
+            seenPoint = true
+        } else if c == 'e' || c == 'E' {
+            match parseInt(t[i + 1..]) {
+                Some(x) { e = x }
+                None {
+                    // an exponent beyond int: only its sign matters here
+                    if contains(t[i + 1..], "-") { return DecParts{neg: neg, digits: "", exp: 0, special: 0} }
+                    return DecParts{neg: neg, digits: "1", exp: 4000000000000000000, special: 0}
+                }
+            }
+            break
+        } else {
+            if !seenPoint { pointExp += 1 }
+            if c != '0' || b.size() > 0 {
+                b.addByte(c)
+            } else {
+                // a leading zero: after the point it lowers the exponent
+                if seenPoint { pointExp -= 1 }
+            }
+        }
+        i += 1
+    }
+    var d = b.toStr()
+    var z = len(d)
+    while z > 0 && d[z - 1] == '0' { z -= 1 }
+    d = d[..z]
+    if len(d) == 0 { return DecParts{neg: false, digits: "", exp: 0, special: 0} }
+    return DecParts{neg: neg, digits: d, exp: pointExp + e, special: 0}
+}
+
+// The order of two number literals, exactly.
+fn cmpDecimalText(a: str, b: str): int {
+    let x = decParts(a)
+    let y = decParts(b)
+    if x.special != 0 || y.special != 0 { return 0 }
+    let sx = if len(x.digits) == 0 { 0 } else if x.neg { -1 } else { 1 }
+    let sy = if len(y.digits) == 0 { 0 } else if y.neg { -1 } else { 1 }
+    if sx != sy { return if sx < sy { -1 } else { 1 } }
+    if sx == 0 { return 0 }
+    var c = 0
+    if x.exp != y.exp {
+        c = if x.exp < y.exp { -1 } else { 1 }
+    } else {
+        c = if x.digits < y.digits { -1 } else if x.digits > y.digits { 1 } else { 0 }
+    }
+    return if sx < 0 { -c } else { c }
+}
+
+// ---------------------------------------------------------------- parsing
+
+// Why parsing failed: what was found where. line and column count from 1
+// (the column in bytes); offset is the byte where the problem was seen.
+pub type Error = value record {
+    pub kind: ErrorKind
+    pub msg: str
+    pub offset: int
+    pub line: int
+    pub column: int
+}
+
+pub type ErrorKind = value closed {
+    Eof           // the text ended inside a value
+    Syntax        // a character that cannot come there
+    Literal       // a word that is not true, false or null
+    Number        // a malformed number
+    Escape        // an unknown escape in a string
+    Unicode       // a \u escape without four hex digits
+    Surrogate     // a \u high surrogate not followed by a low one
+    Control       // a control character inside a string
+    Utf8          // invalid UTF-8 (with strictUtf8)
+    Depth         // nested deeper than maxDepth
+    Trailing      // more text after the value (parse)
+}
+
+pub fn (a: ErrorKind) eq(b: &ErrorKind): bool { return a.code() == b.code() }
+
+pub fn (k: ErrorKind) code(): int {
+    match k {
+        ErrorKind.Eof { return 1 }
+        ErrorKind.Syntax { return 2 }
+        ErrorKind.Literal { return 3 }
+        ErrorKind.Number { return 4 }
+        ErrorKind.Escape { return 5 }
+        ErrorKind.Unicode { return 6 }
+        ErrorKind.Surrogate { return 7 }
+        ErrorKind.Control { return 8 }
+        ErrorKind.Utf8 { return 9 }
+        ErrorKind.Depth { return 10 }
+        ErrorKind.Trailing { return 11 }
+    }
+}
+
+// "json: expected ',' or ']' at line 3, column 7"
+pub fn (e: Error) toStr(): str {
+    return "json: " + e.msg + " at line " + intToStr(e.line) + ", column " + intToStr(e.column)
+}
+
+pub type ParseOptions = value record {
+    pub maxDepth: int       // arrays and objects nested deeper are an error (default 512)
+    pub strictUtf8: bool    // invalid UTF-8 in a string is an error, not U+FFFD
+    pub lenient: bool       // also what jq 1.7 accepts: nan, NaN, infinity, leading
+                            // zeros and +, "1." and ".5", as numbers
+}
+
+pub fn parseOptions(): ParseOptions { return ParseOptions{maxDepth: 512, strictUtf8: false, lenient: false} }
+
+// The one JSON value in s (whitespace around it is allowed).
+pub fn parse(s: str): Result[Json, Error] { return parseWith(s, parseOptions()) }
+
+pub fn parseBytes(b: &[byte]): Result[Json, Error] { return parse(strFromBytes(b)) }
+
+pub fn parseWith(s: str, o: ParseOptions): Result[Json, Error] {
+    var d = decoderWith(s, o)
+    match try d.next() {
+        Some(v) {
+            d.skipSpace()
+            if d.pos < len(s) { return Err(d.fail(ErrorKind.Trailing, "unexpected text after the value", d.pos)) }
+            return Ok(v)
+        }
+        None { return Err(d.fail(ErrorKind.Eof, "no value", len(s))) }
+    }
+}
+
+// Reads a sequence of JSON values from one text, separated by whitespace
+// (or nothing, where that is not ambiguous): a log of JSON lines, jq's input.
+pub type Decoder = record {
+    s: str
+    pos: int
+    depth: int
+    opts: ParseOptions
+}
+
+pub fn decoder(s: str): Decoder { return decoderWith(s, parseOptions()) }
+
+pub fn decoderWith(s: str, o: ParseOptions): Decoder { return Decoder{s: s, pos: 0, depth: 0, opts: o} }
+
+// The next value, None at the end of the text.
+pub fn (d: mut &Decoder) next(): Result[Option[Json], Error] {
+    d.skipSpace()
+    if d.pos >= len(d.s) { return Ok(None) }
+    d.depth = 0
+    let v = try d.value()
+    return Ok(Some(v))
+}
+
+// The byte offset after the last value read.
+pub fn (d: &Decoder) offset(): int { return d.pos }
+
+// The text being decoded.
+pub fn (d: &Decoder) text(): str { return d.s }
+
+// The line and column of a byte offset of s, counted from 1.
+pub type Position = value record {
+    pub line: int
+    pub column: int
+}
+
+pub fn positionOf(s: str, offset: int): Position {
+    var line = 1
+    var col = 1
+    var i = 0
+    while i < offset && i < len(s) {
+        if s[i] == '\n' {
+            line += 1
+            col = 1
+        } else {
+            col += 1
+        }
+        i += 1
+    }
+    return Position{line: line, column: col}
+}
+
+fn (d: &Decoder) fail(k: ErrorKind, msg: str, at: int): Error {
+    let p = positionOf(d.s, at)
+    return Error{kind: k, msg: msg, offset: at, line: p.line, column: p.column}
+}
+
+fn (d: mut &Decoder) skipSpace() {
+    let s = d.s
+    var i = d.pos
+    while i < len(s) {
+        let c = s[i]
+        if c != ' ' && c != '\n' && c != '\r' && c != '\t' { break }
+        i += 1
+    }
+    d.pos = i
+}
+
+// A byte that may continue a word or a number (jq's "literal" class).
+fn wordByte(c: byte): bool {
+    return !(c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '[' || c == ']' || c == '{' ||
+             c == '}' || c == ',' || c == ':' || c == '"')
+}
+
+fn (d: mut &Decoder) value(): Result[Json, Error] {
+    let s = d.s
+    let i = d.pos
+    if i >= len(s) { return Err(d.fail(ErrorKind.Eof, "unexpected end of the text", i)) }
+    let c = s[i]
+    if c == '"' {
+        let t = try d.string()
+        return Ok(Json.Str(t))
+    }
+    if c == '[' { return d.arrayValue() }
+    if c == '{' { return d.objectValue() }
+    if c == '-' || isDigit(c) || (d.opts.lenient && wordByte(c) && c != 't' && c != 'f' && !(c == 'n' && i + 1 < len(s) && s[i + 1] == 'u')) {
+        return d.numberValue()
+    }
+    if c == 't' { return d.word("true", Json.Bool(true)) }
+    if c == 'f' { return d.word("false", Json.Bool(false)) }
+    if c == 'n' { return d.word("null", Json.Null) }
+    if wordByte(c) && c >= 0x20 && c < 0x7f {
+        var j = i
+        while j < len(s) && wordByte(s[j]) { j += 1 }
+        return Err(d.fail(ErrorKind.Literal, "invalid literal " + quoteShort(s[i..j]), i))
+    }
+    return Err(d.fail(ErrorKind.Syntax, "unexpected " + describe(c) + ", expected a value", i))
+}
+
+fn describe(c: byte): str {
+    if c >= 0x20 && c < 0x7f { return "'" + strFromBytes(&[c]) + "'" }
+    return "byte 0x" + hex2(int(c))
+}
+
+fn hex2(n: int): str {
+    let digits = "0123456789abcdef"
+    return strFromBytes(&[digits[n >> 4], digits[n & 15]])
+}
+
+fn quoteShort(s: str): str {
+    if len(s) > 20 { return "\"" + s[..20] + "...\"" }
+    return "\"" + s + "\""
+}
+
+fn (d: mut &Decoder) word(w: str, v: Json): Result[Json, Error] {
+    let s = d.s
+    let i = d.pos
+    var j = i
+    while j < len(s) && wordByte(s[j]) { j += 1 }
+    if s[i..j] != w { return Err(d.fail(ErrorKind.Literal, "invalid literal " + quoteShort(s[i..j]), i)) }
+    d.pos = j
+    return Ok(v)
+}
+
+fn (d: mut &Decoder) numberValue(): Result[Json, Error] {
+    let s = d.s
+    let i = d.pos
+    var j = i
+    while j < len(s) && wordByte(s[j]) { j += 1 }
+    let t = s[i..j]
+    let ok = if d.opts.lenient { isLenientNumber(t) } else { isNumberText(t) }
+    if !ok { return Err(d.fail(ErrorKind.Number, "invalid number " + quoteShort(t), i)) }
+    d.pos = j
+    return Ok(Json.Num(Number{f: floatOf(t), text: t}))
+}
+
+// Whether t is a JSON number: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+pub fn isNumberText(t: str): bool {
+    let n = len(t)
+    var i = 0
+    if i < n && t[i] == '-' { i += 1 }
+    if i >= n { return false }
+    if t[i] == '0' {
+        i += 1
+    } else if t[i] >= '1' && t[i] <= '9' {
+        while i < n && isDigit(t[i]) { i += 1 }
+    } else {
+        return false
+    }
+    if i < n && t[i] == '.' {
+        i += 1
+        let start = i
+        while i < n && isDigit(t[i]) { i += 1 }
+        if i == start { return false }
+    }
+    if i < n && (t[i] == 'e' || t[i] == 'E') {
+        i += 1
+        if i < n && (t[i] == '+' || t[i] == '-') { i += 1 }
+        let start = i
+        while i < n && isDigit(t[i]) { i += 1 }
+        if i == start { return false }
+    }
+    return i == n
+}
+
+// What jq's number reader (decNumber) takes: a sign, digits with at most one
+// point and at least one digit, an exponent; or inf, infinity, nan, snan in
+// any case, with an optional sign (and digits after nan).
+fn isLenientNumber(t: str): bool {
+    let n = len(t)
+    var i = 0
+    if i < n && (t[i] == '-' || t[i] == '+') { i += 1 }
+    if i >= n { return false }
+    let rest = strings_lower(t[i..])
+    if rest == "inf" || rest == "infinity" { return true }
+    if startsWith(rest, "nan") || startsWith(rest, "snan") {
+        let k = if startsWith(rest, "nan") { 3 } else { 4 }
+        for x in k..len(rest) {
+            if !isDigit(rest[x]) { return false }
+        }
+        return true
+    }
+    var digits = 0
+    while i < n && isDigit(t[i]) {
+        i += 1
+        digits += 1
+    }
+    if i < n && t[i] == '.' {
+        i += 1
+        while i < n && isDigit(t[i]) {
+            i += 1
+            digits += 1
+        }
+    }
+    if digits == 0 { return false }
+    if i < n && (t[i] == 'e' || t[i] == 'E') {
+        i += 1
+        if i < n && (t[i] == '+' || t[i] == '-') { i += 1 }
+        let start = i
+        while i < n && isDigit(t[i]) { i += 1 }
+        if i == start { return false }
+    }
+    return i == n
+}
+
+fn strings_lower(s: str): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = s[i]
+        b.addByte(if c >= 'A' && c <= 'Z' { c + 32 } else { c })
+    }
+    return b.toStr()
+}
+
+const P10: []float = [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0,
+    100000000.0, 1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0,
+    10000000000000.0, 100000000000000.0, 1000000000000000.0, 10000000000000000.0,
+    100000000000000000.0, 1000000000000000000.0, 10000000000000000000.0,
+    100000000000000000000.0, 1000000000000000000000.0, 10000000000000000000000.0]
+
+// The nearest double to a number literal (lenient ones included). Exact
+// fast paths for up to 15 digits and powers of ten up to 22 (Clinger), else
+// the runtime's correctly rounded conversion.
+pub fn floatOf(t: str): float {
+    let n = len(t)
+    var i = 0
+    var neg = false
+    if i < n && (t[i] == '-' || t[i] == '+') {
+        neg = t[i] == '-'
+        i += 1
+    }
+    var m = 0
+    var nd = 0
+    var frac = 0
+    var simple = true
+    while i < n && isDigit(t[i]) {
+        if nd > 0 || t[i] != '0' {
+            nd += 1
+            if nd <= 15 { m = m * 10 + int(t[i] - '0') }
+        }
+        i += 1
+    }
+    if i < n && t[i] == '.' {
+        i += 1
+        while i < n && isDigit(t[i]) {
+            if nd > 0 || t[i] != '0' {
+                nd += 1
+                if nd <= 15 { m = m * 10 + int(t[i] - '0') }
+            }
+            frac += 1
+            i += 1
+        }
+    }
+    var e = 0
+    if i < n && (t[i] == 'e' || t[i] == 'E') {
+        i += 1
+        var eneg = false
+        if i < n && (t[i] == '+' || t[i] == '-') {
+            eneg = t[i] == '-'
+            i += 1
+        }
+        var x = 0
+        while i < n && isDigit(t[i]) {
+            if x < 100000 { x = x * 10 + int(t[i] - '0') }
+            i += 1
+        }
+        e = if eneg { -x } else { x }
+    }
+    if i != n || nd > 15 { simple = false }
+    if simple {
+        // m < 10^15 and 10^|p| are exact doubles: one rounding (Clinger)
+        let p = e - frac
+        if m == 0 {
+            let z: float = 0.0
+            return if neg { -z } else { z }
+        }
+        if p >= 0 && p <= 22 {
+            let f = float(m) * P10[p]
+            return if neg { -f } else { f }
+        }
+        if p < 0 && p >= -22 {
+            let f = float(m) / P10[-p]
+            return if neg { -f } else { f }
+        }
+    }
+    var out: float = 0.0
+    if parseFloat(t, mut &out) { return out }
+    // lenient forms the runtime does not take
+    let low = strings_lower(t)
+    if contains(low, "nan") { return math_nan() }
+    if contains(low, "inf") { return if neg { -math_inf() } else { math_inf() } }
+    var u = t
+    if len(u) > 0 && u[0] == '+' { u = u[1..] }
+    if len(u) > 0 && u[0] == '.' { u = "0" + u }
+    if len(u) > 1 && u[0] == '-' && u[1] == '.' { u = "-0" + u[1..] }
+    if endsWith(u, ".") { u = u + "0" }
+    if parseFloat(u, mut &out) { return out }
+    return 0.0
+}
+
+fn isNegZero(f: float): bool {
+    let one: float = 1.0
+    return f == 0.0 && one.copySign(f) < 0.0
+}
+
+fn math_inf(): float {
+    let one: float = 1.0
+    let zero: float = 0.0
+    return one / zero
+}
+
+fn math_nan(): float {
+    let zero: float = 0.0
+    return zero / zero
+}
+
+fn (d: mut &Decoder) arrayValue(): Result[Json, Error] {
+    let start = d.pos
+    d.depth += 1
+    if d.depth > d.opts.maxDepth { return Err(d.fail(ErrorKind.Depth, "nested too deep", start)) }
+    d.pos += 1
+    var items: []Json = []
+    d.skipSpace()
+    if d.pos < len(d.s) && d.s[d.pos] == ']' {
+        d.pos += 1
+        d.depth -= 1
+        return Ok(newArr(items))
+    }
+    while true {
+        d.skipSpace()
+        let v = try d.value()
+        append(mut &items, v)
+        d.skipSpace()
+        if d.pos >= len(d.s) { return Err(d.fail(ErrorKind.Eof, "unfinished array", d.pos)) }
+        let c = d.s[d.pos]
+        if c == ',' {
+            d.pos += 1
+        } else if c == ']' {
+            d.pos += 1
+            break
+        } else {
+            return Err(d.fail(ErrorKind.Syntax, "expected ',' or ']', found " + describe(c), d.pos))
+        }
+    }
+    d.depth -= 1
+    return Ok(newArr(items))
+}
+
+fn (d: mut &Decoder) objectValue(): Result[Json, Error] {
+    let start = d.pos
+    d.depth += 1
+    if d.depth > d.opts.maxDepth { return Err(d.fail(ErrorKind.Depth, "nested too deep", start)) }
+    d.pos += 1
+    var b = ObjBox{rc: 1, keys: [], vals: [], index: []}
+    d.skipSpace()
+    if d.pos < len(d.s) && d.s[d.pos] == '}' {
+        d.pos += 1
+        d.depth -= 1
+        return Ok(Json.Obj(Object{p: intoPtr(b)}))
+    }
+    while true {
+        d.skipSpace()
+        if d.pos >= len(d.s) { return Err(d.fail(ErrorKind.Eof, "unfinished object", d.pos)) }
+        if d.s[d.pos] != '"' { return Err(d.fail(ErrorKind.Syntax, "expected a string key, found " + describe(d.s[d.pos]), d.pos)) }
+        let k = try d.string()
+        d.skipSpace()
+        if d.pos >= len(d.s) { return Err(d.fail(ErrorKind.Eof, "unfinished object", d.pos)) }
+        if d.s[d.pos] != ':' { return Err(d.fail(ErrorKind.Syntax, "expected ':', found " + describe(d.s[d.pos]), d.pos)) }
+        d.pos += 1
+        d.skipSpace()
+        let v = try d.value()
+        putKey(mut &b, k, v)
+        d.skipSpace()
+        if d.pos >= len(d.s) { return Err(d.fail(ErrorKind.Eof, "unfinished object", d.pos)) }
+        let c = d.s[d.pos]
+        if c == ',' {
+            d.pos += 1
+        } else if c == '}' {
+            d.pos += 1
+            break
+        } else {
+            return Err(d.fail(ErrorKind.Syntax, "expected ',' or '}', found " + describe(c), d.pos))
+        }
+    }
+    d.depth -= 1
+    return Ok(Json.Obj(Object{p: intoPtr(b)}))
+}
+
+// The length of the UTF-8 sequence that byte c starts (jq's table): 0 for a
+// byte that cannot start one, -1 for a continuation byte.
+fn utf8Len(c: byte): int {
+    if c < 0x80 { return 1 }
+    if c < 0xC0 { return -1 }
+    if c < 0xC2 { return 0 }
+    if c < 0xE0 { return 2 }
+    if c < 0xF0 { return 3 }
+    if c < 0xF5 { return 4 }
+    return 0
+}
+
+// The length of the sequence at s[i] (end: where the string ends) and whether
+// it is valid: jq's rule, so that a bad sequence becomes one U+FFFD where jq
+// makes one: a bad lead byte or a stray continuation byte alone, a lead byte
+// with the continuation bytes that follow it, or a whole sequence of the
+// right shape whose value is overlong, a surrogate or beyond U+10FFFF.
+fn utf8At(s: &str, i: int, end: int): int {
+    let c0 = s[i]
+    let n = utf8Len(c0)
+    if n == 1 { return 1 }
+    if n <= 0 { return -1 }
+    if i + n > end { return -(end - i) }
+    var cp = int(c0) & (if n == 2 { 0x1F } else if n == 3 { 0x0F } else { 0x07 })
+    for k in 1..n {
+        let c = s[i + k]
+        if c < 0x80 || c >= 0xC0 { return -k }
+        cp = (cp << 6) | (int(c) & 0x3F)
+    }
+    let first = if n == 2 { 0x80 } else if n == 3 { 0x800 } else { 0x10000 }
+    if cp < first || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF { return -n }
+    return n
+}
+
+fn (d: mut &Decoder) string(): Result[str, Error] {
+    let s = d.s
+    let start = d.pos + 1
+    var i = start
+    let n = len(s)
+    // fast path: no escapes, valid UTF-8; the result shares s
+    while i < n {
+        let c = s[i]
+        if c == '"' {
+            d.pos = i + 1
+            return Ok(s[start..i])
+        }
+        if c == '\\' || c < 0x20 { break }
+        if c >= 0x80 {
+            let k = utf8At(&s, i, n)
+            if k < 0 { break }
+            i += k
+        } else {
+            i += 1
+        }
+    }
+    if i >= n { return Err(d.fail(ErrorKind.Eof, "unfinished string", n)) }
+    var b = newStrBuf()
+    b.add(s[start..i])
+    while true {
+        if i >= n { return Err(d.fail(ErrorKind.Eof, "unfinished string", n)) }
+        let c = s[i]
+        if c == '"' {
+            d.pos = i + 1
+            return Ok(b.toStr())
+        }
+        if c == '\\' {
+            if i + 1 >= n { return Err(d.fail(ErrorKind.Eof, "unfinished string", n)) }
+            let e = s[i + 1]
+            if e == '"' || e == '\\' || e == '/' {
+                b.addByte(e)
+                i += 2
+            } else if e == 'n' {
+                b.addByte('\n')
+                i += 2
+            } else if e == 't' {
+                b.addByte('\t')
+                i += 2
+            } else if e == 'r' {
+                b.addByte('\r')
+                i += 2
+            } else if e == 'b' {
+                b.addByte(0x08)
+                i += 2
+            } else if e == 'f' {
+                b.addByte(0x0C)
+                i += 2
+            } else if e == 'u' {
+                let h = hex4(&s, i + 2)
+                if h < 0 { return Err(d.fail(ErrorKind.Unicode, "invalid \\u escape", i)) }
+                var cp = h
+                i += 6
+                if h >= 0xD800 && h <= 0xDBFF {
+                    var lo = -1
+                    if i + 1 < n && s[i] == '\\' && s[i + 1] == 'u' { lo = hex4(&s, i + 2) }
+                    if lo < 0xDC00 || lo > 0xDFFF {
+                        return Err(d.fail(ErrorKind.Surrogate, "unpaired surrogate in \\u escape", i - 6))
+                    }
+                    cp = 0x10000 + ((h - 0xD800) << 10) + (lo - 0xDC00)
+                    i += 6
+                } else if h >= 0xDC00 && h <= 0xDFFF {
+                    if d.opts.strictUtf8 { return Err(d.fail(ErrorKind.Surrogate, "unpaired surrogate in \\u escape", i - 6)) }
+                    cp = 0xFFFD
+                }
+                addCodePoint(mut &b, cp)
+            } else {
+                return Err(d.fail(ErrorKind.Escape, "invalid escape \\" + strFromBytes(&[e]), i))
+            }
+        } else if c < 0x20 {
+            return Err(d.fail(ErrorKind.Control, "control character " + describe(c) + " in a string", i))
+        } else if c >= 0x80 {
+            // the string ends at the next unescaped quote
+            var end = i
+            while end < n && s[end] != '"' { end += 1 }
+            let k = utf8At(&s, i, end)
+            if k > 0 {
+                b.add(s[i..i + k])
+                i += k
+            } else {
+                if d.opts.strictUtf8 { return Err(d.fail(ErrorKind.Utf8, "invalid UTF-8 in a string", i)) }
+                b.add("\xEF\xBF\xBD")
+                i += -k
+            }
+        } else {
+            b.addByte(c)
+            i += 1
+        }
+    }
+    return Ok("")
+}
+
+fn hex4(s: &str, at: int): int {
+    if at + 4 > len(s) { return -1 }
+    var r = 0
+    for k in 0..4 {
+        let c = s[at + k]
+        var v = -1
+        if c >= '0' && c <= '9' { v = int(c - '0') }
+        if c >= 'a' && c <= 'f' { v = int(c - 'a') + 10 }
+        if c >= 'A' && c <= 'F' { v = int(c - 'A') + 10 }
+        if v < 0 { return -1 }
+        r = r * 16 + v
+    }
+    return r
+}
+
+// Appends the UTF-8 bytes of a code point.
+pub fn addCodePoint(b: mut &StrBuf, r: int) {
+    var c = r
+    if c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF) { c = 0xFFFD }
+    if c < 0x80 {
+        b.addByte(byte(c))
+    } else if c < 0x800 {
+        b.addByte(byte(0xC0 | (c >> 6)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    } else if c < 0x10000 {
+        b.addByte(byte(0xE0 | (c >> 12)))
+        b.addByte(byte(0x80 | ((c >> 6) & 0x3F)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    } else {
+        b.addByte(byte(0xF0 | (c >> 18)))
+        b.addByte(byte(0x80 | ((c >> 12) & 0x3F)))
+        b.addByte(byte(0x80 | ((c >> 6) & 0x3F)))
+        b.addByte(byte(0x80 | (c & 0x3F)))
+    }
+}
+
+// s with each invalid UTF-8 sequence replaced by U+FFFD (jq's rule, above);
+// s itself when it is valid.
+pub fn validUtf8(s: str): str {
+    var i = 0
+    let n = len(s)
+    while i < n {
+        if s[i] < 0x80 {
+            i += 1
+        } else {
+            let k = utf8At(&s, i, n)
+            if k < 0 { break }
+            i += k
+        }
+    }
+    if i >= n { return s }
+    var b = newStrBuf()
+    b.add(s[..i])
+    while i < n {
+        if s[i] < 0x80 {
+            b.addByte(s[i])
+            i += 1
+        } else {
+            let k = utf8At(&s, i, n)
+            if k > 0 {
+                b.add(s[i..i + k])
+                i += k
+            } else {
+                b.add("\xEF\xBF\xBD")
+                i += -k
+            }
+        }
+    }
+    return b.toStr()
+}
+
+// ---------------------------------------------------------------- writing
+
+// Where write puts its text: io.Writer is one, and so is json.Buf.
+pub type Sink = interface {
+    fn (mut &Self) write(s: str)
+    fn (mut &Self) writeByte(c: byte)
+}
+
+// A byte buffer that is a Sink.
+pub type Buf = record { bytes: []byte }
+
+pub fn newBuf(): Buf { return Buf{bytes: []} }
+pub fn (b: mut &Buf) write(s: str) {
+    for i in 0..len(s) { append(mut &b.bytes, s[i]) }
+}
+pub fn (b: mut &Buf) writeByte(c: byte) { append(mut &b.bytes, c) }
+pub fn (b: &Buf) toStr(): str { return strFromBytes(&b.bytes) }
+pub fn (b: &Buf) size(): int { return len(b.bytes) }
+pub fn (b: mut &Buf) clear() { replace(mut &b.bytes, []) }
+
+pub type WriteOptions = value record {
+    pub indent: int        // spaces per level; 0 writes compactly, no spaces at all
+    pub tab: bool          // one tab per level instead
+    pub sortKeys: bool     // the keys of every object in byte order
+    pub ascii: bool        // every non-ASCII character as \uXXXX (pairs above U+FFFF)
+    pub raw: bool          // a string at the top is written as its bytes, unquoted
+    pub jqNumbers: bool    // numbers as jq 1.7 writes them (literal text in decNumber's
+                           // form, 1E+2; doubles with 17 digits, 1e+100)
+}
+
+// Compact: {"a":[1,2]}.
+pub fn compact(): WriteOptions {
+    return WriteOptions{indent: 0, tab: false, sortKeys: false, ascii: false, raw: false, jqNumbers: false}
+}
+
+// Two spaces per level, a newline at the end (as jq and Python's indent=2,
+// with ": " after keys and nothing after commas at line ends).
+pub fn pretty(): WriteOptions {
+    return WriteOptions{indent: 2, tab: false, sortKeys: false, ascii: false, raw: false, jqNumbers: false}
+}
+
+// The text of j; pretty forms end with a newline.
+pub fn write(j: &Json, o: &WriteOptions): str {
+    var b = newBuf()
+    writeTo(mut &b, j, o)
+    if o.indent > 0 || o.tab { b.writeByte('\n') }
+    return b.toStr()
+}
+
+// The compact text of j.
+pub fn (j: &Json) toStr(): str {
+    var b = newBuf()
+    writeTo(mut &b, j, &compact())
+    return b.toStr()
+}
+
+// The text with two spaces per level (no newline at the end).
+pub fn (j: &Json) pretty(): str {
+    var b = newBuf()
+    writeTo(mut &b, j, &pretty())
+    return b.toStr()
+}
+
+// Writes the text of j to w, with no newline at the end.
+pub fn writeTo[W: Sink](w: mut &W, j: &Json, o: &WriteOptions) {
+    if o.raw {
+        match j {
+            Json.Str(s) {
+                w.write(validUtf8(s))
+                return
+            }
+            else {}
+        }
+    }
+    writeValue(w, j, o, 0)
+}
+
+fn newline[W: Sink](w: mut &W, o: &WriteOptions, level: int) {
+    w.writeByte('\n')
+    if o.tab {
+        for i in 0..level { w.writeByte('\t') }
+    } else {
+        let n = level * o.indent
+        var k = 0
+        while k + 16 <= n {
+            w.write("                ")
+            k += 16
+        }
+        while k < n {
+            w.writeByte(' ')
+            k += 1
+        }
+    }
+}
+
+fn writeValue[W: Sink](w: mut &W, j: &Json, o: &WriteOptions, level: int) {
+    let pretty = o.indent > 0 || o.tab
+    match j {
+        Json.Null { w.write("null") }
+        Json.Bool(b) { w.write(if b { "true" } else { "false" }) }
+        Json.Num(n) { w.write(formatNumber(&n, o.jqNumbers)) }
+        Json.Str(s) { writeString(w, s, o.ascii) }
+        Json.Arr(a) {
+            let b: ArrBox = fromPtr(a.p)
+            if len(b.items) == 0 {
+                w.write("[]")
+            } else {
+                w.writeByte('[')
+                for i in 0..len(b.items) {
+                    if i > 0 { w.writeByte(',') }
+                    if pretty { newline(w, o, level + 1) }
+                    writeValue(w, &b.items[i], o, level + 1)
+                }
+                if pretty { newline(w, o, level) }
+                w.writeByte(']')
+            }
+            let back = intoPtr(b)
+        }
+        Json.Obj(ob) {
+            let b: ObjBox = fromPtr(ob.p)
+            if len(b.keys) == 0 {
+                w.write("{}")
+            } else {
+                var order: []int = []
+                for i in 0..len(b.keys) { append(mut &order, i) }
+                if o.sortKeys { sortByKeys(mut &order, &b.keys) }
+                w.writeByte('{')
+                for x in 0..len(order) {
+                    let i = order[x]
+                    if x > 0 { w.writeByte(',') }
+                    if pretty { newline(w, o, level + 1) }
+                    writeString(w, b.keys[i], o.ascii)
+                    w.writeByte(':')
+                    if pretty { w.writeByte(' ') }
+                    writeValue(w, &b.vals[i], o, level + 1)
+                }
+                if pretty { newline(w, o, level) }
+                w.writeByte('}')
+            }
+            let back = intoPtr(b)
+        }
+    }
+}
+
+// Sorts entry numbers by their keys (insertion sort for few, else a merge sort).
+fn sortByKeys(order: mut &[]int, keys: &[]str) {
+    let n = len(order)
+    if n <= 16 {
+        for i in 1..n {
+            var k = i
+            while k > 0 && keys[order[k - 1]] > keys[order[k]] {
+                swap(order, k - 1, k)
+                k -= 1
+            }
+        }
+        return
+    }
+    var tmp = array(n, 0)
+    var width = 1
+    while width < n {
+        var lo = 0
+        while lo < n {
+            let mid = min(lo + width, n)
+            let hi = min(lo + 2 * width, n)
+            var a = lo
+            var b = mid
+            var k = lo
+            while k < hi {
+                if a < mid && (b >= hi || keys[order[a]] <= keys[order[b]]) {
+                    tmp[k] = order[a]
+                    a += 1
+                } else {
+                    tmp[k] = order[b]
+                    b += 1
+                }
+                k += 1
+            }
+            lo = hi
+        }
+        for k in 0..n { order[k] = tmp[k] }
+        width *= 2
+    }
+}
+
+const HEX = "0123456789abcdef"
+
+fn writeEscape[W: Sink](w: mut &W, c: int) {
+    w.write("\\u")
+    w.writeByte(HEX[(c >> 12) & 15])
+    w.writeByte(HEX[(c >> 8) & 15])
+    w.writeByte(HEX[(c >> 4) & 15])
+    w.writeByte(HEX[c & 15])
+}
+
+// A string in quotes with jq's escapes: \" \\ \b \t \n \f \r, \u00XX for
+// the other control characters and DEL, invalid UTF-8 as U+FFFD; with ascii
+// every non-ASCII character as \uXXXX.
+pub fn writeString[W: Sink](w: mut &W, s: str, ascii: bool) {
+    w.writeByte('"')
+    let n = len(s)
+    var run = 0     // start of the bytes not yet written
+    var i = 0
+    while i < n {
+        let c = s[i]
+        if c >= 0x20 && c < 0x7f && c != '"' && c != '\\' {
+            i += 1
+        } else if c >= 0x80 {
+            let k = utf8At(&s, i, n)
+            if k > 0 && !ascii {
+                i += k
+            } else {
+                if run < i { w.write(s[run..i]) }
+                if k > 0 {
+                    // ascii: the code point as escapes
+                    var cp = int(c) & (if k == 2 { 0x1F } else if k == 3 { 0x0F } else { 0x07 })
+                    for x in 1..k { cp = (cp << 6) | (int(s[i + x]) & 0x3F) }
+                    if cp >= 0x10000 {
+                        let v = cp - 0x10000
+                        writeEscape(w, 0xD800 | (v >> 10))
+                        writeEscape(w, 0xDC00 | (v & 0x3FF))
+                    } else {
+                        writeEscape(w, cp)
+                    }
+                    i += k
+                } else {
+                    if ascii { w.write("\\ufffd") } else { w.write("\xEF\xBF\xBD") }
+                    i += -k
+                }
+                run = i
+            }
+        } else {
+            if run < i { w.write(s[run..i]) }
+            if c == '"' {
+                w.write("\\\"")
+            } else if c == '\\' {
+                w.write("\\\\")
+            } else if c == '\n' {
+                w.write("\\n")
+            } else if c == '\t' {
+                w.write("\\t")
+            } else if c == '\r' {
+                w.write("\\r")
+            } else if c == 0x08 {
+                w.write("\\b")
+            } else if c == 0x0C {
+                w.write("\\f")
+            } else {
+                writeEscape(w, int(c))
+            }
+            i += 1
+            run = i
+        }
+    }
+    if run < n { w.write(s[run..n]) }
+    w.writeByte('"')
+}
+
+// The JSON text of a number. Without jq, the literal text as it is, or the
+// double's shortest form (null for NaN and the infinities). With jq, as jq
+// 1.7.1 prints: a literal in decNumber's scientific form, a double with its
+// shortest digits laid out as jq's dtoa does.
+pub fn formatNumber(n: &Number, jq: bool): str {
+    if len(n.text) > 0 {
+        if !jq { return n.text }
+        let c = canonicalLiteral(n.text)
+        if len(c) > 0 { return c }
+    }
+    let f = n.f
+    if f != f { return "null" }
+    if !jq {
+        if !f.isFinite() { return "null" }
+        return shortestText(f)
+    }
+    return jqFloat(f)
+}
+
+// A double as text with the fewest digits that read back as it ("0.1",
+// "1e+25" style is jq's; here "1e25", "1.5e-07" is jq's, here "1.5e-7").
+pub fn shortestText(f: float): str {
+    if f == f.trunc() && f.abs() < 1000000000000000.0 {
+        if isNegZero(f) { return "-0" }
+        return intToStr(int(f))
+    }
+    return f.toStr()
+}
+
+// The digits and decimal point position of the shortest form of a finite
+// double: the value is 0.digits * 10^point.
+type Digits = value record {
+    neg: bool
+    digits: str
+    point: int
+}
+
+fn shortestDigits(f: float): Digits {
+    let s = f.toStr()
+    var neg = false
+    var b = newStrBuf()
+    var point = 0
+    var seenPoint = false
+    var e = 0
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == '-' {
+            neg = true
+        } else if c == '.' {
+            seenPoint = true
+        } else if c == 'e' {
+            e = parseInt(s[i + 1..]).unwrap()
+            break
+        } else if b.size() == 0 && c == '0' {
+            if seenPoint { point -= 1 }
+        } else {
+            b.addByte(c)
+            if !seenPoint { point += 1 }
+        }
+        i += 1
+    }
+    var d = b.toStr()
+    var z = len(d)
+    while z > 1 && d[z - 1] == '0' { z -= 1 }
+    d = d[..z]
+    if len(d) == 0 { return Digits{neg: neg, digits: "0", point: 1} }
+    return Digits{neg: neg, digits: d, point: point + e}
+}
+
+// jq 1.7.1's text of a double: infinities clamp to the largest double; an
+// exponent (at least two digits, with a sign) when the point is before
+// 1e-5 or more than 15 places after the last digit.
+pub fn jqFloat(x: float): str {
+    var f = x
+    if f != f { return "null" }
+    if !f.isFinite() { f = if f > 0.0 { 1.7976931348623157e308 } else { -1.7976931348623157e308 } }
+    if f == f.trunc() && f.abs() < 1000000000000000.0 {
+        if isNegZero(f) { return "-0" }
+        return intToStr(int(f))
+    }
+    let d = shortestDigits(f)
+    var b = newStrBuf()
+    if d.neg { b.addByte('-') }
+    let nd = len(d.digits)
+    let decpt = d.point
+    if decpt <= -4 || decpt > nd + 15 {
+        b.addByte(d.digits[0])
+        if nd > 1 {
+            b.addByte('.')
+            b.add(d.digits[1..])
+        }
+        b.addByte('e')
+        var e = decpt - 1
+        if e < 0 {
+            b.addByte('-')
+            e = -e
+        } else {
+            b.addByte('+')
+        }
+        if e < 10 { b.addByte('0') }
+        b.addInt(e)
+    } else if decpt <= 0 {
+        b.add("0.")
+        for k in 0..-decpt { b.addByte('0') }
+        b.add(d.digits)
+    } else {
+        if nd <= decpt {
+            b.add(d.digits)
+            for k in 0..decpt - nd { b.addByte('0') }
+        } else {
+            b.add(d.digits[..decpt])
+            b.addByte('.')
+            b.add(d.digits[decpt..])
+        }
+    }
+    return b.toStr()
+}
+
+// A number literal in decNumber's to-scientific-string form, as jq 1.7.1
+// prints literals it did not change: "1e2" is 1E+2, "1.50" stays, "12e-1"
+// is 1.2, "0.0000001" is 1E-7. "" for a NaN or an infinity (jq prints
+// null and the largest double for those).
+pub fn canonicalLiteral(t: str): str {
+    let n = len(t)
+    var i = 0
+    var neg = false
+    if i < n && (t[i] == '-' || t[i] == '+') {
+        neg = t[i] == '-'
+        i += 1
+    }
+    if i < n && !isDigit(t[i]) && t[i] != '.' { return "" }
+    var coef = newStrBuf()
+    var e = 0
+    while i < n && (isDigit(t[i]) || t[i] == '.') {
+        if t[i] == '.' {
+            i += 1
+            while i < n && isDigit(t[i]) {
+                if coef.size() > 0 || t[i] != '0' { coef.addByte(t[i]) }
+                e -= 1
+                i += 1
+            }
+            break
+        }
+        if coef.size() > 0 || t[i] != '0' { coef.addByte(t[i]) }
+        i += 1
+    }
+    if i < n && (t[i] == 'e' || t[i] == 'E') {
+        match parseInt(t[i + 1..]) {
+            Some(x) { e += x }
+            None { return "" }
+        }
+    }
+    var c = coef.toStr()
+    if len(c) == 0 { c = "0" }
+    var b = newStrBuf()
+    if neg { b.addByte('-') }
+    let ae = e + len(c) - 1
+    if e <= 0 && ae >= -6 {
+        if e == 0 {
+            b.add(c)
+        } else if len(c) > -e {
+            b.add(c[..len(c) + e])
+            b.addByte('.')
+            b.add(c[len(c) + e..])
+        } else {
+            b.add("0.")
+            for k in 0..(-e - len(c)) { b.addByte('0') }
+            b.add(c)
+        }
+    } else {
+        b.addByte(c[0])
+        if len(c) > 1 {
+            b.addByte('.')
+            b.add(c[1..])
+        }
+        b.addByte('E')
+        b.addByte(if ae >= 0 { '+' } else { '-' })
+        b.addInt(if ae >= 0 { ae } else { -ae })
+    }
+    return b.toStr()
+}
