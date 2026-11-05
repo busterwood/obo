@@ -100,6 +100,81 @@ pub fn fields(s: str): []str {
     return out
 }
 
+// ------------------------------------------------------------ views (experimental)
+//
+// Splitting without counting: the pieces are views (&str) of s, valid while s
+// is (design/borrow-types.md). A piece that must outlive s converts to str.
+
+// splitOn's pieces as views of s.
+pub fn splitViews(s: &str, sep: str): []&str {
+    if len(sep) == 0 { panic("strings.splitViews: empty separator") }
+    var out: []&str = []
+    var start = 0
+    var i = indexOf(s, sep, 0)
+    while i >= 0 {
+        append(mut &out, &s[start..i])
+        start = i + len(sep)
+        i = indexOf(s, sep, start)
+    }
+    append(mut &out, &s[start..len(s)])
+    return out
+}
+
+// fields' words as views of s.
+pub fn fieldsViews(s: &str): []&str {
+    var out: []&str = []
+    var i = 0
+    while i < len(s) {
+        while i < len(s) && isSpace(s[i]) { i += 1 }
+        let start = i
+        while i < len(s) && !isSpace(s[i]) { i += 1 }
+        if i > start { append(mut &out, &s[start..i]) }
+    }
+    return out
+}
+
+// An iterator over the lines of a text: `for line in strings.lines(&text)`.
+// Each line is a view without its '\n'; a final line without one is a line,
+// and a text ending in '\n' has no empty line after it ("" has no lines).
+pub type Lines = value record {
+    text: &str
+    pos: int
+}
+
+pub fn lines(text: &str): Lines { return Lines{text: text, pos: 0} }
+
+pub fn (it: mut &Lines) next(): Option[&str] {
+    let n = len(it.text)
+    if it.pos >= n { return None }
+    let start = it.pos
+    var e = strFindByte(it.text, start, '\n')
+    if e < 0 { e = n }
+    it.pos = e + 1
+    return Some(it.text[start..e])
+}
+
+// An iterator over the words of a text (fields', one at a time).
+pub type Fields = value record {
+    text: &str
+    pos: int
+}
+
+pub fn fieldsIter(text: &str): Fields { return Fields{text: text, pos: 0} }
+
+pub fn (it: mut &Fields) next(): Option[&str] {
+    let n = len(it.text)
+    var i = it.pos
+    while i < n && isSpace(it.text[i]) { i += 1 }
+    if i >= n {
+        it.pos = n
+        return None
+    }
+    let start = i
+    while i < n && !isSpace(it.text[i]) { i += 1 }
+    it.pos = i
+    return Some(it.text[start..i])
+}
+
 // The text before and after the first sep, if s contains it.
 pub type Cut = value record {
     pub before: str

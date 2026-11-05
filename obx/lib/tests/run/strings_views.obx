@@ -1,0 +1,47 @@
+// strings' experimental views API (design/borrow-types.md): splitViews, fieldsViews, lines, fieldsIter.
+// expect: 4 [a] [bb] [] [c d]
+// expect: 3 [x] [yy] [zzz]
+// expect: <one>
+// expect: <>
+// expect: <three>
+// expect: 0
+// expect: <last>
+// expect: alpha|beta|gamma
+// expect: kept: bb
+import "strings"
+
+fn show(xs: &[]&str): str {
+    var b = newStrBuf()
+    b.add(intToStr(len(xs)))
+    for x in xs { b.add(" [" + x + "]") }
+    return b.toStr()
+}
+
+fn main() {
+    let s = "a,,bb,,,,c d"
+    let ps = strings.splitViews(&s, ",,")
+    println(show(&ps))
+    let w = "  x yy\tzzz \n"
+    let ws = strings.fieldsViews(&w)
+    println(show(&ws))
+    let t = "one\n\nthree\n"
+    for l in strings.lines(&t) { println("<" + l + ">") }
+    let e = ""
+    var n = 0
+    for l in strings.lines(&e) { n += 1 }
+    println(intToStr(n))
+    let u = "last"
+    for l in strings.lines(&u) { println("<" + l + ">") }
+    let v = " alpha  beta gamma "
+    var b = newStrBuf()
+    var first = true
+    for f in strings.fieldsIter(&v) {
+        if !first { b.add("|") }
+        first = false
+        b.add(f)
+    }
+    println(b.toStr())
+    var kept = ""
+    kept = ps[1]          // a view converts to str where one is expected
+    println("kept: " + kept)
+}
