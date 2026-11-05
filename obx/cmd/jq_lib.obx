@@ -1755,7 +1755,7 @@ fn strptimeRest(s: str, i: int, fmt: str, t: Tm): Result[J, str] {
 
 // jq's _match_impl(re; flags; test) on a string input: a test result, or
 // the array of match objects (offsets and lengths in code points).
-pub fn matchImpl(input: &J, re: &J, flags: &J, test: bool): Result[J, str] {
+pub fn matchImpl(input: &J, re: &J, flags: &J, test: bool, cache: mut &RegexCache): Result[J, str] {
     if !isStr(input) { return Err(typeErr(input, "cannot be matched, as it is not a string")) }
     if !isStr(re) { return Err(typeErr(re, "is not a string")) }
     var global = false
@@ -1792,74 +1792,101 @@ pub fn matchImpl(input: &J, re: &J, flags: &J, test: bool): Result[J, str] {
         prefix = strings_without(prefix, 'x')
     }
     if len(prefix) > 0 { pat = "(?" + prefix + ")" + pat }
-    let compiled = if longest { regex.compileLongest(pat) } else { regex.compile(pat) }
-    match compiled {
-        Ok(rx) {
-            let text = strVal(input)
-            var out: []J = []
-            let names = rx.groupNames()
-            // jq's loop over onig_search: after a match the search goes on
-            // at its end (where an empty match may follow it), after an
-            // empty match one character on
-            var start = 0
-            while start <= len(text) {
-                var a = rx.submatchIndexAt(text, start)
-                // n: Oniguruma's FIND_NOT_EMPTY, the first match that is not empty
-                while noEmpty && len(a) > 0 && a[0] == a[1] {
-                    let next = if a[0] < len(text) { a[0] + cpWidth(&text, a[0]) } else { len(text) + 1 }
-                    a = rx.submatchIndexAt(text, next)
-                }
-                if len(a) == 0 { break }
-                if test { return Ok(json.boolean(true)) }
-                let ms = a[0]
-                let me = a[1]
-                let idx = int2j(cpLen(&text[..ms]))
-                var o = json.object()
-                o.set("offset", idx.clone())
-                o.set("length", int2j(cpLen(&text[ms..me])))
-                o.set("string", json.string(text[ms..me]))
-                var cs: []J = []
-                for g in 1..len(a) / 2 {
-                    var co = json.object()
-                    let gs = a[2 * g]
-                    let ge = a[2 * g + 1]
-                    if ms == me {
-                        // a zero-width match: every group as empty there
-                        co.set("offset", idx.clone())
-                        co.set("string", json.string(""))
-                        co.set("length", int2j(0))
-                    } else if gs < 0 {
-                        co.set("offset", int2j(-1))
-                        co.set("string", json.null())
-                        co.set("length", int2j(0))
-                    } else if gs == ge {
-                        co.set("offset", int2j(cpLen(&text[..gs])))
-                        co.set("string", json.string(""))
-                        co.set("length", int2j(0))
-                    } else {
-                        co.set("offset", int2j(cpLen(&text[..gs])))
-                        co.set("length", int2j(cpLen(&text[gs..ge])))
-                        co.set("string", json.string(text[gs..ge]))
-                    }
-                    let nm = if g < len(names) { names[g] } else { "" }
-                    co.set("name", if len(nm) > 0 { json.string(nm) } else { json.null() })
-                    append(mut &cs, co)
-                }
-                o.set("captures", json.arrayOf(cs))
-                append(mut &out, o)
-                if !global { break }
-                if ms == me {
-                    start = if me < len(text) { me + cpWidth(&text, me) } else { len(text) + 1 }
-                } else {
-                    start = me
-                }
-            }
-            if test { return Ok(json.boolean(false)) }
-            return Ok(json.arrayOf(out))
+    // a program uses few patterns, many times: keep them compiled
+    let key = (if longest { "L" } else { "F" }) + pat
+    var at = -1
+    for i in 0..len(cache.keys) {
+        if cache.keys[i] == key {
+            at = i
+            break
         }
-        Err(e) { return Err("Regex failure: " + onigMessage(e.code)) }
     }
+    if at < 0 {
+        let compiled = if longest { regex.compileLongest(pat) } else { regex.compile(pat) }
+        match move(compiled) {
+            Ok(r) {
+                if len(cache.keys) >= 64 {
+                    let ok = replace(mut &cache.keys, [])
+                    let orx = replace(mut &cache.rxs, [])
+                }
+                append(mut &cache.keys, key)
+                append(mut &cache.rxs, r)
+                at = len(cache.keys) - 1
+            }
+            Err(e) { return Err("Regex failure: " + onigMessage(e.code)) }
+        }
+    }
+    let rx = &cache.rxs[at]
+    let text = strVal(input)
+    var out: []J = []
+    let names = rx.groupNames()
+    // jq's loop over onig_search: after a match the search goes on
+    // at its end (where an empty match may follow it), after an
+    // empty match one character on
+    var start = 0
+    while start <= len(text) {
+        var a = rx.submatchIndexAt(text, start)
+        // n: Oniguruma's FIND_NOT_EMPTY, the first match that is not empty
+        while noEmpty && len(a) > 0 && a[0] == a[1] {
+            let next = if a[0] < len(text) { a[0] + cpWidth(&text, a[0]) } else { len(text) + 1 }
+            a = rx.submatchIndexAt(text, next)
+        }
+        if len(a) == 0 { break }
+        if test { return Ok(json.boolean(true)) }
+        let ms = a[0]
+        let me = a[1]
+        let idx = int2j(cpLen(&text[..ms]))
+        var o = json.object()
+        o.set("offset", idx.clone())
+        o.set("length", int2j(cpLen(&text[ms..me])))
+        o.set("string", json.string(text[ms..me]))
+        var cs: []J = []
+        for g in 1..len(a) / 2 {
+            var co = json.object()
+            let gs = a[2 * g]
+            let ge = a[2 * g + 1]
+            if ms == me {
+                // a zero-width match: every group as empty there
+                co.set("offset", idx.clone())
+                co.set("string", json.string(""))
+                co.set("length", int2j(0))
+            } else if gs < 0 {
+                co.set("offset", int2j(-1))
+                co.set("string", json.null())
+                co.set("length", int2j(0))
+            } else if gs == ge {
+                co.set("offset", int2j(cpLen(&text[..gs])))
+                co.set("string", json.string(""))
+                co.set("length", int2j(0))
+            } else {
+                co.set("offset", int2j(cpLen(&text[..gs])))
+                co.set("length", int2j(cpLen(&text[gs..ge])))
+                co.set("string", json.string(text[gs..ge]))
+            }
+            let nm = if g < len(names) { names[g] } else { "" }
+            co.set("name", if len(nm) > 0 { json.string(nm) } else { json.null() })
+            append(mut &cs, co)
+        }
+        o.set("captures", json.arrayOf(cs))
+        append(mut &out, o)
+        if !global { break }
+        if ms == me {
+            start = if me < len(text) { me + cpWidth(&text, me) } else { len(text) + 1 }
+        } else {
+            start = me
+        }
+    }
+    if test { return Ok(json.boolean(false)) }
+    return Ok(json.arrayOf(out))
 }
+
+// Compiled regular expressions by pattern, for matchImpl.
+pub type RegexCache = record {
+    keys: []str
+    rxs: []regex.Regex
+}
+
+pub fn newRegexCache(): RegexCache { return RegexCache{keys: [], rxs: []} }
 
 // The length in bytes of the UTF-8 sequence at i (1 for a stray byte).
 fn cpWidth(s: &str, i: int): int {

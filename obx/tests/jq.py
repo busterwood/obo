@@ -619,6 +619,20 @@ module []; 0
 "foo bar foo" | gsub("[^a-z]*(?<x>[a-z]*)"; "Z\(.x)")
 "qux" | [match("u*"; "g")] | map(.offset)
 get_prog_origin | type
+def fib: if . < 2 then . else (. - 1 | fib) + (. - 2 | fib) end; 20 | fib
+def f($a): $a + 1; [f(1, 2)]
+def f(g): g + 1; [f(1, 2)]
+def f(g): [g, g]; [3 | f(1, (2 | debug))]
+def f($a; g): $a + g; [f(1, 2; 10, 20)]
+def g: if . > 0 then (. - 1 | g), . else empty end; [3 | g]
+[range(3) as $x | $x + (1, 2)]
+[(1, 2) + (10, 20)]
+[limit(5; def r: ., (. + 1 | r); 0 | r)]
+first(def r: ., (. + 1 | r); 0 | r)
+def h: reduce (1, 2) as $x (.; . + $x); [(0, 10) | h]
+[range(2000)] | sort_by(-.) | .[0:3]
+[range(100) | tostring | select(test("7"))] | length
+["a1", "b2", "a3"] | map(sub("(?<l>[a-z])"; "\(.l | ascii_upcase)"))
 '''
 
 
