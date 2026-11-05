@@ -1,5 +1,5 @@
 // collections: array algorithms (stable sorting, binary search, reversal,
-// insertion and removal, searching), Set, and a binary Heap.
+// insertion and removal, searching), Set, UniqueList, and a binary Heap.
 //
 // Map, newMap and sort (an unstable, allocation-free heap sort) are in std.
 // Algorithms that do not grow or shrink the array take a slice (&[T] /
@@ -342,6 +342,283 @@ pub fn (a: &Set[T]) isSubset(b: &Set[T]): bool {
 }
 
 pub fn (a: &Set[T]) eq(b: &Set[T]): bool { return a.size() == b.size() && a.isSubset(b) }
+
+// ------------------------------------------------------------ UniqueList
+
+// A list of unique elements, in insertion order. A port of busterwood/Goodies'
+// UniqueList (C#), which was inspired by Python 3.6's dict. The elements live in
+// dense arrays (their hashes and values, in insertion order); indexes is an
+// open-addressing table of entry numbers, where a slot holds an entry number,
+// FREE (never used: probing ends here) or DELETED (its entry was removed:
+// probing goes on past it). The table is sized with a quarter of its slots
+// spare and is rebuilt without its DELETED marks before the last FREE slot
+// would be used, so probing always ends. has, indexOf, add and replace(i, x)
+// are O(1) on average;
+// removal shifts the later entries down, O(n). A slot is chosen from the hash
+// mixed with a per-process seed, as Map does, so no sender can pick colliding
+// elements.
+pub type UniqueList[T: Eq + Hash] = record {
+    indexes: []int   // per slot: an entry number, FREE or DELETED
+    hashes: []u64    // per entry: the element's hash
+    values: []T      // per entry, in insertion order
+    cap: int         // the entry capacity (C#'s values.Length): the table grows when count + 1 >= cap
+    tombs: int       // the DELETED slots of indexes
+    seed: u64        // mixed into a hash before it picks a slot
+}
+
+const FREE = -1
+const DELETED = -2
+const SLOT_MIX: u64 = 11400714819323198485   // std's GOLDEN
+
+// Where a probe ended: slot and entry of the element (-1 when absent), and
+// free, the slot it goes to (the first DELETED slot on its probe path, else
+// the FREE slot that ended the probe).
+type Lookup = value record { slot: int; entry: int; free: int }
+
+extern "c" fn ulHashKey(i: int): u64 as "obxlib_hash_key"
+
+// The per-process seed: SipHash of a name under the kernel's random key
+// words, as std derives its own.
+fn ulSeed(): u64 { return sipHash13(ulHashKey(0), ulHashKey(1), "UniqueList") }
+
+// An empty list with room for three elements.
+pub fn newUniqueList[T: Eq + Hash](): UniqueList[T] {
+    return UniqueList{indexes: array(3, FREE), hashes: [], values: [], cap: 3, tombs: 0, seed: ulSeed()}
+}
+
+// A list of the distinct elements of xs, in their order.
+pub fn uniqueListOf[T: Eq + Hash + copy](xs: &[T]): UniqueList[T] {
+    var u: UniqueList[T] = newUniqueList()
+    for x in xs { u.add(x) }
+    return u
+}
+
+pub fn (u: &UniqueList[T]) size(): int { return len(u.values) }
+pub fn (u: &UniqueList[T]) isEmpty(): bool { return len(u.values) == 0 }
+pub fn (u: &UniqueList[T]) has(x: &T): bool { return u.find(x, x.hash()).entry >= 0 }
+
+// The index of x in the list, or None.
+pub fn (u: &UniqueList[T]) indexOf(x: &T): Option[int] {
+    let p = u.find(x, x.hash())
+    if p.entry < 0 { return None }
+    return Some(p.entry)
+}
+
+// Element i, borrowed; stops the program (exit 3) when i is out of range.
+pub fn (u: &UniqueList[T]) at(i: int): &T { return &u.values[i] }
+
+// Adds x at the end. Whether it was new: false, and nothing changes, when x
+// is already in the list.
+pub fn (u: mut &UniqueList[T]) add(x: T): bool {
+    if len(u.values) + 1 >= u.cap { u.resize() }
+    let h = x.hash()
+    var p = u.find(&x, h)
+    if p.entry >= 0 { return false }
+    if len(u.values) + 1 + u.tombs >= len(u.indexes) {
+        // the new entry would leave no FREE slot: rebuild without the DELETED marks
+        u.rebuild(len(u.indexes))
+        p = u.find(&x, h)
+    }
+    append(mut &u.hashes, h)
+    append(mut &u.values, x)
+    if u.indexes[p.free] == DELETED { u.tombs -= 1 }
+    u.indexes[p.free] = len(u.values) - 1
+    return true
+}
+
+// Replaces the element equal to x, or adds x when there is none.
+pub fn (u: mut &UniqueList[T]) addOrUpdate(x: T) {
+    let p = u.find(&x, x.hash())
+    if p.entry < 0 {
+        u.add(x)
+    } else {
+        u.replace(p.entry, x)
+    }
+}
+
+// Stores x at index i in place of the element there. Returns false, and
+// changes nothing, when x is already in the list at another index (the
+// elements stay unique); true otherwise. Stops the program (exit 3) when i is
+// out of range.
+pub fn (u: mut &UniqueList[T]) replace(i: int, x: T): bool {
+    let oldH = u.hashes[i]
+    let h = x.hash()
+    let p = u.find(&x, h)
+    if p.entry == i {
+        replace(mut &u.values[i], x)
+        return true
+    }
+    if p.entry >= 0 { return false }
+    // x is new: the slot of entry i becomes DELETED, and x takes a slot
+    let s = u.slotOf(i, oldH)
+    u.indexes[s] = DELETED
+    u.tombs += 1
+    replace(mut &u.values[i], x)
+    u.hashes[i] = h
+    if len(u.values) + u.tombs >= len(u.indexes) {
+        u.rebuild(len(u.indexes))
+    } else {
+        let q = u.find(&u.values[i], h)
+        if u.indexes[q.free] == DELETED { u.tombs -= 1 }
+        u.indexes[q.free] = i
+    }
+    return true
+}
+
+// Removes x; whether it was in the list. The later elements move down one (O(n)).
+pub fn (u: mut &UniqueList[T]) remove(x: &T): bool {
+    let p = u.find(x, x.hash())
+    if p.entry < 0 { return false }
+    u.removeEntry(p.slot, p.entry)
+    return true
+}
+
+// Removes the element at index i, moves the later elements down one, and
+// returns it (O(n)). Stops the program (exit 3) when i is out of range.
+pub fn (u: mut &UniqueList[T]) removeAt(i: int): T {
+    let s = u.slotOf(i, u.hashes[i])
+    return u.removeEntry(s, i)
+}
+
+// Removes every element; the table keeps its size.
+pub fn (u: mut &UniqueList[T]) clear() {
+    replace(mut &u.indexes, array(len(u.indexes), FREE))
+    replace(mut &u.hashes, [])
+    replace(mut &u.values, [])
+    u.tombs = 0
+}
+
+// Calls f on each element, in order.
+pub fn (u: &UniqueList[T]) each(f: &fn(&T)) {
+    for i in 0..len(u.values) { f(&u.values[i]) }
+}
+
+// The elements, in order.
+pub fn (u: &UniqueList[T: copy]) items(): []T { return copyOf(&u.values) }
+
+// A copy of the list.
+pub fn (u: &UniqueList[T: copy]) copy(): UniqueList[T] {
+    return UniqueList{indexes: copyOf(&u.indexes), hashes: copyOf(&u.hashes), values: copyOf(&u.values),
+        cap: u.cap, tombs: u.tombs, seed: u.seed}
+}
+
+// The elements that satisfy pred, in order, as a new list.
+pub fn (a: &UniqueList[T: copy]) filter(pred: &fn(&T): bool): UniqueList[T] {
+    var out: UniqueList[T] = newUniqueList()
+    a.each(fn(x) { if pred(x) { out.add(x) } })
+    return out
+}
+
+// The elements of a, then the elements of b that a does not have.
+pub fn (a: &UniqueList[T: copy]) union(b: &UniqueList[T]): UniqueList[T] {
+    var out: UniqueList[T] = newUniqueList()
+    a.each(fn(x) { out.add(x) })
+    b.each(fn(x) { out.add(x) })
+    return out
+}
+
+// The elements of a that b has, in a's order.
+pub fn (a: &UniqueList[T: copy]) intersect(b: &UniqueList[T]): UniqueList[T] { return a.filter(fn(x) { return b.has(x) }) }
+
+// The elements of a that b does not have, in a's order.
+pub fn (a: &UniqueList[T: copy]) minus(b: &UniqueList[T]): UniqueList[T] { return a.filter(fn(x) { return !b.has(x) }) }
+
+// The elements in exactly one of a and b: a minus b, then b minus a.
+pub fn (a: &UniqueList[T: copy]) symmetricMinus(b: &UniqueList[T]): UniqueList[T] {
+    var out: UniqueList[T] = a.minus(b)
+    b.each(fn(x) { if !a.has(x) { out.add(x) } })
+    return out
+}
+
+pub fn (a: &UniqueList[T]) isSubset(b: &UniqueList[T]): bool {
+    for i in 0..a.size() {
+        if !b.has(a.at(i)) { return false }
+    }
+    return true
+}
+
+pub fn (a: &UniqueList[T]) isSuperset(b: &UniqueList[T]): bool { return b.isSubset(a) }
+
+pub fn (a: &UniqueList[T]) overlaps(b: &UniqueList[T]): bool {
+    for i in 0..a.size() {
+        if b.has(a.at(i)) { return true }
+    }
+    return false
+}
+
+// Whether a and b have the same elements (the order is not compared).
+pub fn (a: &UniqueList[T]) eq(b: &UniqueList[T]): bool { return a.size() == b.size() && a.isSubset(b) }
+
+// The table slot a hash starts probing at: the hash mixed with the seed, scaled
+// to the table's length (the top bits, so every slot is reachable).
+fn (u: &UniqueList[T]) home(h: u64): int {
+    let x = (h ^ u.seed) *% SLOT_MIX
+    return int(((x >> 32) * u64(len(u.indexes))) >> 32)
+}
+
+// The slot after s, wrapping round.
+fn (u: &UniqueList[T]) after(s: int): int {
+    if s + 1 == len(u.indexes) { return 0 }
+    return s + 1
+}
+
+// The probe for x, whose hash is h: where x is, or where it goes.
+fn (u: &UniqueList[T]) find(x: &T, h: u64): Lookup {
+    var s = u.home(h)
+    var firstDeleted = -1
+    while true {
+        let e = u.indexes[s]
+        if e == FREE {
+            let slotFree = if firstDeleted >= 0 { firstDeleted } else { s }
+            return Lookup{slot: -1, entry: -1, free: slotFree}
+        }
+        if e == DELETED {
+            if firstDeleted < 0 { firstDeleted = s }
+        } else if u.hashes[e] == h && u.values[e] == x {
+            return Lookup{slot: s, entry: e, free: firstDeleted}
+        }
+        s = u.after(s)
+    }
+}
+
+// The index slot that points at entry e, whose hash is h.
+fn (u: &UniqueList[T]) slotOf(e: int, h: u64): int {
+    var s = u.home(h)
+    while u.indexes[s] != e { s = u.after(s) }
+    return s
+}
+
+// Removes entry e, which slot s points at: s becomes DELETED, the entries after
+// e move down one (and the slots that point at them follow), and e's value is
+// returned.
+fn (u: mut &UniqueList[T]) removeEntry(s: int, e: int): T {
+    u.indexes[s] = DELETED
+    u.tombs += 1
+    for i in 0..len(u.indexes) {
+        if u.indexes[i] > e { u.indexes[i] = u.indexes[i] - 1 }
+    }
+    removeAt(mut &u.hashes, e)
+    return removeAt(mut &u.values, e)
+}
+
+// Rebuilds the table with n slots, one for each entry, and no DELETED marks.
+fn (u: mut &UniqueList[T]) rebuild(n: int) {
+    replace(mut &u.indexes, array(n, FREE))
+    u.tombs = 0
+    for e in 0..len(u.values) {
+        var s = u.home(u.hashes[e])
+        while u.indexes[s] != FREE { s = u.after(s) }
+        u.indexes[s] = e
+    }
+}
+
+// Grows as C#'s Resize does: the entry capacity becomes twice the table length
+// plus one, and the table has a quarter of its slots spare.
+fn (u: mut &UniqueList[T]) resize() {
+    let newCap = 2 * len(u.indexes) + 1
+    u.cap = newCap
+    u.rebuild(newCap * 5 / 4)
+}
 
 // ------------------------------------------------------------ Heap
 
