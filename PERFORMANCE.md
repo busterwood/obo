@@ -244,6 +244,12 @@ to 1,133M, the compiler -0.3%), and `zoxide_gen.py` emits one `b.add` per
 run of literal text (203 calls instead of 1,347; every rendering
 unchanged). Together, compiling zoxide from main: 1,234M to 533M
 instructions (-57%), and its binary 594 KB to 352 KB.
+- **`appendStr`** (a std intrinsic: a string's bytes at the end of a
+`[]byte` in one copy) makes `StrBuf.add` a call instead of a loop of
+`append(strByte)` per byte. Building 20 strings of 400,000 words each:
+native 1,782M to 899M instructions, 670M to 364M cycles (-46%); via C 485M
+to 269M cycles (-45%). With no inlined loop at each `add`, compiling zoxide
+takes 471M to 435M instructions (-7.6%), the compiler -0.5%.
 
 **The runtime's memcpy.** See "Native backend progress".
 
