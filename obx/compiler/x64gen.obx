@@ -4326,6 +4326,25 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
 
 // ---------------------------------------------------------------- calls
 
+// The libm call e of one float, generated as the instruction that computes it exactly (sqrt,
+// floor, ceil, trunc, rint: sqrtsd and roundsd; fabs: and with the sign mask), else false.
+fn (g: mut &Gen) inlineMath(e: int, name: str): bool {
+    var imm = -1
+    if name == "floor" { imm = 9 } else if name == "ceil" { imm = 10 } else if name == "trunc" { imm = 11 } else if name == "rint" { imm = 12 }
+    if imm < 0 && name != "sqrt" && name != "fabs" { return false }
+    g.gen(g.u.listAt(g.u.nodes[e].b, 0))
+    if name == "sqrt" {
+        g.a.sse(x64.SQRTSD, 0, 0)
+    } else if name == "fabs" {
+        g.a.movRI(RCX, 9223372036854775807)
+        g.a.movqXR(1, RCX)
+        g.a.sse66(0x54, 0, 1)
+    } else {
+        g.a.roundsd(0, 0, imm)
+    }
+    return true
+}
+
 fn (g: mut &Gen) genCall(e: int) {
     // where the aggregate result goes, if the caller said (callDest), and whether it may be
     // the hidden result pointer (the place is new: nothing reads it during the call)
@@ -4341,6 +4360,11 @@ fn (g: mut &Gen) genCall(e: int) {
     var direct = -1
     if g.u.nk(callee) == ir.E_DECAY && g.u.nk(g.u.nodes[callee].a) == ir.E_FUNC {
         direct = g.u.nodes[g.u.nodes[callee].a].a
+    }
+    if direct >= 0 && g.u.funcs[direct].body < 0 && len(pts) == 1 && g.isF(pts[0]) && g.isF(rt) &&
+        g.inlineMath(e, g.u.funcs[direct].asmName) {
+        g.destUsed = false
+        return
     }
     if direct >= 0 && g.u.funcs[direct].body < 0 && !g.u.funcs[direct].isExtern &&
         g.inlineRt(e, g.u.funcs[direct].name) {

@@ -537,6 +537,12 @@ pub fn (a: mut &Asm) repStos(size: int) {
 // op xd, xs: addsd, mulsd, subsd, divsd, sqrtsd, movsd (F2 0F op).
 pub fn (a: mut &Asm) sse(op: int, dst: int, src: int) { a.rr(0xF2, false, 0x0F00 + op, dst, src, false, false) }
 
+// roundsd xd, xs, imm (SSE4.1, which every AVX CPU has): 9 floor, 10 ceil, 11 trunc, 12 rint.
+pub fn (a: mut &Asm) roundsd(dst: int, src: int, imm: int) {
+    a.rr(0x66, false, 0x0F3A0B, dst, src, false, false)
+    a.b(imm)
+}
+
 // ucomisd, xorpd (66 0F op).
 pub fn (a: mut &Asm) sse66(op: int, dst: int, src: int) { a.rr(0x66, false, 0x0F00 + op, dst, src, false, false) }
 

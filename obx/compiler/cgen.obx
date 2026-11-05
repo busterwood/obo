@@ -29,6 +29,11 @@ pub fn print(p: ir.Ir, prefix: str): str {
     return g.out.toStr()
 }
 
+// The libm functions of one float that are single instructions.
+fn builtinMath(name: str): bool {
+    return name == "sqrt" || name == "floor" || name == "ceil" || name == "trunc" || name == "rint" || name == "fabs"
+}
+
 fn (g: mut &Gen) line(s: str) {
     g.out.add(s)
     g.out.addByte('\n')
@@ -446,7 +451,14 @@ fn (g: &Gen) put(x: int, need: int, b: mut &StrBuf) {
     } else if k == ir.E_CALL {
         let c = &g.u.nodes[n.a]
         if c.k == ir.E_DECAY && g.u.nk(c.a) == ir.E_FUNC {
-            b.add(g.u.funcs[g.u.nodes[c.a].a].name)
+            let cf = &g.u.funcs[g.u.nodes[c.a].a]
+            if cf.isExtern && g.u.listLen(n.b) == 1 && builtinMath(cf.asmName) {
+                // gcc does not know an extern by its C name (it has a different label): the
+                // builtin inlines to sqrtsd or roundsd (-fno-math-errno, -msse4.1; see main.obx)
+                b.add(if cf.asmName == "sqrt" || cf.asmName == "fabs" { "__builtin_" + cf.asmName } else { "rt_" + cf.asmName })
+            } else {
+                b.add(cf.name)
+            }
         } else {
             g.put(n.a, P_POST, b)
         }

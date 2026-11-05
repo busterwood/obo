@@ -141,7 +141,7 @@ fn run(words: &[]str, errFile: str): int {
 fn gccCmd(exe: str, cfile: str, libs: &[]str): []str {
     // -falign-functions=64: a small recursive function's speed depends on where it falls in
     // the fetch blocks (bench fib: 15%), so a change in the runtime's size must not move it.
-    var cmd: []str = ["gcc", "-O2", "-falign-functions=64", "-w", "-std=gnu11", "-o", exe, cfile]
+    var cmd: []str = ["gcc", "-O2", "-falign-functions=64", "-fno-math-errno", "-w", "-std=gnu11", "-o", exe, cfile]
     for f in libFlags(libs) { append(mut &cmd, f) }
     append(mut &cmd, "-lm")
     return cmd
