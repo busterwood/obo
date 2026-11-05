@@ -6,7 +6,10 @@
 The key is the hash of the C text (rt.h is embedded in it), the exact C compiler command
 and the compiler's version string. A hit hard-links (or copies) the cached binary to
 `out`; a miss builds into a temporary file in the cache and renames it (atomic, so
-parallel runners are safe). The cache is $OBX_CACHE or ~/.cache/obx-build and is trimmed
+parallel runners are safe). Cached binaries are read-only (0555): a hit's `out` is the
+same file, so writing into `out` in place (`cp new out`, say) would change the cache
+entry and every other checkout linked to it; read-only, that write fails instead.
+`private=True` gives `out` its own copy, for a file people replace by hand. The cache is $OBX_CACHE or ~/.cache/obx-build and is trimmed
 to $OBX_CACHE_MB (default 2000) megabytes, oldest use first. OBX_NOCACHE=1 disables it:
 build_obx then runs obxc -o as before, and cc_build compiles every time.
 Compile errors from obxc produce no C and are never cached.
@@ -49,15 +52,21 @@ def cc_version(cc):
         return cc
 
 
-def _place(src, out):
+def _place(src, out, private=False):
     try:
         os.remove(out)
     except OSError:
         pass
-    try:
-        os.link(src, out)
-    except OSError:
-        shutil.copy2(src, out)
+    if os.stat(src).st_mode & 0o222:
+        os.chmod(src, 0o555)          # entries from before the cache was read-only
+    if not private:
+        try:
+            os.link(src, out)
+            return
+        except OSError:
+            pass
+    shutil.copyfile(src, out)
+    os.chmod(out, 0o755)
 
 
 def _trim(d):
@@ -81,7 +90,7 @@ def _trim(d):
             pass
 
 
-def cc_build(csrc, cmd, out, timeout=None):
+def cc_build(csrc, cmd, out, timeout=None, private=False):
     """Compile csrc with cmd (placeholders @SRC@, @OUT@) into out.
     Returns (returncode, stderr); the binary is at out when the code is 0."""
     def run(src, dst):
@@ -98,7 +107,7 @@ def cc_build(csrc, cmd, out, timeout=None):
     hit = os.path.join(d, key)
     if os.path.exists(hit):
         os.utime(hit)
-        _place(hit, out)
+        _place(hit, out, private)
         return 0, ''
     with tempfile.TemporaryDirectory(prefix='tmp_', dir=d) as t:
         c, exe = os.path.join(t, 'prog.c'), os.path.join(t, 'prog')
@@ -106,8 +115,9 @@ def cc_build(csrc, cmd, out, timeout=None):
         r = run(c, exe)
         if r.returncode:
             return r.returncode, r.stderr
+        os.chmod(exe, 0o555)
         os.rename(exe, hit)           # atomic; a racing runner stored the same bytes
-    _place(hit, out)
+    _place(hit, out, private)
     if random.random() < 0.05:
         _trim(d)
     return 0, ''

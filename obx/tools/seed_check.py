@@ -39,8 +39,8 @@ def emit(exe):
     return j['c'], j['cmd']
 
 
-def build(csrc, cmd, out):
-    rc, err = cbuild.cc_build(csrc, cmd, out)
+def build(csrc, cmd, out, private=False):
+    rc, err = cbuild.cc_build(csrc, cmd, out, private=private)
     if rc:
         fail(f"gcc failed building {os.path.basename(out)}:\n{err[:2000]}")
 
@@ -48,7 +48,7 @@ def build(csrc, cmd, out):
 def main():
     seed = open(SEED).read()
     os.makedirs(os.path.dirname(OBXC), exist_ok=True)
-    build(seed, BUILD, OBXC)
+    build(seed, BUILD, OBXC, private=True)   # its own file: people replace out/obxc
     r = subprocess.run([sys.executable, os.path.join(COMP, 'gen_rt.py'), '--check'])
     if r.returncode:
         sys.exit(1)
