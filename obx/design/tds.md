@@ -236,7 +236,8 @@ server.
 
 ## 7. Open decisions (the user's)
 
-- **D1. Module names, and the future of `mssql`.** Recommendation: a new
+- **D1. Module names, and the future of `mssql`.** Decided (the user,
+  2026-11-05): `tds` and `sqlserver`, as built in T1. Recommendation was: a new
   `tds` module (the protocol) plus `sqlserver` (the API). Keep `mssql`
   (ODBC) until the TDS client matches it on the differential suite and
   the load test, then decide whether `mssql` stays as an ODBC fallback or
