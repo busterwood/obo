@@ -47,6 +47,7 @@ CACHE = os.environ.get('OBX_MD_CACHE') or os.path.join(os.path.expanduser('~'), 
 URLS = {
     'spec.json': 'https://spec.commonmark.org/0.31.2/spec.json',
     'regression.txt': 'https://raw.githubusercontent.com/commonmark/cmark/0.31.2/test/regression.txt',
+    'spec.txt': 'https://raw.githubusercontent.com/commonmark/commonmark-spec/0.31.2/spec.txt',
     'smart_punct.txt': 'https://raw.githubusercontent.com/commonmark/cmark/0.31.2/test/smart_punct.txt',
 }
 
@@ -246,6 +247,30 @@ def real_docs():
     return sorted(docs)
 
 
+def perf(exes, ref, reps):
+    """Times each renderer on large documents: the spec repeated to about 10 MB, the
+    repo's Markdown files concatenated (and repeated to about 10 MB), and the spec
+    examples. Best of reps runs, seconds."""
+    with open(fetch('spec.txt'), 'rb') as f:
+        spec = f.read()
+    docs = []
+    docs.append(('spec x%d' % (10_000_000 // len(spec) + 1), spec * (10_000_000 // len(spec) + 1)))
+    repo = b'\n\n'.join(open(p, 'rb').read() for p in real_docs())
+    docs.append(('repo md (%d KB) x%d' % (len(repo) // 1024, 10_000_000 // len(repo) + 1), repo * (10_000_000 // len(repo) + 1)))
+    ex = ''.join(e['markdown'] + '\n' for e in load_spec()).encode()
+    docs.append(('spec examples x%d' % (10_000_000 // len(ex) + 1), ex * (10_000_000 // len(ex) + 1)))
+    print('%-34s %8s' % ('document', 'size MB') + ''.join('%12s' % n for n, _ in exes) + '%12s' % 'cmark')
+    for name, data in docs:
+        row = []
+        for n, exe in exes + ([('cmark', ref)] if ref else []):
+            best = None
+            for _ in range(reps):
+                out, err, t = run(exe, ['--unsafe'], data, timeout=300, check=False)
+                best = t if best is None else min(best, t)
+            row.append(best)
+        print('%-34s %8.1f' % (name, len(data) / 1e6) + ''.join('%12.3f' % t for t in row))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--c', action='store_true', help='build through C instead of native')
@@ -255,11 +280,15 @@ def main():
     ap.add_argument('-k', default='')
     ap.add_argument('-v', action='store_true')
     ap.add_argument('--no-patho', action='store_true')
+    ap.add_argument('--perf', action='store_true', help='time the renderers on large documents instead of testing')
     ap.add_argument('--rand', type=int, default=400, help='number of random differential inputs')
     a = ap.parse_args()
     ref = a.ref
     work = tempfile.mkdtemp(prefix='obx-md-')
     try:
+        if a.perf:
+            perf([('obx native', build(False, work)), ('obx C', build(True, work))], ref, 3)
+            return
         exe = a.exe or build(a.c, work)
         ok = True
         with concurrent.futures.ThreadPoolExecutor(a.j) as pool:

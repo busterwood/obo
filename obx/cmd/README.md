@@ -88,6 +88,7 @@ runtime report on the large-input cases (four for the coreutils, four for `grep`
 | `tail` | 71,016 | 92,768 |
 | `grep` | 544,672 | 476,488 |
 | `zoxide` | 589,536 | 352,496 |
+| `cmark` | 329,928 | 445,072 |
 
 (obo's static binaries were 90 to 119 KB. `grep` is large because it carries
 the regex library.)
@@ -316,3 +317,36 @@ in [../../PERFORMANCE.md](../../PERFORMANCE.md) ("TLS").
 
     python3 cmd/tls_bench.py                     # about 2 minutes
     python3 cmd/tls_bench.py --time 1 --mib 64 --requests 2000
+
+## cmark
+
+`cmark.obx` renders CommonMark to HTML like the reference implementation's
+command line tool (cmark 0.31.2), on top of [../lib/markdown.obx](../lib/markdown.obx).
+The name is cmark's on purpose: the tests run it in place of cmark, and the
+library module (`markdown`) is what other renderers use. It reads the files
+(or standard input) as one document and writes HTML to standard output.
+
+    compiler/out/obxc cmd/cmark.obx --native -o cmark
+    cmark [--unsafe] [--smart] [--sourcepos] [--hardbreaks] [--nobreaks] [--validate-utf8] [file ...]
+
+`--unsafe` lets raw HTML and every URL through (cmark's default replaces raw
+HTML by `<!-- raw HTML omitted -->` and empties dangerous URLs). The XML, man,
+LaTeX and CommonMark writers are not ported; `-t html` is accepted.
+
+### Tests
+
+[../tests/markdown.py](../tests/markdown.py), with a reference cmark built from
+github.com/commonmark/cmark 0.31.2 (the spec, cmark's regression and smart
+punctuation files are downloaded to a cache directory when missing):
+
+    python3 tests/markdown.py -j 8 --ref /path/to/cmark            # native build
+    python3 tests/markdown.py --c -j 8 --ref /path/to/cmark        # C build
+    python3 tests/markdown.py --perf --ref /path/to/cmark          # timings
+
+Suites: the 652 spec examples against the spec's HTML (all pass, by section),
+cmark's smart punctuation (16) and regression (23) examples, the spec examples
+again in safe mode, with smart punctuation, `--sourcepos`, `--hardbreaks` and
+`--nobreaks` against cmark, 400 generated inputs by default (`--rand N`) and
+every `*.md` file of the repository against cmark with three option sets, and
+cmark's pathological inputs (plus a few more) with a time limit against cmark.
+Our tool runs with `OBX_CHECK=1`, so a leak fails a case.

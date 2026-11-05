@@ -546,6 +546,26 @@ Also tried on `grepfast` (in the library and the runtime), not committed:
 | memcpy: align the destination to 64 bytes, then `rep movsb` | no change (about 25 ms per 100 MB either way) | the slow case depends on the distance between source and destination, not on alignment |
 | a line prefilter that switches itself off, like the literal ones | `-c -v '^0'` slower (69 ms to 326 ms) | once off, every byte took the slow path; the line prefilter now stays on |
 
+## Markdown
+
+[obx/cmd/cmark.obx](obx/cmd/cmark.obx) (the `markdown` library) against cmark
+0.31.2 (`-O3` release build, cmake), rendering 10 MB documents with `--unsafe`
+to a pipe. Best of 3, seconds, 5 November 2026 (`python3 obx/tests/markdown.py
+--perf`):
+
+| document | cmark | obx native | obx via C |
+|---|---:|---:|---:|
+| the spec, repeated to 10 MB | 0.37 | 0.59 | 0.45 |
+| the repo's Markdown files, repeated to 11 MB | 0.37 | 0.67 | 0.58 |
+| the spec's examples, repeated to 10 MB | 1.58 | 1.54 | 2.59 |
+
+cmark's pathological inputs (nested emphasis, brackets and block quotes
+30,000 to 100,000 deep, a million backticks, unclosed constructs) all finish
+in well under a second, within a small factor of cmark; the one quadratic case
+(a run of blank lines inside deeply nested lists) is cut by the same early exit
+as cmark's. The parser keeps the tree in one array of 200-byte nodes: the 10 MB spec
+takes 114 MB of memory at its peak (cmark: 68 MB).
+
 ## Binary sizes
 
 | program | via C | native |
