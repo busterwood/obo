@@ -1,0 +1,191 @@
+// tds on bytes a broken or hostile server could send: every truncation of a
+// full reply, thousands of one- and few-byte mutations of it, malformed
+// token streams, PRELOGIN answers, packet headers and UTF-16. Each must be
+// an error (or, for a mutation, possibly a different valid reply), never a
+// trap or a hang.
+// needs: ssl
+// expect: truncations: 0
+// expect: mutations: 4000 decoded, unexpected codes 0, some ok true, some errors true
+// expect: random: unexpected codes 0
+// expect: empty: error 1022: tds: the reply ended before its final DONE
+// expect: unknown token: error 1022: tds: unknown token 0x01
+// expect: after the final DONE: error 1022: tds: 1 bytes after the final DONE
+// expect: no final DONE: error 1022: tds: the reply ended before its final DONE
+// expect: row first: error 1022: tds: a row before any COLMETADATA
+// expect: limit: error 1015: tds: a reply of more than 2 values
+// expect: intn of 5 bytes: error 1022: tds: a value of column a: 5 bytes for a size of 4
+// expect: nbcrow without bitmap: error 1022: tds: NBCROW's null bitmap: 1 bytes needed, 0 left
+// expect: fewer columns than said: error 1022: tds: unknown data type 0x0
+// expect: unknown type: error 1022: tds: unknown data type 0x99
+// expect: short PLP chunk: error 1022: tds: a value of column a: 1000 bytes needed, 15 left
+// expect: ENVCHANGE past the end: error 1022: tds: ENVCHANGE: 40 bytes needed, 14 left
+// expect: ERROR too short: error 1022: tds: ERROR/INFO: 2 bytes needed, 0 left
+// expect: RETURNVALUE: error 1022: tds: RETURNVALUE is not supported yet
+// expect: header length 7: error 1022: tds: a packet length of 7
+// expect: header length 65535: ok
+// expect: header short: error 1022: tds: a packet header needs 8 bytes
+
+import "tds"
+import "sqldialect"
+import "../support/tdstest" as tt
+
+var SEED: int = 12345
+
+// A 31-bit LCG: the products stay well inside an int.
+fn rand(n: int): int {
+    SEED = (SEED * 1103515245 + 12345) & 0x7fffffff
+    return (SEED >> 8) % n
+}
+
+fn code[T](r: Result[T, tds.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn known(c: int): bool { return c == sqldialect.E_PROTOCOL || c == sqldialect.E_LIMIT }
+
+fn mutate(s: str, k: int): str {
+    var b = strToBytes(s)
+    for i in 0..k {
+        let at = rand(len(b))
+        match rand(4) {
+            0 { b[at] = byte(rand(256)) }
+            1 { b[at] = byte(0xff) }
+            2 { b[at] = byte(0) }
+            else { b[at] = byte(int(b[at]) ^ (1 << rand(8))) }
+        }
+    }
+    return strFromBytes(&b)
+}
+
+// A reply of the given tokens after a COLMETADATA of one int column.
+fn withIntColumn(rest: str): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(1)
+    b.col("a", tds.T_INTN)
+    b.u8(4)
+    b.name("a")
+    b.raw(rest)
+    return b.str()
+}
+
+fn done(): str {
+    var b = tt.bytesOf()
+    b.done(tds.TK_DONE, 0, 0, 0)
+    return b.str()
+}
+
+fn main() {
+    let full = tt.stream()
+
+    // ---- every truncation is an error, of the protocol kind
+    var bad = 0
+    for n in 0..len(full) {
+        match tds.decode(full[0..n], 1000) {
+            Ok(_) { bad += 1 }
+            Err(e) { if e.code != sqldialect.E_PROTOCOL { bad += 1 } }
+        }
+    }
+    println("truncations: " + bad.toStr())
+
+    // ---- mutations: an error of a known kind, or a reply
+    var oks = 0
+    var errs = 0
+    var odd = 0
+    for i in 0..4000 {
+        let m = mutate(full, 1 + rand(3))
+        match tds.decode(m, 1000) {
+            Ok(_) { oks += 1 }
+            Err(e) {
+                errs += 1
+                if !known(e.code) { odd += 1 }
+            }
+        }
+    }
+    println("mutations: 4000 decoded, unexpected codes " + odd.toStr() + ", some ok " + (oks > 0).toStr() +
+            ", some errors " + (errs > 0).toStr())
+
+    // ---- random bytes
+    var rodd = 0
+    for i in 0..2000 {
+        var b: []byte = []
+        let n = rand(64)
+        for k in 0..n { append(mut &b, byte(rand(256))) }
+        let s = strFromBytes(&b)
+        match tds.decode(s, 1000) {
+            Ok(_) {}
+            Err(e) { if !known(e.code) { rodd += 1 } }
+        }
+        let p = tds.parsePrelogin(s)
+        let u = tds.fromUtf16(s)
+        if n >= 8 {
+            let h = tds.parseHeader(&b[0..8])
+        }
+    }
+    println("random: unexpected codes " + rodd.toStr())
+
+    // ---- token streams
+    println("empty: " + code(tds.decode("", 10)))
+    println("unknown token: " + code(tds.decode("\x01" + done(), 10)))
+    println("after the final DONE: " + code(tds.decode(done() + "\x00", 10)))
+    var more = tt.bytesOf()
+    more.done(tds.TK_DONE, tds.DONE_MORE, 0, 0)
+    println("no final DONE: " + code(tds.decode(more.str(), 10)))
+    var row = tt.bytesOf()
+    row.u8(tds.TK_ROW)
+    row.u8(4)
+    row.u32(7)
+    println("row first: " + code(tds.decode(row.str() + done(), 10)))
+    println("limit: " + code(tds.decode(withIntColumn(row.str() + row.str() + row.str() + done()), 2)))
+    var wide = tt.bytesOf()
+    wide.u8(tds.TK_ROW)
+    wide.u8(5)
+    wide.raw("\x01\x02\x03\x04\x05")
+    println("intn of 5 bytes: " + code(tds.decode(withIntColumn(wide.str() + done()), 10)))
+    var nbc = tt.bytesOf()
+    nbc.u8(tds.TK_NBCROW)
+    println("nbcrow without bitmap: " + code(tds.decode(withIntColumn(nbc.str()), 10)))
+    var cols = tt.bytesOf()
+    cols.u8(tds.TK_COLMETADATA)
+    cols.u16(3)
+    cols.col("a", tds.T_INT4)
+    cols.name("a")
+    println("fewer columns than said: " + code(tds.decode(cols.str() + done(), 10)))
+    var ty = tt.bytesOf()
+    ty.u8(tds.TK_COLMETADATA)
+    ty.u16(1)
+    ty.col("a", 0x99)
+    ty.name("a")
+    println("unknown type: " + code(tds.decode(ty.str() + done(), 10)))
+    var plp = tt.bytesOf()
+    plp.u8(tds.TK_COLMETADATA)
+    plp.u16(1)
+    plp.col("a", tds.T_NVARCHAR)
+    plp.u16(0xFFFF)
+    plp.collation(0x0409, 1, 52)
+    plp.name("a")
+    plp.u8(tds.TK_ROW)
+    plp.u64(10)
+    plp.u32(1000)
+    plp.raw("ab")
+    println("short PLP chunk: " + code(tds.decode(plp.str() + done(), 10)))
+    var env = tt.bytesOf()
+    env.u8(tds.TK_ENVCHANGE)
+    env.u16(40)
+    env.u8(1)
+    println("ENVCHANGE past the end: " + code(tds.decode(env.str() + done(), 10)))
+    var msg = tt.bytesOf()
+    msg.u8(tds.TK_ERROR)
+    msg.u16(6)
+    msg.raw("\x01\x00\x00\x00\x01\x10")
+    println("ERROR too short: " + code(tds.decode(msg.str() + done(), 10)))
+    println("RETURNVALUE: " + code(tds.decode("\xac\x00\x00" + done(), 10)))
+
+    // ---- packet headers
+    println("header length 7: " + code(tds.parseHeader(&strToBytes("\x04\x01\x00\x07\x00\x00\x01\x00"))))
+    println("header length 65535: " + code(tds.parseHeader(&strToBytes("\x04\x01\xff\xff\x00\x00\x01\x00"))))
+    println("header short: " + code(tds.parseHeader(&strToBytes("\x04\x01\x00"))))
+}

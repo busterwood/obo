@@ -1,8 +1,8 @@
 # A native TDS client: SQL Server and Sybase in obx
 
-Status: plan, 2026-11-04. Nothing here is built yet. Stage T0, TLS, is on
-the `tls` branch (design/tls.md, when it lands). The open decisions at the
-end are the user's.
+Status: plan, 2026-11-04. T0 (TLS) is in main; T1 is built on branch
+`tds-t1` (section 8, 2026-11-05). The open decisions in section 7 are the
+user's; T1 took D1 and D3 provisionally.
 
 ## 1. Why
 
@@ -260,3 +260,46 @@ server.
 - **D6. A Sybase ASE server for tests.** There is none on this machine (no
   Docker either). Without one, T4 is written from the specification and
   tested only by recorded exchanges.
+
+## 8. Stage T1, as built (2026-11-05)
+
+`lib/tds.obx` (the protocol) and `lib/sqlserver.obx` (the API), with D1's
+names and D3's buffered `query`; `mssql` is unchanged. Written from MS-TDS.
+
+- **Transport:** packets of the negotiated size (ENVCHANGE 4; the server
+  caps 32767 at 16384), messages read whole into memory up to `maxReply`
+  (256 MiB). Under TLS each packet is written by itself: SQL Server resets
+  the connection when one TLS record holds the end of a packet and the
+  start of the next, which is what one write of a multi-packet message
+  gives. This was found live; every batch over one packet failed before.
+- **PRELOGIN and TLS:** the handshake runs in tls.obx's memory mode, its
+  records carried in PRELOGIN packets, then `tls.over` takes the socket.
+  `Encrypt=yes` needs the server to answer ON or REQ; `Encrypt=no` with
+  OFF encrypts the login only (`detach` after LOGIN7), with NOT_SUP
+  nothing. `strict` (TDS 8.0) is an `E_INPUT` "not supported yet".
+- **LOGIN7:** SQL authentication, TDS 7.4, the password scrambled per the
+  spec, OptionFlags1 0xE0 and OptionFlags2 0x03 (the live `@@OPTIONS` matches
+  ODBC's), the UTF-8 feature extension.
+- **Tokens:** COLMETADATA, ROW, NBCROW, DONE/DONEPROC/DONEINPROC (counts),
+  ERROR, INFO, LOGINACK, ENVCHANGE (database, packet size, collation,
+  transactions, the rest kept), FEATUREEXTACK, ORDER, RETURNSTATUS,
+  TABNAME/COLINFO skipped. RETURNVALUE, ALTMETADATA/ALTROW and
+  DATACLASSIFICATION are `E_PROTOCOL` "not supported yet". Every type's
+  metadata is parsed, so any result set can be read; a cell of a type T1
+  does not decode is `E_TYPE` naming the type, only when read.
+- **Errors:** the server's first ERROR is the call's `Err` (its number as
+  `code`); `E_IO` 1023 and `E_PROTOCOL` 1022 are new in sqldialect. A wire
+  or protocol failure marks the session broken.
+- **Tests:** hermetic `tds_codec`, `tds_malformed` (truncations, 4000
+  mutations, random bytes: two traps found and fixed), `sqlserver_connstr`,
+  `sqlserver_fake` (a scripted server task, plain TDS); live
+  `sqlserver_live_basic` and `sqlserver_live_diff`. The differential cases
+  (ints at their limits, real and float, bit, NULL of every type,
+  nvarchar with surrogate pairs, UTF-8 varchar, (max) values, binary,
+  `@@OPTIONS`, 3000 generated rows, a system catalog) give no difference
+  against ODBC. All pass under OBX_CHECK=1 on the C and native backends.
+- **Left for T2:** RPC with parameters, every result set of a batch, the
+  other types (D4, D5), RETURNVALUE, `transaction[T]`. For T3: ATTENTION,
+  streamed rows, pools. The recorded-exchange server of section 5 is the
+  scripted `sqlserver_fake` for now; TLS inside PRELOGIN is tested live
+  only.

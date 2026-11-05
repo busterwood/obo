@@ -1,0 +1,155 @@
+// sqlserver against mssql (ODBC) on a live SQL Server ($MSSQL_TEST_DSN or
+// ~/.obo-mssql-dsn, never printed; exits 77 without one): the same queries
+// through both must give the same column names and values, cell by cell.
+// The differences are printed (the queries' own values only); on a failed
+// connect, only the code.
+// needs: ssl
+// needs: odbc
+// expect: constants: 5 cells, 0 differ
+// expect: int limits: 9 cells, 0 differ
+// expect: floats: 8 cells, 0 differ
+// expect: nulls: 10 cells, 0 differ
+// expect: unicode: 7 cells, 0 differ
+// expect: utf8 varchar: 4 cells, 0 differ
+// expect: max: 3 cells, 0 differ
+// expect: binary: 4 cells, 0 differ
+// expect: options: 6 cells, 0 differ
+// expect: rows: 9000 cells, 0 differ
+// expect: system: 7917 cells, 0 differ
+// expect: open: mssql 0, sqlserver 0
+
+import "sqlserver"
+import "mssql"
+import "sqldialect"
+import "io"
+import "os"
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+type Table = record {
+    names: []str
+    cells: [][]str      // each value's toStr(), or "error <code>"
+}
+
+fn viaOdbc(c: &mssql.Conn, sql: str): Result[Table, sqldialect.DbError] {
+    var st = try c.query(sql, &[])
+    var t = Table{names: [], cells: []}
+    for i in 0..st.columnCount() { append(mut &t.names, try st.columnName(i)) }
+    while try st.step() {
+        var row: []str = []
+        for i in 0..st.columnCount() {
+            match st.value(i) {
+                Ok(v) { append(mut &row, v.toStr()) }
+                Err(e) { append(mut &row, "error " + e.code.toStr()) }
+            }
+        }
+        append(mut &t.cells, row)
+    }
+    return Ok(t)
+}
+
+fn viaTds(c: mut &sqlserver.Conn, sql: str): Result[Table, sqldialect.DbError] {
+    let rows = try c.query(sql, &[])
+    var t = Table{names: [], cells: []}
+    for i in 0..rows.columnCount() { append(mut &t.names, try rows.columnName(i)) }
+    for r in 0..rows.rowCount() {
+        var row: []str = []
+        for i in 0..rows.columnCount() {
+            match rows.value(r, i) {
+                Ok(v) { append(mut &row, v.toStr()) }
+                Err(e) { append(mut &row, "error " + e.code.toStr()) }
+            }
+        }
+        append(mut &t.cells, row)
+    }
+    return Ok(t)
+}
+
+fn compare(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str) {
+    let a = viaOdbc(o, sql)
+    let b = viaTds(n, sql)
+    if a.isErr() || b.isErr() {
+        println(label + ": odbc " + (if a.isErr() { a.unwrapErr().code.toStr() } else { "ok" }) + ", tds " +
+                (if b.isErr() { b.unwrapErr().code.toStr() } else { "ok" }))
+        return
+    }
+    let x = a.unwrap()
+    let y = b.unwrap()
+    var diffs = 0
+    var cells = 0
+    var names = len(x.names) == len(y.names)
+    if names { for i in 0..len(x.names) { if x.names[i] != y.names[i] { names = false } } }
+    if !names || len(x.cells) != len(y.cells) {
+        println(label + ": shapes differ: " + len(x.names).toStr() + "x" + len(x.cells).toStr() + " and " +
+                len(y.names).toStr() + "x" + len(y.cells).toStr())
+        return
+    }
+    for r in 0..len(x.cells) {
+        for i in 0..len(x.names) {
+            cells += 1
+            if x.cells[r][i] != y.cells[r][i] {
+                diffs += 1
+                if diffs <= 5 { println("  " + label + " row " + r.toStr() + " " + x.names[i] + ": odbc " + x.cells[r][i] + ", tds " + y.cells[r][i]) }
+            }
+        }
+    }
+    println(label + ": " + cells.toStr() + " cells, " + diffs.toStr() + " differ")
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(x) { x }
+        None { exit(77) }
+    }
+    let ro = mssql.connect(d)
+    if ro.isErr() {
+        println("odbc connect failed: " + ro.unwrapErr().code.toStr())
+        exit(1)
+    }
+    let o = ro.unwrap()
+    let rn = sqlserver.connect(d + ";Encrypt=yes")
+    if rn.isErr() {
+        println("tds connect failed: " + rn.unwrapErr().code.toStr())
+        exit(1)
+    }
+    var n = rn.unwrap()
+    compare("constants", &o, mut &n, "SELECT 1 AS one, N'café' AS t, CAST(NULL AS int) AS n, CAST(1 AS bit) AS b, 2.5E0 AS f")
+    compare("int limits", &o, mut &n, "SELECT CAST(255 AS tinyint) AS a, CAST(0 AS tinyint) AS b, CAST(-32768 AS smallint) AS c, " +
+            "CAST(32767 AS smallint) AS d, CAST(-2147483648 AS int) AS e, CAST(2147483647 AS int) AS f, " +
+            "CAST(-9223372036854775808 AS bigint) AS g, CAST(9223372036854775807 AS bigint) AS h, CAST(0 AS bit) AS i")
+    compare("floats", &o, mut &n, "SELECT CAST(0.1 AS real) AS a, CAST(-3.4E38 AS real) AS b, CAST(1.17549435E-38 AS real) AS c, " +
+            "CAST(0.1 AS float) AS d, CAST(1.7976931348623157E308 AS float) AS e, CAST(-2.2250738585072014E-308 AS float) AS f, " +
+            "CAST(1E0/3 AS float) AS g, CAST(123456789.125 AS float) AS h")
+    compare("nulls", &o, mut &n, "SELECT CAST(NULL AS tinyint) AS a, CAST(NULL AS smallint) AS b, CAST(NULL AS bigint) AS c, " +
+            "CAST(NULL AS real) AS d, CAST(NULL AS float) AS e, CAST(NULL AS bit) AS f, CAST(NULL AS nvarchar(5)) AS g, " +
+            "CAST(NULL AS nchar(3)) AS h, CAST(NULL AS nvarchar(max)) AS i, CAST(NULL AS varbinary(4)) AS j")
+    compare("unicode", &o, mut &n, "SELECT N'' AS a, N'naïve façade' AS b, N'日本語テキスト' AS c, N'😀 𝄞 surrogates' AS d, " +
+            "CAST(N'ab' AS nchar(5)) AS e, NCHAR(0x2028) + N'x' AS f, N'tab' + NCHAR(9) + N'end' AS g")
+    compare("utf8 varchar", &o, mut &n, "SELECT CAST(N'naïve 😀' COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS varchar(30)) AS a, " +
+            "CAST(N'' COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS varchar(5)) AS b, " +
+            "CAST(N'ab' COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS char(4)) AS c, " +
+            "REPLICATE(CAST(N'é' COLLATE Latin1_General_100_CI_AS_SC_UTF8 AS varchar(max)), 5000) AS d")
+    compare("max", &o, mut &n, "SELECT REPLICATE(CAST(N'é😀' AS nvarchar(max)), 20000) AS a, CAST(N'' AS nvarchar(max)) AS b, " +
+            "CAST(0x0001ff AS varbinary(max)) AS c")
+    compare("binary", &o, mut &n, "SELECT 0x AS a, 0x00ff AS b, CAST(0x01 AS binary(4)) AS c, CAST(REPLICATE(0xab, 100) AS varbinary(200)) AS d")
+    compare("options", &o, mut &n, "SELECT @@OPTIONS AS opts, @@TEXTSIZE AS ts, @@LANGUAGE AS lang, DB_NAME() AS db, " +
+            "CAST(SESSIONPROPERTY('ANSI_NULLS') AS int) AS an, @@MAX_PRECISION AS mp")
+    compare("rows", &o, mut &n, "SELECT TOP 3000 CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS int) AS n, " +
+            "CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS float) / 7 AS f, " +
+            "CASE WHEN ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) % 3 = 0 THEN NULL ELSE N'r' END AS t " +
+            "FROM sys.all_objects a CROSS JOIN sys.all_objects b")
+    compare("system", &o, mut &n, "SELECT name, object_id, is_ms_shipped FROM sys.all_objects WHERE object_id < 0 ORDER BY object_id")
+    o.close().unwrap()
+    n.close()
+    println("open: mssql " + mssql.openHandles().toStr() + ", sqlserver " + sqlserver.openHandles().toStr())
+}

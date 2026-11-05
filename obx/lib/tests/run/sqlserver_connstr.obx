@@ -1,0 +1,111 @@
+// sqlserver's connection strings (design/tds.md, section 4): ADO.NET and
+// ODBC keywords, the forms of Server, braces and quotes, every option, the
+// errors (which never contain a value), and masked().
+// needs: ssl
+// expect: host=db.example.com port=1433 user=app pwd=s3cret db=app app=obx encrypt=mandatory trust=false cert= packet=4096 timeout=15000
+// expect: host=db.example.com port=1500 user=a pwd=b db=app app=obx encrypt=optional trust=true cert= packet=4096 timeout=15000
+// expect: host=10.0.0.5 port=1433 user=a pwd=x;y}z db= app=my app encrypt=mandatory trust=false cert= packet=4096 timeout=15000
+// expect: host=::1 port=1444 user=a pwd=q;"q db= app=obx encrypt=mandatory trust=false cert= packet=8192 timeout=0
+// expect: host=localhost port=1433 user=a pwd= db= app=obx encrypt=strict trust=false cert=sql.example.com packet=4096 timeout=15000
+// expect: host=localhost port=1433 user=a pwd= db= app=obx encrypt=optional trust=false cert= packet=4096 timeout=4000
+// expect: host=h port=1450 user=a pwd= db= app=obx encrypt=mandatory trust=false cert= packet=4096 timeout=15000
+// expect: host=h port=1433 user=a pwd=b db= app=x encrypt=mandatory trust=false cert= packet=4096 timeout=15000
+// expect: error 1000: connection string: an unknown keyword (entry 3)
+// expect: error 1000: connection string: no Server
+// expect: error 1000: connection string: no UID (User Id): only SQL authentication is supported
+// expect: error 1000: connection string: a named instance needs SQL Server Browser, which is not supported: give the port (host,port)
+// expect: error 1000: connection string: the server's port must be 1 to 65535
+// expect: error 1000: connection string: the server's port must be 1 to 65535
+// expect: error 1000: connection string: the server's port must be a number
+// expect: error 1000: connection string: only TCP servers are supported
+// expect: error 1000: connection string: LocalDB is not supported
+// expect: error 1000: connection string: integrated (Windows) authentication is not supported
+// expect: error 1000: connection string: integrated (Windows) authentication is not supported
+// expect: error 1000: connection string: a value in braces or quotes is not closed (entry 3)
+// expect: error 1000: connection string: text after a value in braces or quotes (entry 3)
+// expect: error 1000: connection string: Encrypt must be yes, no, mandatory, optional or strict
+// expect: error 1000: connection string: TrustServerCertificate must be yes or no
+// expect: error 1000: connection string: Packet Size must be 512 to 32767
+// expect: error 1000: connection string: Connect Timeout must be a number of 0 or more
+// expect: error 1000: connection string: Connect Timeout is too large
+// expect: error 1000: connection string: a keyword without '=' (entry 3)
+// expect: error 1000: connection string: an empty keyword (entry 3)
+// expect: error 1000: connection string: no Server
+// expect: error 1000: connection string: no Server
+// expect: error 1000: connection string: an unknown keyword (entry 4)
+// expect: Server=h;UID=a;PWD=***;Database=d; password =***;
+// expect: Server=h;Password=***;***
+// expect: closed port: 1023
+// expect: open handles: 0
+
+import "sqlserver"
+import "tds"
+import "net"
+import "strings"
+
+fn show(s: str) {
+    match sqlserver.parseConnString(s) {
+        Ok(st) {
+            let c = st.config
+            let enc = match c.encrypt {
+                tds.Encrypt.Mandatory { "mandatory" }
+                tds.Encrypt.Optional { "optional" }
+                tds.Encrypt.Strict { "strict" }
+            }
+            println("host=" + c.host + " port=" + c.port.toStr() + " user=" + c.user + " pwd=" + c.password + " db=" +
+                    c.database + " app=" + c.appName + " encrypt=" + enc + " trust=" + c.trustServerCertificate.toStr() +
+                    " cert=" + c.hostNameInCertificate + " packet=" + c.packetSize.toStr() + " timeout=" +
+                    st.connectTimeoutMs.toStr())
+        }
+        Err(e) { println(e.toStr()) }
+    }
+}
+
+fn main() {
+    // ADO.NET
+    show("Server=db.example.com;Database=app;User Id=app;Password=s3cret")
+    show("Data Source=tcp:db.example.com,1500;Initial Catalog=app;User ID=a;Password=b;Encrypt=no;TrustServerCertificate=yes")
+    show("data source = 10.0.0.5 , 1433 ; user id = a ; password = {x;y}}z} ; Application Name = my app ;")
+    show("Server=[::1],1444;UID=a;PWD=\"q;\"\"q\";Connect Timeout=0;Packet Size=8192")
+    show("Address=.;UID=a;Encrypt=strict;HostNameInCertificate=sql.example.com")
+    show("Addr=(local);UID=a;Encrypt=Optional;Connection Timeout=3;LoginTimeout=4")
+    show("Network Address=h\\SQLEXPRESS,1450;UID=a;Trusted_Connection=no")
+    // ODBC
+    show("Driver={ODBC Driver 18 for SQL Server};Server=tcp:h,1433;UID=a;PWD=b;Encrypt=yes;TrustServerCertificate=no;APP=x")
+    // errors
+    show("Server=h;UID=a;Colour=blue")
+    show("Database=app;UID=a")
+    show("Server=h;PWD=b")
+    show("Server=h\\SQLEXPRESS;UID=a")
+    show("Server=h,0;UID=a")
+    show("Server=h,99999;UID=a")
+    show("Server=h,x;UID=a")
+    show("Server=np:\\\\h\\pipe\\sql\\query;UID=a")
+    show("Server=(localdb)\\v11;UID=a")
+    show("Server=h;UID=a;Trusted_Connection=yes")
+    show("Server=h;UID=a;Integrated Security=SSPI")
+    show("Server=h;UID=a;PWD={never closed")
+    show("Server=h;UID=a;PWD={b}x")
+    show("Server=h;UID=a;Encrypt=maybe")
+    show("Server=h;UID=a;TrustServerCertificate=perhaps")
+    show("Server=h;UID=a;Packet Size=100")
+    show("Server=h;UID=a;Connect Timeout=-1")
+    show("Server=h;UID=a;Connect Timeout=99999999")
+    show("Server=h;UID=a;PWD")
+    show("Server=h;UID=a;=b")
+    show("Server= ;UID=a")
+    show("")
+    show("Server=h;UID=a;PWD=x;y=z")
+    // masked
+    println(sqlserver.masked("Server=h;UID=a;PWD={x;y}}z};Database=d; password = 'q' ;"))
+    println(sqlserver.masked("Server=h;Password=p;oops"))
+    // the port reaches connect: a closed one is E_IO
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let port = strings.replaceAll(ln.localAddr(), "127.0.0.1:", "")
+    ln.close()
+    match sqlserver.connect("Server=127.0.0.1," + port + ";UID=a;PWD=b;Connect Timeout=5") {
+        Ok(_) { println("closed port: ok") }
+        Err(e) { println("closed port: " + e.code.toStr()) }
+    }
+    println("open handles: " + sqlserver.openHandles().toStr())
+}

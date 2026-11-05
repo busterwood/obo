@@ -1,0 +1,1638 @@
+// tds: the Tabular Data Stream protocol of Microsoft SQL Server, TDS 7.4,
+// written from Microsoft's specification [MS-TDS] (design/tds.md). The API
+// for programs is `sqlserver`; this module is the protocol under it.
+//
+//   - packets: the 8-byte header (type, status with EOM, length, SPID,
+//     packet id); a message is cut into packets of the negotiated size and
+//     joined again on the way in (packets, parseHeader).
+//   - PRELOGIN (preloginRequest, parsePrelogin) and the TLS handshake carried
+//     inside PRELOGIN packets (tls.obx's memory mode), then TLS records
+//     straight on the socket: for the whole connection (Encrypt=yes), or for
+//     the LOGIN7 packet only when the client and the server both have
+//     encryption off (Encrypt=no).
+//   - LOGIN7 with SQL authentication (login7; the password scrambled as
+//     MS-TDS 2.2.6.4 says, and sent inside TLS).
+//   - SQLBatch (sqlBatch: ALL_HEADERS with the transaction descriptor, then
+//     the text in UTF-16LE).
+//   - the reply's tokens (decode): COLMETADATA, ROW, NBCROW, DONE,
+//     DONEPROC, DONEINPROC, ERROR, INFO, LOGINACK, ENVCHANGE, FEATUREEXTACK,
+//     ORDER, RETURNSTATUS, and the ones skipped by their length (COLINFO,
+//     TABNAME, SSPI, SESSIONSTATE, FEDAUTHINFO, OFFSET).
+//   - the values: tinyint, smallint, int, bigint (and INTN), real and float
+//     (FLTN, exact), bit (BITN), nchar and nvarchar (UTF-16LE, strict),
+//     char and varchar with a UTF-8 collation, binary and varbinary as bytes;
+//     (max) types (PLP chunks) and text, ntext and image too. A varchar of
+//     another code page, and every other type, decode to Cell.Failed with a
+//     message naming the code page or the type: reading that cell is an
+//     error, the rest of the row is not.
+//   - Session: a logged-in connection (open, batch), its state (database,
+//     collation, packet size, transaction descriptor) kept from ENVCHANGE.
+//
+// The decoder never traps on what the server sends: every length and count
+// is checked against the bytes there are before it is used, nothing is
+// allocated from a length alone, and a malformed reply is Err(E_PROTOCOL).
+// A reply is limited in size (Session.maxReply) and in cells decoded
+// (maxReply / 8).
+//
+// Errors are sqldialect.DbError: E_PROTOCOL (the server's bytes make no
+// sense), E_IO (the socket or TLS failed, the server closed the connection),
+// E_CANCELLED and E_TIMEOUT (the task's cancellation or deadline), E_LIMIT,
+// E_INPUT; and the server's own errors with its error number as the code.
+// After an error on the wire (anything but the server's own ERROR tokens and
+// E_INPUT) the session is broken: its later calls fail with E_IO at once.
+
+import "net"
+import "tls"
+import "io"
+import "strings"
+import "sqldialect"
+import "math"
+
+pub type Error = sqldialect.DbError
+
+// Packet types (MS-TDS 2.2.3.1.1).
+pub const PT_SQLBATCH = 1
+pub const PT_RPC = 3
+pub const PT_REPLY = 4
+pub const PT_ATTENTION = 6
+pub const PT_LOGIN7 = 16
+pub const PT_PRELOGIN = 18
+
+pub const STATUS_EOM = 1
+pub const HEADER = 8
+pub const MIN_PACKET = 512
+pub const MAX_PACKET = 32767
+pub const DEFAULT_PACKET = 4096
+
+pub const TDS74 = 0x74000004
+
+// PRELOGIN's ENCRYPTION values.
+pub const ENCRYPT_OFF = 0
+pub const ENCRYPT_ON = 1
+pub const ENCRYPT_NOT_SUP = 2
+pub const ENCRYPT_REQ = 3
+
+// Tokens (MS-TDS 2.2.7).
+pub const TK_OFFSET = 0x78
+pub const TK_RETURNSTATUS = 0x79
+pub const TK_COLMETADATA = 0x81
+pub const TK_ALTMETADATA = 0x88
+pub const TK_DATACLASSIFICATION = 0xA3
+pub const TK_TABNAME = 0xA4
+pub const TK_COLINFO = 0xA5
+pub const TK_ORDER = 0xA9
+pub const TK_ERROR = 0xAA
+pub const TK_INFO = 0xAB
+pub const TK_RETURNVALUE = 0xAC
+pub const TK_LOGINACK = 0xAD
+pub const TK_FEATUREEXTACK = 0xAE
+pub const TK_ROW = 0xD1
+pub const TK_NBCROW = 0xD2
+pub const TK_ALTROW = 0xD3
+pub const TK_ENVCHANGE = 0xE3
+pub const TK_SESSIONSTATE = 0xE4
+pub const TK_SSPI = 0xED
+pub const TK_FEDAUTHINFO = 0xEE
+pub const TK_DONE = 0xFD
+pub const TK_DONEPROC = 0xFE
+pub const TK_DONEINPROC = 0xFF
+
+// DONE status bits.
+pub const DONE_MORE = 0x1
+pub const DONE_ERROR = 0x2
+pub const DONE_INXACT = 0x4
+pub const DONE_COUNT = 0x10
+pub const DONE_ATTN = 0x20
+pub const DONE_SRVERROR = 0x100
+
+// ENVCHANGE types.
+pub const ENV_DATABASE = 1
+pub const ENV_LANGUAGE = 2
+pub const ENV_CHARSET = 3
+pub const ENV_PACKETSIZE = 4
+pub const ENV_COLLATION = 7
+pub const ENV_BEGINTRAN = 8
+pub const ENV_COMMITTRAN = 9
+pub const ENV_ROLLBACKTRAN = 10
+pub const ENV_TRANENDED = 17
+pub const ENV_RESETACK = 18
+pub const ENV_ROUTING = 20
+
+// FEATUREEXT ids.
+pub const FEATURE_UTF8 = 0x0A
+
+// Data types (MS-TDS 2.2.5.4).
+pub const T_NULL = 0x1F
+pub const T_INT1 = 0x30
+pub const T_BIT = 0x32
+pub const T_INT2 = 0x34
+pub const T_INT4 = 0x38
+pub const T_DATETIM4 = 0x3A
+pub const T_FLT4 = 0x3B
+pub const T_MONEY = 0x3C
+pub const T_DATETIME = 0x3D
+pub const T_FLT8 = 0x3E
+pub const T_MONEY4 = 0x7A
+pub const T_INT8 = 0x7F
+pub const T_GUID = 0x24
+pub const T_INTN = 0x26
+pub const T_DECIMAL = 0x37
+pub const T_NUMERIC = 0x3F
+pub const T_BITN = 0x68
+pub const T_DECIMALN = 0x6A
+pub const T_NUMERICN = 0x6C
+pub const T_FLTN = 0x6D
+pub const T_MONEYN = 0x6E
+pub const T_DATETIMN = 0x6F
+pub const T_DATEN = 0x28
+pub const T_TIMEN = 0x29
+pub const T_DATETIME2N = 0x2A
+pub const T_DATETIMEOFFSETN = 0x2B
+pub const T_CHAR = 0x2F
+pub const T_VARCHAR = 0x27
+pub const T_BINARY = 0x2D
+pub const T_VARBINARY = 0x25
+pub const T_BIGVARBIN = 0xA5
+pub const T_BIGVARCHR = 0xA7
+pub const T_BIGBINARY = 0xAD
+pub const T_BIGCHAR = 0xAF
+pub const T_NVARCHAR = 0xE7
+pub const T_NCHAR = 0xEF
+pub const T_XML = 0xF1
+pub const T_UDT = 0xF0
+pub const T_TEXT = 0x23
+pub const T_IMAGE = 0x22
+pub const T_NTEXT = 0x63
+pub const T_SSVARIANT = 0x62
+
+// How a type's values are framed (Column.framing).
+const F_FIXED = 0        // Column.size bytes, never NULL
+const F_BYTE = 1         // a length byte (0: NULL)
+const F_USHORT = 2       // a 2-byte length (0xFFFF: NULL)
+const F_TEXT = 3         // a text pointer (length byte 0: NULL), a timestamp, a 4-byte length
+const F_PLP = 4          // partially length-prefixed: an 8-byte total, then chunks
+const F_VARIANT = 5      // a 4-byte length (0: NULL)
+const F_NONE = 6         // NULLTYPE: no bytes, always NULL
+
+const PLP_NULL: u64 = 0xFFFFFFFFFFFFFFFF
+pub const MAX_REPLY = 268435456        // 256 MiB: the default limit of one reply
+
+// ---------------------------------------------------------------- errors
+
+fn proto(msg: str): Error { return sqldialect.dbError(sqldialect.E_PROTOCOL, "tds: " + msg) }
+
+fn ioErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_IO, "tds: " + msg) }
+
+fn ioFail(e: io.IoError): Error {
+    if e.isCancelled() { return sqldialect.dbError(sqldialect.E_CANCELLED, "tds: cancelled") }
+    if e.isTimeout() { return sqldialect.dbError(sqldialect.E_TIMEOUT, "tds: deadline passed") }
+    return ioErr(e.toStr())
+}
+
+fn tlsFail(e: tls.Error): Error {
+    if e.kind == tls.Kind.Cancelled { return sqldialect.dbError(sqldialect.E_CANCELLED, "tds: cancelled") }
+    if e.kind == tls.Kind.Timeout { return sqldialect.dbError(sqldialect.E_TIMEOUT, "tds: deadline passed") }
+    if e.kind == tls.Kind.Io { return ioErr(e.cause.toStr()) }
+    return ioErr(e.toStr())
+}
+
+// ---------------------------------------------------------------- writing
+
+fn put8(b: mut &[]byte, v: int) { append(b, byte(v & 0xff)) }
+
+fn put16(b: mut &[]byte, v: int) {
+    append(b, byte(v & 0xff))
+    append(b, byte((v >> 8) & 0xff))
+}
+
+fn put32(b: mut &[]byte, v: int) {
+    for k in 0..4 { append(b, byte((v >> (8 * k)) & 0xff)) }
+}
+
+fn put16be(b: mut &[]byte, v: int) {
+    append(b, byte((v >> 8) & 0xff))
+    append(b, byte(v & 0xff))
+}
+
+fn set16(b: mut &[]byte, at: int, v: int) {
+    b[at] = byte(v & 0xff)
+    b[at + 1] = byte((v >> 8) & 0xff)
+}
+
+fn set32(b: mut &[]byte, at: int, v: int) {
+    for k in 0..4 { b[at + k] = byte((v >> (8 * k)) & 0xff) }
+}
+
+fn set16be(b: mut &[]byte, at: int, v: int) {
+    b[at] = byte((v >> 8) & 0xff)
+    b[at + 1] = byte(v & 0xff)
+}
+
+// ---------------------------------------------------------------- UTF-16
+
+// s, strict UTF-8, as UTF-16LE code units. Err names the first byte that is
+// not valid UTF-8.
+pub fn toUtf16(s: str): Result[[]byte, str] {
+    var out: []byte = []
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c < 0x80 {
+            append(mut &out, c)
+            append(mut &out, byte(0))
+            i += 1
+            continue
+        }
+        let d = strings.decodeAt(s, i)
+        if !d.ok { return Err("invalid UTF-8 at byte " + i.toStr()) }
+        if d.rune >= 0x10000 {
+            put16(mut &out, 0xd800 + ((d.rune - 0x10000) >> 10))
+            put16(mut &out, 0xdc00 + ((d.rune - 0x10000) & 0x3ff))
+        } else {
+            put16(mut &out, d.rune)
+        }
+        i += d.size
+    }
+    return Ok(out)
+}
+
+// UTF-16LE bytes as UTF-8. Err for an odd number of bytes or a surrogate
+// that is not part of a pair (SQL Server's nvarchar can hold one).
+pub fn fromUtf16(b: str): Result[str, str] {
+    if len(b) % 2 != 0 { return Err("UTF-16 text has an odd number of bytes") }
+    var ascii = true
+    var k = 0
+    while k < len(b) {
+        if b[k + 1] != 0 || b[k] >= 0x80 {
+            ascii = false
+            break
+        }
+        k += 2
+    }
+    if ascii {
+        var a = array(len(b) / 2, byte(0))
+        for j in 0..len(a) { a[j] = b[2 * j] }
+        return Ok(strFromBytes(&a))
+    }
+    var out = newStrBuf()
+    var i = 0
+    while i < len(b) {
+        var u = int(b[i]) | (int(b[i + 1]) << 8)
+        if u >= 0xd800 && u <= 0xdfff {
+            let lo = if i + 3 < len(b) { int(b[i + 2]) | (int(b[i + 3]) << 8) } else { 0 }
+            if u >= 0xdc00 || lo < 0xdc00 || lo > 0xdfff {
+                return Err("invalid UTF-16: lone surrogate at unit " + (i / 2).toStr())
+            }
+            u = 0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00)
+            i += 2
+        }
+        strings.addRune(mut &out, u)
+        i += 2
+    }
+    return Ok(out.toStr())
+}
+
+// ---------------------------------------------------------------- packets
+
+// The packets of one message of type ptype: the payload cut into pieces of
+// at most packetSize - 8 bytes, each after its header (SPID 0, packet ids
+// from 1, modulo 256); the last one has EOM. An empty payload is one packet.
+pub fn packets(ptype: int, payload: str, packetSize: int): []byte {
+    let room = packetSize - HEADER
+    var out: []byte = []
+    var off = 0
+    var id = 1
+    while true {
+        let n = min(len(payload) - off, room)
+        let last = off + n == len(payload)
+        put8(mut &out, ptype)
+        put8(mut &out, if last { STATUS_EOM } else { 0 })
+        put16be(mut &out, n + HEADER)
+        put16be(mut &out, 0)
+        put8(mut &out, id % 256)
+        put8(mut &out, 0)
+        appendStr(mut &out, payload[off..off + n])
+        id += 1
+        off += n
+        if last { break }
+    }
+    return out
+}
+
+// A packet header.
+pub type Header = value record {
+    pub ptype: int
+    pub status: int
+    pub length: int      // the packet's, header included
+    pub spid: int
+    pub id: int
+}
+
+// The header in the first 8 bytes of h. E_PROTOCOL for a length below 8.
+pub fn parseHeader(h: &[byte]): Result[Header, Error] {
+    if len(h) < HEADER { return Err(proto("a packet header needs 8 bytes")) }
+    let n = (int(h[2]) << 8) | int(h[3])
+    if n < HEADER { return Err(proto("a packet length of " + n.toStr())) }
+    return Ok(Header{ptype: int(h[0]), status: int(h[1]), length: n, spid: (int(h[4]) << 8) | int(h[5]), id: int(h[6])})
+}
+
+// ---------------------------------------------------------------- PRELOGIN
+
+const PL_VERSION = 0
+const PL_ENCRYPTION = 1
+const PL_INSTOPT = 2
+const PL_THREADID = 3
+const PL_MARS = 4
+const PL_TERMINATOR = 0xFF
+
+// PRELOGIN's payload from the client: VERSION, ENCRYPTION (encrypt),
+// INSTOPT (the default instance), THREADID 0, MARS off.
+pub fn preloginRequest(encrypt: int): str {
+    // option table: 5 options of 5 bytes, then the terminator; data from 26
+    var b: []byte = []
+    let lens = [6, 1, 1, 4, 1]
+    var at = 26
+    for i in 0..5 {
+        put8(mut &b, i)
+        put16be(mut &b, at)
+        put16be(mut &b, lens[i])
+        at += lens[i]
+    }
+    put8(mut &b, PL_TERMINATOR)
+    for x in [0, 1, 0, 0, 0, 0] { put8(mut &b, x) }      // VERSION: 0.1.0, sub-build 0
+    put8(mut &b, encrypt)
+    put8(mut &b, 0)                                     // INSTOPT: "" (the default instance)
+    put32(mut &b, 0)                                    // THREADID
+    put8(mut &b, 0)                                     // MARS off
+    return strFromBytes(&b)
+}
+
+// The server's PRELOGIN answer.
+pub type Prelogin = value record {
+    pub version: str        // "16.0.4135.0": major, minor, build, sub-build
+    pub encryption: int     // ENCRYPT_*
+    pub instance: int       // INSTOPT: 0 when the instance name matched (-1: absent)
+    pub mars: int           // -1: absent
+}
+
+// The options of a PRELOGIN payload. E_PROTOCOL when the table or an
+// option's data is out of bounds, or ENCRYPTION is missing.
+pub fn parsePrelogin(p: str): Result[Prelogin, Error] {
+    var r = Prelogin{version: "", encryption: -1, instance: -1, mars: -1}
+    var i = 0
+    while true {
+        if i >= len(p) { return Err(proto("PRELOGIN: the option table has no terminator")) }
+        let tok = int(p[i])
+        if tok == PL_TERMINATOR { break }
+        if i + 5 > len(p) { return Err(proto("PRELOGIN: a truncated option")) }
+        let off = (int(p[i + 1]) << 8) | int(p[i + 2])
+        let n = (int(p[i + 3]) << 8) | int(p[i + 4])
+        if off + n > len(p) { return Err(proto("PRELOGIN: option " + tok.toStr() + " is out of bounds")) }
+        if tok == PL_VERSION {
+            if n < 6 { return Err(proto("PRELOGIN: VERSION is " + n.toStr() + " bytes")) }
+            r.version = int(p[off]).toStr() + "." + int(p[off + 1]).toStr() + "." +
+                        ((int(p[off + 2]) << 8) | int(p[off + 3])).toStr() + "." +
+                        ((int(p[off + 4]) << 8) | int(p[off + 5])).toStr()
+        } else if tok == PL_ENCRYPTION {
+            if n < 1 { return Err(proto("PRELOGIN: ENCRYPTION is empty")) }
+            r.encryption = int(p[off])
+        } else if tok == PL_INSTOPT {
+            if n > 0 { r.instance = int(p[off]) }
+        } else if tok == PL_MARS {
+            if n > 0 { r.mars = int(p[off]) }
+        }
+        i += 5
+    }
+    if r.encryption < 0 { return Err(proto("PRELOGIN: no ENCRYPTION option")) }
+    return Ok(r)
+}
+
+// ---------------------------------------------------------------- LOGIN7
+
+// What LOGIN7 sends. Every text is at most 128 characters (UTF-16 units).
+pub type Login = value record {
+    pub hostName: str        // the client's machine
+    pub userName: str
+    pub password: str
+    pub appName: str
+    pub serverName: str      // the server as the client named it
+    pub library: str         // the client library's name
+    pub language: str        // "" : the login's default
+    pub database: str        // "" : the login's default
+    pub packetSize: int
+    pub clientPid: int
+    pub utf8: bool           // ask for UTF8_SUPPORT (FEATUREEXT)
+}
+
+// The password as LOGIN7 carries it: UTF-16LE, each byte's halves swapped
+// and XORed with 0xA5 (MS-TDS 2.2.6.4). It is not encryption: TLS is.
+pub fn scramble(units: &[byte]): []byte {
+    var out = array(len(units), byte(0))
+    for i in 0..len(units) {
+        let b = int(units[i])
+        out[i] = byte((((b << 4) & 0xf0) | (b >> 4)) ^ 0xa5)
+    }
+    return out
+}
+
+fn units(s: str, what: str): Result[[]byte, Error] {
+    let u = match toUtf16(s) {
+        Ok(x) { x }
+        Err(e) { return Err(sqldialect.inputError(what + ": " + e)) }
+    }
+    if len(u) / 2 > 128 { return Err(sqldialect.inputError(what + " is longer than 128 characters")) }
+    return Ok(u)
+}
+
+// The LOGIN7 payload (TDS 7.4, SQL authentication). E_INPUT for a text that
+// is not UTF-8 or is too long (the message names the field, never its value).
+pub fn login7(l: &Login): Result[str, Error] {
+    let host = try units(l.hostName, "the host name")
+    let user = try units(l.userName, "the user name")
+    let pw = scramble(&try units(l.password, "the password"))
+    let app = try units(l.appName, "the application name")
+    let server = try units(l.serverName, "the server name")
+    let lib = try units(l.library, "the library name")
+    let lang = try units(l.language, "the language")
+    let db = try units(l.database, "the database")
+    if l.packetSize < MIN_PACKET || l.packetSize > MAX_PACKET {
+        return Err(sqldialect.inputError("a packet size outside " + MIN_PACKET.toStr() + " to " + MAX_PACKET.toStr()))
+    }
+    var h = array(94, byte(0))
+    set32(mut &h, 4, TDS74)
+    set32(mut &h, 8, l.packetSize)
+    set32(mut &h, 12, 0x00000001)              // ClientProgVer
+    set32(mut &h, 16, l.clientPid)
+    h[24] = byte(0xE0)                          // fUseDB, fDatabase (fatal), fSetLang
+    h[25] = byte(0x03)                          // fLanguage (fatal), fODBC
+    h[26] = byte(0)                             // TypeFlags: fSQLType default, read-write
+    h[27] = byte(if l.utf8 { 0x18 } else { 0x08 })   // fUnknownCollationHandling, fExtension
+    set32(mut &h, 32, 0x0409)                   // ClientLCID
+    var data: []byte = []
+    field(mut &h, mut &data, 36, &host)
+    field(mut &h, mut &data, 40, &user)
+    field(mut &h, mut &data, 44, &pw)
+    field(mut &h, mut &data, 48, &app)
+    field(mut &h, mut &data, 52, &server)
+    var extAt = -1
+    if l.utf8 {
+        set16(mut &h, 56, 94 + len(data))
+        set16(mut &h, 58, 4)
+        extAt = len(data)
+        put32(mut &data, 0)                     // the offset of FeatureExt, set below
+    } else {
+        set16(mut &h, 56, 94 + len(data))
+    }
+    field(mut &h, mut &data, 60, &lib)
+    field(mut &h, mut &data, 64, &lang)
+    field(mut &h, mut &data, 68, &db)
+    set16(mut &h, 78, 94 + len(data))           // SSPI: none
+    set16(mut &h, 82, 94 + len(data))           // AtchDBFile: none
+    set16(mut &h, 86, 94 + len(data))           // ChangePassword: none
+    if extAt >= 0 {
+        set32(mut &data, extAt, 94 + len(data))
+        put8(mut &data, FEATURE_UTF8)
+        put32(mut &data, 0)
+        put8(mut &data, 0xFF)                   // the end of the features
+    }
+    set32(mut &h, 0, 94 + len(data))
+    appendStr(mut &h, strFromBytes(&data))
+    return Ok(strFromBytes(&h))
+}
+
+fn field(h: mut &[]byte, data: mut &[]byte, at: int, u: &[]byte) {
+    set16(h, at, 94 + len(data))
+    set16(h, at + 2, len(u) / 2)
+    for b in u { append(data, b) }
+}
+
+// ---------------------------------------------------------------- SQLBatch
+
+// The SQLBatch payload: ALL_HEADERS with the transaction descriptor (8
+// bytes; zeros outside a transaction) and one outstanding request, then the
+// text in UTF-16LE. E_INPUT for text that is not UTF-8.
+pub fn sqlBatch(sql: str, txn: str): Result[str, Error] {
+    if len(txn) != 8 { return Err(sqldialect.inputError("a transaction descriptor is 8 bytes")) }
+    var b: []byte = []
+    put32(mut &b, 22)          // ALL_HEADERS' total length
+    put32(mut &b, 18)          // this header's length
+    put16(mut &b, 2)           // transaction descriptor
+    appendStr(mut &b, txn)
+    put32(mut &b, 1)           // outstanding requests
+    let text = match toUtf16(sql) {
+        Ok(x) { x }
+        Err(e) { return Err(sqldialect.inputError("SQL text: " + e)) }
+    }
+    appendStr(mut &b, strFromBytes(&text))
+    return Ok(strFromBytes(&b))
+}
+
+pub fn noTransaction(): str { return "\x00\x00\x00\x00\x00\x00\x00\x00" }
+
+// ---------------------------------------------------------------- reading
+
+// A position in a byte string, with an end.
+type Cur = value record { s: str; pos: int; end: int }
+
+fn cursor(s: str): Cur { return Cur{s: s, pos: 0, end: len(s)} }
+
+fn (c: &Cur) left(): int { return c.end - c.pos }
+
+fn (c: &Cur) need(n: int, what: str): Result[Unit, Error] {
+    if n < 0 || n > c.end - c.pos {
+        return Err(proto(what + ": " + n.toStr() + " bytes needed, " + (c.end - c.pos).toStr() + " left"))
+    }
+    return Ok(Unit{})
+}
+
+fn (c: mut &Cur) u8(what: str): Result[int, Error] {
+    try c.need(1, what)
+    let v = int(c.s[c.pos])
+    c.pos += 1
+    return Ok(v)
+}
+
+fn (c: mut &Cur) u16(what: str): Result[int, Error] {
+    try c.need(2, what)
+    let v = int(c.s[c.pos]) | (int(c.s[c.pos + 1]) << 8)
+    c.pos += 2
+    return Ok(v)
+}
+
+fn (c: mut &Cur) u32(what: str): Result[int, Error] {
+    try c.need(4, what)
+    var v = 0
+    for k in 0..4 { v = v | (int(c.s[c.pos + k]) << (8 * k)) }
+    c.pos += 4
+    return Ok(v)
+}
+
+// A little-endian integer of n bytes (1 to 8), sign-extended when signed.
+fn (c: mut &Cur) le(n: int, signed: bool, what: str): Result[int, Error] {
+    try c.need(n, what)
+    var v = 0
+    for k in 0..n { v = v | (int(c.s[c.pos + k]) << (8 * k)) }
+    if signed && n < 8 && ((v >> (8 * n - 1)) & 1) == 1 { v = v - (1 << (8 * n)) }
+    c.pos += n
+    return Ok(v)
+}
+
+fn (c: mut &Cur) u64(what: str): Result[u64, Error] {
+    try c.need(8, what)
+    var v: u64 = 0
+    for k in 0..8 { v = v | (u64(c.s[c.pos + k]) << (8 * k)) }
+    c.pos += 8
+    return Ok(v)
+}
+
+fn (c: mut &Cur) take(n: int, what: str): Result[str, Error] {
+    try c.need(n, what)
+    let v = c.s[c.pos..c.pos + n]
+    c.pos += n
+    return Ok(v)
+}
+
+fn (c: mut &Cur) skip(n: int, what: str): Result[Unit, Error] {
+    try c.need(n, what)
+    c.pos += n
+    return Ok(Unit{})
+}
+
+// A cursor over the next n bytes; c moves past them.
+fn (c: mut &Cur) sub(n: int, what: str): Result[Cur, Error] {
+    try c.need(n, what)
+    let r = Cur{s: c.s, pos: c.pos, end: c.pos + n}
+    c.pos += n
+    return Ok(r)
+}
+
+fn text16(b: str, what: str): Result[str, Error] {
+    match fromUtf16(b) {
+        Ok(t) { return Ok(t) }
+        Err(e) { return Err(proto(what + ": " + e)) }
+    }
+}
+
+// B_VARCHAR: a length byte (characters), then UTF-16LE.
+fn (c: mut &Cur) bvarchar(what: str): Result[str, Error] {
+    let n = try c.u8(what)
+    return text16(try c.take(2 * n, what), what)
+}
+
+// US_VARCHAR: a 2-byte length (characters), then UTF-16LE.
+fn (c: mut &Cur) usvarchar(what: str): Result[str, Error] {
+    let n = try c.u16(what)
+    return text16(try c.take(2 * n, what), what)
+}
+
+// ---------------------------------------------------------------- collations
+
+// A column's or the database's collation (MS-TDS 2.2.5.1.2): the Windows
+// locale id, the comparison flags, the version and a SQL sort order id (0 for
+// a Windows collation).
+pub type Collation = value record {
+    pub lcid: int
+    pub flags: int       // bit 0 IgnoreCase, ..., 4 Binary, 5 Binary2, 6 UTF8
+    pub version: int
+    pub sortId: int
+}
+
+pub fn noCollation(): Collation { return Collation{lcid: 0, flags: 0, version: 0, sortId: 0} }
+
+// The 5 bytes of a COLLATION.
+pub fn parseCollation(b: str): Result[Collation, Error] {
+    if len(b) != 5 { return Err(proto("a collation of " + len(b).toStr() + " bytes")) }
+    var w = 0
+    for k in 0..4 { w = w | (int(b[k]) << (8 * k)) }
+    return Ok(Collation{lcid: w & 0xFFFFF, flags: (w >> 20) & 0xFF, version: (w >> 28) & 0xF, sortId: int(b[4])})
+}
+
+pub fn (c: &Collation) utf8(): bool { return (c.flags & 0x40) != 0 }
+
+// The code page of char and varchar data in this collation: 65001 for
+// UTF-8; from the SQL sort order when there is one this table knows, else
+// from the locale's language; 0 when neither is known.
+pub fn (c: &Collation) codePage(): int {
+    if c.utf8() { return 65001 }
+    let s = c.sortId
+    if s >= 30 && s <= 34 { return 437 }
+    if s >= 51 && s <= 54 { return 1252 }
+    if (s >= 40 && s <= 44) || s == 49 || (s >= 55 && s <= 61) { return 850 }
+    let lang = c.lcid & 0x3FF
+    let sub = (c.lcid >> 10) & 0x3F
+    match lang {
+        0x09, 0x0C, 0x07, 0x0A, 0x10, 0x13, 0x16, 0x06, 0x14, 0x1D, 0x0B, 0x0F, 0x03, 0x2D, 0x21, 0x36, 0x38, 0x3E,
+        0x41, 0x56 { return 1252 }
+        0x05, 0x0E, 0x15, 0x18, 0x1B, 0x1C, 0x24 { return 1250 }
+        0x1A { return if sub == 3 || sub == 7 { 1251 } else { 1250 } }   // Serbian Cyrillic; else Croatian, Serbian Latin
+        0x19, 0x22, 0x23, 0x02, 0x2F, 0x3F, 0x40, 0x44, 0x50 { return 1251 }
+        0x08 { return 1253 }
+        0x1F, 0x2C, 0x43 { return 1254 }
+        0x0D { return 1255 }
+        0x01, 0x29, 0x20 { return 1256 }
+        0x25, 0x26, 0x27 { return 1257 }
+        0x2A { return 1258 }
+        0x1E { return 874 }
+        0x11 { return 932 }
+        0x04 { return if sub == 1 || sub == 3 || sub == 5 { 950 } else { 936 } }
+        0x12 { return 949 }
+        else { return 0 }
+    }
+}
+
+// "code page 1252 (LCID 0x0409, sort order 52)"
+pub fn (c: &Collation) describe(): str {
+    let cp = c.codePage()
+    let what = if cp == 0 { "an unknown code page" } else { "code page " + cp.toStr() }
+    return what + " (LCID 0x" + strings.padLeft(strings.hex(c.lcid), 4, '0') + ", sort order " +
+           c.sortId.toStr() + ")"
+}
+
+// ---------------------------------------------------------------- columns
+
+// A result column as COLMETADATA describes it.
+pub type Column = value record {
+    pub name: str
+    pub tdsType: int        // T_*
+    pub size: int           // the type's length: bytes, or -1 for (max)
+    pub precision: int
+    pub scale: int
+    pub collation: Collation
+    pub flags: int          // bit 0: nullable
+    pub userType: int
+    framing: int
+}
+
+fn column(t: int): Column {
+    return Column{name: "", tdsType: t, size: 0, precision: 0, scale: 0, collation: noCollation(), flags: 0,
+                  userType: 0, framing: F_FIXED}
+}
+
+// The SQL Server name of a column's type: "int", "nvarchar", "float", ...
+pub fn (c: &Column) typeName(): str {
+    let t = c.tdsType
+    match t {
+        T_INT1 { return "tinyint" }
+        T_INT2 { return "smallint" }
+        T_INT4 { return "int" }
+        T_INT8 { return "bigint" }
+        T_INTN {
+            match c.size {
+                1 { return "tinyint" }
+                2 { return "smallint" }
+                4 { return "int" }
+                else { return "bigint" }
+            }
+        }
+        T_BIT, T_BITN { return "bit" }
+        T_FLT4 { return "real" }
+        T_FLT8 { return "float" }
+        T_FLTN { return if c.size == 4 { "real" } else { "float" } }
+        T_NVARCHAR { return "nvarchar" }
+        T_NCHAR { return "nchar" }
+        T_BIGVARCHR, T_VARCHAR { return "varchar" }
+        T_BIGCHAR, T_CHAR { return "char" }
+        T_BIGVARBIN, T_VARBINARY { return "varbinary" }
+        T_BIGBINARY, T_BINARY { return "binary" }
+        T_TEXT { return "text" }
+        T_NTEXT { return "ntext" }
+        T_IMAGE { return "image" }
+        T_GUID { return "uniqueidentifier" }
+        T_DECIMAL, T_DECIMALN { return "decimal" }
+        T_NUMERIC, T_NUMERICN { return "numeric" }
+        T_MONEY { return "money" }
+        T_MONEY4 { return "smallmoney" }
+        T_MONEYN { return if c.size == 4 { "smallmoney" } else { "money" } }
+        T_DATETIME { return "datetime" }
+        T_DATETIM4 { return "smalldatetime" }
+        T_DATETIMN { return if c.size == 4 { "smalldatetime" } else { "datetime" } }
+        T_DATEN { return "date" }
+        T_TIMEN { return "time" }
+        T_DATETIME2N { return "datetime2" }
+        T_DATETIMEOFFSETN { return "datetimeoffset" }
+        T_XML { return "xml" }
+        T_UDT { return "udt" }
+        T_SSVARIANT { return "sql_variant" }
+        T_NULL { return "null" }
+        else { return "type 0x" + strings.hex(t) }
+    }
+}
+
+// TYPE_INFO (MS-TDS 2.2.5.6) into col.
+fn typeInfo(c: mut &Cur, col: mut &Column): Result[Unit, Error] {
+    let what = "TYPE_INFO"
+    let t = col.tdsType
+    match t {
+        T_NULL { col.framing = F_NONE }
+        T_INT1, T_BIT { col.size = 1 }
+        T_INT2 { col.size = 2 }
+        T_INT4, T_DATETIM4, T_FLT4, T_MONEY4 { col.size = 4 }
+        T_MONEY, T_DATETIME, T_FLT8, T_INT8 { col.size = 8 }
+        T_GUID, T_INTN, T_BITN, T_FLTN, T_MONEYN, T_DATETIMN {
+            col.framing = F_BYTE
+            col.size = try c.u8(what)
+            let ok = match t {
+                T_INTN { col.size == 1 || col.size == 2 || col.size == 4 || col.size == 8 }
+                T_BITN { col.size == 1 }
+                T_FLTN, T_MONEYN, T_DATETIMN { col.size == 4 || col.size == 8 }
+                else { col.size == 16 }
+            }
+            if !ok { return Err(proto(col.typeName() + " with length " + col.size.toStr())) }
+        }
+        T_DECIMAL, T_NUMERIC, T_DECIMALN, T_NUMERICN {
+            col.framing = F_BYTE
+            col.size = try c.u8(what)
+            col.precision = try c.u8(what)
+            col.scale = try c.u8(what)
+        }
+        T_DATEN {
+            col.framing = F_BYTE
+            col.size = 3
+        }
+        T_TIMEN, T_DATETIME2N, T_DATETIMEOFFSETN {
+            col.framing = F_BYTE
+            col.size = if t == T_TIMEN { 5 } else if t == T_DATETIME2N { 8 } else { 10 }      // the largest, at scale 7
+            col.scale = try c.u8(what)
+            if col.scale > 7 { return Err(proto(col.typeName() + " with scale " + col.scale.toStr())) }
+        }
+        T_CHAR, T_VARCHAR, T_BINARY, T_VARBINARY {
+            col.framing = F_BYTE
+            col.size = try c.u8(what)
+            if t == T_CHAR || t == T_VARCHAR { col.collation = try parseCollation(try c.take(5, what)) }
+        }
+        T_BIGVARBIN, T_BIGBINARY, T_BIGVARCHR, T_BIGCHAR, T_NVARCHAR, T_NCHAR {
+            col.size = try c.u16(what)
+            col.framing = F_USHORT
+            if col.size == 0xFFFF {
+                if t == T_BIGBINARY || t == T_BIGCHAR || t == T_NCHAR {
+                    return Err(proto(col.typeName() + " cannot be (max)"))
+                }
+                col.size = -1
+                col.framing = F_PLP
+            }
+            if t != T_BIGVARBIN && t != T_BIGBINARY { col.collation = try parseCollation(try c.take(5, what)) }
+        }
+        T_TEXT, T_NTEXT, T_IMAGE {
+            col.framing = F_TEXT
+            col.size = try c.u32(what)
+            if t != T_IMAGE { col.collation = try parseCollation(try c.take(5, what)) }
+            let parts = try c.u8(what)                     // the table's name, in parts
+            for i in 0..parts { let p = try c.usvarchar(what) }
+        }
+        T_XML {
+            col.framing = F_PLP
+            col.size = -1
+            if try c.u8(what) != 0 {
+                let a = try c.bvarchar(what)
+                let b = try c.bvarchar(what)
+                let s = try c.usvarchar(what)
+            }
+        }
+        T_UDT {
+            col.framing = F_PLP
+            col.size = try c.u16(what)
+            let a = try c.bvarchar(what)
+            let b = try c.bvarchar(what)
+            let n = try c.bvarchar(what)
+            let q = try c.usvarchar(what)
+        }
+        T_SSVARIANT {
+            col.framing = F_VARIANT
+            col.size = try c.u32(what)
+        }
+        else { return Err(proto("unknown data type 0x" + strings.hex(t))) }
+    }
+    return Ok(Unit{})
+}
+
+// ---------------------------------------------------------------- values
+
+// A value of a row.
+pub type Cell = value closed {
+    Null
+    Int(int)          // the integer types and bit
+    Float(float)      // real and float, exact
+    Text(str)         // nchar, nvarchar, ntext; char, varchar, text in UTF-8
+    Bytes(str)        // binary, varbinary, image
+    Failed(str)       // a value that could not be decoded: why ("code page 1252 ...", "type datetime2 ...")
+}
+
+// The float with IEEE 754 double bits b.
+pub fn floatOfBits(b: int): float {
+    let e = (b >> 52) & 0x7ff
+    let m = b & 0xfffffffffffff
+    var f: float = 0.0
+    if e == 0x7ff {
+        f = if m == 0 { math.inf() } else { math.nan() }
+    } else {
+        f = pow2(float(if e == 0 { m } else { m | (1 << 52) }), (if e == 0 { 1 } else { e }) - 1075)
+    }
+    return if b < 0 { -f } else { f }
+}
+
+// The float with IEEE 754 single bits b (0 to 2^32 - 1), exactly.
+pub fn floatOfBits32(b: int): float {
+    let e = (b >> 23) & 0xff
+    let m = b & 0x7fffff
+    var f: float = 0.0
+    if e == 0xff {
+        f = if m == 0 { math.inf() } else { math.nan() }
+    } else {
+        f = pow2(float(if e == 0 { m } else { m | (1 << 23) }), (if e == 0 { 1 } else { e }) - 150)
+    }
+    return if ((b >> 31) & 1) == 1 { -f } else { f }
+}
+
+// x * 2^e, exact when the result is a float (each step is a power of two).
+fn pow2(x: float, e: int): float {
+    var f = x
+    var k = e
+    while k > 0 {
+        let s = if k > 60 { 60 } else { k }
+        f = f * float(1 << s)
+        k -= s
+    }
+    while k < 0 {
+        let s = if -k > 60 { 60 } else { -k }
+        f = f / float(1 << s)
+        k += s
+    }
+    return f
+}
+
+fn unsupported(col: &Column): Cell {
+    return Cell.Failed("type " + col.typeName() + " is not supported yet")
+}
+
+// One value of col (ROW, MS-TDS 2.2.7.19): its bytes by the type's framing,
+// then decoded.
+fn readValue(c: mut &Cur, col: &Column): Result[Cell, Error] {
+    let what = "a value of column " + col.name
+    match col.framing {
+        F_NONE { return Ok(Cell.Null) }
+        F_FIXED { return Ok(decodeValue(col, try c.take(col.size, what))) }
+        F_BYTE {
+            let n = try c.u8(what)
+            if n == 0 { return Ok(Cell.Null) }
+            if n > col.size { return Err(proto(what + ": " + n.toStr() + " bytes for a size of " + col.size.toStr())) }
+            return Ok(decodeValue(col, try c.take(n, what)))
+        }
+        F_USHORT {
+            let n = try c.u16(what)
+            if n == 0xFFFF { return Ok(Cell.Null) }
+            if n > col.size { return Err(proto(what + ": " + n.toStr() + " bytes for a size of " + col.size.toStr())) }
+            return Ok(decodeValue(col, try c.take(n, what)))
+        }
+        F_TEXT {
+            let tp = try c.u8(what)
+            if tp == 0 { return Ok(Cell.Null) }
+            try c.skip(tp + 8, what)                     // the text pointer and its timestamp
+            let n = try c.u32(what)
+            return Ok(decodeValue(col, try c.take(n, what)))
+        }
+        F_PLP {
+            let total = try c.u64(what)
+            if total == PLP_NULL { return Ok(Cell.Null) }
+            var b: []byte = []
+            while true {
+                let n = try c.u32(what)
+                if n == 0 { break }
+                appendStr(mut &b, try c.take(n, what))
+            }
+            if total != PLP_NULL - 1 && u64(len(b)) != total {
+                return Err(proto(what + ": PLP chunks of " + len(b).toStr() + " bytes for a total of " + total.toStr()))
+            }
+            return Ok(decodeValue(col, strFromBytes(&b)))
+        }
+        else {
+            let n = try c.u32(what)
+            if n == 0 { return Ok(Cell.Null) }
+            try c.skip(n, what)
+            return Ok(unsupported(col))
+        }
+    }
+}
+
+// The bytes b of a non-NULL value of col as a Cell.
+fn decodeValue(col: &Column, b: str): Cell {
+    let t = col.tdsType
+    match t {
+        T_INT1, T_INT2, T_INT4, T_INT8, T_INTN, T_BIT, T_BITN {
+            let n = len(b)
+            if n != 1 && n != 2 && n != 4 && n != 8 { return Cell.Failed("an integer of " + n.toStr() + " bytes") }
+            var v = 0
+            for k in 0..n { v = v | (int(b[k]) << (8 * k)) }
+            if t == T_BIT || t == T_BITN { return Cell.Int(if v != 0 { 1 } else { 0 }) }
+            if n > 1 && n < 8 && ((v >> (8 * n - 1)) & 1) == 1 { v = v - (1 << (8 * n)) }   // tinyint is unsigned
+            return Cell.Int(v)
+        }
+        T_FLT4, T_FLT8, T_FLTN {
+            if len(b) != 4 && len(b) != 8 { return Cell.Failed("a float of " + len(b).toStr() + " bytes") }
+            var v = 0
+            for k in 0..len(b) { v = v | (int(b[k]) << (8 * k)) }
+            if len(b) == 4 { return Cell.Float(floatOfBits32(v)) }
+            return Cell.Float(floatOfBits(v))
+        }
+        T_NVARCHAR, T_NCHAR, T_NTEXT {
+            match fromUtf16(b) {
+                Ok(s) { return Cell.Text(s) }
+                Err(e) { return Cell.Failed(e) }
+            }
+        }
+        T_BIGVARCHR, T_BIGCHAR, T_TEXT, T_VARCHAR, T_CHAR {
+            if !col.collation.utf8() {
+                return Cell.Failed("varchar data in " + col.collation.describe() + ": only UTF-8 collations are supported yet")
+            }
+            if !strings.isValidUtf8(b) { return Cell.Failed("invalid UTF-8 in a UTF-8 collation") }
+            return Cell.Text(b)
+        }
+        T_BIGVARBIN, T_BIGBINARY, T_IMAGE, T_VARBINARY, T_BINARY { return Cell.Bytes(b) }
+        else { return unsupported(col) }
+    }
+}
+
+// ---------------------------------------------------------------- replies
+
+// An ERROR or INFO token.
+pub type Message = value record {
+    pub number: int
+    pub state: int
+    pub class: int          // severity: 0 to 10 information, 11 and up errors
+    pub text: str
+    pub server: str
+    pub proc: str
+    pub line: int
+}
+
+// "Msg 208, Level 16, State 1, Line 1: Invalid object name 'nope'."
+pub fn (m: &Message) toStr(): str {
+    return "Msg " + m.number.toStr() + ", Level " + m.class.toStr() + ", State " + m.state.toStr() + ", Line " +
+           m.line.toStr() + ": " + m.text
+}
+
+// An ENVCHANGE token: the new and old values as text for the text types
+// (database, language, character set, packet size, ...), as bytes for the
+// others (collation, transaction descriptors).
+pub type EnvChange = value record { pub kind: int; pub newValue: str; pub oldValue: str }
+
+pub type LoginAck = value record {
+    pub iface: int
+    pub tdsVersion: int     // 0x74000004 for TDS 7.4
+    pub progName: str       // "Microsoft SQL Server"
+    pub version: str        // "16.0.4135"
+}
+
+pub type Feature = value record { pub id: int; pub data: str }
+
+pub type Done = value record {
+    pub token: int          // TK_DONE, TK_DONEPROC, TK_DONEINPROC
+    pub status: int         // DONE_*
+    pub curCmd: int
+    pub count: int
+}
+
+// The rows of one COLMETADATA and the ROWs after it.
+pub type ResultSet = record {
+    pub columns: []Column
+    pub rows: [][]Cell
+    pub count: int          // the row count its DONE gave, or -1
+}
+
+// A reply, decoded.
+pub type Reply = record {
+    pub results: []ResultSet
+    pub errors: []Message
+    pub infos: []Message
+    pub envs: []EnvChange
+    pub loginAck: Option[LoginAck]
+    pub features: []Feature
+    pub dones: []Done
+    pub returnStatus: Option[int]
+    pub affected: int       // the count of the last DONE that ends no result set, or -1
+    open: bool              // the last result set has had no DONE yet
+}
+
+pub fn emptyReply(): Reply {
+    return Reply{results: [], errors: [], infos: [], envs: [], loginAck: None, features: [], dones: [],
+                 returnStatus: None, affected: -1, open: false}
+}
+
+// Decodes a reply's token stream, up to and including its final DONE (one
+// without DONE_MORE). E_PROTOCOL for anything malformed: a length or count
+// past the end, an unknown token or type, a ROW before any COLMETADATA,
+// bytes after the final DONE, no final DONE. E_LIMIT past maxCells cells.
+pub fn decode(data: str, maxCells: int): Result[Reply, Error] {
+    var r = emptyReply()
+    var c = cursor(data)
+    var cols: []Column = []
+    var haveCols = false
+    var cells = 0
+    var final = false
+    while c.left() > 0 {
+        if final { return Err(proto(c.left().toStr() + " bytes after the final DONE")) }
+        let tok = try c.u8("a token")
+        match tok {
+            TK_COLMETADATA {
+                cols = try colMetadata(mut &c)
+                haveCols = true
+                var copy: []Column = []
+                for x in cols { append(mut &copy, x) }
+                if len(cols) > 0 {
+                    append(mut &r.results, ResultSet{columns: copy, rows: [], count: -1})
+                    r.open = true
+                }
+            }
+            TK_ROW, TK_NBCROW {
+                if !haveCols || len(r.results) == 0 { return Err(proto("a row before any COLMETADATA")) }
+                cells += len(cols)
+                if cells > maxCells { return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tds: a reply of more than " +
+                                                 maxCells.toStr() + " values")) }
+                let row = try readRow(mut &c, &cols, tok == TK_NBCROW)
+                let k = len(r.results) - 1
+                append(mut &r.results[k].rows, row)
+            }
+            TK_DONE, TK_DONEPROC, TK_DONEINPROC {
+                let d = Done{token: tok, status: try c.u16("DONE"), curCmd: try c.u16("DONE"), count: 0}
+                let n = try c.u64("DONE")
+                var done = d
+                done.count = if n > 9223372036854775807 { -1 } else { int(n) }
+                if (done.status & DONE_COUNT) != 0 {
+                    if r.open {
+                        let k = len(r.results) - 1
+                        r.results[k].count = done.count
+                    } else {
+                        r.affected = done.count
+                    }
+                }
+                r.open = false
+                append(mut &r.dones, done)
+                if tok == TK_DONE && (done.status & DONE_MORE) == 0 { final = true }
+            }
+            TK_ERROR, TK_INFO {
+                let m = try message(mut &c)
+                if tok == TK_ERROR { append(mut &r.errors, m) } else { append(mut &r.infos, m) }
+            }
+            TK_ENVCHANGE { append(mut &r.envs, try envChange(mut &c)) }
+            TK_LOGINACK { r.loginAck = Some(try loginAck(mut &c)) }
+            TK_FEATUREEXTACK {
+                while true {
+                    let id = try c.u8("FEATUREEXTACK")
+                    if id == 0xFF { break }
+                    let n = try c.u32("FEATUREEXTACK")
+                    append(mut &r.features, Feature{id: id, data: try c.take(n, "FEATUREEXTACK")})
+                }
+            }
+            TK_RETURNSTATUS { r.returnStatus = Some(try c.le(4, true, "RETURNSTATUS")) }
+            TK_ORDER, TK_COLINFO, TK_TABNAME, TK_SSPI {
+                let n = try c.u16("a token's length")
+                try c.skip(n, "token 0x" + strings.hex(tok))
+            }
+            TK_SESSIONSTATE, TK_FEDAUTHINFO {
+                let n = try c.u32("a token's length")
+                try c.skip(n, "token 0x" + strings.hex(tok))
+            }
+            TK_OFFSET { try c.skip(4, "OFFSET") }
+            TK_RETURNVALUE { return Err(proto("RETURNVALUE is not supported yet")) }
+            TK_ALTMETADATA, TK_ALTROW { return Err(proto("COMPUTE results (ALTMETADATA, ALTROW) are not supported")) }
+            TK_DATACLASSIFICATION { return Err(proto("DATACLASSIFICATION is not supported (it was not asked for)")) }
+            else { return Err(proto("unknown token 0x" + strings.padLeft(strings.hex(tok), 2, '0'))) }
+        }
+    }
+    if !final { return Err(proto("the reply ended before its final DONE")) }
+    return Ok(r)
+}
+
+fn colMetadata(c: mut &Cur): Result[[]Column, Error] {
+    let n = try c.u16("COLMETADATA")
+    var cols: []Column = []
+    if n == 0xFFFF { return Ok(cols) }                  // no metadata
+    for i in 0..n {
+        let userType = try c.u32("COLMETADATA")
+        let flags = try c.u16("COLMETADATA")
+        var col = column(try c.u8("COLMETADATA"))
+        col.userType = userType
+        col.flags = flags
+        try typeInfo(mut &c, mut &col)
+        col.name = try c.bvarchar("a column name")
+        append(mut &cols, col)
+    }
+    return Ok(cols)
+}
+
+fn readRow(c: mut &Cur, cols: &[]Column, nbc: bool): Result[[]Cell, Error] {
+    var nulls = ""
+    if nbc { nulls = try c.take((len(cols) + 7) / 8, "NBCROW's null bitmap") }
+    var row: []Cell = []
+    for i in 0..len(cols) {
+        if nbc && ((int(nulls[i / 8]) >> (i % 8)) & 1) == 1 {
+            append(mut &row, Cell.Null)
+        } else {
+            append(mut &row, try readValue(mut &c, &cols[i]))
+        }
+    }
+    return Ok(row)
+}
+
+fn message(c: mut &Cur): Result[Message, Error] {
+    let n = try c.u16("ERROR/INFO")
+    var s = try c.sub(n, "ERROR/INFO")
+    let number = try s.le(4, true, "ERROR/INFO")
+    let state = try s.u8("ERROR/INFO")
+    let class = try s.u8("ERROR/INFO")
+    let text = try s.usvarchar("ERROR/INFO")
+    let server = try s.bvarchar("ERROR/INFO")
+    let procName = try s.bvarchar("ERROR/INFO")
+    let line = try s.u32("ERROR/INFO")
+    return Ok(Message{number: number, state: state, class: class, text: text, server: server, proc: procName, line: line})
+}
+
+fn envChange(c: mut &Cur): Result[EnvChange, Error] {
+    let n = try c.u16("ENVCHANGE")
+    var s = try c.sub(n, "ENVCHANGE")
+    let kind = try s.u8("ENVCHANGE")
+    match kind {
+        1, 2, 3, 4, 5, 6, 13, 19 {
+            let nv = try s.bvarchar("ENVCHANGE")
+            let ov = if s.left() > 0 { try s.bvarchar("ENVCHANGE") } else { "" }
+            return Ok(EnvChange{kind: kind, newValue: nv, oldValue: ov})
+        }
+        7, 8, 9, 10, 11, 12, 16, 17, 18 {
+            let nn = try s.u8("ENVCHANGE")
+            let nv = try s.take(nn, "ENVCHANGE")
+            var ov = ""
+            if s.left() > 0 {
+                let on = try s.u8("ENVCHANGE")
+                ov = try s.take(on, "ENVCHANGE")
+            }
+            return Ok(EnvChange{kind: kind, newValue: nv, oldValue: ov})
+        }
+        else { return Ok(EnvChange{kind: kind, newValue: try s.take(s.left(), "ENVCHANGE"), oldValue: ""}) }
+    }
+}
+
+fn loginAck(c: mut &Cur): Result[LoginAck, Error] {
+    let n = try c.u16("LOGINACK")
+    var s = try c.sub(n, "LOGINACK")
+    let iface = try s.u8("LOGINACK")
+    let v = try s.take(4, "LOGINACK")
+    let tdsv = (int(v[0]) << 24) | (int(v[1]) << 16) | (int(v[2]) << 8) | int(v[3])
+    let prog = try s.bvarchar("LOGINACK")
+    let major = try s.u8("LOGINACK")
+    let minor = try s.u8("LOGINACK")
+    let hi = try s.u8("LOGINACK")
+    let lo = try s.u8("LOGINACK")
+    return Ok(LoginAck{iface: iface, tdsVersion: tdsv, progName: prog,
+                       version: major.toStr() + "." + minor.toStr() + "." + (hi * 256 + lo).toStr()})
+}
+
+// ---------------------------------------------------------------- transport
+
+// What a session reads and writes through: plain TCP, or TLS over it.
+type Stream = value closed {
+    Plain(net.Conn)
+    Tls(tls.Conn)
+    Gone
+}
+
+fn (s: &Stream) isTls(): bool {
+    match s {
+        Stream.Tls(_) { return true }
+        else { return false }
+    }
+}
+
+// The TLS connection, taken out for a call that changes it (a match binds
+// it read-only); s.put gives it back.
+fn (s: mut &Stream) takeTls(): tls.Conn {
+    match replace(s, Stream.Gone) {
+        Stream.Tls(t) { return t }
+        else { panic("tds: not a TLS stream") }
+    }
+}
+
+fn (s: mut &Stream) put(t: tls.Conn) { let old = replace(s, Stream.Tls(t)) }
+
+fn (s: mut &Stream) read(b: mut &[byte], w: Where): Result[int, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.read(b, w)
+        s.put(t)
+        return match r {
+            Ok(n) { Ok(n) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            return match c.read(b, w) {
+                Ok(n) { Ok(n) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+fn (s: mut &Stream) write(data: &[byte], w: Where): Result[Unit, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.write(data, w)
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            return match c.write(data, w) {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+// Bytes read ahead from the stream: buf[pos..end].
+type Inbox = record { buf: []byte; pos: int; end: int }
+
+// Fills dst from the inbox, then from the stream (parking). E_IO when the
+// server closes the connection first.
+fn readFull(s: mut &Stream, ib: mut &Inbox, dst: mut &[byte], w: Where): Result[Unit, Error] {
+    var have = 0
+    while have < len(dst) {
+        if ib.pos < ib.end {
+            let n = min(ib.end - ib.pos, len(dst) - have)
+            for k in 0..n { dst[have + k] = ib.buf[ib.pos + k] }
+            ib.pos += n
+            have += n
+            continue
+        }
+        let n = try s.read(mut &ib.buf, w)
+        if n == 0 { return Err(ioErr("the server closed the connection")) }
+        ib.pos = 0
+        ib.end = n
+    }
+    return Ok(Unit{})
+}
+
+// A message read: its packets' type and their payloads joined.
+pub type Received = value record { pub ptype: int; pub data: str }
+
+// A connection's packets: written a message at a time, read a message at a
+// time (every packet up to the one with EOM).
+pub type Transport = record {
+    s: Stream
+    inbox: Inbox
+    hdr: []byte
+    pkt: []byte
+    pub packetSize: int
+}
+
+pub fn transport(sock: net.Conn): Transport {
+    return Transport{s: Stream.Plain(sock), inbox: Inbox{buf: array(16384, byte(0)), pos: 0, end: 0},
+                     hdr: array(HEADER, byte(0)), pkt: array(65536, byte(0)), packetSize: DEFAULT_PACKET}
+}
+
+// Sends one message as packets of the current packet size.
+//
+// Each packet is written by itself: under TLS, SQL Server reads a packet
+// from its own TLS records, and drops the connection when one record holds
+// the end of a packet and the start of the next.
+pub fn (t: mut &Transport) send(ptype: int, payload: str, w: Where): Result[Unit, Error] {
+    let b = packets(ptype, payload, t.packetSize)
+    if !t.s.isTls() { return t.s.write(&b, w) }
+    var off = 0
+    while off < len(b) {
+        let n = (int(b[off + 2]) << 8) | int(b[off + 3])
+        try t.s.write(&b[off..off + n], w)
+        off += n
+    }
+    return Ok(Unit{})
+}
+
+// Reads one message. E_LIMIT when its payload passes limit bytes (the rest
+// of it is not read), E_PROTOCOL for packets of different types.
+pub fn (t: mut &Transport) receive(limit: int, w: Where): Result[Received, Error] {
+    var msg: []byte = []
+    var ptype = -1
+    while true {
+        try readFull(mut &t.s, mut &t.inbox, mut &t.hdr, w)
+        let h = try parseHeader(&t.hdr)
+        if ptype < 0 {
+            ptype = h.ptype
+        } else if h.ptype != ptype {
+            return Err(proto("a packet of type " + h.ptype.toStr() + " inside a message of type " + ptype.toStr()))
+        }
+        let n = h.length - HEADER
+        if len(msg) + n > limit {
+            return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tds: a reply larger than " + limit.toStr() + " bytes"))
+        }
+        try readFull(mut &t.s, mut &t.inbox, mut &t.pkt[0..n], w)
+        appendStr(mut &msg, strFromBytes(&t.pkt[0..n]))
+        if (h.status & STATUS_EOM) != 0 { break }
+    }
+    return Ok(Received{ptype: ptype, data: strFromBytes(&msg)})
+}
+
+fn (t: &Transport) buffered(): bool { return t.inbox.pos < t.inbox.end }
+
+// Puts TLS over the socket, with an engine whose handshake is done.
+fn (t: mut &Transport) startTls(e: tls.Engine): Result[Unit, Error] {
+    if t.buffered() { return Err(proto("bytes after the TLS handshake")) }
+    match replace(mut &t.s, Stream.Gone) {
+        Stream.Plain(c) {
+            t.s = Stream.Tls(tls.over(e, c))
+            return Ok(Unit{})
+        }
+        else { return Err(ioErr("TLS on a connection that is not plain")) }
+    }
+}
+
+// Ends TLS without close_notify (encryption for the login only); bytes
+// that arrived after the last record are read next, as plain bytes.
+fn (t: mut &Transport) stopTls(): Result[Unit, Error] {
+    match replace(mut &t.s, Stream.Gone) {
+        Stream.Tls(c) {
+            let tls.Detached{sock: sock, rest: rest} = c.detach()
+            t.s = Stream.Plain(sock)
+            if len(rest) > 0 {
+                var b = rest
+                for k in t.inbox.pos..t.inbox.end { append(mut &b, t.inbox.buf[k]) }
+                let n = len(b)
+                if n > len(t.inbox.buf) { t.inbox.buf = array(n, byte(0)) }
+                for k in 0..n { t.inbox.buf[k] = b[k] }
+                t.inbox.pos = 0
+                t.inbox.end = n
+            }
+            return Ok(Unit{})
+        }
+        else { return Err(ioErr("the connection is not encrypted")) }
+    }
+}
+
+// ---------------------------------------------------------------- sessions
+
+// How a connection is encrypted (Encrypt=).
+pub type Encrypt = value closed {
+    Mandatory      // yes: TLS for the whole connection, or no connection
+    Optional       // no: TLS for the login at least; the whole connection if the server requires it
+    Strict         // TDS 8.0: not supported yet
+}
+
+// Where and how to connect: sqlserver fills it from a connection string.
+pub type Config = value record {
+    pub host: str
+    pub port: int
+    pub user: str
+    pub password: str
+    pub database: str
+    pub appName: str
+    pub encrypt: Encrypt
+    pub trustServerCertificate: bool    // tls's insecureSkipVerify
+    pub hostNameInCertificate: str      // "" : host
+    pub packetSize: int
+}
+
+// The encryption a session got.
+pub type Encryption = value closed {
+    Full         // TLS for everything
+    LoginOnly    // TLS for the LOGIN7 packet only (both sides had encryption off)
+    Off          // none (the server does not support encryption, and Encrypt=no)
+}
+
+pub fn (e: Encryption) toStr(): str {
+    match e {
+        Encryption.Full { return "full" }
+        Encryption.LoginOnly { return "login only" }
+        Encryption.Off { return "off" }
+    }
+}
+
+// A logged-in connection.
+pub type Session = record {
+    t: Transport
+    pub encryption: Encryption
+    pub tdsVersion: int
+    pub serverName: str          // LOGINACK's program name, "Microsoft SQL Server"
+    pub serverVersion: str       // "16.0.4135"
+    pub preloginVersion: str
+    pub database: str
+    pub collation: Collation
+    pub utf8: bool               // the server acknowledged UTF8_SUPPORT
+    pub maxReply: int            // bytes a reply may have (MAX_REPLY)
+    pub broken: bool             // a request failed on the wire: no more requests
+    txn: str                     // the transaction descriptor, 8 bytes
+    pub infos: []Message         // the INFO messages of the last request (login: "Changed database context ...")
+}
+
+fn addrOf(host: str, port: int): str {
+    if indexOf(host, ":", 0) >= 0 { return "[" + host + "]:" + port.toStr() }
+    return host + ":" + port.toStr()
+}
+
+// The first ERROR of a reply as the error of a call: its number as the code.
+pub fn serverError(m: &Message): Error {
+    return Error{code: m.number, state: "", msg: m.text}
+}
+
+// Connects, negotiates encryption in PRELOGIN, runs the TLS handshake
+// inside PRELOGIN packets, and logs in with LOGIN7. Every step parks only
+// the task. The server's login error (18456 "Login failed for user ...")
+// comes back with its number as the code.
+pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
+    if cfg.encrypt == Encrypt.Strict {
+        return Err(sqldialect.inputError("Encrypt=strict (TDS 8.0) is not supported yet"))
+    }
+    let sock = match net.dial(addrOf(cfg.host, cfg.port), w) {
+        Ok(c) { c }
+        Err(e) { return Err(ioFail(e)) }
+    }
+    sock.setNoDelay(true)
+    var t = transport(sock)
+    let want = if cfg.encrypt == Encrypt.Mandatory { ENCRYPT_ON } else { ENCRYPT_OFF }
+    try t.send(PT_PRELOGIN, preloginRequest(want), w)
+    let m = try t.receive(65536, w)
+    if m.ptype != PT_REPLY && m.ptype != PT_PRELOGIN {
+        return Err(proto("a PRELOGIN answer in a packet of type " + m.ptype.toStr()))
+    }
+    let pre = try parsePrelogin(m.data)
+    let srv = pre.encryption & 0x7F
+    var enc = Encryption.Full
+    if want == ENCRYPT_ON {
+        if srv != ENCRYPT_ON && srv != ENCRYPT_REQ {
+            return Err(ioErr("the server does not support encryption (Encrypt=yes needs it)"))
+        }
+    } else if srv == ENCRYPT_OFF {
+        enc = Encryption.LoginOnly
+    } else if srv == ENCRYPT_NOT_SUP {
+        enc = Encryption.Off
+    } else if srv != ENCRYPT_ON && srv != ENCRYPT_REQ {
+        return Err(proto("PRELOGIN: encryption value " + srv.toStr()))
+    }
+    if enc != Encryption.Off { try handshake(mut &t, cfg, w) }
+    let login = Login{hostName: hostName(), userName: cfg.user, password: cfg.password, appName: cfg.appName,
+                      serverName: cfg.host, library: "obx tds", language: "", database: cfg.database,
+                      packetSize: cfg.packetSize, clientPid: 0, utf8: true}
+    try t.send(PT_LOGIN7, try login7(&login), w)
+    if enc == Encryption.LoginOnly { try t.stopTls() }
+    let a = try t.receive(MAX_REPLY, w)
+    if a.ptype != PT_REPLY { return Err(proto("a login answer in a packet of type " + a.ptype.toStr())) }
+    var r = try decode(a.data, MAX_REPLY / 8)
+    if len(r.errors) > 0 { return Err(serverError(&r.errors[0])) }
+    let ack = match r.loginAck {
+        Some(x) { x }
+        None { return Err(proto("the login's answer has no LOGINACK")) }
+    }
+    if ack.tdsVersion < 0x72090002 {
+        return Err(proto("the server speaks TDS version 0x" + strings.hex(ack.tdsVersion) + ", older than 7.2"))
+    }
+    var s = Session{t: t, encryption: enc, tdsVersion: ack.tdsVersion, serverName: ack.progName,
+                    serverVersion: ack.version, preloginVersion: pre.version, database: "", collation: noCollation(),
+                    utf8: false, maxReply: MAX_REPLY, broken: false, txn: noTransaction(), infos: replace(mut &r.infos, [])}
+    for f in r.features {
+        if f.id == FEATURE_UTF8 && len(f.data) >= 1 && f.data[0] != 0 { s.utf8 = true }
+    }
+    try s.apply(&r.envs)
+    return Ok(s)
+}
+
+// The TLS handshake through PRELOGIN packets (MS-TDS 2.2.6.5), then the
+// engine over the socket.
+fn handshake(t: mut &Transport, cfg: &Config, w: Where): Result[Unit, Error] {
+    var o = tls.defaults()
+    o.insecureSkipVerify = cfg.trustServerCertificate
+    let ctx = match tls.client(o) {
+        Ok(c) { c }
+        Err(e) { return Err(tlsFail(e)) }
+    }
+    let name = if len(cfg.hostNameInCertificate) > 0 { cfg.hostNameInCertificate } else { cfg.host }
+    var e = match ctx.engine(name) {
+        Ok(x) { x }
+        Err(x) { return Err(tlsFail(x)) }
+    }
+    while true {
+        let r = e.handshake()
+        let out = e.takeOutput()
+        if len(out) > 0 { try t.send(PT_PRELOGIN, strFromBytes(&out), w) }
+        let done = match r {
+            Ok(d) { d }
+            Err(x) { return Err(tlsFail(x)) }
+        }
+        if done { break }
+        let m = try t.receive(1048576, w)
+        if m.ptype != PT_PRELOGIN && m.ptype != PT_REPLY {
+            return Err(proto("a TLS handshake packet of type " + m.ptype.toStr()))
+        }
+        e.feed(&strToBytes(m.data))
+    }
+    return t.startTls(e)
+}
+
+fn hostName(): str {
+    match io.read("/proc/sys/kernel/hostname") {
+        Ok(h) {
+            let n = trim(h)
+            if len(n) > 0 && len(n) <= 128 { return n }
+        }
+        Err(_) {}
+    }
+    return "localhost"
+}
+
+// Applies ENVCHANGE tokens: database, collation, packet size, transactions.
+fn (s: mut &Session) apply(envs: &[]EnvChange): Result[Unit, Error] {
+    for e in envs {
+        match e.kind {
+            ENV_DATABASE { s.database = e.newValue }
+            ENV_COLLATION { if len(e.newValue) == 5 { s.collation = try parseCollation(e.newValue) } }
+            ENV_PACKETSIZE {
+                let n = match parseInt(e.newValue) {
+                    Some(x) { x }
+                    None { return Err(proto("a packet size of " + e.newValue)) }
+                }
+                if n < MIN_PACKET || n > MAX_PACKET { return Err(proto("a packet size of " + n.toStr())) }
+                s.t.packetSize = n
+            }
+            ENV_BEGINTRAN {
+                if len(e.newValue) != 8 { return Err(proto("a transaction descriptor of " + len(e.newValue).toStr() + " bytes")) }
+                s.txn = e.newValue
+            }
+            ENV_COMMITTRAN, ENV_ROLLBACKTRAN, ENV_TRANENDED { s.txn = noTransaction() }
+            else {}
+        }
+    }
+    return Ok(Unit{})
+}
+
+pub fn (s: &Session) packetSize(): int { return s.t.packetSize }
+
+// Whether a transaction is open (the server has given a descriptor).
+pub fn (s: &Session) inTransaction(): bool { return s.txn != noTransaction() }
+
+// Runs a batch: sends SQLBatch and decodes the whole reply. The reply's
+// ERROR tokens are in reply.errors, not an Err: the caller decides. Err is
+// E_INPUT for SQL text that is not UTF-8, or a failure on the wire, after
+// which the session is broken.
+pub fn (s: mut &Session) batch(sql: str, w: Where): Result[Reply, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    let payload = try sqlBatch(sql, s.txn)
+    let r = s.roundTrip(PT_SQLBATCH, payload, w)
+    match r {
+        Ok(_) {}
+        Err(_) { s.broken = true }
+    }
+    let reply = try r
+    s.infos = []
+    for m in reply.infos { append(mut &s.infos, m) }
+    try s.apply(&reply.envs)
+    return Ok(reply)
+}
+
+fn (s: mut &Session) roundTrip(ptype: int, payload: str, w: Where): Result[Reply, Error] {
+    try s.t.send(ptype, payload, w)
+    let m = try s.t.receive(s.maxReply, w)
+    if m.ptype != PT_REPLY { return Err(proto("a reply in a packet of type " + m.ptype.toStr())) }
+    return decode(m.data, s.maxReply / 8)
+}

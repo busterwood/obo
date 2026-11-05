@@ -1,0 +1,248 @@
+// Test support for tds (lib/tests/run/tds_*.obx): a builder for the bytes a
+// server sends (little-endian integers, UTF-16 text, collations, tokens),
+// and stream(), a reply with every core token and type that tds_codec
+// checks and tds_malformed truncates and mutates.
+import "tds"
+
+pub type B = record { b: []byte }
+
+pub fn bytesOf(): B { return B{b: []} }
+
+pub fn (b: mut &B) u8(v: int) { append(mut &b.b, byte(v & 0xff)) }
+
+pub fn (b: mut &B) u16(v: int) {
+    b.u8(v)
+    b.u8(v >> 8)
+}
+
+pub fn (b: mut &B) u32(v: int) {
+    b.u16(v & 0xffff)
+    b.u16((v >> 16) & 0xffff)
+}
+
+pub fn (b: mut &B) u64(v: int) {
+    b.u32(v & 0xffffffff)
+    b.u32((v >> 32) & 0xffffffff)
+}
+
+pub fn (b: mut &B) raw(s: str) { appendStr(mut &b.b, s) }
+
+pub fn (b: mut &B) utf16(s: str) {
+    let u = tds.toUtf16(s).unwrap()
+    for x in u { append(mut &b.b, x) }
+}
+
+pub fn units(s: str): int { return len(tds.toUtf16(s).unwrap()) / 2 }
+
+pub fn (b: mut &B) bvarchar(s: str) {
+    b.u8(units(s))
+    b.utf16(s)
+}
+
+pub fn (b: mut &B) usvarchar(s: str) {
+    b.u16(units(s))
+    b.utf16(s)
+}
+
+pub fn (b: &B) str(): str { return strFromBytes(&b.b) }
+
+// A COLLATION: LCID, flags, version, sort id.
+pub fn (b: mut &B) collation(lcid: int, flags: int, sortId: int) {
+    b.u32(lcid | (flags << 20))
+    b.u8(sortId)
+}
+
+pub fn (b: mut &B) col(name: str, ty: int) {
+    b.u32(0)          // user type
+    b.u16(1)          // flags: nullable
+    b.u8(ty)
+}
+
+pub fn (b: mut &B) name(s: str) { b.bvarchar(s) }
+
+pub fn (b: mut &B) message(tok: int, number: int, state: int, class: int, text: str, line: int) {
+    var m = bytesOf()
+    m.u32(number)
+    m.u8(state)
+    m.u8(class)
+    m.usvarchar(text)
+    m.bvarchar("srv")
+    m.bvarchar("")
+    m.u32(line)
+    b.u8(tok)
+    b.u16(len(m.b))
+    b.raw(m.str())
+}
+
+pub fn (b: mut &B) done(tok: int, status: int, cmd: int, count: int) {
+    b.u8(tok)
+    b.u16(status)
+    b.u16(cmd)
+    b.u64(count)
+}
+
+pub fn (b: mut &B) utf16Value(s: str) {
+    b.u16(2 * units(s))
+    b.utf16(s)
+}
+
+pub fn stream(): str {
+    var b = bytesOf()
+    b.loginAck()
+    // ENVCHANGE database, packet size, collation, begin transaction
+    b.envText(1, "master", "tempdb")
+    b.envText(4, "8192", "4096")
+    var c = bytesOf()
+    c.u8(7)
+    c.u8(5)
+    c.collation(0x0409, 0x01, 52)
+    c.u8(0)
+    b.u8(tds.TK_ENVCHANGE)
+    b.u16(len(c.b))
+    b.raw(c.str())
+    var t = bytesOf()
+    t.u8(8)
+    t.u8(8)
+    t.raw("\x01\x02\x03\x04\x05\x06\x07\x08")
+    t.u8(0)
+    b.u8(tds.TK_ENVCHANGE)
+    b.u16(len(t.b))
+    b.raw(t.str())
+    b.message(tds.TK_INFO, 5701, 2, 10, "Changed database context to 'master'.", 1)
+    // FEATUREEXTACK: UTF8_SUPPORT on
+    b.u8(tds.TK_FEATUREEXTACK)
+    b.u8(0x0A)
+    b.u32(1)
+    b.u8(1)
+    b.u8(0xFF)
+    // COLMETADATA
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(12)
+    b.col("id", tds.T_INTN)
+    b.u8(8)
+    b.name("id")
+    b.col("name", tds.T_NVARCHAR)
+    b.u16(100)
+    b.collation(0x0409, 0x01, 52)
+    b.name("name")
+    b.col("note", tds.T_BIGVARCHR)
+    b.u16(50)
+    b.collation(0x0409, 0x41, 0)          // Latin1_General_100_CI_AS_SC_UTF8
+    b.name("note")
+    b.col("old", tds.T_BIGVARCHR)
+    b.u16(50)
+    b.collation(0x0409, 0x01, 52)          // SQL_Latin1_General_CP1_CI_AS
+    b.name("old")
+    b.col("f", tds.T_FLTN)
+    b.u8(8)
+    b.name("f")
+    b.col("r", tds.T_FLTN)
+    b.u8(4)
+    b.name("r")
+    b.col("b", tds.T_BITN)
+    b.u8(1)
+    b.name("b")
+    b.col("t", tds.T_INT1)
+    b.name("t")
+    b.col("s", tds.T_INTN)
+    b.u8(2)
+    b.name("s")
+    b.col("big", tds.T_NVARCHAR)
+    b.u16(0xFFFF)
+    b.collation(0x0409, 0x01, 52)
+    b.name("big")
+    b.col("bin", tds.T_BIGVARBIN)
+    b.u16(10)
+    b.name("bin")
+    b.col("d", tds.T_DATEN)
+    b.name("d")
+    // ROW 0
+    b.u8(tds.TK_ROW)
+    b.u8(8)
+    b.u64(-5)
+    b.utf16Value("café")
+    b.u16(6)
+    b.raw("naïve")
+    b.u16(4)
+    b.raw("caf\xe9")
+    b.u8(8)
+    b.u64(0x4004000000000000)                // 2.5
+    b.u8(4)
+    b.u32(0x3dcccccd)                        // 0.1f
+    b.u8(1)
+    b.u8(1)
+    b.u8(255)
+    b.u8(2)
+    b.u16(0xfffe)
+    b.u64(-2)                                // PLP: unknown total length
+    b.u32(8)
+    b.utf16("long")
+    b.u32(4)
+    b.utf16("😀")
+    b.u32(8)
+    b.utf16("text")
+    b.u32(0)
+    b.u16(3)
+    b.raw("\x00\x01\xff")
+    b.u8(3)
+    b.raw("\x01\x02\x03")
+    // NBCROW 1: all NULL
+    b.u8(tds.TK_NBCROW)
+    b.u8(0xff)
+    b.u8(0x0f)
+    // NBCROW 2: some NULL (old, r, d), empty strings
+    b.u8(tds.TK_NBCROW)
+    b.u8(0x28)                               // columns 3 and 5
+    b.u8(0x08)                               // column 11
+    b.u8(8)
+    b.u64(9223372036854775807)
+    b.u16(0)
+    b.u16(1)
+    b.raw("x")
+    b.u8(8)
+    b.u64(-9223372036854775807 - 1)          // -0.0
+    b.u8(1)
+    b.u8(0)
+    b.u8(0)
+    b.u8(2)
+    b.u16(0x8000)
+    b.u64(0)                                 // PLP: empty, known length 0
+    b.u32(0)
+    b.u16(0)
+    b.done(tds.TK_DONE, 0x11, 0xC1, 3)
+    b.u8(tds.TK_ORDER)
+    b.u16(2)
+    b.u16(1)
+    b.message(tds.TK_ERROR, 208, 1, 16, "Invalid object name 'nope'.", 3)
+    b.u8(tds.TK_RETURNSTATUS)
+    b.u32(-6)
+    b.done(tds.TK_DONEINPROC, 0x10, 0xC3, 7)
+    b.done(tds.TK_DONE, 0, 0, 0)
+    return b.str()
+}
+
+// A LOGINACK for TDS 7.4 from "Microsoft SQL Server" 17.0.5035.
+pub fn (b: mut &B) loginAck() {
+    var a = bytesOf()
+    a.u8(1)
+    a.raw("\x74\x00\x00\x04")
+    a.bvarchar("Microsoft SQL Server")
+    a.u8(17)
+    a.u8(0)
+    a.u8(5035 >> 8)
+    a.u8(5035 & 0xff)
+    b.u8(tds.TK_LOGINACK)
+    b.u16(len(a.b))
+    b.raw(a.str())
+}
+
+// An ENVCHANGE of text values (database, language, packet size).
+pub fn (b: mut &B) envText(kind: int, newValue: str, oldValue: str) {
+    var e = bytesOf()
+    e.u8(kind)
+    e.bvarchar(newValue)
+    e.bvarchar(oldValue)
+    b.u8(tds.TK_ENVCHANGE)
+    b.u16(len(e.b))
+    b.raw(e.str())
+}
