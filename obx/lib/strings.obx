@@ -153,8 +153,9 @@ pub fn cut(s: &str, sep: &str): Option[Cut] {
     return Some(Cut{before: s[0..i], after: s[i + len(sep)..len(s)]})
 }
 
-// The parts with sep between them.
-pub fn join(parts: &[str], sep: str): str {
+// The parts with sep between them. The parts are views (`&[&str]`): an array of views, or of
+// owned strings (`&names`, read as views, SPEC 4.1), or a slice of either.
+pub fn join(parts: &[&str], sep: str): str {
     var b = newStrBuf()
     for i in 0..len(parts) {
         if i > 0 { b.add(sep) }

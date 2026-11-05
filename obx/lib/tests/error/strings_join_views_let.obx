@@ -1,0 +1,8 @@
+// A typed let reads the array as views, and freezes it while it is used.
+// error: 'names' is borrowed by 'r' and cannot be assigned
+fn main() {
+    var names: []str = [intToStr(1) + "aaaaaaaaaaaaaaaaaaaaaaaa"]
+    let r: &[]&str = &names
+    names = []
+    println(r[0])
+}

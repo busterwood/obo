@@ -180,7 +180,8 @@ insertion point), `lowerBound`, `upperBound`, `find`, `findBy`, `contains`,
 `lastIndexOf`, `indexOfByte`, `count`, `equalFold`, `split(&s, sep):
 []&str`, `splitN(&s, sep, n)` (n < 0: all), `fields(&s): []&str`, `cut(&s,
 sep): Option[Cut]` (`before` and `after` are views), `owned(&pieces): []str`,
-`lines(&text)` and `fieldsIter(&text)`, `join(&parts, sep)`,
+`lines(&text)` and `fieldsIter(&text)`, `join(&parts, sep)` (parts:
+`&[&str]`, views or, read as views, owned strings),
 `replaceAll`, `replaceN`, `trimLeft`, `trimRight`, `trimPrefix`, `trimSuffix`,
 `toUpper`, `toLower` (ASCII), `isLetter`, `isAlnum`; `parseInt(s)` and
 `parseIntBase(s, base)` return `Result[int, ParseError]` (`Empty`,
@@ -194,8 +195,10 @@ its maximal subpart, as Rust's `from_utf8_lossy`), `runes`, `runeCount`,
 combining marks, format and control characters 0).
 Splitting gives views (design/borrow-types.md): the pieces are `&str` views
 of the text, not copies and not counted, and the text is frozen while they
-live (SPEC 10); a piece converts to `str` where one is expected, and
-`owned(&pieces)` keeps a whole array. `lines` and `fieldsIter` are iterators
+live (SPEC 10, until their last use); a piece converts to `str` where one is
+expected, and `owned(&pieces)` keeps a whole array past its text. `join`
+takes the pieces as they are, and an array of owned strings too (`&names` is
+read as `&[]&str`, SPEC 4.1). `lines` and `fieldsIter` are iterators
 for `for x in ...` (a line has no `"\n"`; a final line without one is a line;
 `""` has none). Separators are `&str`, so a literal is passed as it is
 (`strings.split(&line, ",")`). std's `split(s, sep: byte): []str` (the

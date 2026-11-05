@@ -598,6 +598,7 @@ What the rules made awkward:
 - Splitting a temporary (`strings.split(&io.read(p).unwrap(), "\n")` in a
   `for` header) needs the text bound to a `let` first. (Lifted in section 12.2.)
 - `join` takes `&[str]`, so joining views goes through `owned` (or a loop).
+  (Lifted in section 12.4.)
   A `join` over `&[]&str` would need a second function or a generic one.
 - A view does not get a count, but converting it to `str` (an argument of a
   `str` parameter, std's `indexOf`) takes one; strings' own functions use the
@@ -769,3 +770,29 @@ rhs_later, mut_read). Four conformance and compiler error tests that left
 the borrow unused after the conflict now use it after. Callers: srvtest's
 inner block is gone, and srvtest and httptest cut the text again instead of
 slicing it by index.
+
+### 12.4 `join` over views
+
+Chosen: (b) with (a). `strings.join(parts: &[&str], sep: str)` is the one
+function, and a shared borrow or slice of an array of `str` may be used as
+one of views: `&[]str` as `&[]&str`, `&[str]` as `&[&str]` (in `coerce`, and
+for arguments in the call's slice and borrow cases, `strAsView`).
+
+Why it is sound: a shared `&str` is the string's header by value, the same
+16 bytes as a `str` element, so the array is read in place, with no copy and
+no conversion. The views read from it point into strings the array owns, so
+they are rooted where the array is (the borrow's root); the array is frozen
+while they are live, as for any borrow of it. Only shared borrows convert:
+through a `mut &[]&str` a callee could store an uncounted view into an array
+that owns its elements (rejected: "argument 1 of put is mut &[]&str, not
+mut &[]str"). Views are not read as owned strings (`&[]&str` is not a
+`&[]str`): dropping or copying them would take counts nobody holds.
+
+Callers: every existing `join(&strs, sep)` keeps working (an array literal of
+string literals now types as views of static bytes). No caller went through
+`owned` only to join; `owned` stays for keeping pieces past their text.
+Bootstrap note: the compiler calls `join(&rt.RT, ...)` with a `[]str`, so the
+first stage was built with the old signature before the new one.
+
+Tests: lib/tests/run/strings_join_views.obx; lib/tests/error/
+strings_join_views_* (root, mut, back, let).

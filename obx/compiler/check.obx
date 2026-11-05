@@ -1711,9 +1711,20 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
         r.vvar = v.vvar
         return r
     }
+    // a shared borrow of an array of str read as one of views (the same headers, SPEC 4.1): the views
+    // are rooted where the array is, and nothing can be written through it
+    if vk == sema.TK_REF && k == sema.TK_REF && !c.pg.tm(t) && c.pg.tk(c.pg.ta(v.t)) == sema.TK_ARR &&
+        c.pg.tk(c.pg.ta(t)) == sema.TK_ARR && c.strAsView(c.pg.ta(c.pg.ta(v.t)), c.pg.ta(c.pg.ta(t))) {
+        var r = val(v.c, t, v.cat)
+        r.root = v.root
+        r.path = v.path
+        r.vvar = v.vvar
+        return r
+    }
     if k == sema.TK_SLICE {
         let s = c.asSlice(v)
-        if s.t >= 0 && c.pg.ta(s.t) == c.pg.ta(t) && (c.pg.tm(s.t) || !c.pg.tm(t)) {
+        if s.t >= 0 && (c.pg.ta(s.t) == c.pg.ta(t) && (c.pg.tm(s.t) || !c.pg.tm(t)) ||
+            !c.pg.tm(t) && c.strAsView(c.pg.ta(s.t), c.pg.ta(t))) {
             var r = val(s.c, t, s.cat)
             r.root = s.root
             r.path = s.path
@@ -1721,6 +1732,11 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
         }
     }
     c.err(line, what + " is " + c.tstr(v.t) + ", not " + c.tstr(t))
+}
+
+// Elements of type a may be read as elements of type b through a shared borrow: str as &str.
+fn (c: mut &Checker) strAsView(a: int, b: int): bool {
+    return a == sema.T_STR && b == c.pg.mkRef(sema.T_STR, false)
 }
 
 // ((obx_clo){(void*)fn, (void*)env})
@@ -4726,6 +4742,7 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             if pm && !c.pg.tm(sv.t) { c.err(line, what + " needs a mut slice, not " + c.tstr(sv.t)) }
             if pm { c.frozen(sv.root, FR_MUT, line) }
             v = rvAt(sv.c, c.pg.mkSlice(c.pg.ta(sv.t), pm), sv.root, sv.path)
+            if !pm && c.strAsView(c.pg.ta(v.t), c.pg.ta(pt)) { v.t = c.pg.mkSlice(c.pg.ta(pt), false) }
             if !c.pg.unify(c.pg.ta(pt), c.pg.ta(v.t), mut &bind, &tps) {
                 c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
             }
@@ -4741,6 +4758,10 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
                 c.err(line, what + " needs a mut borrow, not " + c.tstr(v.t) + nm)
             }
             v = c.borrow(v, pm, line, isrecv)
+            if !pm && c.pg.tk(c.pg.ta(v.t)) == sema.TK_ARR && c.pg.tk(c.pg.ta(pt)) == sema.TK_ARR &&
+                c.strAsView(c.pg.ta(c.pg.ta(v.t)), c.pg.ta(c.pg.ta(pt))) {
+                v.t = c.pg.mkRef(c.pg.ta(pt), false)
+            }
             if !c.pg.unify(c.pg.ta(pt), c.pg.ta(v.t), mut &bind, &tps) {
                 c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
             }

@@ -188,7 +188,10 @@ length) by value, with no count taken. `&s[a..b]` borrows the bytes `a` to
 is a borrow (sections 4.5 and 10): its root is the root of `s`. A `&str`
 converts to `str` where a `str` is expected (an argument, a stored value),
 which takes a count of the same bytes. `mut &str` borrows a `str` variable or
-field for writing, as for any `T`.
+field for writing, as for any `T`. A shared borrow or slice of an array of
+`str` may be used as one of views (`&[]str` as `&[]&str`, `&[str]` as
+`&[&str]`): the elements are read as views rooted where the array is
+(`strings.join(&names, ",")`). Not the other way, and not through `mut`.
 
 A string literal, or a `str` constant (section 5.2), where a shared `&str` is
 expected (an argument, a typed `let`, a field of a record literal, an

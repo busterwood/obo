@@ -1,0 +1,31 @@
+// strings.join takes views (&[&str]): an array of views joins with no copies, and an array or
+// slice of owned strings is read as views (SPEC 4.1), so neither needs strings.owned first.
+// expect: a-bb-c d
+// expect: x+y+z
+// expect: y/z
+// expect: one, two
+// expect: [a|b]
+// expect: first a
+// expect: 2
+import "strings"
+
+fn firstOf(xs: &[&str]): &str { return xs[0] }
+fn count(xs: &[]&str): int { return len(xs) }
+
+fn main() {
+    let s = "a,,bb,,c d"
+    let views = strings.split(&s, ",,")
+    println(strings.join(&views, "-"))
+    var owned: []str = ["x", "y", "z"]
+    println(strings.join(&owned, "+"))
+    println(strings.join(owned[1..], "/"))
+    println(strings.join(&["one", "two"], ", "))
+    let ab = "a b"
+    var parts: []&str = []
+    for p in strings.split(&ab, " ") { append(mut &parts, p) }
+    println("[" + strings.join(&parts, "|") + "]")
+    let names: []str = ["a", "b"]
+    let f = firstOf(&names)
+    println("first " + f)
+    println(intToStr(count(&names)))
+}
