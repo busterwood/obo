@@ -174,10 +174,15 @@ Observable behaviour is that of rt.h:
   from user space, where it makes the same one. A read costs about 18 ns
   against 240 for the system call (WSL2, clocksource `tsc`).
 
-The heap is the runtime's own: size classes (16-byte steps to 128, then
-+25% steps to 64 KiB) carved from 1 MiB `mmap` chunks with one free list per
-class; larger blocks are their own mappings. Every block has a 16-byte
-header, so blocks are 16-byte aligned as glibc's are. The last large block
+The heap is the runtime's own: size classes (8, 24, 40, ... 120, then
++25% steps to 64 KiB, each 8 bytes short of a multiple of 16) carved from
+1 MiB `mmap` chunks with one free list per class; larger blocks are their
+own mappings. Every block has an 8-byte header (its class, or a large
+block's mapping size) and is 16-byte aligned as glibc's are: a chunk's first
+block starts 8 bytes in, so header and block fill a multiple of 16. A
+70-byte string takes 80 bytes, as with glibc; with the 16-byte header it
+had until 2026-11-05 it took 96, and a Map lookup over 200,000 such keys
+(bench maps) missed the cache on most of them. The last large block
 freed, up to 32 MiB, is kept (not unmapped) and reused by the next large
 `malloc` it fits with at most twice the size asked for: a loop that
 allocates and frees one big array (bench sieve) faults its pages in once,

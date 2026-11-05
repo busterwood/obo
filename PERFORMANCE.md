@@ -42,7 +42,7 @@ host-dependent: use them to compare the columns, not as portable constants.
 | trees | 24 ms | 19 ms | 0.78 | binary trees |
 | tokens | 18 ms | 12 ms | 0.63 | byte scanning and hashing |
 | sieve | 170 ms | 116 ms | 0.68 | the sieve of Eratosthenes to 10 million, ten rounds |
-| maps | 242 ms | 291 ms | 1.20 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
+| maps | 182 ms | 188 ms | 1.03 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
 
 Native fib runs the same 4,305M instructions as after the nineteenth pass,
 in 1,855M cycles instead of the 1,550M it took then: the code placement
@@ -106,6 +106,35 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   `u64`, `u32` or `byte` by a constant below its width is a plain C
   operator (it was a runtime call, which gcc could not fold into a rotate),
   and the native backend emits `rol` for `x << k | x >> (64 - k)`.
+- **Map's index holds a hash tag** (branch `mapfast`). maps went from
+  245 to 182 ms via C and 292 to 188 ms native (bench.py -n 11, the same
+  run; 1.19 to 1.03); under `perf stat` (least cycles, interleaved) via C
+  1,764M instructions and 921M cycles to 1,855M and 675M, native 2,218M and
+  1,153M to 2,151M and 703M. Three changes, each measured alone:
+  - `Map`'s index slots are `u32`, an entry number with 32 - b bits of the
+    mixed hash above it (2^b slots), so a probe skips other keys' slots
+    without loading their entries, and the index is half the size: via C
+    947M to 699M cycles (-26%), native 1,172M to 966M (-18%); more
+    instructions (1,764M to 1,961M via C), fewer misses. A Map now holds at
+    most 2^31 entries (lib/README.md).
+  - `sipKeyedStr` is a plain block loop, its tail one word read (strings of
+    8 bytes or more) and its last rounds written out: via C 685M to 646M
+    cycles (-5.7%), native 962M to 939M; 60-byte keys hashed natively 502M
+    to 415M.
+  - The native heap's block header is 8 bytes, not 16, and its classes
+    16k + 8 bytes, so a 64-byte string with its header fills 72 bytes, not
+    80 (design/native.md, the heap): native maps 926M to 709M cycles
+    (-23%; its long keys had missed the cache four times as often as C's),
+    alloc -1.5% instructions.
+  Tried and dropped (cycles within the noise, under 3%): `str`'s `eq` and
+  `hash` taking `&str` (no copy on a lookup; -44M instructions via C, -49M
+  native); the native backend computing `x = x op y` and rotates of a
+  register local in place (a SipHash round 14 instructions, not 26; native
+  maps 2,151M to 1,923M instructions but 703M to 701M cycles, the hash of
+  60-byte keys -6% cycles; reverted, kept in history); scaled indexes by
+  `lea`/`shl` instead of `imul`, and no range check on `x >> (n & 63)`
+  (-30M instructions via C, -8M native). The probes wait on memory: what
+  is left is the misses on the keys' strings and the entries.
 - **Code placement matters.** Native fib runs at 1,547M, 1,690M or 2,020M
   cycles with identical instructions, depending only on where its code
   falls relative to 64-byte boundaries. The generated code starts at a
