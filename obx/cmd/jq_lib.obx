@@ -1,0 +1,1930 @@
+// jq_lib: the value operations of cmd/jq.obx: indexing, paths, arithmetic,
+// the C-implemented builtins of jq 1.7.1 (formats, dates, math, regular
+// expressions), and jq's error messages for them. Nothing here evaluates jq
+// code; jq_eval does.
+//
+// The error texts and edge cases follow jq 1.7.1 (jq is MIT licensed,
+// Copyright (C) 2012 Stephen Dolan; see NOTICE). jqParseError follows the
+// state machine of jq's src/jv_parse.c to report a JSON text's first error
+// with jq's message, line and column.
+import "json"
+import "regex"
+import "time"
+import "collections"
+
+pub type J = json.Json
+
+// ---------------------------------------------------------------- basics
+
+pub fn typeName(j: &J): str {
+    match j {
+        json.Json.Null { return "null" }
+        json.Json.Bool(_) { return "boolean" }
+        json.Json.Num(_) { return "number" }
+        json.Json.Str(_) { return "string" }
+        json.Json.Arr(_) { return "array" }
+        json.Json.Obj(_) { return "object" }
+    }
+}
+
+pub fn isNum(j: &J): bool { return j.kind() == json.Kind.Number }
+pub fn isStr(j: &J): bool { return j.kind() == json.Kind.String }
+
+pub fn numVal(j: &J): float {
+    match j.asFloat() {
+        Some(f) { return f }
+        None { return 0.0 }
+    }
+}
+
+pub fn strVal(j: &J): str {
+    match j.asStr() {
+        Some(s) { return s }
+        None { return "" }
+    }
+}
+
+pub fn num(f: float): J { return json.number(f) }
+pub fn int2j(n: int): J { return json.integer(n) }
+
+pub fn truthy(j: &J): bool {
+    match j {
+        json.Json.Null { return false }
+        json.Json.Bool(b) { return b }
+        else { return true }
+    }
+}
+
+pub fn jqOpts(): json.WriteOptions {
+    var o = json.compact()
+    o.jqNumbers = true
+    return o
+}
+
+// jq's compact text of a value (jv_dump_string with no flags).
+pub fn dump(j: &J): str { return json.write(j, &jqOpts()) }
+
+// jv_dump_string_trunc: at most size-1 bytes, the last three "..." when cut.
+pub fn dumpTrunc(j: &J, size: int): str {
+    let s = dump(j)
+    // jq copies with strncpy, which stops at a NUL byte
+    var n = len(s)
+    for i in 0..len(s) {
+        if s[i] == 0 {
+            n = i
+            break
+        }
+    }
+    if n > size - 1 { return s[..size - 4] + "..." }
+    return s[..n]
+}
+
+// "number (1)": the kind and the truncated value, as jq's type_error.
+pub fn typeErr(j: &J, msg: str): str { return typeName(j) + " (" + dumpTrunc(j, 15) + ") " + msg }
+
+pub fn typeErr2(a: &J, b: &J, msg: str): str {
+    return typeName(a) + " (" + dumpTrunc(a, 15) + ") and " + typeName(b) + " (" + dumpTrunc(b, 15) + ") " + msg
+}
+
+pub fn tostring(j: &J): str {
+    match j {
+        json.Json.Str(s) { return s }
+        else { return dump(j) }
+    }
+}
+
+// The number of code points of valid UTF-8.
+pub fn cpLen(s: &str): int {
+    var n = 0
+    for i in 0..len(s) {
+        if (s[i] & 0xC0) != 0x80 { n += 1 }
+    }
+    return n
+}
+
+// The byte offset of code point i (len(s) past the end).
+pub fn cpOffset(s: &str, i: int): int {
+    var n = 0
+    var b = 0
+    while b < len(s) {
+        if (s[b] & 0xC0) != 0x80 {
+            if n == i { return b }
+            n += 1
+        }
+        b += 1
+    }
+    return len(s)
+}
+
+fn clampInt(f: float): int {
+    if f != f { return 0 }
+    if f < -2147483648.0 { return -2147483648 }
+    if f > 2147483647.0 { return 2147483647 }
+    return int(f.trunc())
+}
+
+// ---------------------------------------------------------------- length, keys, has
+
+pub fn length(j: &J): Result[J, str] {
+    match j {
+        json.Json.Null { return Ok(int2j(0)) }
+        json.Json.Bool(_) { return Err(typeErr(j, "has no length")) }
+        json.Json.Num(n) {
+            // jq: fabs of the double
+            return Ok(num(n.toFloat().abs()))
+        }
+        json.Json.Str(s) { return Ok(int2j(cpLen(&s))) }
+        else { return Ok(int2j(j.size())) }
+    }
+}
+
+pub fn keys(j: &J, sorted: bool): Result[J, str] {
+    if j.isObject() {
+        var ks = j.keys()
+        if sorted { sort(mut &ks) }
+        return Ok(json.strings(&ks))
+    }
+    if j.isArray() {
+        var out: []J = []
+        for i in 0..j.size() { append(mut &out, int2j(i)) }
+        return Ok(json.arrayOf(out))
+    }
+    return Err(typeErr(j, "has no keys"))
+}
+
+pub fn has(t: &J, k: &J): Result[J, str] {
+    if t.isObject() && isStr(k) { return Ok(json.boolean(t.has(strVal(k)))) }
+    if t.isArray() && isNum(k) {
+        let f = numVal(k)
+        if f != f { return Ok(json.boolean(false)) }
+        let i = clampInt(f)
+        return Ok(json.boolean(i >= 0 && i < t.size()))
+    }
+    return Err("Cannot check whether " + typeName(t) + " has a " + typeName(k) + " key")
+}
+
+// ---------------------------------------------------------------- indexing
+
+// jv_get: t[k].
+pub fn index(t: &J, k: &J): Result[J, str] {
+    match t {
+        json.Json.Obj(_) {
+            match k {
+                json.Json.Str(s) { return Ok(t.field(s)) }
+                else {}
+            }
+        }
+        json.Json.Arr(_) {
+            match k {
+                json.Json.Num(n) {
+                    if n.toFloat() != n.toFloat() { return Ok(json.null()) }
+                    var i = clampInt(n.toFloat())
+                    if i < 0 { i += t.size() }
+                    if i < 0 || i >= t.size() { return Ok(json.null()) }
+                    return Ok(t.item(i))
+                }
+                json.Json.Obj(_) { return sliceObj(t, k) }
+                json.Json.Arr(_) { return Ok(indexes(t, k)) }
+                else {}
+            }
+        }
+        json.Json.Str(_) {
+            match k {
+                json.Json.Obj(_) { return sliceObj(t, k) }
+                else {}
+            }
+        }
+        json.Json.Null {
+            let kk = k.kind()
+            if kk == json.Kind.String || kk == json.Kind.Number || kk == json.Kind.Object { return Ok(json.null()) }
+        }
+        else {}
+    }
+    match k {
+        json.Json.Str(s) {
+            if len(s) < 30 { return Err("Cannot index " + typeName(t) + " with string \"" + s + "\"") }
+        }
+        else {}
+    }
+    return Err("Cannot index " + typeName(t) + " with " + typeName(k))
+}
+
+fn sliceObj(t: &J, k: &J): Result[J, str] { return slice(t, &k.field("start"), &k.field("end")) }
+
+// The start and end of a slice of a sequence of n items, as parse_slice.
+pub type Span = value record {
+    pub start: int
+    pub end: int
+}
+
+pub fn sliceSpan(n: int, from: &J, to: &J): Result[Span, str] {
+    var fj = from.clone()
+    var tj = to.clone()
+    if fj.isNull() { fj = int2j(0) }
+    if tj.isNull() { tj = int2j(n) }
+    if !isNum(&fj) || !isNum(&tj) { return Err("Array/string slice indices must be integers") }
+    var ds = numVal(&fj)
+    var de = numVal(&tj)
+    let fl = float(n)
+    if ds != ds { ds = 0.0 }
+    if ds < 0.0 { ds += fl }
+    if ds < 0.0 { ds = 0.0 }
+    if ds > fl { ds = fl }
+    let start = clampInt(ds)
+    if de != de { de = fl }
+    if de < 0.0 { de += fl }
+    if de < 0.0 { de = float(start) }
+    var end = clampInt(de)
+    if end > n { end = n }
+    if end < n && float(end) < de { end += 1 }
+    if end < start { end = start }
+    return Ok(Span{start: start, end: end})
+}
+
+pub fn slice(t: &J, from: &J, to: &J): Result[J, str] {
+    match t {
+        json.Json.Null { return Ok(json.null()) }
+        json.Json.Arr(_) {
+            let sp = try sliceSpan(t.size(), from, to)
+            var out: []J = []
+            for i in sp.start..sp.end { append(mut &out, t.item(i)) }
+            return Ok(json.arrayOf(out))
+        }
+        json.Json.Str(s) {
+            let sp = try sliceSpan(cpLen(&s), from, to)
+            return Ok(json.string(s[cpOffset(&s, sp.start)..cpOffset(&s, sp.end)]))
+        }
+        else {}
+    }
+    return Err("Cannot index " + typeName(t) + " with object")
+}
+
+// jv_array_indexes: where the array b occurs in a.
+pub fn indexes(a: &J, b: &J): J {
+    let xs = a.items()
+    let ys = b.items()
+    var out: []J = []
+    if len(ys) == 0 { return json.null() }
+    var i = 0
+    while i + len(ys) <= len(xs) {
+        var ok = true
+        for k in 0..len(ys) {
+            if !xs[i + k].eq(&ys[k]) {
+                ok = false
+                break
+            }
+        }
+        if ok { append(mut &out, int2j(i)) }
+        i += 1
+    }
+    return json.arrayOf(out)
+}
+
+// ---------------------------------------------------------------- paths
+
+// jv_set: t with t[k] = v.
+pub fn setKey(t: J, k: &J, v: J): Result[J, str] {
+    let isnull = t.isNull()
+    match k {
+        json.Json.Str(s) {
+            if t.isObject() || isnull {
+                var o = if isnull { json.object() } else { t }
+                o.set(s, v)
+                return Ok(o)
+            }
+        }
+        json.Json.Num(n) {
+            if t.isArray() || isnull {
+                if n.toFloat() != n.toFloat() { return Err("Cannot set array element at NaN index") }
+                var a = if isnull { json.emptyArray() } else { t }
+                var i = clampInt(n.toFloat())
+                if i < 0 { i += a.size() }
+                if i < 0 { return Err("Out of bounds negative array index") }
+                if i > 536870912 { return Err("Array index too large") }
+                while a.size() < i { a.push(json.null()) }
+                if i == a.size() {
+                    a.push(v)
+                } else {
+                    a.setAt(i, v)
+                }
+                return Ok(a)
+            }
+        }
+        json.Json.Obj(_) {
+            if t.isArray() || isnull {
+                let a = if isnull { json.emptyArray() } else { t }
+                let sp = try sliceSpan(a.size(), &k.field("start"), &k.field("end"))
+                if !v.isArray() { return Err("A slice of an array can only be assigned another array") }
+                var out: []J = []
+                for i in 0..sp.start { append(mut &out, a.item(i)) }
+                for x in v.items() { append(mut &out, x.clone()) }
+                for i in sp.end..a.size() { append(mut &out, a.item(i)) }
+                return Ok(json.arrayOf(out))
+            }
+            if t.kind() == json.Kind.String { return Err("Cannot update string slices") }
+        }
+        else {}
+    }
+    return Err("Cannot update field at " + typeName(k) + " index of " + typeName(&t))
+}
+
+pub fn getpath(t: &J, path: &J): Result[J, str] {
+    if !path.isArray() { return Err("Path must be specified as an array") }
+    var cur = t.clone()
+    for k in path.items() {
+        if cur.isNull() { return Ok(json.null()) }
+        cur = try index(&cur, &k)
+    }
+    return Ok(cur)
+}
+
+// jv_setpath, consuming root so an unshared value is changed in place.
+pub fn setpath(root: J, path: &J, v: J): Result[J, str] {
+    if !path.isArray() { return Err("Path must be specified as an array") }
+    return setpathFrom(root, path, 0, v)
+}
+
+fn setpathFrom(root: J, path: &J, i: int, v: J): Result[J, str] {
+    if i >= path.size() { return Ok(v) }
+    let k = path.item(i)
+    if k.isObject() {
+        let sub = try index(&root, &k)
+        let nv = try setpathFrom(sub, path, i + 1, v)
+        return setKey(root, &k, nv)
+    }
+    let sub = try index(&root, &k)
+    // drop root's reference to the child first, so the child is unshared
+    var r = root
+    if i + 1 < path.size() && (sub.isArray() || sub.isObject()) {
+        r = try setKey(r, &k, json.null())
+    }
+    let nv = try setpathFrom(sub, path, i + 1, v)
+    return setKey(r, &k, nv)
+}
+
+pub fn delpaths(t: J, paths: &J): Result[J, str] {
+    if !paths.isArray() { return Err("Paths must be specified as an array") }
+    var ps = paths.items()
+    sortJson(mut &ps)
+    for p in ps {
+        if !p.isArray() { return Err("Path must be specified as array, not " + typeName(&p)) }
+    }
+    if len(ps) == 0 { return Ok(t) }
+    if ps[0].size() == 0 { return Ok(json.null()) }
+    return delSorted(t, &ps, 0, len(ps), 0)
+}
+
+fn delSorted(obj: J, ps: &[]J, from: int, to: int, depth: int): Result[J, str] {
+    var o = obj
+    var delkeys: []J = []
+    var i = from
+    while i < to {
+        let key = ps[i].item(depth)
+        let whole = ps[i].size() == depth + 1
+        var j = i
+        while j < to && ps[j].item(depth).eq(&key) { j += 1 }
+        if whole {
+            append(mut &delkeys, key)
+        } else {
+            let sub = try index(&o, &key)
+            if !sub.isNull() {
+                let nsub = try delSorted(sub, ps, i, j, depth + 1)
+                o = try setKey(o, &key, nsub)
+            }
+        }
+        i = j
+    }
+    return dels(o, &delkeys)
+}
+
+// jv_dels: delete keys (sorted) from t.
+fn dels(t: J, keys: &[]J): Result[J, str] {
+    if t.isNull() || len(keys) == 0 { return Ok(t) }
+    if t.isArray() {
+        let n = t.size()
+        var del = array(n, false)
+        for k in keys {
+            match k {
+                json.Json.Num(x) {
+                    var i = clampInt(x.toFloat())
+                    if i < 0 { i += n }
+                    if i >= 0 && i < n { del[i] = true }
+                }
+                json.Json.Obj(_) {
+                    let sp = try sliceSpan(n, &k.field("start"), &k.field("end"))
+                    for i in sp.start..sp.end { del[i] = true }
+                }
+                else { return Err("Cannot delete " + typeName(&k) + " element of array") }
+            }
+        }
+        var out: []J = []
+        let items = t.items()
+        for i in 0..n {
+            if !del[i] { append(mut &out, items[i].clone()) }
+        }
+        return Ok(json.arrayOf(out))
+    }
+    if t.isObject() {
+        var o = t
+        for k in keys {
+            match k {
+                json.Json.Str(s) { let r = o.remove(s) }
+                else { return Err("Cannot delete " + typeName(&k) + " field of object") }
+            }
+        }
+        return Ok(o)
+    }
+    return Err("Cannot delete fields from " + typeName(&t))
+}
+
+// ---------------------------------------------------------------- arithmetic
+
+pub fn add(a: &J, b: &J): Result[J, str] {
+    if a.isNull() { return Ok(b.clone()) }
+    if b.isNull() { return Ok(a.clone()) }
+    match a {
+        json.Json.Num(x) {
+            match b {
+                json.Json.Num(y) { return Ok(num(x.toFloat() + y.toFloat())) }
+                else {}
+            }
+        }
+        json.Json.Str(x) {
+            match b {
+                json.Json.Str(y) { return Ok(json.string(x + y)) }
+                else {}
+            }
+        }
+        json.Json.Arr(_) {
+            if b.isArray() {
+                var r = a.clone()
+                r.extend(b)
+                return Ok(r)
+            }
+        }
+        json.Json.Obj(_) {
+            if b.isObject() {
+                var r = a.clone()
+                for i in 0..b.size() { r.set(b.keyAt(i), b.valueAt(i)) }
+                return Ok(r)
+            }
+        }
+        else {}
+    }
+    return Err(typeErr2(a, b, "cannot be added"))
+}
+
+// a + b where a is owned: arrays, strings and objects grow in place when
+// nothing else holds them.
+pub fn addOwned(a: J, b: &J): Result[J, str] {
+    if a.isArray() && b.isArray() {
+        var r = a
+        r.extend(b)
+        return Ok(r)
+    }
+    if a.isObject() && b.isObject() {
+        var r = a
+        for i in 0..b.size() { r.set(b.keyAt(i), b.valueAt(i)) }
+        return Ok(r)
+    }
+    return add(&a, b)
+}
+
+pub fn sub(a: &J, b: &J): Result[J, str] {
+    if isNum(a) && isNum(b) { return Ok(num(numVal(a) - numVal(b))) }
+    if a.isArray() && b.isArray() {
+        let ys = b.items()
+        var out: []J = []
+        for x in a.items() {
+            var keep = true
+            for y in ys {
+                if x.eq(&y) {
+                    keep = false
+                    break
+                }
+            }
+            if keep { append(mut &out, x.clone()) }
+        }
+        return Ok(json.arrayOf(out))
+    }
+    return Err(typeErr2(a, b, "cannot be subtracted"))
+}
+
+pub fn mul(a: &J, b: &J): Result[J, str] {
+    if isNum(a) && isNum(b) { return Ok(num(numVal(a) * numVal(b))) }
+    if (isStr(a) && isNum(b)) || (isNum(a) && isStr(b)) {
+        let s = if isStr(a) { strVal(a) } else { strVal(b) }
+        let d = if isNum(a) { numVal(a) } else { numVal(b) }
+        if d < 0.0 || d != d { return Ok(json.null()) }
+        let n = clampInt(d)
+        var buf = newStrBuf()
+        for i in 0..n { buf.add(s) }
+        return Ok(json.string(buf.toStr()))
+    }
+    if a.isObject() && b.isObject() { return Ok(deepMerge(a, b)) }
+    return Err(typeErr2(a, b, "cannot be multiplied"))
+}
+
+fn deepMerge(a: &J, b: &J): J {
+    var r = a.clone()
+    for i in 0..b.size() {
+        let k = b.keyAt(i)
+        let bv = b.valueAt(i)
+        let av = r.field(k)
+        if av.isObject() && bv.isObject() {
+            r.set(k, deepMerge(&av, &bv))
+        } else {
+            r.set(k, bv)
+        }
+    }
+    return r
+}
+
+pub fn div(a: &J, b: &J): Result[J, str] {
+    if isNum(a) && isNum(b) {
+        if numVal(b) == 0.0 { return Err(typeErr2(a, b, "cannot be divided because the divisor is zero")) }
+        return Ok(num(numVal(a) / numVal(b)))
+    }
+    if isStr(a) && isStr(b) { return Ok(splitStr(strVal(a), strVal(b))) }
+    return Err(typeErr2(a, b, "cannot be divided"))
+}
+
+fn dtoi(f: float): int {
+    if f < -9223372036854775808.0 { return -9223372036854775807 - 1 }
+    if f >= 9223372036854775808.0 { return 9223372036854775807 }
+    return int(f.trunc())
+}
+
+pub fn modulo(a: &J, b: &J): Result[J, str] {
+    if isNum(a) && isNum(b) {
+        let na = numVal(a)
+        let nb = numVal(b)
+        if na != na || nb != nb {
+            let z: float = 0.0
+            return Ok(num(z / z))
+        }
+        let bi = dtoi(nb)
+        if bi == 0 { return Err(typeErr2(a, b, "cannot be divided (remainder) because the divisor is zero")) }
+        if bi == -1 { return Ok(int2j(0)) }
+        return Ok(int2j(dtoi(na) % bi))
+    }
+    return Err(typeErr2(a, b, "cannot be divided (remainder)"))
+}
+
+pub fn negate(a: &J): Result[J, str] {
+    if isNum(a) { return Ok(num(-numVal(a))) }
+    return Err(typeErr(a, "cannot be negated"))
+}
+
+pub fn compare(op: int, a: &J, b: &J): bool {
+    let c = a.cmp(b)
+    if op == 6 { return c == 0 }
+    if op == 7 { return c != 0 }
+    if op == 8 { return c < 0 }
+    if op == 9 { return c <= 0 }
+    if op == 10 { return c > 0 }
+    return c >= 0
+}
+
+// ---------------------------------------------------------------- strings
+
+pub fn splitStr(s: str, sep: str): J {
+    var out: []J = []
+    if len(s) == 0 { return json.arrayOf(out) }
+    if len(sep) == 0 {
+        // jq 1.7.1 splits into code points
+        var i = 0
+        while i < len(s) {
+            var e = i + 1
+            while e < len(s) && (s[e] & 0xC0) == 0x80 { e += 1 }
+            append(mut &out, json.string(s[i..e]))
+            i = e
+        }
+        return json.arrayOf(out)
+    }
+    var start = 0
+    while true {
+        let at = indexOf(s, sep, start)
+        if at < 0 { break }
+        append(mut &out, json.string(s[start..at]))
+        start = at + len(sep)
+    }
+    append(mut &out, json.string(s[start..]))
+    return json.arrayOf(out)
+}
+
+pub fn explode(s: &str): J {
+    var out: []J = []
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        var cp = int(c)
+        var n = 1
+        if c >= 0xF0 {
+            cp = int(c) & 0x07
+            n = 4
+        } else if c >= 0xE0 {
+            cp = int(c) & 0x0F
+            n = 3
+        } else if c >= 0xC0 {
+            cp = int(c) & 0x1F
+            n = 2
+        }
+        for k in 1..n {
+            if i + k < len(s) { cp = (cp << 6) | (int(s[i + k]) & 0x3F) }
+        }
+        append(mut &out, int2j(cp))
+        i += n
+    }
+    return json.arrayOf(out)
+}
+
+pub fn implode(a: &J): Result[J, str] {
+    if !a.isArray() { return Err("implode input must be an array") }
+    var b = newStrBuf()
+    for x in a.items() {
+        if !isNum(&x) { return Err("Unicode codepoint must be numeric") }
+        let f = numVal(&x)
+        var cp = clampInt(f)
+        if cp > 0x10FFFF || cp < 0 || (cp >= 0xD800 && cp <= 0xDFFF) { cp = 0xFFFD }
+        json.addCodePoint(mut &b, cp)
+    }
+    return Ok(json.string(b.toStr()))
+}
+
+// _strindices: byte offsets of sub in s, as code point offsets (jq 1.7.1
+// reports byte offsets).
+pub fn strIndices(s: str, sub: str): J {
+    var out: []J = []
+    if len(sub) == 0 { return json.null() }
+    var i = 0
+    while true {
+        let at = indexOf(s, sub, i)
+        if at < 0 { break }
+        append(mut &out, int2j(at))
+        i = at + 1
+    }
+    return json.arrayOf(out)
+}
+
+pub fn contains(a: &J, b: &J): bool {
+    if a.isObject() && b.isObject() {
+        for i in 0..b.size() {
+            let k = b.keyAt(i)
+            match a.get(k) {
+                Some(av) {
+                    if !contains(&av, &b.valueAt(i)) { return false }
+                }
+                None { return false }
+            }
+        }
+        return true
+    }
+    if a.isArray() && b.isArray() {
+        let xs = a.items()
+        for y in b.items() {
+            var found = false
+            for x in xs {
+                if contains(&x, &y) {
+                    found = true
+                    break
+                }
+            }
+            if !found { return false }
+        }
+        return true
+    }
+    if isStr(a) && isStr(b) { return indexOf(strVal(a), strVal(b), 0) >= 0 }
+    return a.eq(b)
+}
+
+pub fn asciiCase(s: str, upper: bool): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        let c = s[i]
+        if upper && c >= 'a' && c <= 'z' {
+            b.addByte(c - 32)
+        } else if !upper && c >= 'A' && c <= 'Z' {
+            b.addByte(c + 32)
+        } else {
+            b.addByte(c)
+        }
+    }
+    return b.toStr()
+}
+
+// ---------------------------------------------------------------- sorting
+
+// A stable sort in jq's order.
+pub fn sortJson(xs: mut &[]J) { collections.sortBy(xs, fn(a, b) { return a.cmp(b) }) }
+
+// ---------------------------------------------------------------- JSON text
+
+// jq's JSON reader for one value (fromjson, tonumber): jq's messages.
+pub fn parseOne(s: str): Result[J, str] {
+    var o = json.parseOptions()
+    o.lenient = true
+    o.maxDepth = 256
+    var d = json.decoderWith(s, o)
+    let r1 = d.next()
+    match move(r1) {
+        Ok(first) {
+            match move(first) {
+                Some(v) {
+                    match d.next() {
+                        Ok(second) {
+                            if second.isSome() { return Err("Unexpected extra JSON values (while parsing '" + s + "')") }
+                            return Ok(v)
+                        }
+                        Err(e) { return Err(jqParseError(s, 0) + " (while parsing '" + s + "')") }
+                    }
+                }
+                None { return Err("Expected JSON value (while parsing '" + s + "')") }
+            }
+        }
+        Err(e) { return Err(jqParseError(s, 0) + " (while parsing '" + s + "')") }
+    }
+}
+
+// The state of jq's JSON reader (jv_parse.c), enough to find its first
+// error: the open containers and whether a value is pending.
+type PState = record {
+    stack: []int       // 1 an array, 2 an object, 3 a key (string) waiting for its value
+    lens: []int        // elements or keys so far, per container
+    next: int          // 0 none, 1 a string, 2 another value
+    line: int
+    column: int
+    token: StrBuf
+}
+
+// The first error jq would report reading s from offset start, with its
+// line and column ("Invalid literal at line 1, column 5"); "" if none.
+pub fn jqParseError(s: str, start: int): str {
+    var p = PState{stack: [], lens: [], next: 0, line: 1, column: 0, token: newStrBuf()}
+    // jq counts lines and columns from the start of the input
+    for i in 0..start {
+        p.column += 1
+        if s[i] == '\n' {
+            p.line += 1
+            p.column = 0
+        }
+    }
+    var i = start
+    var inString = false
+    var strStart = 0
+    var escape = false
+    while i < len(s) {
+        let ch = s[i]
+        p.column += 1
+        if ch == '\n' {
+            p.line += 1
+            p.column = 0
+        }
+        if inString {
+            if ch == '"' && !escape {
+                let m = foundString(s[strStart..i])
+                if len(m) > 0 { return at(&p, m) }
+                if p.next != 0 { return at(&p, "Expected separator between values") }
+                p.next = 1
+                inString = false
+                checkDone(mut &p)
+            } else {
+                escape = ch == '\\' && !escape
+            }
+            i += 1
+            continue
+        }
+        let ws = ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+        let structure = ch == '[' || ch == ',' || ch == ']' || ch == '{' || ch == ':' || ch == '}'
+        if ws || structure || ch == '"' {
+            let m = checkLiteral(mut &p)
+            if len(m) > 0 { return at(&p, m) }
+            checkDone(mut &p)
+        }
+        if ch == '"' {
+            inString = true
+            escape = false
+            strStart = i + 1
+        } else if structure {
+            let m = token(mut &p, ch)
+            if len(m) > 0 { return at(&p, m) }
+            checkDone(mut &p)
+        } else if !ws {
+            p.token.addByte(ch)
+        }
+        i += 1
+    }
+    if inString { return "Unfinished string at EOF at line " + intToStr(p.line) + ", column " + intToStr(p.column) }
+    let m = checkLiteral(mut &p)
+    if len(m) > 0 { return m + " at EOF at line " + intToStr(p.line) + ", column " + intToStr(p.column) }
+    if len(p.stack) > 0 { return "Unfinished JSON term at EOF at line " + intToStr(p.line) + ", column " + intToStr(p.column) }
+    return ""
+}
+
+fn at(p: &PState, m: str): str { return m + " at line " + intToStr(p.line) + ", column " + intToStr(p.column) }
+
+fn checkDone(p: mut &PState) {
+    if len(p.stack) == 0 && p.next != 0 { p.next = 0 }
+}
+
+fn checkLiteral(p: mut &PState): str {
+    if p.token.size() == 0 { return "" }
+    let t = p.token.toStr()
+    p.token.clear()
+    var pattern = ""
+    if t[0] == 't' { pattern = "true" }
+    if t[0] == 'f' { pattern = "false" }
+    if t[0] == 'n' && len(t) > 1 && t[1] == 'u' { pattern = "null" }
+    if t == "n" { pattern = "" }
+    if len(pattern) > 0 {
+        if t != pattern { return "Invalid literal" }
+    } else {
+        if json.lenientNumber(t).isNone() { return "Invalid numeric literal" }
+    }
+    if p.next != 0 { return "Expected separator between values" }
+    p.next = 2
+    return ""
+}
+
+fn top(p: &PState): int { return if len(p.stack) == 0 { 0 } else { p.stack[len(p.stack) - 1] } }
+
+fn token(p: mut &PState, ch: byte): str {
+    if ch == '[' || ch == '{' {
+        if len(p.stack) >= 256 { return "Exceeds depth limit for parsing" }
+        if p.next != 0 { return "Expected separator between values" }
+        append(mut &p.stack, if ch == '[' { 1 } else { 2 })
+        append(mut &p.lens, 0)
+        return ""
+    }
+    if ch == ':' {
+        if p.next == 0 { return "Expected string key before ':'" }
+        if top(p) != 2 { return "':' not as part of an object" }
+        if p.next != 1 { return "Object keys must be strings" }
+        append(mut &p.stack, 3)
+        append(mut &p.lens, 0)
+        p.next = 0
+        return ""
+    }
+    if ch == ',' {
+        if p.next == 0 { return "Expected value before ','" }
+        if len(p.stack) == 0 { return "',' not as part of an object or array" }
+        let t = top(p)
+        if t == 1 {
+            p.lens[len(p.lens) - 1] += 1
+            p.next = 0
+        } else if t == 3 {
+            pop(mut &p.stack)
+            pop(mut &p.lens)
+            p.lens[len(p.lens) - 1] += 1
+            p.next = 0
+        } else {
+            return "Objects must consist of key:value pairs"
+        }
+        return ""
+    }
+    if ch == ']' {
+        if top(p) != 1 { return "Unmatched ']'" }
+        if p.next != 0 {
+            p.next = 0
+        } else if p.lens[len(p.lens) - 1] != 0 {
+            return "Expected another array element"
+        }
+        pop(mut &p.stack)
+        pop(mut &p.lens)
+        p.next = 2
+        return ""
+    }
+    // '}'
+    if len(p.stack) == 0 { return "Unmatched '}'" }
+    if p.next != 0 {
+        if top(p) != 3 { return "Objects must consist of key:value pairs" }
+        pop(mut &p.stack)
+        pop(mut &p.lens)
+        p.lens[len(p.lens) - 1] += 1
+        p.next = 0
+    } else {
+        if top(p) != 2 { return "Unmatched '}'" }
+        if p.lens[len(p.lens) - 1] != 0 { return "Expected another key-value pair" }
+    }
+    pop(mut &p.stack)
+    pop(mut &p.lens)
+    p.next = 2
+    return ""
+}
+
+fn hexv(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+fn unhex4(s: &str, i: int): int {
+    var r = 0
+    for k in 0..4 {
+        let v = hexv(s[i + k])
+        if v < 0 { return -1 }
+        r = r * 16 + v
+    }
+    return r
+}
+
+fn foundString(s: str): str {
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        i += 1
+        if c == '\\' {
+            if i >= len(s) { return "Expected escape character at end of string" }
+            let e = s[i]
+            i += 1
+            if e == 'u' {
+                if i + 4 > len(s) { return "Invalid \\uXXXX escape" }
+                let h = unhex4(&s, i)
+                if h < 0 { return "Invalid characters in \\uXXXX escape" }
+                i += 4
+                if h >= 0xD800 && h <= 0xDBFF {
+                    if i + 6 > len(s) || s[i] != '\\' || s[i + 1] != 'u' { return "Invalid \\uXXXX\\uXXXX surrogate pair escape" }
+                    let lo = unhex4(&s, i + 2)
+                    if !(lo >= 0xDC00 && lo <= 0xDFFF) { return "Invalid \\uXXXX\\uXXXX surrogate pair escape" }
+                    i += 6
+                }
+            } else if !(e == '\\' || e == '"' || e == '/' || e == 'b' || e == 'f' || e == 't' || e == 'n' || e == 'r') {
+                return "Invalid escape"
+            }
+        } else if c < 0x20 {
+            return "Invalid string: control characters from U+0000 through U+001F must be escaped"
+        }
+    }
+    return ""
+}
+
+// ---------------------------------------------------------------- formats
+
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+fn csvRow(j: &J, tsv: bool): Result[str, str] {
+    var b = newStrBuf()
+    var first = true
+    for x in j.items() {
+        if !first { b.add(if tsv { "\t" } else { "," }) }
+        first = false
+        match x {
+            json.Json.Null {}
+            json.Json.Bool(v) { b.add(if v { "true" } else { "false" }) }
+            json.Json.Num(_) { b.add(dump(&x)) }
+            json.Json.Str(s) {
+                if tsv {
+                    for i in 0..len(s) {
+                        let c = s[i]
+                        if c == '\\' {
+                            b.add("\\\\")
+                        } else if c == '\t' {
+                            b.add("\\t")
+                        } else if c == '\r' {
+                            b.add("\\r")
+                        } else if c == '\n' {
+                            b.add("\\n")
+                        } else {
+                            b.addByte(c)
+                        }
+                    }
+                } else {
+                    b.addByte('"')
+                    for i in 0..len(s) {
+                        if s[i] == '"' { b.addByte('"') }
+                        b.addByte(s[i])
+                    }
+                    b.addByte('"')
+                }
+            }
+            else { return Err(typeErr(&x, "is not valid in a csv row")) }
+        }
+    }
+    return Ok(b.toStr())
+}
+
+fn unreserved(c: byte): bool {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~'
+}
+
+fn shQuote(x: &J): Result[str, str] {
+    match x {
+        json.Json.Str(s) {
+            var b = newStrBuf()
+            b.addByte('\'')
+            for i in 0..len(s) {
+                if s[i] == '\'' {
+                    b.add("'\\''")
+                } else {
+                    b.addByte(s[i])
+                }
+            }
+            b.addByte('\'')
+            return Ok(b.toStr())
+        }
+        json.Json.Arr(_) { return Err(typeErr(x, "can not be escaped for shell")) }
+        json.Json.Obj(_) { return Err(typeErr(x, "can not be escaped for shell")) }
+        else { return Ok(dump(x)) }
+    }
+}
+
+pub fn base64Encode(s: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i + 3 <= len(s) {
+        let n = (int(s[i]) << 16) | (int(s[i + 1]) << 8) | int(s[i + 2])
+        b.addByte(B64[(n >> 18) & 63])
+        b.addByte(B64[(n >> 12) & 63])
+        b.addByte(B64[(n >> 6) & 63])
+        b.addByte(B64[n & 63])
+        i += 3
+    }
+    let rest = len(s) - i
+    if rest == 1 {
+        let n = int(s[i]) << 16
+        b.addByte(B64[(n >> 18) & 63])
+        b.addByte(B64[(n >> 12) & 63])
+        b.add("==")
+    } else if rest == 2 {
+        let n = (int(s[i]) << 16) | (int(s[i + 1]) << 8)
+        b.addByte(B64[(n >> 18) & 63])
+        b.addByte(B64[(n >> 12) & 63])
+        b.addByte(B64[(n >> 6) & 63])
+        b.addByte('=')
+    }
+    return b.toStr()
+}
+
+fn b64val(c: byte): int {
+    if c >= 'A' && c <= 'Z' { return int(c - 'A') }
+    if c >= 'a' && c <= 'z' { return int(c - 'a') + 26 }
+    if c >= '0' && c <= '9' { return int(c - '0') + 52 }
+    if c == '+' { return 62 }
+    if c == '/' { return 63 }
+    return -1
+}
+
+// jq 1.7.1's @base64d: invalid characters are an error, '=' ends the data, a
+// single leftover character is "trailing base64 byte found".
+pub fn base64Decode(j: &J, s: str): Result[str, str] {
+    var out: []byte = []
+    var acc = 0
+    var bits = 0
+    var n = 0
+    for i in 0..len(s) {
+        let c = s[i]
+        if c == '=' { break }
+        let v = b64val(c)
+        if v < 0 { return Err(typeErr(j, "is not valid base64 data")) }
+        acc = (acc << 6) | v
+        bits += 6
+        n += 1
+        if bits >= 8 {
+            bits -= 8
+            append(mut &out, byte((acc >> bits) & 0xFF))
+        }
+    }
+    if n % 4 == 1 { return Err(typeErr(j, "trailing base64 byte found")) }
+    return Ok(json.validUtf8(strFromBytes(&out)))
+}
+
+// @name applied to a value.
+pub fn format(name: str, x: &J): Result[J, str] {
+    if name == "text" { return Ok(json.string(tostring(x))) }
+    if name == "json" { return Ok(json.string(dump(x))) }
+    if name == "html" {
+        let s = tostring(x)
+        var b = newStrBuf()
+        for i in 0..len(s) {
+            let c = s[i]
+            if c == '<' {
+                b.add("&lt;")
+            } else if c == '>' {
+                b.add("&gt;")
+            } else if c == '&' {
+                b.add("&amp;")
+            } else if c == '\'' {
+                b.add("&apos;")
+            } else if c == '"' {
+                b.add("&quot;")
+            } else {
+                b.addByte(c)
+            }
+        }
+        return Ok(json.string(b.toStr()))
+    }
+    if name == "uri" {
+        let s = tostring(x)
+        var b = newStrBuf()
+        let hex = "0123456789ABCDEF"
+        for i in 0..len(s) {
+            let c = s[i]
+            if unreserved(c) {
+                b.addByte(c)
+            } else {
+                b.addByte('%')
+                b.addByte(hex[int(c) >> 4])
+                b.addByte(hex[int(c) & 15])
+            }
+        }
+        return Ok(json.string(b.toStr()))
+    }
+    if name == "csv" || name == "tsv" {
+        if !x.isArray() {
+            return Err(typeErr(x, if name == "csv" { "cannot be csv-formatted, only array" } else { "cannot be tsv-formatted, only array" }))
+        }
+        let r = try csvRow(x, name == "tsv")
+        return Ok(json.string(r))
+    }
+    if name == "sh" {
+        if x.isArray() {
+            var b = newStrBuf()
+            var first = true
+            for e in x.items() {
+                if !first { b.addByte(' ') }
+                first = false
+                let q = try shQuote(&e)
+                b.add(q)
+            }
+            return Ok(json.string(b.toStr()))
+        }
+        let q = try shQuote(x)
+        return Ok(json.string(q))
+    }
+    if name == "base64" { return Ok(json.string(base64Encode(tostring(x)))) }
+    if name == "base64d" {
+        let s = tostring(x)
+        let d = try base64Decode(x, s)
+        return Ok(json.string(d))
+    }
+    return Err(name + " is not a valid format")
+}
+
+
+// ---------------------------------------------------------------- math
+
+extern "c" fn acosh(x: float): float
+extern "c" fn asinh(x: float): float
+extern "c" fn atanh(x: float): float
+extern "c" fn erf(x: float): float
+extern "c" fn erfc(x: float): float
+extern "c" fn exp2(x: float): float
+extern "c" fn expm1(x: float): float
+extern "c" fn log1p(x: float): float
+extern "c" fn logb(x: float): float
+extern "c" fn lgamma(x: float): float
+extern "c" fn tgamma(x: float): float
+extern "c" fn nearbyint(x: float): float
+extern "c" fn j0(x: float): float
+extern "c" fn j1(x: float): float
+extern "c" fn y0(x: float): float
+extern "c" fn y1(x: float): float
+extern "c" fn jn(n: i32, x: float): float
+extern "c" fn yn(n: i32, x: float): float
+extern "c" fn fdim(x: float, y: float): float
+extern "c" fn fmax(x: float, y: float): float
+extern "c" fn fmin(x: float, y: float): float
+extern "c" fn remainder(x: float, y: float): float
+extern "c" fn nextafter(x: float, y: float): float
+extern "c" fn ldexp(x: float, n: i32): float
+extern "c" fn scalbn(x: float, n: i32): float
+extern "c" fn fma(x: float, y: float, z: float): float
+extern "c" fn frexp(x: float, e: mut &i32): float
+extern "c" fn modf(x: float, ip: mut &float): float
+extern "c" fn lgamma_r(x: float, sign: mut &i32): float
+
+pub fn isMath1(name: str): bool {
+    return name == "floor" || name == "sqrt" || name == "ceil" || name == "round" || name == "fabs" ||
+        name == "trunc" || name == "rint" || name == "nearbyint" || name == "sin" || name == "cos" ||
+        name == "tan" || name == "asin" || name == "acos" || name == "atan" || name == "sinh" ||
+        name == "cosh" || name == "tanh" || name == "asinh" || name == "acosh" || name == "atanh" ||
+        name == "exp" || name == "exp2" || name == "exp10" || name == "pow10" || name == "expm1" ||
+        name == "log" || name == "log2" || name == "log10" || name == "log1p" || name == "logb" ||
+        name == "cbrt" || name == "erf" || name == "erfc" || name == "gamma" || name == "lgamma" ||
+        name == "tgamma" || name == "significand" || name == "j0" || name == "j1" || name == "y0" ||
+        name == "y1"
+}
+
+pub fn math1(name: str, x: float): float {
+    if name == "floor" { return x.floor() }
+    if name == "sqrt" { return x.sqrt() }
+    if name == "ceil" { return x.ceil() }
+    if name == "round" { return x.round() }
+    if name == "fabs" { return x.abs() }
+    if name == "trunc" { return x.trunc() }
+    if name == "rint" { return x.roundEven() }
+    if name == "nearbyint" { return nearbyint(x) }
+    if name == "sin" { return x.sin() }
+    if name == "cos" { return x.cos() }
+    if name == "tan" { return x.tan() }
+    if name == "asin" { return x.asin() }
+    if name == "acos" { return x.acos() }
+    if name == "atan" { return x.atan() }
+    if name == "sinh" { return x.sinh() }
+    if name == "cosh" { return x.cosh() }
+    if name == "tanh" { return x.tanh() }
+    if name == "asinh" { return asinh(x) }
+    if name == "acosh" { return acosh(x) }
+    if name == "atanh" { return atanh(x) }
+    if name == "exp" { return x.exp() }
+    if name == "exp2" { return exp2(x) }
+    if name == "exp10" || name == "pow10" { return float(10).pow(x) }
+    if name == "expm1" { return expm1(x) }
+    if name == "log" { return x.ln() }
+    if name == "log2" { return x.log2() }
+    if name == "log10" { return x.log10() }
+    if name == "log1p" { return log1p(x) }
+    if name == "logb" { return logb(x) }
+    if name == "cbrt" { return x.cbrt() }
+    if name == "erf" { return erf(x) }
+    if name == "erfc" { return erfc(x) }
+    if name == "gamma" || name == "lgamma" { return lgamma(x) }
+    if name == "tgamma" { return tgamma(x) }
+    if name == "significand" {
+        if x == 0.0 || x != x || !x.isFinite() { return x }
+        var e: i32 = 0
+        let m = frexp(x, mut &e)
+        return m * 2.0
+    }
+    if name == "j0" { return j0(x) }
+    if name == "j1" { return j1(x) }
+    if name == "y0" { return y0(x) }
+    if name == "y1" { return y1(x) }
+    return x
+}
+
+pub fn isMath2(name: str): bool {
+    return name == "pow" || name == "atan2" || name == "fmod" || name == "hypot" || name == "copysign" ||
+        name == "drem" || name == "remainder" || name == "fdim" || name == "fmax" || name == "fmin" ||
+        name == "ldexp" || name == "scalb" || name == "scalbln" || name == "nextafter" ||
+        name == "nexttoward" || name == "jn" || name == "yn"
+}
+
+fn toI32(f: float): i32 {
+    if f != f { return i32(0) }
+    if f > 2147483647.0 { return i32(2147483647) }
+    if f < -2147483648.0 { return i32(-2147483648) }
+    return i32(int(f.trunc()))
+}
+
+pub fn math2(name: str, a: float, b: float): float {
+    if name == "pow" { return a.pow(b) }
+    if name == "atan2" { return a.atan2(b) }
+    if name == "fmod" { return a.mod(b) }
+    if name == "hypot" { return a.hypot(b) }
+    if name == "copysign" { return a.copySign(b) }
+    if name == "drem" || name == "remainder" { return remainder(a, b) }
+    if name == "fdim" { return fdim(a, b) }
+    if name == "fmax" { return fmax(a, b) }
+    if name == "fmin" { return fmin(a, b) }
+    if name == "ldexp" || name == "scalbln" { return ldexp(a, toI32(b)) }
+    if name == "scalb" { return a * float(2).pow(b) }
+    if name == "nextafter" || name == "nexttoward" { return nextafter(a, b) }
+    if name == "jn" { return jn(toI32(a), b) }
+    if name == "yn" { return yn(toI32(a), b) }
+    return a
+}
+
+pub fn fmaOf(a: float, b: float, c: float): float { return fma(a, b, c) }
+
+pub fn frexpOf(x: float): J {
+    var e: i32 = 0
+    let m = frexp(x, mut &e)
+    return json.arrayOf([num(m), int2j(int(e))])
+}
+
+pub fn modfOf(x: float): J {
+    var ip: float = 0.0
+    let f = modf(x, mut &ip)
+    return json.arrayOf([num(f), num(ip)])
+}
+
+pub fn lgammaR(x: float): J {
+    var s: i32 = 0
+    let v = lgamma_r(x, mut &s)
+    return json.arrayOf([num(v), int2j(int(s))])
+}
+
+// ---------------------------------------------------------------- dates
+
+const MONTHS: []str = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December"]
+const DAYS: []str = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+const YDAYS: []int = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+
+// A broken-down time, as C's struct tm.
+pub type Tm = value record {
+    pub year: int    // since 1900
+    pub mon: int
+    pub mday: int
+    pub hour: int
+    pub min: int
+    pub sec: int
+    pub wday: int
+    pub yday: int
+    pub fsec: float  // seconds with the fraction, for the array
+}
+
+fn floorDiv(a: int, b: int): int {
+    var q = a / b
+    if (a % b != 0) && ((a < 0) != (b < 0)) { q -= 1 }
+    return q
+}
+
+// gmtime of whole seconds.
+pub fn gmtimeOf(secs: int): Tm {
+    let days = floorDiv(secs, 86400)
+    let rem = secs - days * 86400
+    let d = time.dateOfDays(days)
+    var yday = YDAYS[d.month - 1] + d.day - 1
+    if d.month > 2 && time.isLeapYear(d.year) { yday += 1 }
+    var wday = (days + 4) % 7
+    if wday < 0 { wday += 7 }
+    return Tm{year: d.year - 1900, mon: d.month - 1, mday: d.day, hour: rem / 3600, min: (rem / 60) % 60,
+              sec: rem % 60, wday: wday, yday: yday, fsec: float(rem % 60)}
+}
+
+pub fn tmToJson(t: &Tm): J {
+    return json.arrayOf([int2j(t.year + 1900), int2j(t.mon), int2j(t.mday), int2j(t.hour), int2j(t.min),
+                         num(t.fsec), int2j(t.wday), int2j(t.yday)])
+}
+
+pub fn gmtime(x: &J): Result[J, str] {
+    if !isNum(x) { return Err("gmtime() requires numeric inputs") }
+    let f = numVal(x)
+    if f != f || f > 1e17 || f < -1e17 { return Err("error converting number of seconds since epoch to datetime") }
+    let secs = int(f.trunc())
+    var t = gmtimeOf(secs)
+    t.fsec = float(t.sec) + (f - f.floor())
+    return Ok(tmToJson(&t))
+}
+
+fn fieldInt(a: &J, i: int): Option[int] {
+    let x = a.item(i)
+    if !isNum(&x) { return None }
+    let f = numVal(&x)
+    return Some(clampInt(f))
+}
+
+pub fn jsonToTm(a: &J): Option[Tm] {
+    var v: []int = []
+    for i in 0..8 {
+        match fieldInt(a, i) {
+            Some(n) { append(mut &v, n) }
+            None { return None }
+        }
+    }
+    let s = numVal(&a.item(5))
+    return Some(Tm{year: v[0] - 1900, mon: v[1], mday: v[2], hour: v[3], min: v[4], sec: v[5], wday: v[6], yday: v[7], fsec: s})
+}
+
+// timegm.
+pub fn timegm(t: &Tm): int {
+    var y = t.year + 1900
+    var m = t.mon
+    y += floorDiv(m, 12)
+    m = m - floorDiv(m, 12) * 12
+    let days = time.daysOfDate(time.Date{year: y, month: m + 1, day: 1}) + t.mday - 1
+    return days * 86400 + t.hour * 3600 + t.min * 60 + t.sec
+}
+
+pub fn mktime(a: &J): Result[J, str] {
+    if !a.isArray() { return Err("mktime requires array inputs") }
+    if a.size() < 6 { return Err("mktime requires parsed datetime inputs") }
+    match jsonToTm(a) {
+        Some(t) { return Ok(int2j(timegm(&t))) }
+        None { return Err("mktime requires parsed datetime inputs") }
+    }
+}
+
+fn pad(n: int, width: int, fill: byte): str {
+    var s = intToStr(if n < 0 { -n } else { n })
+    var b = newStrBuf()
+    if n < 0 { b.addByte('-') }
+    var k = len(s)
+    while k < width {
+        b.addByte(fill)
+        k += 1
+    }
+    b.add(s)
+    return b.toStr()
+}
+
+fn isoWeek(t: &Tm): Tm {
+    // the ISO 8601 week-based year in year, the week in mon
+    let wdayMon = (t.wday + 6) % 7
+    var year = t.year + 1900
+    var week = (t.yday - wdayMon + 10) / 7
+    if week < 1 {
+        year -= 1
+        let prevDays = if time.isLeapYear(year) { 366 } else { 365 }
+        week = (t.yday + prevDays - wdayMon + 10) / 7
+    } else {
+        let days = if time.isLeapYear(year) { 366 } else { 365 }
+        if week == 53 && (t.yday - wdayMon + 3) >= days {
+            year += 1
+            week = 1
+        }
+    }
+    return Tm{year: year, mon: week, mday: 0, hour: 0, min: 0, sec: 0, wday: 0, yday: 0, fsec: 0.0}
+}
+
+pub fn strftime(t: &Tm, fmt: str, zone: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i < len(fmt) {
+        let c = fmt[i]
+        if c != '%' || i + 1 >= len(fmt) {
+            b.addByte(c)
+            i += 1
+            continue
+        }
+        let f = fmt[i + 1]
+        i += 2
+        let wd = if t.wday >= 0 && t.wday < 7 { t.wday } else { 0 }
+        let mo = if t.mon >= 0 && t.mon < 12 { t.mon } else { 0 }
+        if f == 'Y' {
+            b.addInt(t.year + 1900)
+        } else if f == 'm' {
+            b.add(pad(t.mon + 1, 2, '0'))
+        } else if f == 'd' {
+            b.add(pad(t.mday, 2, '0'))
+        } else if f == 'e' {
+            b.add(pad(t.mday, 2, ' '))
+        } else if f == 'H' {
+            b.add(pad(t.hour, 2, '0'))
+        } else if f == 'k' {
+            b.add(pad(t.hour, 2, ' '))
+        } else if f == 'I' {
+            b.add(pad(if t.hour % 12 == 0 { 12 } else { t.hour % 12 }, 2, '0'))
+        } else if f == 'l' {
+            b.add(pad(if t.hour % 12 == 0 { 12 } else { t.hour % 12 }, 2, ' '))
+        } else if f == 'M' {
+            b.add(pad(t.min, 2, '0'))
+        } else if f == 'S' {
+            b.add(pad(t.sec, 2, '0'))
+        } else if f == 'j' {
+            b.add(pad(t.yday + 1, 3, '0'))
+        } else if f == 'a' {
+            b.add(DAYS[wd][..3])
+        } else if f == 'A' {
+            b.add(DAYS[wd])
+        } else if f == 'b' || f == 'h' {
+            b.add(MONTHS[mo][..3])
+        } else if f == 'B' {
+            b.add(MONTHS[mo])
+        } else if f == 'p' {
+            b.add(if t.hour < 12 { "AM" } else { "PM" })
+        } else if f == 'P' {
+            b.add(if t.hour < 12 { "am" } else { "pm" })
+        } else if f == 'Z' {
+            b.add(zone)
+        } else if f == 'z' {
+            b.add("+0000")
+        } else if f == 'u' {
+            b.addInt(if wd == 0 { 7 } else { wd })
+        } else if f == 'w' {
+            b.addInt(wd)
+        } else if f == 'y' {
+            b.add(pad((t.year + 1900) % 100, 2, '0'))
+        } else if f == 'C' {
+            b.add(pad((t.year + 1900) / 100, 2, '0'))
+        } else if f == 'D' {
+            b.add(strftime(t, "%m/%d/%y", zone))
+        } else if f == 'F' {
+            b.add(strftime(t, "%Y-%m-%d", zone))
+        } else if f == 'T' {
+            b.add(strftime(t, "%H:%M:%S", zone))
+        } else if f == 'R' {
+            b.add(strftime(t, "%H:%M", zone))
+        } else if f == 'r' {
+            b.add(strftime(t, "%I:%M:%S %p", zone))
+        } else if f == 'c' {
+            b.add(strftime(t, "%a %b %e %H:%M:%S %Y", zone))
+        } else if f == 'x' {
+            b.add(strftime(t, "%m/%d/%y", zone))
+        } else if f == 'X' {
+            b.add(strftime(t, "%H:%M:%S", zone))
+        } else if f == 's' {
+            b.addInt(timegm(t))
+        } else if f == 'n' {
+            b.addByte('\n')
+        } else if f == 't' {
+            b.addByte('\t')
+        } else if f == '%' {
+            b.addByte('%')
+        } else if f == 'U' {
+            b.add(pad((t.yday + 7 - wd) / 7, 2, '0'))
+        } else if f == 'W' {
+            b.add(pad((t.yday + 7 - (wd + 6) % 7) / 7, 2, '0'))
+        } else if f == 'V' {
+            b.add(pad(isoWeek(t).mon, 2, '0'))
+        } else if f == 'G' {
+            b.addInt(isoWeek(t).year)
+        } else if f == 'g' {
+            b.add(pad(isoWeek(t).year % 100, 2, '0'))
+        } else {
+            b.addByte('%')
+            b.addByte(f)
+        }
+    }
+    return b.toStr()
+}
+
+fn matchName(s: &str, i: int, names: &[str]): int {
+    for k in 0..len(names) {
+        let full = names[k]
+        let lf = asciiCase(full, false)
+        if i + len(full) <= len(s) && asciiCase(s[i..i + len(full)], false) == lf { return k * 100 + len(full) }
+        if i + 3 <= len(s) && asciiCase(s[i..i + 3], false) == lf[..3] { return k * 100 + 3 }
+    }
+    return -1
+}
+
+fn readNum(s: &str, i: int, maxDigits: int): Option[Span] {
+    // start = the value, end = the offset after it
+    var j = i
+    var neg = false
+    if j < len(s) && (s[j] == '+' || s[j] == '-') {
+        neg = s[j] == '-'
+        j += 1
+    }
+    let st = j
+    var v = 0
+    while j < len(s) && j - st < maxDigits && isDigit(s[j]) {
+        v = v * 10 + int(s[j] - '0')
+        j += 1
+    }
+    if j == st { return None }
+    return Some(Span{start: if neg { -v } else { v }, end: j})
+}
+
+fn setWday(t: mut &Tm) {
+    let century = (1900 + t.year) / 100
+    var year = (1900 + t.year) % 100
+    if t.mon < 2 { year -= 1 }
+    var mon = t.mon - 1
+    if mon < 1 { mon += 12 }
+    let fm = (2.6 * float(mon) - 0.2).floor()
+    var wday = (t.mday + int(fm) + year + int((float(year) / 4.0).floor()) + int((float(century) / 4.0).floor()) - 2 * century) % 7
+    if wday < 0 { wday += 7 }
+    t.wday = wday
+}
+
+fn setYday(t: mut &Tm) {
+    var mon = t.mon
+    let year = 1900 + t.year
+    var leap = 0
+    if t.mon > 1 && time.isLeapYear(year) { leap = 1 }
+    if mon < 0 { mon = -mon }
+    if mon > 11 { mon = mon % 12 }
+    t.yday = YDAYS[mon] + leap + t.mday - 1
+}
+
+// strptime for the common conversions (glibc's set).
+pub fn strptime(s: str, fmt: str): Result[J, str] {
+    var t = Tm{year: 0, mon: 0, mday: 0, hour: 0, min: 0, sec: 0, wday: 8, yday: 367, fsec: 0.0}
+    var i = 0
+    var f = 0
+    var ok = true
+    var haveDate = false
+    var pm = -1
+    var epoch = false
+    while f < len(fmt) && ok {
+        let c = fmt[f]
+        if c == ' ' {
+            while i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n') { i += 1 }
+            f += 1
+            continue
+        }
+        if c != '%' || f + 1 >= len(fmt) {
+            if i < len(s) && s[i] == c {
+                i += 1
+            } else {
+                ok = false
+            }
+            f += 1
+            continue
+        }
+        let d = fmt[f + 1]
+        f += 2
+        if d == 'Y' || d == 'm' || d == 'd' || d == 'e' || d == 'H' || d == 'M' || d == 'S' || d == 'j' || d == 'y' || d == 'I' || d == 'C' || d == 'k' || d == 'l' {
+            while i < len(s) && s[i] == ' ' { i += 1 }
+            let w = if d == 'Y' { 4 } else if d == 'j' { 3 } else { 2 }
+            match readNum(&s, i, w) {
+                Some(n) {
+                    i = n.end
+                    let v = n.start
+                    if d == 'Y' {
+                        t.year = v - 1900
+                        haveDate = true
+                    } else if d == 'm' {
+                        t.mon = v - 1
+                        haveDate = true
+                    } else if d == 'd' || d == 'e' {
+                        t.mday = v
+                        haveDate = true
+                    } else if d == 'H' || d == 'k' {
+                        t.hour = v
+                    } else if d == 'I' || d == 'l' {
+                        t.hour = v % 12
+                    } else if d == 'M' {
+                        t.min = v
+                    } else if d == 'S' {
+                        t.sec = v
+                    } else if d == 'j' {
+                        t.yday = v - 1
+                    } else if d == 'y' {
+                        t.year = if v < 69 { v + 100 } else { v }
+                        haveDate = true
+                    } else if d == 'C' {
+                        t.year = v * 100 - 1900
+                    }
+                }
+                None { ok = false }
+            }
+        } else if d == 's' {
+            match readNum(&s, i, 20) {
+                Some(n) {
+                    i = n.end
+                    t = gmtimeOf(n.start)
+                    epoch = true
+                }
+                None { ok = false }
+            }
+        } else if d == 'a' || d == 'A' {
+            let m = matchName(&s, i, &DAYS)
+            if m < 0 {
+                ok = false
+            } else {
+                t.wday = m / 100
+                i += m % 100
+            }
+        } else if d == 'b' || d == 'B' || d == 'h' {
+            let m = matchName(&s, i, &MONTHS)
+            if m < 0 {
+                ok = false
+            } else {
+                t.mon = m / 100
+                i += m % 100
+                haveDate = true
+            }
+        } else if d == 'p' {
+            if i + 2 <= len(s) && asciiCase(s[i..i + 2], true) == "AM" {
+                pm = 0
+                i += 2
+            } else if i + 2 <= len(s) && asciiCase(s[i..i + 2], true) == "PM" {
+                pm = 1
+                i += 2
+            } else {
+                ok = false
+            }
+        } else if d == 'Z' {
+            while i < len(s) && (strings_isAlpha(s[i])) { i += 1 }
+        } else if d == 'z' {
+            if i < len(s) && (s[i] == 'Z' || s[i] == 'z') {
+                i += 1
+            } else if i < len(s) && (s[i] == '+' || s[i] == '-') {
+                i += 1
+                var k = 0
+                while i < len(s) && k < 4 && (isDigit(s[i]) || s[i] == ':') {
+                    if s[i] != ':' { k += 1 }
+                    i += 1
+                }
+            } else {
+                ok = false
+            }
+        } else if d == 'T' || d == 'D' || d == 'F' || d == 'R' {
+            let sub = if d == 'T' { "%H:%M:%S" } else if d == 'D' { "%m/%d/%y" } else if d == 'F' { "%Y-%m-%d" } else { "%H:%M" }
+            let rest = sub + fmt[f..]
+            let r = try strptimeRest(s, i, rest, t)
+            return Ok(r)
+        } else if d == '%' {
+            if i < len(s) && s[i] == '%' {
+                i += 1
+            } else {
+                ok = false
+            }
+        } else if d == 'n' || d == 't' {
+            while i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n') { i += 1 }
+        } else {
+            ok = false
+        }
+    }
+    if !ok || (i < len(s) && !(s[i] == ' ' || s[i] == '\t' || s[i] == '\n')) {
+        return Err("date \"" + s + "\" does not match format \"" + fmt + "\"")
+    }
+    if pm == 1 { t.hour += 12 }
+    if !epoch && haveDate {
+        // glibc computes the weekday and day of the year from a full date
+        if t.mday != 0 && t.mon >= 0 && t.mon <= 11 {
+            setWday(mut &t)
+            setYday(mut &t)
+        }
+    } else if !epoch {
+        if t.wday == 8 && t.mday != 0 && t.mon >= 0 && t.mon <= 11 { setWday(mut &t) }
+        if t.yday == 367 && t.mday != 0 && t.mon >= 0 && t.mon <= 11 { setYday(mut &t) }
+    }
+    t.fsec = float(t.sec)
+    var out = tmToJson(&t)
+    if i < len(s) { out.push(json.string(s[i..])) }
+    return Ok(out)
+}
+
+fn strings_isAlpha(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// strptime continuing at s[i] with a format that starts with an expansion.
+fn strptimeRest(s: str, i: int, fmt: str, t: Tm): Result[J, str] {
+    // parse the remainder with the expanded format, then merge the fields
+    // already set (only the date or time parts the expansion sets change)
+    let full = try strptime(s[i..], fmt)
+    var r = jsonToTm(&full).unwrap()
+    if t.year != 0 && r.year == 0 { r.year = t.year }
+    if t.mon != 0 && r.mon == 0 { r.mon = t.mon }
+    if t.mday != 0 && r.mday == 0 { r.mday = t.mday }
+    if r.mday != 0 && r.mon >= 0 && r.mon <= 11 {
+        setWday(mut &r)
+        setYday(mut &r)
+    }
+    r.fsec = float(r.sec)
+    return Ok(tmToJson(&r))
+}
+
+// ---------------------------------------------------------------- regular expressions
+
+// jq's _match_impl(re; flags; test) on a string input: a test result, or
+// the array of match objects (offsets and lengths in code points).
+pub fn matchImpl(input: &J, re: &J, flags: &J, test: bool): Result[J, str] {
+    if !isStr(input) { return Err(typeErr(input, "cannot be matched, as it is not a string")) }
+    if !isStr(re) { return Err(typeErr(re, "is not a string")) }
+    var global = false
+    var noEmpty = false
+    var prefix = ""
+    var longest = false
+    if !flags.isNull() {
+        if !isStr(flags) { return Err(typeErr(flags, "is not a string")) }
+        let fs = strVal(flags)
+        for i in 0..len(fs) {
+            let c = fs[i]
+            if c == 'g' {
+                global = true
+            } else if c == 'i' {
+                prefix = prefix + "i"
+            } else if c == 'x' {
+                prefix = prefix + "x"
+            } else if c == 's' {
+                // Oniguruma's single-line mode, already the default of its Perl syntax
+            } else if c == 'n' {
+                noEmpty = true
+            } else if c == 'p' {
+                prefix = prefix + "s"
+            } else if c == 'l' {
+                longest = true
+            } else {
+                return Err(fs + " is not a valid modifier string")
+            }
+        }
+    }
+    var pat = strVal(re)
+    if indexOf(prefix, "x", 0) >= 0 {
+        pat = stripExtended(pat)
+        prefix = strings_without(prefix, 'x')
+    }
+    if len(prefix) > 0 { pat = "(?" + prefix + ")" + pat }
+    let compiled = if longest { regex.compileLongest(pat) } else { regex.compile(pat) }
+    match compiled {
+        Ok(rx) {
+            let text = strVal(input)
+            var out: []J = []
+            let names = rx.groupNames()
+            // jq's loop over onig_search: after a match the search goes on
+            // at its end (where an empty match may follow it), after an
+            // empty match one character on
+            var start = 0
+            while start <= len(text) {
+                var a = rx.submatchIndexAt(text, start)
+                // n: Oniguruma's FIND_NOT_EMPTY, the first match that is not empty
+                while noEmpty && len(a) > 0 && a[0] == a[1] {
+                    let next = if a[0] < len(text) { a[0] + cpWidth(&text, a[0]) } else { len(text) + 1 }
+                    a = rx.submatchIndexAt(text, next)
+                }
+                if len(a) == 0 { break }
+                if test { return Ok(json.boolean(true)) }
+                let ms = a[0]
+                let me = a[1]
+                let idx = int2j(cpLen(&text[..ms]))
+                var o = json.object()
+                o.set("offset", idx.clone())
+                o.set("length", int2j(cpLen(&text[ms..me])))
+                o.set("string", json.string(text[ms..me]))
+                var cs: []J = []
+                for g in 1..len(a) / 2 {
+                    var co = json.object()
+                    let gs = a[2 * g]
+                    let ge = a[2 * g + 1]
+                    if ms == me {
+                        // a zero-width match: every group as empty there
+                        co.set("offset", idx.clone())
+                        co.set("string", json.string(""))
+                        co.set("length", int2j(0))
+                    } else if gs < 0 {
+                        co.set("offset", int2j(-1))
+                        co.set("string", json.null())
+                        co.set("length", int2j(0))
+                    } else if gs == ge {
+                        co.set("offset", int2j(cpLen(&text[..gs])))
+                        co.set("string", json.string(""))
+                        co.set("length", int2j(0))
+                    } else {
+                        co.set("offset", int2j(cpLen(&text[..gs])))
+                        co.set("length", int2j(cpLen(&text[gs..ge])))
+                        co.set("string", json.string(text[gs..ge]))
+                    }
+                    let nm = if g < len(names) { names[g] } else { "" }
+                    co.set("name", if len(nm) > 0 { json.string(nm) } else { json.null() })
+                    append(mut &cs, co)
+                }
+                o.set("captures", json.arrayOf(cs))
+                append(mut &out, o)
+                if !global { break }
+                if ms == me {
+                    start = if me < len(text) { me + cpWidth(&text, me) } else { len(text) + 1 }
+                } else {
+                    start = me
+                }
+            }
+            if test { return Ok(json.boolean(false)) }
+            return Ok(json.arrayOf(out))
+        }
+        Err(e) { return Err("Regex failure: " + onigMessage(e.code)) }
+    }
+}
+
+// The length in bytes of the UTF-8 sequence at i (1 for a stray byte).
+fn cpWidth(s: &str, i: int): int {
+    let c = s[i]
+    var w = 1
+    if c >= 0xF0 {
+        w = 4
+    } else if c >= 0xE0 {
+        w = 3
+    } else if c >= 0xC0 {
+        w = 2
+    }
+    if i + w > len(s) { return 1 }
+    return w
+}
+
+fn strings_without(s: str, c: byte): str {
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        if s[i] != c { b.addByte(s[i]) }
+    }
+    return b.toStr()
+}
+
+// The x flag: whitespace and # comments outside classes are dropped.
+fn stripExtended(p: str): str {
+    var b = newStrBuf()
+    var i = 0
+    var inClass = false
+    while i < len(p) {
+        let c = p[i]
+        if c == '\\' && i + 1 < len(p) {
+            b.addByte(c)
+            b.addByte(p[i + 1])
+            i += 2
+            continue
+        }
+        if inClass {
+            if c == ']' { inClass = false }
+            b.addByte(c)
+        } else if c == '[' {
+            inClass = true
+            b.addByte(c)
+        } else if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+        } else if c == '#' {
+            while i < len(p) && p[i] != '\n' { i += 1 }
+        } else {
+            b.addByte(c)
+        }
+        i += 1
+    }
+    return b.toStr()
+}
+
+// Oniguruma's wording for a pattern error, where there is one.
+fn onigMessage(c: regex.ErrorCode): str {
+    match c {
+        regex.ErrorCode.MissingParen { return "end pattern with unmatched parenthesis" }
+        regex.ErrorCode.UnexpectedParen { return "unmatched close parenthesis" }
+        regex.ErrorCode.MissingBracket { return "premature end of char-class" }
+        regex.ErrorCode.MissingRepeatArgument { return "target of repeat operator is not specified" }
+        regex.ErrorCode.TrailingBackslash { return "end pattern at escape" }
+        regex.ErrorCode.InvalidCharRange { return "empty range in char class" }
+        regex.ErrorCode.InvalidRepeatSize { return "too big number for repeat range" }
+        regex.ErrorCode.InvalidNamedCapture { return "invalid group name <>" }
+        else { return c.toStr() }
+    }
+}
