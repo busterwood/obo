@@ -1549,7 +1549,19 @@ fn (pg: mut &Program) resolveFn(f: int) {
             pg.err(m, a.line, "a drop method takes `mut &` receiver and nothing else")
         }
         if pg.fns[f].ownerKind == O_PRIM { pg.err(m, a.line, "primitive types cannot have a drop method") }
-        pg.types[pg.fns[f].owner].drop = f
+        let od = pg.fns[f].owner
+        // design/borrow-types.md D8: a type that holds borrows has no drop method (none has a use yet)
+        var why = if pg.declBC(od) { "it holds borrows" } else { "" }
+        for tp in pg.types[od].tparams {
+            if why == "" && pg.tparams[tp].borrow {
+                why = "its type parameter " + pg.tparams[tp].name + " is declared borrow, so it may hold borrows"
+            }
+        }
+        if why != "" {
+            pg.err(m, a.line, pg.types[od].name + " cannot have a drop method: " + why + " (a type that holds " +
+                "borrows cannot have one)")
+        }
+        pg.types[od].drop = f
     }
     let ret = pg.fns[f].ret
     if !pg.isBorrow(ret) && pg.isBorrowClass(ret) {
