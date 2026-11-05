@@ -615,7 +615,11 @@ Then:
   branch) is moved further, to a multiple of 16 from which it does not
   cross a 64-byte boundary, so that each iteration runs from one cache line
   (bench sieve's inner loop, 17 bytes from 48 bytes into a line, ran at
-  about 1.5 times the cycles);
+  about 1.5 times the cycles). The functions themselves start at multiples of
+  64 (`FUNC_ALIGN`; bench fib moved by 10% with its entry at 16-byte shifts),
+  which makes these positions independent of the code before them
+  (`tools/placement.py` shifts the code to check; `OBX_PADB=n` and
+  `OBX_FALIGN=n` are its debug switches);
 - conditions compile to jumps (`&&`, `||`, `!`, comparisons and conversions
   to bool as branches); the C front end's `bool c = e; if (!c) break;` (every
   loop condition) and `T r = e; return r;` are generated without the local
@@ -735,7 +739,7 @@ the roots are the sections of the runtime symbols the generated code names
 a dynamically linked program, `rt_n_libc` (the dynamic linker writes it);
 a live section's relocations make their target sections live. The live
 sections keep `rtx.obx`'s order (gcc's) and their alignments (functions at
-multiples of 64, as `-falign-functions=64` asks): code then read-only data
+multiples of 64, as `-falign-functions=64` asks, and loops at 32): code then read-only data
 from 0x401000, data then bss from 0x40000000. The runtime's relocations are
 applied at the link (`rtBytes`), PC-relative ones against the final layout,
 and the generated code's runtime symbols (`SK_RT`) get their addresses from
