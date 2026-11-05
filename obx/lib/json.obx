@@ -786,8 +786,8 @@ fn decParts(t: str): DecParts {
             }
             break
         } else {
-            if !seenPoint { pointExp += 1 }
             if c != '0' || b.size() > 0 {
+                if !seenPoint { pointExp += 1 }
                 b.addByte(c)
             } else {
                 // a leading zero: after the point it lowers the exponent

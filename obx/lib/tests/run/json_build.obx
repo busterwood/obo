@@ -29,6 +29,9 @@
 // expect: 1
 // expect: true
 // expect: true
+// expect: true
+// expect: true
+// expect: -1
 import "json"
 
 fn main() {
@@ -103,4 +106,9 @@ fn main() {
     println(json.parse(`100000000000000000001`).unwrap().cmp(&json.parse(`100000000000000000000`).unwrap()))
     println(json.parse(`1.0`).unwrap().eq(&json.integer(1)))
     println(json.parse(`{"a":[1,{"b":2}]}`).unwrap().eq(&json.parse(`{"a":[1.0,{"b":2e0}]}`).unwrap()))
+    // leading zeros before and after the point (0.0001e4 is 1)
+    let one = json.integer(1)
+    println(json.parse(`0.0001e4`).unwrap().eq(&one))
+    println(json.parse(`0.000100000000000000000001e4`).unwrap().cmp(&json.parse(`1.00000000000000000001`).unwrap()) == 0)
+    println(json.parse(`0.0099999999999999999999e2`).unwrap().cmp(&one))
 }
