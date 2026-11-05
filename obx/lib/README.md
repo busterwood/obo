@@ -133,7 +133,12 @@ for leaks.
   `valAtMut(i)` for walking, `each(fn(k, v) {...})` and `eachMut(fn(k, v)
   {...})` (v is `mut &V`) in insertion order, `keys()`/`values()` (copy
   types). `remove` moves the last entry into the hole. Slots come from
-  `(hash ^ seed) * GOLDEN` (the seed per process, above). Experimental:
+  `(hash ^ seed) * GOLDEN` (the seed per process, above); the index is an
+  array of u32 slots, each an entry number with some bits of that mixed hash
+  beside it, so a probe passes other keys' slots without loading them. A Map
+  (and so a Set) holds at most 2^31 entries: the `put` (or `atOrPut`) that
+  would add one more stops the program with `obx: panic: Map: more than 2^31
+  entries` (exit code 12). Experimental:
   `for e in m.iter()` walks the entries in insertion order as
   `MapEntry{key: &K, value: &V}` (`MapIter` holds a borrow of the map, which
   is frozen for the loop; design/borrow-types.md).
