@@ -1,0 +1,6 @@
+// borrow-class types (design/borrow-types.md): a closure cannot return a value holding borrows.
+// error: a closure cannot return []&str
+fn main() {
+    let s = "x"
+    let f = fn(): []&str { return [] }
+}

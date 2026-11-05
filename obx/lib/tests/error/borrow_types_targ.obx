@@ -1,0 +1,7 @@
+// borrow-class types (design/borrow-types.md): only a type parameter declared T: borrow takes a borrow.
+// error: cannot be a type argument (type parameter T)
+type Box[T] = value record { v: T }
+fn main() {
+    let s = "x"
+    let b: Box[&str] = Box{v: &s}
+}

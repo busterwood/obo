@@ -22,7 +22,7 @@ fn handshakes(addr: str, ca: str, n: int) {
     var o = tls.defaults()
     o.caFile = ca
     let ctx = tls.client(o).unwrap()
-    let host = strings.cut(addr, ":").unwrap().before
+    let host = strings.cut(&addr, ":").unwrap().before
     let t0 = time.monotonicNs()
     for i in 0..n {
         let sock = match net.connect(addr) {
@@ -101,7 +101,7 @@ fn serve(addr: str, cert: str, key: str) {
     o.keyFile = key
     let ctx = tls.server(o).unwrap()
     let ln = net.listen(addr).unwrap()
-    println("listening " + strings.cut(ln.localAddr(), ":").unwrap().after)
+    println("listening " + strings.cut(&ln.localAddr(), ":").unwrap().after)
     io.flushStdout().unwrap()
     task.scope(fn(s: mut &task.Scope) {
         while true {
@@ -142,7 +142,7 @@ fn handle(p: Peer): int {
         for i in 0..rest { buf[i] = buf[e + 4 + i] }
         w = rest
         var size = 5
-        match strings.cut(head.target, "/big?n=") {
+        match strings.cut(&head.target, "/big?n=") {
             Some(x) { size = strings.parseInt(x.after).unwrapOr(0) }
             None {}
         }

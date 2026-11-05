@@ -63,7 +63,7 @@ fn hello(r: Result[http.Response, http.Error]): str {
 
 fn start(s: mut &task.Scope, servers: mut &[]task.Future[int], cert: str): str {
     let ln = net.listen("127.0.0.1:0").unwrap()
-    let port = strings.cut(ln.localAddr(), ":").unwrap().after
+    let port: str = strings.cut(&ln.localAddr(), ":").unwrap().after
     PORTS = if len(PORTS) == 0 { port } else { PORTS + " " + port }
     append(servers, s.start(tt.serveHttps, tt.Https{ctx: tt.serverContext(cert), ln: ln}))
     return "https://localhost:" + port
@@ -86,7 +86,7 @@ fn main() {
         let other = start(s, mut &servers, "other")
         let pln = net.listen("127.0.0.1:0").unwrap()
         let plain = "http://" + pln.localAddr()
-        PORTS = PORTS + " " + strings.cut(pln.localAddr(), ":").unwrap().after
+        PORTS = PORTS + " " + strings.cut(&pln.localAddr(), ":").unwrap().after
         let psrv = s.start(ht.serve, pln)
 
         var o = http.defaults()
@@ -108,8 +108,8 @@ fn main() {
         println("keep-alive: 6 requests, X-Conn " + conn + ", dials " + intToStr(s1.dials) + ", reuses " + intToStr(s1.reuses))
 
         let t2 = c.post(base + "/echo?a=1", "text/plain", "hello there").unwrap().text().unwrap()
-        println("POST: " + strings.cut(t2, "\n").unwrap().before + " | Content-Length: " + intToStr(len(t2) - len("POST /echo?a=1\n")) +
-                " | " + strings.cut(t2, "\n").unwrap().after)
+        println("POST: " + strings.cut(&t2, "\n").unwrap().before + " | Content-Length: " + intToStr(len(t2) - len("POST /echo?a=1\n")) +
+                " | " + strings.cut(&t2, "\n").unwrap().after)
 
         let big = c.get(base + "/big?n=1048576").unwrap().text().unwrap()
         var allX = true

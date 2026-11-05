@@ -1,0 +1,12 @@
+// borrow-class types (design/borrow-types.md, D8): a type that holds borrows cannot have a drop method.
+// error: Cursor cannot have a drop method: it holds borrows
+type Cursor = value record {
+    text: &str
+    pos: int
+}
+fn (c: mut &Cursor) drop() { println("dropped") }
+fn main() {
+    let s = "abc"
+    let c = Cursor{text: &s, pos: 0}
+    println(c.pos)
+}

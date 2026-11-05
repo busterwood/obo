@@ -265,6 +265,11 @@ static obx_str rt_str_sub(obx_str s, int64_t a, int64_t b, const char* w) {
     if (a < 0 || b < a || b > s.len) rt_trap(3, "string slice out of range", w);
     return (obx_str){rt_str_dup(s).b, s.off + (uint32_t)a, (uint32_t)(b - a)};
 }
+/* &s[a..b]: a view of the bytes of s, uncounted (a shared &str; design/borrow-types.md) */
+static obx_str rt_str_view(obx_str s, int64_t a, int64_t b, const char* w) {
+    if (a < 0 || b < a || b > s.len) rt_trap(3, "string slice out of range", w);
+    return (obx_str){s.b, s.off + (uint32_t)a, (uint32_t)(b - a)};
+}
 /* Searching (the regex prefilters): the first index >= from in s of the byte c, of any byte of
    set, or of the string n; -1 when there is none (from < 0 counts as 0). With SSE2 the loops
    look at 16 bytes a step. A string is found by two of its bytes, the rarest by rt_byte_rank,

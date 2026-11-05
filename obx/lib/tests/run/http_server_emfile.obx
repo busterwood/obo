@@ -173,13 +173,13 @@ fn main() {
     }
     let c = io.read("emfile_client.txt").unwrapOr("no client output\n")
     var unanswered = 0
-    for line in strings.splitOn(c, "\n") {
+    for line in strings.split(&c, "\n") {
         if startsWith(line, "unanswered ") { unanswered = strings.parseInt(line[11..len(line)]).unwrapOr(0) } else if len(line) > 0 { println(line) }
     }
     let s = io.read("emfile_server.txt").unwrapOr("no server output")
     var shed = -1
     if startsWith(s, "shed ") {
-        let parts = strings.splitOn(s, ",")
+        let parts = strings.split(&s, ",")
         shed = strings.parseInt(parts[0][5..len(parts[0])]).unwrapOr(-1)
     }
     println("server: shed the unanswered ones: " + (if unanswered >= 1 && shed >= unanswered { "true" } else { "false (" + s + "; unanswered " + intToStr(unanswered) + ")" }))

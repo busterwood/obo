@@ -31,7 +31,7 @@ import "../support/httptest" as ht
 
 fn has(text: str, line: str): str { return if contains(text, "\n" + line) { "yes" } else { "no" } }
 
-fn firstLine(t: str): str { return strings.cut(t, "\n").unwrap().before }
+fn firstLine(t: str): str { return strings.cut(&t, "\n").unwrap().before }
 
 fn redir(base: str, code: int, to: str): str {
     return base + "/redirect?code=" + intToStr(code) + "&to=" + url.encode(to)
@@ -41,7 +41,7 @@ fn main() {
     task.scope(fn(s: mut &task.Scope) {
         let ln = net.listen("127.0.0.1:0").unwrap()
         let addr = ln.localAddr()
-        let p = strings.cut(addr, ":").unwrap().after
+        let p = strings.cut(&addr, ":").unwrap().after
         let base = "http://" + addr
         let srv = s.start(ht.serve, ln)
         let c = http.newClient(http.defaults())
@@ -55,10 +55,10 @@ fn main() {
         rq.body = "data"
         let t2 = c.send(&rq).unwrap().text().unwrap()
         println("302 POST: " + firstLine(t2) + " | Content-Length: " + has(t2, "Content-Length") + " | Content-Type: " +
-                has(t2, "Content-Type") + " | body '" + strings.cut(t2, "\n\n").unwrap().after + "'")
+                has(t2, "Content-Type") + " | body '" + strings.cut(&t2, "\n\n").unwrap().after + "'")
 
         let t3 = c.put(redir(base, 303, "/echo"), "text/plain", "data").unwrap().text().unwrap()
-        println("303 PUT: " + firstLine(t3) + " | body '" + strings.cut(t3, "\n\n").unwrap().after + "'")
+        println("303 PUT: " + firstLine(t3) + " | body '" + strings.cut(&t3, "\n\n").unwrap().after + "'")
 
         let r4 = c.head(redir(base, 303, "/echo")).unwrap()
         println("303 HEAD: " + intToStr(r4.status) + " " + (if r4.header("Content-Length").unwrap() != "0" { "HEAD" } else { "?" }))
@@ -68,10 +68,10 @@ fn main() {
         rq5.body = "data"
         let t5 = c.send(&rq5).unwrap().text().unwrap()
         println("307 POST: " + firstLine(t5) + " | Content-Type: " + has(t5, "Content-Type") + " | body '" +
-                strings.cut(t5, "\n\n").unwrap().after + "'")
+                strings.cut(&t5, "\n\n").unwrap().after + "'")
 
         let t6 = c.put(redir(base, 308, "/echo"), "text/plain", "data").unwrap().text().unwrap()
-        println("308 PUT: " + firstLine(t6) + " | body '" + strings.cut(t6, "\n\n").unwrap().after + "'")
+        println("308 PUT: " + firstLine(t6) + " | body '" + strings.cut(&t6, "\n\n").unwrap().after + "'")
 
         let t7 = c.post(redir(base, 301, "/echo"), "text/plain", "data").unwrap().text().unwrap()
         println("301 POST: " + firstLine(t7))
@@ -91,7 +91,7 @@ fn main() {
         rq10.header("Cookie", "a=1")
         rq10.header("X-Keep", "1")
         let t10 = c.send(&rq10).unwrap().text().unwrap()
-        let host = strings.cut(strings.cut(t10, "Host: ").unwrap().after, ":").unwrap().before
+        let host = strings.cut(strings.cut(&t10, "Host: ").unwrap().after, ":").unwrap().before
         println("other host: Authorization: " + has(t10, "Authorization") + " | Cookie: " + has(t10, "Cookie") +
                 " | X-Keep: " + has(t10, "X-Keep") + " | Host " + host)
 

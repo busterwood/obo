@@ -4,7 +4,7 @@ fn main() {
     var parts: []str = []
     {
         let s = "a,b,c" + ""
-        parts = strings.splitOn(s, ",")
+        parts = strings.owned(&strings.split(&s, ","))
     }
     println(parts[1])
 }

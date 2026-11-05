@@ -181,6 +181,22 @@ borrowed `mut` (a string is immutable). Out-of-range indices and bounds stop
 the program (exit 3). A string is at most
 4 GiB − 1 bytes long; making a longer one stops the program (exit 2).
 
+A shared `&str` is a **view**: the string's header (its block, offset and
+length) by value, with no count taken. `&s[a..b]` borrows the bytes `a` to
+`b - 1` of `s` without copying or counting them, and so does `s[a..b]` where a
+`&str` is expected; elsewhere `s[a..b]` is an owned `str` (it counts). A view
+is a borrow (sections 4.5 and 10): its root is the root of `s`. A `&str`
+converts to `str` where a `str` is expected (an argument, a stored value),
+which takes a count of the same bytes. `mut &str` borrows a `str` variable or
+field for writing, as for any `T`.
+
+A string literal, or a `str` constant (section 5.2), where a shared `&str` is
+expected (an argument, a typed `let`, a field of a record literal, an
+`Option` or `Result` payload, an array element, a `return`) is a view of
+static bytes. It has **no root**: it may be passed, kept in a value that holds
+borrows, joined with any root, and returned from any function
+(`fn kind(k: int): &str { return "word" }`). Elsewhere it is a `str`.
+
 All primitive types are copy types.
 
 ### 4.2 Arrays
@@ -267,12 +283,16 @@ A variant with positional fields is built like a call, `Expr.Num(3)`,
 ### 4.5 Borrows
 
 `&T` borrows a `T` for reading; `mut &T` borrows it for writing. A borrow is
-second class: it can be the type of a parameter, a receiver, a `let`, or a
-function result, and nothing else. Section 10 has the rules.
+second class (section 10): it can be the type of a parameter, a receiver, a
+`let`, a function result, a field of a value record or value closed type, an
+array element, or a type argument of a parameter declared `borrow` (section
+6.1). Such a record, closed type or array *holds borrows*, and is second class
+too. Section 10 has the rules.
 
 A borrow is never rebound. Reading a borrow reads the value it points to;
 assigning to a `mut &T` variable writes through it, and so does assigning to
-a field or element reached through it.
+a field or element reached through it. Assigning to a field or element *of*
+borrow type stores a new borrow there; it does not write through the old one.
 
 ### 4.6 Function values
 
@@ -444,7 +464,19 @@ Satisfaction is structural: there is no `impl` declaration.
 
 Functions and types take type parameters: `fn max[T: Ord + copy](a: T, b: T): T`,
 `type Map[K: Eq + Hash, V] = record { ... }`. A constraint is an interface,
-possibly generic (`T: Into[str]`), or `copy`.
+possibly generic (`T: Into[str]`), `copy`, or `borrow`.
+
+`borrow` (`type Option[T: borrow]`) lets the parameter take a type argument
+that holds borrows (section 10): `Option[&str]`, or `[]Token` with
+`Token = value record { text: &str; kind: int }`. Only a parameter declared
+`borrow` takes one. In the body a value of such a parameter is treated as
+holding borrows, and a type with such a parameter as one that may: it follows
+the rules of section 10 and cannot have a `drop` method. `std`'s `Option` and
+`Result` take `borrow` parameters; its heap containers (`Map`, `Set`, `Heap`)
+and `task.Scope.start` do not. A `borrow` parameter may also be constrained
+by an interface (`I: borrow + Iter[X]`), so adapters over iterators can be
+written; a type argument named only in another parameter's constraint is not
+inferred.
 
 A type argument is a type: `never` and "no result" are not, so neither can be
 a type argument, written or inferred (`call(fn(): never { exit(3) })` with
@@ -632,7 +664,9 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
 - The result is a value, copy or owned; it may not be a borrow, a slice or a
   closure. A borrow branch is read: `if c { r } else { 0 }` with `r: &int`
   is an `int`, and a field bound as a borrow by a match arm can be read but
-  not be the result when it is owned (moving out of a borrow).
+  not be the result when it is owned (moving out of a borrow). The result may
+  hold borrows (`if c { Some(&a) } else { None }` as an `Option[&str]`): it
+  then has the roots of all branches (section 10, rule 2).
 
 ## 8. Statements
 
@@ -643,6 +677,15 @@ let name = match e { Expr.Num(n) { n.toStr() } Expr.Call(f, _) { f } else { "?" 
   once. `for x in xs` walks an array: `x` is a copy of each element when the
   element type is a copy type, and a `&T` borrow of it otherwise. The array is
   borrowed for the whole loop.
+- `for x in e`, when `e` is not a range, an array or a slice, **iterates**:
+  `e` is moved (or copied) into a hidden variable `it`, and the loop runs as
+  `{ var it = e; while true { match it.next() { Some(x) { body } None { break } } } }`.
+  `next` must take `mut &Self` and return an `Option`. When the iterator holds
+  borrows, each `x` has the iterator's roots (section 10, rule 5), so the body
+  may keep `x` after the next call to `next`; an item never borrows the
+  iterator itself. `e` may be a record literal (`for t in Lexer{src: &s,
+  pos: 0} { ... }`): in a `for` header, a name followed by `{` and `field:`
+  is a literal, not the loop body.
 - `match e { ... }` takes a closed value. An arm names a variant and binds its
   positional fields (`Expr.Add(l, r)`) or named fields in declaration order; `_`
   ignores one. An arm may instead name several variants of the type, binding
@@ -723,7 +766,8 @@ take part in the join of section 9.1 (it drops nothing there).
 If a type has a `drop` method, dropping a value of that type first calls
 `drop` with a mutable borrow, then drops the fields. This is how a wrapper
 closes a C resource. A `drop` method may not move out of `self` or assign the
-whole of `self`, and no interface member can be satisfied by it.
+whole of `self`, and no interface member can be satisfied by it. A type that
+holds borrows, or has a type parameter declared `borrow`, cannot have one.
 
 Dropping a long chain of boxed values (a linked list) does not use stack depth
 proportional to its length. This includes a chain whose `drop` method detaches
@@ -748,14 +792,33 @@ A borrow points into a value that is owned elsewhere. The compiler enforces
 that a borrow is never used after what it points to is freed, with the
 following rules, all checked within one function at a time.
 
-1. **Second class.** A borrow type may appear only as a parameter, receiver,
-   `let` or function result type. A borrow cannot be stored in a field, an
-   element, a global, a `var`, or used as a type argument.
+A type *holds borrows* when it is a borrow or a slice, an array whose element
+holds borrows, a value record or value closed type with a field that holds
+borrows, an instance whose argument for a `borrow` type parameter holds
+borrows, or a type parameter declared `borrow` (section 6.1).
+
+1. **Second class.** A borrow, and any value of a type that holds borrows,
+   may be a parameter, receiver, `let`, function result, field of a value
+   record or value closed type, array element, or type argument of a `borrow`
+   type parameter; a value that holds borrows but is not itself a borrow may
+   also be a `var` (rule 7). None may be a global, a constant, a field of a
+   boxed record or closed type, a closure's result (a closure may capture
+   one), a task's argument or result, or a type argument of another type
+   parameter.
 2. **Roots.** Every borrow expression `&p` or `mut &p` has a root: the local
    variable or parameter that the place `p` starts from. Borrowing a global or
    a temporary that does not outlive the statement into a `let` is an error.
+   A value that holds borrows has the roots of the borrows it holds: a value
+   built from parts (a literal, an `append`, the branches of an `if` or
+   `match` expression) has the roots of all of them; a borrow read from a
+   field or element of such a value has that value's roots. Inside a
+   function, what a parameter that holds borrows (or borrows such a value)
+   holds is a root of its own, which messages call "what 'p' borrows".
+   A string literal or `str` constant used as a `&str` has no root (section
+   4.1): it adds none to a join and satisfies every rule below.
 3. **Calls.** While a call's arguments are evaluated, the places it has
-   already borrowed, or will move, are held: a later argument, at any depth of
+   already borrowed, or will move, are held, and so are the roots of a value
+   holding borrows that it was already passed: a later argument, at any depth of
    nesting, may not mutably borrow, assign or move a place that overlaps a held
    one. `use(first(&xs), pop(mut &xs))` is an error. A borrow taken at the call
    (section 7.5) is not held while the arguments run; when it is taken it is
@@ -765,20 +828,35 @@ following rules, all checked within one function at a time.
    (`m.put(k, m.get(&k)...)`). Two places overlap when one is a prefix of the
    other; any two indexes into the same array overlap. The same holding covers
    an operator's left operand and an index expression's array.
-4. **Frozen roots.** While a `let` borrow is in scope, its root is frozen: it
-   may not be assigned, moved, or mutably borrowed, and nothing under it may be
-   assigned. A `let r = mut &p` freezes the root against any other use as well,
-   except through `r`. A `for x in xs` loop freezes `xs` the same way for the
-   loop body.
-5. **Results.** A function whose result type is a borrow must have exactly one
-   borrowed parameter or receiver, and every `return` must return a borrow of
-   a place rooted at it, written `return &p.f` or `return mut &p.f` (or a
-   borrow returned by such a call). At the call site the
-   result borrows the argument passed there, and rule 4 applies to that
-   argument's root while the result is in scope.
+4. **Frozen roots.** While a `let` borrow, or a variable, parameter, `for`
+   or `match` binding of a type that holds borrows, is in scope, its roots are
+   frozen: they may not be assigned, moved, or mutably borrowed, and nothing
+   under them may be assigned. A `let r = mut &p`, or a value holding a
+   `mut &`, freezes its roots against any other use as well, except through
+   it. A `for x in xs` loop freezes `xs` the same way for the loop body, and
+   an iterating `for` freezes the iterator's roots.
+5. **Results.** A function whose result holds borrows has as its *sources*
+   the parameters (and receiver) that are or hold borrows. A result that is a
+   plain borrow has at most one, and a `mut &` result exactly one, a `mut &`
+   parameter. A function without sources may return only static borrows
+   (string literals and constants), and its result has no root. Every
+   `return` (and every
+   `try` that returns an `Err` holding borrows) must be rooted at its
+   sources: at a borrowed parameter itself, written `return &p.f` or
+   `return mut &p.f` (or a borrow returned by such a call), or, when that
+   parameter holds borrows or borrows a value that does, at what it holds,
+   never at the parameter itself. At the call site the result has the roots
+   of the arguments passed for the sources (for the second kind, the roots of
+   what they hold), and rule 4 applies to them while the result is in scope.
 6. **Mutation.** Assigning through `p` or calling a `mut &Self` method on `p`
    requires `p` to be a `var`, a `var` parameter, or rooted at a `mut &`
    borrow.
+7. **Variables.** A `var` of a type that holds borrows has one set of roots
+   for its whole scope, given by the first value stored in it that holds
+   borrows; every later store must have roots among them, and the roots must
+   be declared before the variable, in its block or around it. The first such
+   store inside a loop that the variable is declared outside of may not take a
+   `var` as a root. A `var` of a plain borrow type is an error.
 
 A `match` on a place of an owned type whose arm binds a field as a borrow
 freezes the place's root (rule 4) for the body of that arm.
@@ -1060,7 +1138,8 @@ loop for sockets (`net`) and timers. The rules the language relies on:
   plain function value `f: fn(A): T` and an owned
   argument `arg: A`. A `&fn` (a closure) and a borrow are rejected by the
   ordinary rules: a closure is not a `fn` value (section 4.6), and a borrow
-  type is not a type argument. So a task reaches nothing of its starter's
+  type, or a type that holds borrows, is not a type argument of `start`
+  (section 10, rule 1). So a task reaches nothing of its starter's
   but what was moved into it, and `Shared` values (and `Frozen` values,
   library handles built on `Shared` that lend only `&T`; lib/README.md).
 - A task runs until it parks: it waits for an unfinished future (`wait`,

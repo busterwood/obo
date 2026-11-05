@@ -1,0 +1,9 @@
+// borrow-class types (design/borrow-types.md): a map is frozen while its iterator is in scope.
+// error: 'm' is borrowed by the iterator of the for loop at line 6 and cannot be mutably borrowed
+fn main() {
+    var m: Map[str, int] = newMap()
+    m.put("a", 1)
+    for e in m.iter() {
+        m.put("b", 2)
+    }
+}

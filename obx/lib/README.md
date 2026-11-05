@@ -25,7 +25,7 @@ for leaks.
 | `money.obx` | 200 | Currency, USD/EUR/GBP/JPY/CHF, Money[C] |
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
 | `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
-| `strings.obx` | 490 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
+| `strings.obx` | 705 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
 | `io.obx` | 347 | IoError, whole-file read/write/append, readLines, readStdin, streaming Reader, buffered Writer |
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
@@ -56,7 +56,9 @@ for leaks.
   `Ok`/`Err` (the `try` lang item): `isOk`, `isErr`, `unwrap`, `expect`,
   `unwrapOr`, `unwrapErr`, `expectErr(msg)`, `map(&f)` (the Ok value),
   `mapErr(&f)` (the Err value: `try r.mapErr(toError)`), `ok()`, `err()`,
-  `toStr`. **Unit**.
+  `toStr`. **Unit**. Both take `borrow` type parameters (SPEC 6.1), so
+  `Option[&str]` and `Result[Token, &str]` hold views; such a value follows
+  the rules for values that hold borrows (SPEC 10).
 - **Where** (a lang item, SPEC 15): a call site, the text `"file:line"` in
   the program's static data (`toStr`, `cstr()` for C). A call of a library
   function whose last parameter is a `Where` may leave it out: the compiler
@@ -127,7 +129,10 @@ for leaks.
   `valAtMut(i)` for walking, `each(fn(k, v) {...})` and `eachMut(fn(k, v)
   {...})` (v is `mut &V`) in insertion order, `keys()`/`values()` (copy
   types). `remove` moves the last entry into the hole. Slots come from
-  `(hash ^ seed) * GOLDEN` (the seed per process, above).
+  `(hash ^ seed) * GOLDEN` (the seed per process, above). Experimental:
+  `for e in m.iter()` walks the entries in insertion order as
+  `MapEntry{key: &K, value: &V}` (`MapIter` holds a borrow of the map, which
+  is frozen for the loop; design/borrow-types.md).
 - Powers of ten for Decimal come from `POW10`, a constant table (read-only
   static data) instead of a 39-arm match.
 
@@ -170,8 +175,10 @@ insertion point), `lowerBound`, `upperBound`, `find`, `findBy`, `contains`,
 
 ### strings
 
-`lastIndexOf`, `indexOfByte`, `count`, `equalFold`, `splitOn(s, sep: str)`,
-`splitN`, `fields`, `cut(s, sep): Option[Cut]`, `join(&parts, sep)`,
+`lastIndexOf`, `indexOfByte`, `count`, `equalFold`, `split(&s, sep):
+[]&str`, `splitN(&s, sep, n)` (n < 0: all), `fields(&s): []&str`, `cut(&s,
+sep): Option[Cut]` (`before` and `after` are views), `owned(&pieces): []str`,
+`lines(&text)` and `fieldsIter(&text)`, `join(&parts, sep)`,
 `replaceAll`, `replaceN`, `trimLeft`, `trimRight`, `trimPrefix`, `trimSuffix`,
 `toUpper`, `toLower` (ASCII), `isLetter`, `isAlnum`; `parseInt(s)` and
 `parseIntBase(s, base)` return `Result[int, ParseError]` (`Empty`,
@@ -183,6 +190,14 @@ its maximal subpart, as Rust's `from_utf8_lossy`), `runes`, `runeCount`,
 &buf, r)`, `fromRune`, `fromRunes`, `displayWidth(s)` and `runeWidth(r)`
 (terminal columns per unicode-width 0.1.14: wide East Asian and emoji 2,
 combining marks, format and control characters 0).
+Splitting gives views (design/borrow-types.md): the pieces are `&str` views
+of the text, not copies and not counted, and the text is frozen while they
+live (SPEC 10); a piece converts to `str` where one is expected, and
+`owned(&pieces)` keeps a whole array. `lines` and `fieldsIter` are iterators
+for `for x in ...` (a line has no `"\n"`; a final line without one is a line;
+`""` has none). Separators are `&str`, so a literal is passed as it is
+(`strings.split(&line, ",")`). std's `split(s, sep: byte): []str` (the
+prelude's split at a byte) is a different function and gives owned pieces.
 
 ### io, fs, os, time
 

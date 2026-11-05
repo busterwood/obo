@@ -1,0 +1,9 @@
+// borrow-class types (design/borrow-types.md): appending a borrow of a loop local to an outer var.
+// error: 's' does not live as long as 'keep'
+fn main() {
+    var keep: []&str = []
+    for i in 0..3 {
+        let s = intToStr(i)
+        append(mut &keep, &s)
+    }
+}

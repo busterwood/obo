@@ -1,0 +1,39 @@
+// Borrow-class types (design/borrow-types.md): if and match expressions giving a value that holds
+// borrows keep its root (the join of the branches' roots).
+// expect: alpha
+// expect: beta
+// expect: al
+// expect: none
+// expect: be
+type Span = value record {
+    text: &str
+    at: int
+}
+
+fn spanOf(s: &str, n: int): Span { return Span{text: s[0..n], at: 0} }
+
+fn main() {
+    let a = "alpha"
+    let b = "beta"
+    for k in 0..2 {
+        let t = if k == 0 { Span{text: &a, at: 0} } else { Span{text: &b, at: 1} }
+        println(t.text)
+    }
+    let o: Option[&str] = Some(&a[0..2])
+    let u = match o {
+        Some(x) { spanOf(x, 2) }
+        None { spanOf(&b, 0) }
+    }
+    println(u.text)
+    let n: Option[&str] = None
+    let w = match n {
+        Some(x) { x }
+        None { "none" }
+    }
+    println(w)
+    let v = if len(a) > 10 { Some(&a[0..2]) } else { Some(&b[0..2]) }
+    match v {
+        Some(x) { println(x) }
+        None {}
+    }
+}

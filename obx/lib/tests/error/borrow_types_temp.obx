@@ -1,0 +1,18 @@
+// borrow-class types (design/borrow-types.md): a let cannot hold borrows of a temporary.
+// error: 'parts' cannot hold borrows of a temporary
+fn splitRef(s: &str, sep: byte): []&str {
+    var out: []&str = []
+    var start = 0
+    for i in 0..len(s) {
+        if s[i] == sep {
+            append(mut &out, &s[start..i])
+            start = i + 1
+        }
+    }
+    append(mut &out, &s[start..len(s)])
+    return out
+}
+fn main() {
+    let parts = splitRef(&("a," + "b"), ',')
+    println(parts[0])
+}

@@ -1,0 +1,10 @@
+// borrow-class types (design/borrow-types.md, D8): nor can a type with a borrow type parameter.
+// error: Holder cannot have a drop method: its type parameter T is declared borrow, so it may hold borrows
+type Holder[T: borrow] = value record {
+    x: T
+}
+fn (h: mut &Holder[T]) drop() {}
+fn main() {
+    let h = Holder{x: 1}
+    println(h.x)
+}

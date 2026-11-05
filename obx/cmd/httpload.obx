@@ -125,8 +125,8 @@ fn response(c: &net.Conn, buf: mut &[]byte, addr: str): Result[bool, io.IoError]
     let head = strFromBytes(&buf[0..end])
     var body = 0
     var closing = false
-    for line in strings.splitOn(head, "\r\n") {
-        match strings.cut(line, ":") {
+    for line in strings.split(&head, "\r\n") {
+        match strings.cut(&line, ":") {
             Some(kv) {
                 let name = strings.toLower(kv.before)
                 if name == "content-length" { body = strings.parseInt(trim(kv.after)).unwrapOr(0) }
@@ -200,7 +200,7 @@ fn writeHist(path: str, t: &Tally) {
 
 fn addHist(h: mut &Hist, path: str) {
     for line in io.readLines(path).unwrap() {
-        let kv = strings.cut(line, " ").unwrap()
+        let kv = strings.cut(&line, " ").unwrap()
         let v = strings.parseInt(kv.after).unwrap()
         if kv.before == "errors" {
             h.errors += v

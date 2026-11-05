@@ -1,0 +1,64 @@
+// strings' views (design/borrow-types.md): split, splitN, fields, cut, owned, lines, fieldsIter.
+// expect: 4 [a] [bb] [] [c d]
+// expect: 3 [x] [yy] [zzz]
+// expect: 2 [a] [b,,c]
+// expect: <one>
+// expect: <>
+// expect: <three>
+// expect: 0
+// expect: <last>
+// expect: alpha|beta|gamma
+// expect: kept: bb
+// expect: owned: a bb  c d
+// expect: k=key v=value
+import "strings"
+
+fn show(xs: &[]&str): str {
+    var b = newStrBuf()
+    b.add(intToStr(len(xs)))
+    for x in xs { b.add(" [" + x + "]") }
+    return b.toStr()
+}
+
+fn pieces(): []str {
+    let s = "a,,bb,,,,c d"
+    return strings.owned(&strings.split(&s, ",,"))      // kept past s
+}
+
+fn main() {
+    let s = "a,,bb,,,,c d"
+    let ps = strings.split(&s, ",,")
+    println(show(&ps))
+    let w = "  x yy\tzzz \n"
+    let ws = strings.fields(&w)
+    println(show(&ws))
+    let sep = ","
+    let two = strings.splitN("a,b,,c", &sep, 2)
+    println(show(&two))
+    let t = "one\n\nthree\n"
+    for l in strings.lines(&t) { println("<" + l + ">") }
+    let e = ""
+    var n = 0
+    for l in strings.lines(&e) { n += 1 }
+    println(intToStr(n))
+    let u = "last"
+    for l in strings.lines(&u) { println("<" + l + ">") }
+    let v = " alpha  beta gamma "
+    var b = newStrBuf()
+    var first = true
+    for f in strings.fieldsIter(&v) {
+        if !first { b.add("|") }
+        first = false
+        b.add(f)
+    }
+    println(b.toStr())
+    var kept = ""
+    kept = ps[1]          // a view converts to str where one is expected
+    println("kept: " + kept)
+    println("owned: " + strings.join(&pieces(), " "))
+    let kv = "key=value"
+    match strings.cut(&kv, "=") {
+        Some(c) { println("k=" + c.before + " v=" + c.after) }
+        None { println("none") }
+    }
+}

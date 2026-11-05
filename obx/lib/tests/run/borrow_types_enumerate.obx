@@ -1,0 +1,50 @@
+// Borrow-class types (design/borrow-types.md): an enumerate adapter over any iterator, through an
+// interface constraint on a borrow type parameter. X is not inferred from I's constraint, so the
+// call names both type arguments.
+// expect: 0 alpha
+// expect: 1 beta
+// expect: 2 gamma
+type Iter[X: borrow] = interface { fn (mut &Self) next(): Option[X] }
+
+type Indexed[X: borrow] = value record {
+    index: int
+    item: X
+}
+
+type Enumerate[I: borrow + Iter[X], X: borrow] = value record {
+    inner: I
+    i: int
+}
+
+fn (e: mut &Enumerate[I, X]) next(): Option[Indexed[X]] {
+    match e.inner.next() {
+        Some(x) {
+            let k = e.i
+            e.i += 1
+            return Some(Indexed{index: k, item: x})
+        }
+        None { return None }
+    }
+}
+
+fn enumerate[I: borrow + Iter[X], X: borrow](it: I): Enumerate[I, X] { return Enumerate{inner: it, i: 0} }
+
+type Words = value record {
+    src: &str
+    pos: int
+}
+
+fn (w: mut &Words) next(): Option[&str] {
+    while w.pos < len(w.src) && w.src[w.pos] == ' ' { w.pos += 1 }
+    if w.pos >= len(w.src) { return None }
+    let start = w.pos
+    while w.pos < len(w.src) && w.src[w.pos] != ' ' { w.pos += 1 }
+    return Some(w.src[start..w.pos])
+}
+
+fn main() {
+    let s = "alpha beta  gamma"
+    for e in enumerate[Words, &str](Words{src: &s, pos: 0}) {
+        println(intToStr(e.index) + " " + e.item)
+    }
+}

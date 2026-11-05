@@ -24,6 +24,9 @@ import "strings"
 
 fn show(xs: &[]str, sep: str): str { return "[" + strings.join(xs, sep) + "]" }
 
+// pieces (views) kept as owned strings, then joined
+fn showV(xs: &[]&str, sep: str): str { return show(&strings.owned(xs), sep) }
+
 fn res(r: Result[int, strings.ParseError]): str {
     match r {
         Ok(n) { return "Ok(" + n.toStr() + ")" }
@@ -45,9 +48,9 @@ fn main() {
     println(indexOf(s, "world", 0).toStr() + " " + indexOf(s, "x", 0).toStr() + " " +
         strings.lastIndexOf("abcabc", "c").toStr() + " " + strings.count("ababab", "ab").toStr() + " " +
         strings.count("aaa", "b").toStr())
-    println(show(&strings.splitOn("a, b, , c", ", "), "|") + " " + show(&strings.fields("  \t "), "|") + " " +
-        show(&strings.splitN("a,b,c", ",", 2), "|") + " " +
-        show(&strings.fields(" x  y\tz\n"), "|") + " " + show(&strings.splitN("a=b=c", "=", 2), "|"))
+    println(showV(&strings.split("a, b, , c", ", "), "|") + " " + showV(&strings.fields("  \t "), "|") + " " +
+        showV(&strings.splitN("a,b,c", ",", 2), "|") + " " +
+        showV(&strings.fields(" x  y\tz\n"), "|") + " " + showV(&strings.splitN("a=b=c", "=", 2), "|"))
     match strings.cut("k=v=w", "=") {
         Some(c) { print("key=" + c.before + " value=" + c.after) }
         None { print("none") }

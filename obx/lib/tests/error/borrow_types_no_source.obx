@@ -1,0 +1,10 @@
+// borrow-class types (design/borrow-types.md): a result holding borrows comes from the parameters
+// that are or hold borrows; without one it may hold only static borrows (string literals).
+// error: cannot return a value holding borrows of 's': f has no borrowed parameter, so its result may only borrow static strings
+fn f(n: int): []&str {
+    let s = intToStr(n)
+    var out: []&str = ["static"]
+    append(mut &out, &s)
+    return out
+}
+fn main() { println(len(f(1))) }

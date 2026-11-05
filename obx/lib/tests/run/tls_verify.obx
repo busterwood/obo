@@ -43,7 +43,7 @@ fn attempt(o: tls.Options, addr: str, name: str): str {
 
 fn fingerprint(file: str): str {
     let text = tt.opensslOut(["x509", "-in", file, "-noout", "-fingerprint", "-sha256"])
-    return strings.cut(trim(text), "=").unwrap().after
+    return strings.cut(&trim(text), "=").unwrap().after
 }
 
 fn main() {
@@ -66,7 +66,7 @@ fn main() {
         wrong.insecureSkipVerify = true
         wrong.pins = fingerprint("srv.pem") + ",00:" + repeat("ab", 31)
         let w = attempt(wrong, rogue.addr, "localhost")
-        match strings.cut(w, "(sha256 ") {
+        match strings.cut(&w, "(sha256 ") {
             Some(x) { println("wrong pin: " + x.before + "(sha256 ...) (localhost)") }
             None { println("wrong pin: " + w) }
         }

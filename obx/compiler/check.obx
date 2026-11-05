@@ -72,6 +72,14 @@ pub const H_CL = 7
 pub const H_TRAMP = 8
 pub const H_IMETH = 9
 pub const H_IASSOC = 10
+// H_ADDR, H_DEREF, H_SHARE: t (the referent type, a type parameter) and the C x. A shared &str is
+// the string's header copied without its count (design/borrow-types.md), so a shared borrow of a
+// str is its value, not its address: these become &x / *x / x for other types and x / x / *x for
+// str, per instance (H_SHARE: a mut &T used as a &T). Only a bare type parameter can become str,
+// so any other type is decided when the generic body is checked.
+pub const H_ADDR = 11
+pub const H_DEREF = 12
+pub const H_SHARE = 13
 
 pub type Hole = value record {
     pub k: int
@@ -120,6 +128,11 @@ const CAT_PLACE = 2
 const VK_PARAM = 0
 const VK_LOCAL = 1
 const VK_STATIC = 2
+const VK_PSEUDO = 3     // a root that is not a variable: what a parameter borrows, or a join of roots
+
+// The root of a borrow-class value that holds no borrows (an empty array, None): it freezes nothing
+// and joins with any root (design/borrow-types.md).
+const R_FREE = -1000000000
 
 // The kinds of frozen(): a read, an assignment, a move, a mut borrow.
 const FR_READ = 0
@@ -153,6 +166,10 @@ type Var = value record {
     cap: int        // a closure's capture: the captured variable, or -1
     capmut: bool
     pjoin: int      // the line of the if or match after which it was dropped on the paths that kept it, or 0
+    croot: int      // a borrow-class variable's contents root (what its borrows point into), or -1: not yet bound
+    depth: int      // the scope it was declared in (its index in Ctx.scopes), -1 for a pseudo root
+    loops: int      // the loops around its declaration
+    jn: int         // a join root: its members (Checker.joins), or -1
 }
 
 type Tmp = value record {
@@ -176,6 +193,7 @@ type Val = value record {
     noreturn: bool
     caps: int       // a closure value's captures (Checker.capl), or -1
     late: bool
+    cr: int         // a borrow-class value that is not a place: its root (R_FREE: none), or -1: unknown
 }
 
 type Cap = value record {
@@ -238,12 +256,13 @@ type Ctx = record {
     capNames: []str
     capVars: []int
     wconds: []int   // the number of loops around each while condition being checked
+    rsrc: []int     // a result holding borrows: the roots it may have (parameters, or what they hold)
 }
 
 fn newCtx(f: int, label: str, ret: int, env: []int, mod: int, closure: bool): Ctx {
     return Ctx{fd: f, label: label, ret: ret, env: env, mod: mod, closure: closure, bvar: -1, lines: [], ind: 1,
         scopes: [], frames: [], loops: [], pending: [], pmarks: [], dead: false, nomove: [], n: 0, tailOn: false,
-        tail: [], capNames: [], capVars: [], wconds: []}
+        tail: [], capNames: [], capVars: [], wconds: [], rsrc: []}
 }
 
 // What static() finds.
@@ -302,6 +321,7 @@ type MatchX = record {
     r: int
     t: int
     lits: []int     // (line index, node, indent) triples
+    cr: int         // a value holding borrows: the join of the arms' roots (R_FREE: none yet)
 }
 
 pub type Checker = record {
@@ -324,12 +344,15 @@ pub type Checker = record {
     calleeTps: []int
     initOrder: []int
     mxs: []MatchX
+    joins: [][]int             // the members of each join root
+    joinVars: []int            // the join roots made so far
+    noRebase: int              // > 0 while an assignment target is evaluated: a borrow field is the place
 }
 
 pub fn newChecker(pg: sema.Program): Checker {
     var c = Checker{pg: pg, x: tm.newArena(), tmpls: [], ginits: [], cinits: [], vars: [], tmps: [], capl: [], statics: newMap(),
         podMemo: [], copyMemo: [], cids: 0, holes: [], lifted: [], cx: newCtx(-1, "", sema.T_VOID, [], 0, false),
-        outers: [], calleeTps: [], initOrder: [], mxs: []}
+        outers: [], calleeTps: [], initOrder: [], mxs: [], joins: [], joinVars: [], noRebase: 0}
     for f in 0..len(c.pg.fns) { append(mut &c.tmpls, Tmpl{done: false, lines: [], holes: [], lifted: []}) }
     for g in 0..len(c.pg.globals) { append(mut &c.ginits, noInit()) }
     for k in 0..len(c.pg.consts) { append(mut &c.cinits, noInit()) }
@@ -342,7 +365,7 @@ fn noInit(): GInit { return GInit{has: false, isOnce: false, table: false, items
 
 fn val(c: int, t: int, cat: int): Val {
     return Val{c: c, t: t, cat: cat, tmp: -1, root: -1, path: "", mutable: false, viaref: false, vvar: -1, gk: -1,
-        gi: -1, noreturn: false, caps: -1, late: false}
+        gi: -1, noreturn: false, caps: -1, late: false, cr: -1}
 }
 
 fn rv(c: int, t: int): Val { return val(c, t, CAT_RV) }
@@ -424,6 +447,28 @@ fn (c: mut &Checker) T(t: int): int {
 // A C type of the runtime by name.
 fn (c: mut &Checker) ct(s: str): int { return c.x.ct(s) }
 
+// The C of a shared borrow of the place x (an lvalue) of type t: &x, or x itself for a str (a
+// shared &str is the header, uncounted), or a hole when t mentions type parameters.
+fn (c: mut &Checker) addrOf(t: int, x: int): int {
+    if t == sema.T_STR { return x }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_ADDR, t, x)) }
+    return c.x.par(c.x.pre("&", x))
+}
+
+// The C of the place a shared borrow x of a t points to.
+fn (c: mut &Checker) derefOf(t: int, x: int): int {
+    if t == sema.T_STR { return x }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_DEREF, t, x)) }
+    return c.x.par(c.x.pre("*", x))
+}
+
+// The C of a mut &t borrow x used as a shared &t.
+fn (c: mut &Checker) shareOf(t: int, x: int): int {
+    if t == sema.T_STR { return c.x.par(c.x.pre("*", x)) }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_SHARE, t, x)) }
+    return x
+}
+
 // The names and numbers of C.
 fn (c: mut &Checker) nm(s: str): int { return c.x.nm(s) }
 fn (c: mut &Checker) ll(v: int): int { return c.x.ll(v) }
@@ -469,7 +514,335 @@ fn (c: mut &Checker) isCopy(t: int): bool {
 fn (c: mut &Checker) tuple(ts: &[]int): int { return c.pg.mkFn(ts, sema.T_VOID) }
 
 fn (c: &Checker) rootName(r: int, dflt: str): str {
-    return if r >= 0 { c.vars[r].name } else if r <= -2 { "a temporary" } else { dflt }
+    return if r >= 0 { c.vars[r].name } else if r == R_FREE { "nothing" } else if r <= -2 { "a temporary" } else { dflt }
+}
+
+// A root as messages show it: 'x', what 'p' borrows (a parameter's pseudo root), 'a' and 'b' (a
+// join), a temporary, nothing.
+fn (c: &Checker) rootDesc(r: int): str {
+    if r == R_FREE { return "nothing" }
+    if r <= -2 { return "a temporary" }
+    if r < 0 { return "something unknown" }
+    if c.vars[r].jn >= 0 { return c.vars[r].name }
+    if c.vars[r].kind == VK_PSEUDO && startsWith(c.vars[r].name, "*") {
+        return "what '" + c.vars[r].name[1..len(c.vars[r].name)] + "' borrows"
+    }
+    return c.varDesc(r)
+}
+
+// A variable as messages show it: 'x', or a hidden one's description (the iterator of a for loop).
+fn (c: &Checker) varDesc(x: int): str {
+    let n = c.vars[x].name
+    return if startsWith(n, "the ") { n } else { "'" + n + "'" }
+}
+
+// ---------------------------------------------------------------- borrow-class roots
+//
+// A borrow-class value (design/borrow-types.md) holds borrows; its root is what they point into,
+// which it freezes while it is in scope (SPEC 10 rule 4). A place's root (Val.root) is the variable
+// the place starts from; the root of the borrows held by the value at a place is the contents root
+// of that variable (Var.croot); a value that is not a place carries it in Val.cr.
+
+fn isTmpRoot(r: int): bool { return r <= -2 && r != R_FREE }
+
+fn (c: &Checker) isBorrowTy(t: int): bool { return t >= 0 && c.pg.isBorrow(t) }
+
+// The variable a borrow variable (a let borrow, a for or match binding) finally borrows from.
+fn (c: &Checker) ultimate(r0: int): int {
+    var r = r0
+    var n = 0
+    while r >= 0 && n < 1000 && c.vars[r].kind != VK_PARAM && c.isBorrowTy(c.vars[r].t) && c.vars[r].broot >= 0 &&
+            c.vars[r].broot != r {
+        r = c.vars[r].broot
+        n += 1
+    }
+    return r
+}
+
+// The variable whose contents root a place under variable x has: x, or what a borrow variable borrows.
+fn (c: &Checker) holder(x0: int): int {
+    var x = x0
+    var n = 0
+    while x >= 0 && n < 1000 && c.vars[x].kind != VK_PARAM && c.isBorrowTy(c.vars[x].t) && c.vars[x].broot >= 0 &&
+            c.vars[x].broot != x {
+        x = c.vars[x].broot
+        n += 1
+    }
+    return x
+}
+
+fn (c: &Checker) cvar(x0: int): int {
+    let x = c.holder(x0)
+    return if x < 0 { x } else { c.vars[x].croot }
+}
+
+// The root of the borrows the value v holds (v borrow-class): R_FREE, a variable or pseudo root, a
+// temporary's root, or -1 when it is not known.
+fn (c: mut &Checker) crOf(v: Val): int {
+    let k = c.pg.tk(v.t)
+    let isB = k == sema.TK_REF || k == sema.TK_SLICE
+    if v.cat == CAT_PLACE {
+        if v.gk >= 0 { return R_FREE }
+        if v.root < 0 { return if v.cr != -1 { v.cr } else { v.root } }
+        if isB && len(v.path) == 0 && !v.viaref { return c.ultimate(v.root) }
+        if isB && c.pg.tm(v.t) { return v.root }     // a mut borrow held in a value: through its holder only
+        let r = c.cvar(v.root)
+        return if r == -1 { v.root } else { r }
+    }
+    if isB {
+        if v.root >= 0 || isTmpRoot(v.root) { return c.ultimate(v.root) }
+        // a borrow of a value that is not a place: a str (its bytes are a literal's or held by a
+        // temporary of the statement) or a constant table is free; anything else is a temporary
+        if v.root == R_FREE || k == sema.TK_SLICE || c.pg.ta(v.t) == sema.T_STR { return R_FREE }
+        return -2
+    }
+    return v.cr
+}
+
+// A shared borrow read out of a value (a field or element of borrow type) has the root of the
+// borrows that value holds, not the value's own place.
+fn (c: mut &Checker) rebase(v: Val): Val {
+    let k = c.pg.tk(v.t)
+    if (k == sema.TK_REF || k == sema.TK_SLICE) && !c.pg.tm(v.t) && v.cat == CAT_PLACE && v.gk < 0 &&
+            (len(v.path) > 0 || v.viaref) && v.root != -1 {
+        var r = v
+        r.root = c.crOf(v)
+        r.path = pathAdd("", "*")
+        r.vvar = -1
+        return r
+    }
+    return v
+}
+
+fn (c: &Checker) members(r: int): []int {
+    if r >= 0 && c.vars[r].jn >= 0 { return copyInts(&c.joins[c.vars[r].jn]) }
+    return [r]
+}
+
+fn hasInt(xs: &[]int, x: int): bool {
+    for y in xs {
+        if y == x { return true }
+    }
+    return false
+}
+
+// The root of a value holding the borrows of both roots a and b: R_FREE is none, a temporary wins,
+// and two variables make a join root, which freezes both.
+fn (c: mut &Checker) joinRoots(a: int, b: int): int {
+    if a == R_FREE { return b }
+    if b == R_FREE || a == b { return a }
+    if a == -1 || b == -1 { return -1 }
+    if isTmpRoot(a) { return a }
+    if isTmpRoot(b) { return b }
+    var ms = c.members(a)
+    for x in c.members(b) {
+        if !hasInt(&ms, x) { append(mut &ms, x) }
+    }
+    for v in c.joinVars {
+        if len(c.joins[c.vars[v].jn]) == len(ms) {
+            var same = true
+            for x in ms {
+                if !hasInt(&c.joins[c.vars[v].jn], x) { same = false }
+            }
+            if same { return v }
+        }
+    }
+    var name = newStrBuf()
+    for i in 0..len(ms) {
+        if i > 0 { name.add(if i == len(ms) - 1 { " and " } else { ", " }) }
+        name.add(c.rootDesc(ms[i]))
+    }
+    append(mut &c.joins, ms)
+    let j = c.newVar(name.toStr(), "", sema.T_VOID, false, VK_PSEUDO, 0)
+    c.vars[j].jn = len(c.joins) - 1
+    c.vars[j].depth = -1
+    append(mut &c.joinVars, j)
+    return j
+}
+
+// v with the root of what it holds set to cr: a borrow's root, or a value's cr.
+fn (c: mut &Checker) withCr(v: Val, cr: int): Val {
+    var r = v
+    let k = c.pg.tk(v.t)
+    if k == sema.TK_REF || k == sema.TK_SLICE {
+        r.root = cr
+        r.path = pathAdd("", "*")
+        return r
+    }
+    r.cr = cr
+    return r
+}
+
+// The root of the borrows held by a value of type t stored inside the value at root (cr: that
+// value's own, when it is a temporary): an element or field.
+fn (c: mut &Checker) innerCr(root: int, cr: int, t: int): int {
+    var ev = val(-1, t, CAT_PLACE)
+    ev.root = root
+    ev.cr = cr
+    ev.path = pathAdd("", "[]")
+    ev.viaref = true
+    return c.crOf(ev)
+}
+
+// Variable x (of type t), bound to a value holding borrows with root cr: it borrows (a borrow
+// type) or holds (any other) what cr is, and freezes it while in scope (SPEC 10 rule 4).
+fn (c: mut &Checker) bindBC(x: int, t: int, cr: int, line: int, tmpOk: bool) {
+    if !c.pg.isBorrowClass(t) { return }
+    let name = c.varDesc(x)
+    if cr == -1 {
+        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be bound to " +
+            name)
+    }
+    if isTmpRoot(cr) && !tmpOk {
+        c.err(line, name + " cannot hold borrows of a temporary: the temporary does not outlive the statement " +
+            "(bind it to a variable first)")
+    }
+    if c.isBorrowTy(t) {
+        c.vars[x].broot = if cr == R_FREE { -1 } else { cr }
+    } else if cr != R_FREE {
+        c.vars[x].croot = cr
+    }
+    if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), name) }
+}
+
+// A parameter that is or holds borrows of a borrow-class value gets a pseudo root for what those
+// borrows point into, which outlives the call.
+fn (c: mut &Checker) paramContents(v: int) {
+    if !c.inherits(c.vars[v].t) { return }
+    let p = c.newVar("*" + c.vars[v].name, "", sema.T_VOID, false, VK_PSEUDO, c.vars[v].line)
+    c.vars[p].depth = -1
+    c.vars[v].croot = p
+}
+
+// A result holding borrows (or a borrow) returned with root r: it must be one of cx.rsrc.
+fn (c: mut &Checker) checkResult(r: int, shown: int, line: int, isB: bool) {
+    if r == R_FREE { return }
+    var ok = r != -1 && !isTmpRoot(r)
+    if ok {
+        for m in c.members(r) {
+            if !hasInt(&c.cx.rsrc, m) { ok = false }
+        }
+    }
+    if ok { return }
+    let f = c.cx.fd
+    var anyInh = false
+    var desc = newStrBuf()
+    var k = 0
+    let bsrc = copyInts(&c.pg.fns[f].bsrc)
+    for i in bsrc {
+        let p = c.pg.fns[f].params[i]
+        if k > 0 { desc.add(" or ") }
+        if c.inherits(p.ty) {
+            anyInh = true
+            desc.add("what '" + p.name + "' borrows")
+        } else {
+            desc.add("'" + p.name + "'")
+        }
+        k += 1
+    }
+    let rs = if shown != -1 { shown } else { r }
+    let name = c.rootDesc(rs)
+    if len(bsrc) == 0 {
+        c.err(line, "cannot return " + (if isB { "a borrow" } else { "a value holding borrows" }) + " of " + name +
+            ": " + c.cx.label + " has no borrowed parameter, so its result may only borrow static strings " +
+            "(literals and constants)")
+    }
+    if isB && !anyInh {
+        c.err(line, "cannot return a borrow of " + name + ": a borrow result must be rooted at the " +
+            "borrowed parameter '" + c.pg.fns[f].bparam + "', not a local or temporary")
+    }
+    // a parameter that holds borrows lends what it holds, not itself (no lending iterators, D5)
+    let own = if rs >= 0 && c.vars[rs].kind == VK_PARAM && c.inherits(c.vars[rs].t) {
+        " (" + name + " holds borrows, so a result borrows what it holds, not " + name + " itself)" } else { "" }
+    c.err(line, "cannot return " + (if isB { "a borrow" } else { "a value holding borrows" }) + " of " +
+        name + ": the result of " + c.cx.label + " may only borrow from " + desc.toStr() + own)
+}
+
+// Whether root r outlives variable x (it is declared before x, in x's scope or around it).
+fn (c: &Checker) outlives(r: int, x: int): bool {
+    for m in c.members(r) {
+        if m < 0 { return false }
+        if c.vars[m].kind != VK_PSEUDO && c.vars[m].kind != VK_STATIC {
+            if c.vars[m].depth > c.vars[x].depth || (c.vars[m].depth == c.vars[x].depth && m > x) { return false }
+        }
+    }
+    return true
+}
+
+// A borrow parameter of a borrow-class referent, or a by-value borrow-class parameter: a result
+// inherits the root of what it holds (Swift's copy dependency), not the parameter's own place.
+fn (c: mut &Checker) inherits(t: int): bool {
+    let k = c.pg.tk(t)
+    if k == sema.TK_REF || k == sema.TK_SLICE { return c.pg.isBorrowClass(c.pg.ta(t)) }
+    return c.pg.isBorrowClass(t)
+}
+
+// A borrow-class value with root r is stored into a place under variable x (its holder keeps one
+// root): the first store binds an unbound holder, later ones must have the same root.
+fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
+    if r == R_FREE || x0 < 0 { return }
+    if isTmpRoot(x0) { return }      // a temporary holder: dropped with the statement
+    let x = c.holder(x0)
+    if x < 0 { return }
+    let name = c.varDesc(x)
+    if r == -1 {
+        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be stored in " +
+            name)
+    }
+    if isTmpRoot(r) {
+        c.err(line, name + " cannot hold a borrow of a temporary: the temporary does not outlive the statement " +
+            "(bind it to a variable first)")
+    }
+    let cur = c.vars[x].croot
+    if cur == r { return }
+    if cur >= 0 {
+        let have = c.members(cur)
+        var inside = true
+        for m in c.members(r) {
+            if !hasInt(&have, m) { inside = false }
+        }
+        if inside { return }
+        c.err(line, name + " holds borrows of " + c.rootDesc(cur) + ", so it cannot also hold borrows of " +
+            c.rootDesc(r) + " (a value holding borrows keeps the roots it was first given)")
+    }
+    if c.vars[x].kind == VK_PARAM || c.vars[x].kind == VK_PSEUDO {
+        c.err(line, name + " cannot hold borrows of " + c.rootDesc(r) + ": it is a parameter, and what it borrows " +
+            "is fixed by the caller")
+    }
+    if r == x || !c.outlives(r, x) {
+        c.err(line, name + " cannot hold borrows of " + c.rootDesc(r) + ": " + c.rootDesc(r) +
+            " does not live as long as " + name)
+    }
+    if len(c.cx.loops) > c.vars[x].loops {
+        for m in c.members(r) {
+            if m >= 0 && c.vars[m].mutable {
+                c.err(line, name + " first holds borrows of the var '" + c.vars[m].name + "' inside a loop: give " +
+                    name + " its root before the loop (initialise it from a value that borrows '" + c.vars[m].name + "')")
+            }
+        }
+    }
+    for m in c.members(r) { c.frozen(m, if c.pg.holdsMut(t) { FR_MUT } else { FR_READ }, line) }
+    c.vars[x].croot = r
+    let d = c.vars[x].depth
+    if d >= 0 && d < len(c.cx.scopes) {
+        append(mut &c.cx.scopes[d].freezes, Freeze{root: r, m: c.pg.holdsMut(c.vars[x].t), by: name})
+    }
+}
+
+// The root a call's borrow-class result has from its source argument v (parameter type pt).
+fn (c: mut &Checker) srcRoot(pt: int, v: Val): int {
+    if !c.inherits(pt) {
+        return if v.root == -1 && c.isBorrowTy(v.t) { c.crOf(v) } else { c.ultimate(v.root) }
+    }
+    let k = c.pg.tk(pt)
+    if k == sema.TK_REF || k == sema.TK_SLICE {
+        if v.root >= 0 {
+            let r = c.cvar(v.root)
+            return if r == -1 { c.ultimate(v.root) } else { r }
+        }
+        return if v.root == -1 { -2 } else { v.root }
+    }
+    return c.crOf(v)
 }
 
 fn (c: &Checker) inDrop(): bool {
@@ -654,7 +1027,9 @@ fn (c: mut &Checker) holdtmpSrc(cc: int, t: int, hasSrc: bool, src: Val): Val {
     c.emit(c.x.decl(ct, n, cc))
     let nn = c.nm(n)
     if c.pg.tk(t) == sema.TK_SLICE && hasSrc { return rvAt(nn, t, src.root, src.path) }
-    return c.tmpval(nn, t)
+    var r = c.tmpval(nn, t)
+    if hasSrc { r.cr = src.cr }
+    return r
 }
 
 // ---------------------------------------------------------------- variables
@@ -722,7 +1097,8 @@ fn (c: mut &Checker) lookupAt(lvl: int, name: str, capture: bool): int {
 fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int, line: int): int {
     let cx = c.nm(cn)
     append(mut &c.vars, Var{name: name, c: cx, t: t, mutable: mutable, kind: kind, line: line, moved: false,
-        broot: -1, cap: -1, capmut: false, pjoin: 0})
+        broot: -1, cap: -1, capmut: false, pjoin: 0, croot: -1, depth: len(c.cx.scopes) - 1, loops: len(c.cx.loops),
+        jn: -1})
     return len(c.vars) - 1
 }
 
@@ -732,6 +1108,8 @@ fn (c: mut &Checker) declare(v: int) {
     }
     let s = len(c.cx.scopes) - 1
     append(mut &c.cx.scopes[s].vars, v)
+    c.vars[v].depth = s
+    c.vars[v].loops = len(c.cx.loops)
 }
 
 fn (c: mut &Checker) pushScope() { append(mut &c.cx.scopes, Scope{vars: [], freezes: []}) }
@@ -833,7 +1211,8 @@ fn (c: mut &Checker) frozen(root: int, kind: int, line: int) {
     }
     for s in 0..len(c.cx.scopes) {
         for f in c.cx.scopes[s].freezes {
-            if f.root == root && (kind != FR_READ || f.m) {
+            let hit = f.root == root || (f.root >= 0 && c.vars[f.root].jn >= 0 && hasInt(&c.joins[c.vars[f.root].jn], root))
+            if hit && (kind != FR_READ || f.m) {
                 let verb = match kind { FR_ASSIGN { "assigned" } FR_MOVE { "moved" } FR_MUT { "mutably borrowed" } else { "used" } }
                 c.err(line, "'" + c.vars[root].name + "' is borrowed by " + f.by + " and cannot be " + verb +
                     " while that borrow is in scope")
@@ -857,6 +1236,14 @@ fn (c: mut &Checker) checkPending(root: int, path: str, line: int, move: bool) {
 fn (c: mut &Checker) newCid(): int {
     c.cids += 1
     return c.cids
+}
+
+// Register the roots r (a root of borrow-class value: a variable or a join) as borrowed by call cid.
+fn (c: mut &Checker) holdRoots(r: int, m: bool, cid: int, line: int) {
+    if r < 0 { return }
+    for x in c.members(r) {
+        if x >= 0 && c.vars[x].kind != VK_PSEUDO { c.hold(rvAt(-1, sema.T_VOID, x, ""), hm(m), cid, line) }
+    }
 }
 
 // Register a borrowed argument of call cid (SPEC 10 rule 3, and nested calls).
@@ -923,7 +1310,8 @@ fn (c: &Checker) gname(gk: int, gi: int): str {
 
 fn (c: mut &Checker) deref(v: Val): Val {
     if c.pg.tk(v.t) != sema.TK_REF { return v }
-    var r = val(c.x.par(c.x.pre("*", v.c)), c.pg.ta(v.t), CAT_PLACE)
+    let dc = if c.pg.tm(v.t) { c.x.par(c.x.pre("*", v.c)) } else { c.derefOf(c.pg.ta(v.t), v.c) }
+    var r = val(dc, c.pg.ta(v.t), CAT_PLACE)
     r.root = v.root
     r.path = v.path
     r.mutable = c.pg.tm(v.t)
@@ -945,7 +1333,8 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
             c.err(line, "cannot mutably borrow through the shared borrow '" + c.rootName(v.root, "?") + "'")
         }
         if m { c.frozen(v.root, FR_MUT, line) }
-        return rvAt(v.c, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
+        let rc = if !m && c.pg.tm(v.t) { c.shareOf(c.pg.ta(v.t), v.c) } else { v.c }
+        return rvAt(rc, c.pg.mkRef(c.pg.ta(v.t), m), v.root, v.path)
     }
     if v.t == sema.T_VOID { c.err(line, "this expression has no value") }
     var cc = -1
@@ -963,14 +1352,14 @@ fn (c: mut &Checker) borrow(v0: Val, m: bool, line: int, recv: bool): Val {
             if !v.mutable { c.immutable(v, line, "mutably borrow") }
             c.frozen(v.root, FR_MUT, line)
         }
-        cc = c.x.par(c.x.pre("&", v.c))
+        cc = if m { c.x.par(c.x.pre("&", v.c)) } else { c.addrOf(v.t, v.c) }
     } else if v.cat == CAT_TMP {
-        cc = c.x.par(c.x.pre("&", v.c))
+        cc = if m { c.x.par(c.x.pre("&", v.c)) } else { c.addrOf(v.t, v.c) }
     } else {
         let n = c.fresh("m")
         let ct = c.T(v.t)
         c.emit(c.x.decl(ct, n, v.c))
-        cc = c.x.par(c.x.pre("&", c.nm(n)))
+        cc = if m { c.x.par(c.x.pre("&", c.nm(n))) } else { c.addrOf(v.t, c.nm(n)) }
     }
     return rvAt(cc, c.pg.mkRef(v.t, m), v.root, v.path)
 }
@@ -1078,7 +1467,10 @@ fn (c: mut &Checker) snapVal(v: Val): Val {
         return c.holdtmpSrc(v.c, v.t, true, v)
     }
     if v.cat != CAT_PLACE || k == sema.TK_REF || !c.isCopy(v.t) { return v }
-    return c.holdtmp(c.dup(v.c, v.t), v.t)
+    let cr = c.crOf(v)
+    var r = c.holdtmp(c.dup(v.c, v.t), v.t)
+    r.cr = cr
+    return r
 }
 
 // Make the run-time checks in v's C text now, in their position (SPEC 7).
@@ -1146,7 +1538,8 @@ fn (c: mut &Checker) coerce(v: Val, t: int, line: int, what: str): Val {
         if d.t == t { return d }
     }
     if vk == sema.TK_REF && k == sema.TK_REF && c.pg.ta(v.t) == c.pg.ta(t) && (c.pg.tm(v.t) || !c.pg.tm(t)) {
-        var r = val(v.c, t, v.cat)
+        let rc = if c.pg.tm(v.t) && !c.pg.tm(t) { c.shareOf(c.pg.ta(t), v.c) } else { v.c }
+        var r = val(rc, t, v.cat)
         r.root = v.root
         r.path = v.path
         r.vvar = v.vvar
@@ -1227,28 +1620,31 @@ fn (c: mut &Checker) sLet(s: int) {
             c.err(n.line, "a borrow cannot be stored in var '" + name + "': borrows are second class (use let)")
         }
         let root = v.root
-        if root < 0 {
+        if root < 0 && root != R_FREE {
             c.err(n.line, "cannot borrow a temporary into let '" + name + "': the temporary does not outlive " +
                 "the statement")
         }
         if c.pg.tm(v.t) { c.frozen(root, FR_MUT, n.line) }
         let vx = c.newVar(name, cn, v.t, false, VK_LOCAL, n.line)
-        c.vars[vx].broot = root
+        c.vars[vx].broot = if root == R_FREE { -1 } else { root }
         if c.pg.tk(v.t) == sema.TK_REF {
-            let ct = c.T(c.pg.ta(v.t))
-            c.emit(c.x.decl(c.x.ptr(ct), cn, v.c))
+            c.emit(c.x.decl(c.T(v.t), cn, v.c))
         } else {
             c.emit(c.x.decl(c.ct("obx_slice"), cn, v.c))
         }
         c.declare(vx)
-        c.freeze(root, c.pg.tm(v.t), "'" + name + "'")
+        if root != R_FREE { c.freeze(root, c.pg.tm(v.t), "'" + name + "'") }
         return
     }
     if exp >= 0 { v = c.coerce(v, exp, n.line, what) }
+    let bc = c.pg.isBorrowClass(v.t)
+    let cr = if bc { c.crOf(v) } else { -1 }
     let cc = c.consume(v, n.line)
     let ct = c.T(v.t)
     c.emit(c.x.decl(ct, cn, cc))
-    c.declare(c.newVar(name, cn, v.t, mutable, VK_LOCAL, n.line))
+    let x = c.newVar(name, cn, v.t, mutable, VK_LOCAL, n.line)
+    c.declare(x)
+    if bc { c.bindBC(x, v.t, cr, n.line, false) }
 }
 
 fn (c: &Checker) fieldIndex(d: int, name: str): int {
@@ -1310,6 +1706,7 @@ fn (c: mut &Checker) sDestructure(s: int) {
     }
     let acc = c.fresh("ds")
     let ct = c.T(v.t)
+    let dcr = if c.pg.isBorrowClass(v.t) { c.crOf(v) } else { -1 }
     let cv = c.consume(v, n.line)
     c.emit(c.x.decl(ct, acc, cv))
     let accn = c.nm(acc)
@@ -1328,7 +1725,12 @@ fn (c: mut &Checker) sDestructure(s: int) {
             let cn = c.fresh("v_" + b + "_")
             let fct = c.T(ft)
             c.emit(c.x.decl(fct, cn, c.x.member(accn, sep, "f_" + f)))
-            c.declare(c.newVar(b, cn, ft, n.flags & sx.MUTABLE != 0, VK_LOCAL, c.line(fp)))
+            if n.flags & sx.MUTABLE != 0 && c.pg.isBorrow(ft) {
+                c.err(c.line(fp), "a borrow cannot be stored in var '" + b + "': borrows are second class (use let)")
+            }
+            let x = c.newVar(b, cn, ft, n.flags & sx.MUTABLE != 0, VK_LOCAL, c.line(fp))
+            c.declare(x)
+            c.bindBC(x, ft, dcr, c.line(fp), false)
         }
     }
     if !c.pg.types[di].value { c.emitx(c.x.call("rt_free", [accn])) }
@@ -1401,6 +1803,7 @@ fn (c: mut &Checker) sAssign(s: int) {
             if op == "" {
                 let vt = c.vars[vx].t
                 let v = c.coerce(c.expr(n.b, vt), vt, n.line, "the value assigned to '" + vn + "'")
+                if c.pg.isBorrowClass(vt) { c.storeRoot(vx, c.crOf(v), vt, n.line) }
                 let cc = c.consume(v, n.line)
                 var p = val(c.vars[vx].c, vt, CAT_PLACE)
                 p.vvar = vx
@@ -1423,6 +1826,7 @@ fn (c: mut &Checker) sAssign(s: int) {
         let p = c.place(tg)
         c.cutPending(mark)
         v = c.coerce(v, p.t, n.line, "the assigned value")
+        if c.pg.isBorrowClass(p.t) { c.storeRoot(p.root, c.crOf(v), p.t, n.line) }
         let cc = c.consume(v, n.line)
         c.store(p, cc, true)
         return
@@ -1448,9 +1852,12 @@ fn (c: mut &Checker) sAssign(s: int) {
 
 // Evaluate an assignment target as a mutable place.
 fn (c: mut &Checker) place(e: int): Val {
+    c.noRebase += 1
     var v = c.expr(e, -1)
+    c.noRebase -= 1
     let line = c.line(e)
-    if c.pg.tk(v.t) == sema.TK_REF {
+    // a variable of borrow type is assigned through; a field or element of borrow type is the place
+    if c.pg.tk(v.t) == sema.TK_REF && len(v.path) == 0 && !v.viaref {
         if !c.pg.tm(v.t) {
             c.err(line, "cannot assign through '" + c.rootName(v.root, "?") + "': it is a shared borrow (&), not mut &")
         }
@@ -1769,12 +2176,20 @@ fn (c: mut &Checker) sFor(s: int) {
     if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
     let k = c.pg.tk(v.t)
     if k != sema.TK_ARR && k != sema.TK_SLICE {
+        if k == sema.TK_INST || k == sema.TK_TP {
+            c.forIter(s, v)
+            return
+        }
         c.err(n.line, "for ... in needs an array, a slice or a range a..b, not " + c.tstr(v.t))
     }
     let et = c.pg.ta(v.t)
     let ap = c.fresh("ap")
     let i = c.fresh("i")
-    if v.cat == CAT_RV && k == sema.TK_ARR { v = c.holdtmp(v.c, v.t) }
+    if v.cat == CAT_RV && k == sema.TK_ARR {
+        let cr0 = v.cr
+        v = c.holdtmp(v.c, v.t)
+        v.cr = cr0
+    }
     if v.cat == CAT_PLACE && v.gk >= 0 { c.err(n.line, "cannot iterate over a global") }
     let sl = if k == sema.TK_SLICE { v.c } else { c.x.call("rt_as_slice", [c.x.pre("&", v.c)]) }
     c.emit(c.x.decl(c.ct("obx_slice"), ap, sl))
@@ -1789,15 +2204,88 @@ fn (c: mut &Checker) sFor(s: int) {
     if c.isCopy(et) {
         let ct = c.T(et)
         c.emit(c.x.decl(ct, xn, c.dup(elem, et)))
-        c.declare(c.newVar(name, xn, et, false, VK_LOCAL, n.line))
+        let x = c.newVar(name, xn, et, false, VK_LOCAL, n.line)
+        c.declare(x)
+        if c.pg.isBorrowClass(et) { c.bindBC(x, et, c.innerCr(v.root, v.cr, et), n.line, true) }
     } else {
-        let ct = c.T(et)
-        c.emit(c.x.decl(c.x.ptr(ct), xn, c.x.pre("&", elem)))
-        let x = c.newVar(name, xn, c.pg.mkRef(et, false), false, VK_LOCAL, n.line)
+        let rt = c.pg.mkRef(et, false)
+        c.emit(c.x.decl(c.T(rt), xn, c.addrOf(et, elem)))
+        let x = c.newVar(name, xn, rt, false, VK_LOCAL, n.line)
         c.vars[x].broot = v.root
         c.declare(x)
     }
     c.loopEnd(n.c, n.line)
+    c.cx.ind -= 1
+    c.emit(c.x.send())
+}
+
+// for x in it, it not an array or slice (design/borrow-types.md): an iterator, a value with a
+// method next(mut &self): Option[X]. It runs as
+//     { var it' = it; while true { match it'.next() { Some(x) { body } None { break } } } }
+// x holds borrows of what the iterator borrows (not of the iterator), so the body may keep them.
+fn (c: mut &Checker) forIter(s: int, v0: Val) {
+    let n = c.nd(s)
+    let line = n.line
+    let name = n.s
+    let sig = c.methodSig(v0.t, "next", line, true)
+    if sig.kind < 0 {
+        c.err(line, "for ... in needs an array, a slice, a range a..b or an iterator (a value with a method " +
+            "next(): Option[...]), not " + c.tstr(v0.t))
+    }
+    let cr = if c.pg.isBorrowClass(v0.t) { c.crOf(v0) } else { -1 }
+    let cc = c.consume(v0, line)
+    c.emit(c.x.sblock())
+    c.cx.ind += 1
+    c.pushScope()
+    let itn = c.fresh("it")
+    c.emit(c.x.decl(c.T(v0.t), itn, cc))
+    let itv = c.newVar("the iterator of the for loop at line " + intToStr(line), itn, v0.t, true, VK_LOCAL, line)
+    let sc = len(c.cx.scopes) - 1
+    append(mut &c.cx.scopes[sc].vars, itv)
+    c.vars[itv].depth = sc
+    c.vars[itv].loops = len(c.cx.loops)
+    c.bindBC(itv, v0.t, cr, line, true)
+    c.emit(c.x.swhile(c.lit(1)))
+    c.cx.ind += 1
+    let entry = c.snapshot()
+    c.pushFrame()
+    var recv = val(c.vars[itv].c, v0.t, CAT_PLACE)
+    recv.root = itv
+    recv.mutable = true
+    recv.vvar = itv
+    let none: []Val = []
+    let r = c.opCall(recv, "next", &none, line, "for ... in")
+    let ot = r.t
+    var some = -1
+    if c.pg.tk(ot) == sema.TK_INST && c.pg.types[c.pg.ta(ot)].form == sx.F_CLOSED {
+        for vr in c.pg.types[c.pg.ta(ot)].variants {
+            if c.pg.variants[vr].name == "Some" && len(c.pg.variants[vr].fields) == 1 { some = vr }
+        }
+    }
+    if some < 0 { c.err(line, "an iterator's next must return an Option, not " + c.tstr(ot)) }
+    let rcr = if c.pg.isBorrowClass(ot) { c.crOf(r) } else { -1 }
+    let on = c.fresh("nx")
+    c.emit(c.x.decl(c.T(ot), on, c.consume(r, line)))
+    let fr = c.popFrame()
+    c.dropFrame(&fr)
+    let sep = if c.pg.types[c.pg.ta(ot)].value { "." } else { "->" }
+    let acc = c.nm(on)
+    c.emit(c.x.if1(c.x.bin("!=", c.x.member(acc, sep, "tag"), c.lit(c.pg.variants[some].index)), c.x.sbreak()))
+    c.loopStart(entry, false)
+    let env = c.pg.declEnv(ot)
+    let f = c.pg.variants[some].fields[0]
+    let xt = c.pg.subst(f.ty, &env)
+    let fc = c.x.dot(c.x.dot(c.x.member(acc, sep, "u"), "V_Some"), "f_" + f.name)
+    let xn = c.fresh("v_" + name + "_")
+    c.emit(c.x.decl(c.T(xt), xn, fc))
+    let x = c.newVar(name, xn, xt, false, VK_LOCAL, line)
+    c.declare(x)
+    c.bindBC(x, xt, rcr, line, true)
+    c.loopEnd(n.c, line)
+    c.cx.ind -= 1
+    c.emit(c.x.send())
+    let sc2 = pop(mut &c.cx.scopes)
+    if !c.cx.dead { c.dropVars(&sc2.vars) }
     c.cx.ind -= 1
     c.emit(c.x.send())
 }
@@ -1820,7 +2308,9 @@ fn (c: mut &Checker) sReturn(s: int) {
             v = c.coerce(v, ret, n.line, "the returned borrow")
             var r = v.root
             while r >= 0 && c.vars[r].broot != -1 { r = c.vars[r].broot }
-            if r != c.cx.bvar {
+            if c.cx.fd >= 0 && (len(c.cx.rsrc) > 0 || v.root == R_FREE || c.cx.bvar < 0) {
+                c.checkResult(c.ultimate(v.root), v.root, n.line, true)
+            } else if r != c.cx.bvar {
                 let name = c.rootName(v.root, "a temporary")
                 let bp = if c.cx.fd >= 0 { c.pg.fns[c.cx.fd].bparam } else { "" }
                 c.err(n.line, "cannot return a borrow of " + sx.pyRepr(name) + ": a borrow result must be rooted at the " +
@@ -1829,6 +2319,7 @@ fn (c: mut &Checker) sReturn(s: int) {
             cc = v.c
         } else {
             v = c.coerce(v, ret, n.line, "the returned value")
+            if c.cx.fd >= 0 && c.pg.isBorrowClass(ret) { c.checkResult(c.crOf(v), -1, n.line, false) }
             cc = c.consume(v, n.line)
         }
         let rn = c.fresh("r")
@@ -1865,6 +2356,8 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
     let sep = if c.pg.types[d].value { "." } else { "->" }
     var acc = -1
     var root = -1
+    var scr = -1            // a scrutinee holding borrows: their root
+    var pcr = -1
     if borrowing {
         var p = c.deref(v)
         if p.gk >= 0 { p = c.holdtmp(c.dup(p.c, p.t), p.t) }
@@ -1873,7 +2366,9 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         c.emit(c.x.decl(c.x.ptr(ct), sp, c.x.pre("&", p.c)))
         acc = c.x.par(c.x.pre("*", c.nm(sp)))
         root = p.root
+        pcr = p.cr
     } else {
+        if c.pg.isBorrowClass(v.t) { scr = c.crOf(v) }
         if c.pg.types[d].drop >= 0 {
             c.err(n.line, "cannot destructure a " + c.pg.types[d].name + ": it has a drop method (match on a place instead)")
         }
@@ -1949,7 +2444,9 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                     if bn != "" {
                         let ct = c.T(ft)
                         c.emit(c.x.decl(ct, cn, fc))
-                        c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
+                        let x = c.newVar(bn, cn, ft, false, VK_LOCAL, an.line)
+                        c.declare(x)
+                        c.bindBC(x, ft, scr, an.line, true)
                     } else {
                         c.dropc(fc, ft)
                     }
@@ -1957,11 +2454,13 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                     if c.isCopy(ft) {
                         let ct = c.T(ft)
                         c.emit(c.x.decl(ct, cn, c.dup(fc, ft)))
-                        c.declare(c.newVar(bn, cn, ft, false, VK_LOCAL, an.line))
+                        let x = c.newVar(bn, cn, ft, false, VK_LOCAL, an.line)
+                        c.declare(x)
+                        if c.pg.isBorrowClass(ft) { c.bindBC(x, ft, c.innerCr(root, pcr, ft), an.line, true) }
                     } else {
-                        let ct = c.T(ft)
-                        c.emit(c.x.decl(c.x.ptr(ct), cn, c.x.pre("&", fc)))
-                        let x = c.newVar(bn, cn, c.pg.mkRef(ft, false), false, VK_LOCAL, an.line)
+                        let rt = c.pg.mkRef(ft, false)
+                        c.emit(c.x.decl(c.T(rt), cn, c.addrOf(ft, fc)))
+                        let x = c.newVar(bn, cn, rt, false, VK_LOCAL, an.line)
                         c.vars[x].broot = if root >= 0 { root } else { -1 }
                         c.declare(x)
                         let sc = len(c.cx.scopes) - 1
@@ -2140,11 +2639,12 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
     }
     if k == sx.N_SUB {
         let mut1 = c.ek(exp) == sema.TK_SLICE && (exp == EXP_MUTSLICE || (exp >= 0 && c.pg.tm(exp)))
-        return c.xSub(e, mut1)
+        let view = c.ek(exp) == sema.TK_REF && exp >= 0 && !c.pg.tm(exp) && c.pg.ta(exp) == sema.T_STR
+        return c.xSub(e, mut1, view)
     }
     return match k {
         sx.N_CHAR { rv(c.x.pcast(c.ct("uint8_t"), c.lit(c.nd(e).a)), sema.T_BYTE) }
-        sx.N_STR { rv(c.hole(mkHole(H_STR, -1, c.nd(e).s)), sema.T_STR) }
+        sx.N_STR { c.strLit(c.nd(e).s, exp) }
         sx.N_BOOL { rv(c.nm(if c.flag(e, sx.TRUE) { "true" } else { "false" }), sema.T_BOOL) }
         sx.N_TARG { c.err(c.line(e), "a type is not a value") }
         sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp) }
@@ -2575,7 +3075,17 @@ fn (c: mut &Checker) constVal(k: int, exp: int, line: int): Val {
     if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp) }
     if kind == sema.CK_FLOAT { return rv(c.x.num(num.pyFloatRepr(v.f)), sema.T_FLOAT) }
     if kind == sema.CK_BOOL { return rv(c.nm(if v.b { "true" } else { "false" }), sema.T_BOOL) }
-    return rv(c.hole(mkHole(H_STR, -1, v.s)), sema.T_STR)
+    return c.strLit(v.s, exp)
+}
+
+// A string literal or str constant: a str, or where a shared &str is expected a view of static bytes,
+// which has no root (SPEC 4.1).
+fn (c: mut &Checker) strLit(s: str, exp: int): Val {
+    let h = c.hole(mkHole(H_STR, -1, s))
+    if exp >= 0 && c.pg.tk(exp) == sema.TK_REF && !c.pg.tm(exp) && c.pg.ta(exp) == sema.T_STR {
+        return rvAt(h, exp, R_FREE, "")
+    }
+    return rv(h, sema.T_STR)
 }
 
 fn (c: mut &Checker) xField(e: int, exp: int): Val {
@@ -2619,6 +3129,13 @@ fn (c: mut &Checker) fieldOf(v0: Val, name: str, line: int): Val {
     r.viaref = v.viaref
     r.gk = v.gk
     r.gi = v.gi
+    if v.root < 0 || v.cat != CAT_PLACE { r.cr = c.crOf(v) }
+    let fk = c.pg.tk(ft)
+    if v.cat == CAT_RV && (fk == sema.TK_REF || fk == sema.TK_SLICE) {
+        r.root = r.cr
+        r.path = pathAdd("", "*")
+    }
+    if c.noRebase == 0 { r = c.rebase(r) }
     return r
 }
 
@@ -2657,22 +3174,36 @@ fn (c: mut &Checker) xIndex(e: int, exp: int): Val {
     r.root = v.root
     r.path = pathAdd(v.path, "[]")
     r.viaref = true
+    if v.root < 0 { r.cr = v.cr }
     if k == sema.TK_SLICE {
         r.mutable = c.pg.tm(v.t)
-        return r
+    } else {
+        r.mutable = v.mutable
+        r.viaref = v.viaref
+        r.gk = v.gk
+        r.gi = v.gi
     }
-    r.mutable = v.mutable
-    r.viaref = v.viaref
-    r.gk = v.gk
-    r.gi = v.gi
+    if c.noRebase == 0 { r = c.rebase(r) }
     return r
 }
 
 // xs[a..b], xs[a..], xs[..b] of an array or slice (a slice, SPEC 4.2a) or of a str.
-fn (c: mut &Checker) xSub(e: int, mut1: bool): Val {
+fn (c: mut &Checker) xSub(e: int, mut1: bool, view: bool): Val {
     let n = c.nd(e)
     var v = c.deref(c.expr(n.a, -1))
     let W = c.W(n.line)
+    if v.t == sema.T_STR && view {
+        // a view (design/borrow-types.md): a shared &str of the bytes, rooted where s is, uncounted
+        if v.cat == CAT_RV { v = c.holdtmp(v.c, sema.T_STR) }
+        var b = c.borrow(v, false, n.line, false)
+        b = c.beforeOpt(b, n.b, n.c)
+        let lo = if n.b >= 0 { c.intIndex(n.b) } else { c.lit(0) }
+        let hi = if n.c >= 0 { c.intIndex(n.c) } else { c.x.dot(c.x.par(b.c), "len") }
+        let vn = c.fresh("vw")
+        let rt = c.pg.mkRef(sema.T_STR, false)
+        c.emit(c.x.decl(c.T(rt), vn, c.x.call("rt_str_view", [b.c, lo, hi, W])))
+        return rvAt(c.nm(vn), rt, b.root, pathAdd(b.path, "*"))
+    }
     if v.t == sema.T_STR {
         v = c.beforeOpt(v, n.b, n.c)
         let lo = if n.b >= 0 { c.intIndex(n.b) } else { c.lit(0) }
@@ -2727,8 +3258,9 @@ fn (c: mut &Checker) xBorrow(e: int, exp: int): Val {
     let n = c.nd(e)
     let m = n.flags & sx.MUT != 0
     if c.kind(n.a) == sx.N_SUB {           // &xs[a..b], mut &xs[a..b]: the slice itself
-        let v = c.xSub(n.a, m)
-        return if c.pg.tk(v.t) == sema.TK_SLICE { v } else { c.borrow(v, m, n.line, false) }
+        let v = c.xSub(n.a, m, !m)
+        let vk = c.pg.tk(v.t)
+        return if vk == sema.TK_SLICE || vk == sema.TK_REF { v } else { c.borrow(v, m, n.line, false) }
     }
     var inner = -1
     let ek = c.ek(exp)
@@ -2873,6 +3405,10 @@ fn (c: mut &Checker) xClosure(e: int, exp: int): Val {
     }
     let ret = if n.b >= 0 { c.pg.resolveType(n.b, mod, &env, sema.P_RET, n.line) } else if want >= 0 { c.pg.tb(want) } else { sema.T_VOID }
     if c.pg.isBorrow(ret) { c.err(n.line, "a closure cannot return a borrow") }
+    if c.pg.isBorrowClass(ret) {
+        c.err(n.line, "a closure cannot return " + c.tstr(ret) + ": it holds borrows")
+    }
+    for pv in pvars { c.paramContents(pv) }
     let outer = replace(mut &c.cx, newCtx(-1, "the closure", ret, env, mod, true))
     append(mut &c.outers, outer)
     append(mut &c.cx.scopes, Scope{vars: pvars, freezes: []})
@@ -3065,6 +3601,7 @@ type Branch = record {
     v: Val
     lines: []int
     snap: []int
+    cr: int         // a value holding borrows: their root (R_FREE: none)
 }
 
 fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
@@ -3079,6 +3616,7 @@ fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
         c.err(c.line(x), "an if expression cannot give a borrow, a slice or a closure")
     }
     v = c.rd(v)
+    let bcr = if !v.noreturn && c.pg.isBorrowClass(v.t) { c.crOf(v) } else { R_FREE }
     let fr = c.popFrame()
     if !v.noreturn {
         v = rv(c.consume(v, c.line(x)), v.t)
@@ -3094,7 +3632,7 @@ fn (c: mut &Checker) ifBranch(x: int, want: int, snap: &[]int, r: int): Branch {
     c.dropFrame(&fr)
     c.cx.ind -= 1
     let lines = replace(mut &c.cx.lines, saved)
-    return Branch{v: v, lines: lines, snap: c.snapshot()}
+    return Branch{v: v, lines: lines, snap: c.snapshot(), cr: bcr}
 }
 
 fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
@@ -3108,8 +3646,8 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
     let snap = c.snapshot()
     let rn = c.fresh("ifx")
     let r = c.nm(rn)
-    var a = Branch{v: voidVal(false), lines: [], snap: []}
-    var b = Branch{v: voidVal(false), lines: [], snap: []}
+    var a = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
+    var b = Branch{v: voidVal(false), lines: [], snap: [], cr: R_FREE}
     if exp == -1 && isLitNode(c.kind(n.b)) && !isLitNode(c.kind(n.c)) {     // a literal takes the other's type
         b = c.ifBranch(n.c, -1, &snap, r)
         a = c.ifBranch(n.b, if b.v.noreturn { -1 } else { b.v.t }, &snap, r)
@@ -3132,9 +3670,13 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         k += 1
     }
     if !b.v.noreturn { c.ifxDrops(mut &b, &drops[k], r) }
+    // a value holding borrows has the roots of both branches (design/borrow-types.md)
+    let jcr = if c.pg.isBorrowClass(t) { c.joinRoots(a.cr, b.cr) } else { -1 }
     if len(a.lines) == 0 && len(b.lines) == 0 {
         let text = c.x.par(c.x.cond(cv.c, a.v.c, b.v.c))
-        return if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
+        var rx = if c.pod(t) { rv(text, t) } else { c.holdtmp(text, t) }
+        if jcr != -1 { rx.cr = jcr }
+        return rx
     }
     if !c.cx.dead {
         let ct = c.T(t)
@@ -3159,7 +3701,9 @@ fn (c: mut &Checker) xIfx(e: int, exp: int): Val {
         c.cx.dead = false
         return voidVal(true)
     }
-    return c.tmpval(r, t)
+    var rx = c.tmpval(r, t)
+    if jcr != -1 { rx.cr = jcr }
+    return rx
 }
 
 fn (c: mut &Checker) ifxDrops(br: mut &Branch, vs: &[]int, r: int) {
@@ -3185,6 +3729,7 @@ fn (c: mut &Checker) mxBody(x: int) {
         c.err(c.line(x), "a match expression cannot give a borrow, a slice or a closure")
     }
     v = c.rd(v)
+    if !v.noreturn && c.pg.isBorrowClass(v.t) { c.mxs[top].cr = c.joinRoots(c.mxs[top].cr, c.crOf(v)) }
     let fr = c.popFrame()
     if v.noreturn {
         c.cx.dead = true
@@ -3222,7 +3767,7 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     let rn = c.fresh("mx")
     let r = c.nm(rn)
     let at = len(c.cx.lines)
-    append(mut &c.mxs, MatchX{r: r, t: exp, lits: []})
+    append(mut &c.mxs, MatchX{r: r, t: exp, lits: [], cr: R_FREE})
     c.sMatch(e, true)
     let top = len(c.mxs) - 1
     let lits = copyInts(&c.mxs[top].lits)
@@ -3266,7 +3811,9 @@ fn (c: mut &Checker) xMatchx(e: int, exp: int): Val {
     }
     if at == len(c.cx.lines) { append(mut &nl, dl) }
     c.cx.lines = nl
-    return c.tmpval(r, t)
+    var rx = c.tmpval(r, t)
+    if c.pg.isBorrowClass(t) { rx.cr = mx.cr }
+    return rx
 }
 
 // ref's okerr: the Ok and Err variants of a closed type (and their types), or ok = -1.
@@ -3318,6 +3865,10 @@ fn (c: mut &Checker) xTry(e: int, exp: int): Val {
     let sep = if value { "." } else { "->" }
     let sn = c.fresh("tr")
     let ct = c.T(t)
+    // a result holding borrows (design/borrow-types.md): the Ok value has its root, and so has the
+    // Err value returned, which must be rooted at the function's sources
+    let tcr = if c.pg.isBorrowClass(t) { c.crOf(v) } else { R_FREE }
+    if c.pg.isBorrowClass(a.erT) && len(c.cx.rsrc) > 0 { c.checkResult(tcr, -1, n.line, false) }
     let cv = c.consume(v, n.line)
     c.emit(c.x.decl(ct, sn, cv))
     let snn = c.nm(sn)
@@ -3343,7 +3894,8 @@ fn (c: mut &Checker) xTry(e: int, exp: int): Val {
         c.emitx(c.x.call("rt_free", [snn]))
         oc = c.nm(on)
     }
-    return c.holdtmp(oc, a.okT)
+    let ov = c.holdtmp(oc, a.okT)
+    return if c.pg.isBorrowClass(a.okT) { c.withCr(ov, tcr) } else { ov }
 }
 
 // ---- literals and constructors
@@ -3569,7 +4121,7 @@ fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
     for i in 0..len(items) {
         let it = items[i]
         var v = c.expr(it, et)
-        if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+        if c.pg.tk(v.t) == sema.TK_REF && !(et >= 0 && c.pg.tk(et) == sema.TK_REF) { v = c.deref(v) }
         if et == -1 { et = c.elemType(v.t, c.line(it)) }
         if v.t != et { c.err(c.line(it), "array element is " + c.tstr(v.t) + ", not " + c.tstr(et)) }
         var later: []int = []
@@ -3578,6 +4130,10 @@ fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
     }
     if et == -1 { c.err(n.line, "cannot infer the element type of [] here: it needs an expected type") }
     if et == sema.T_VOID { c.err(n.line, "an array element needs a value") }
+    var acr = R_FREE
+    if c.pg.isBorrowClass(et) {
+        for v in vals { acr = c.joinRoots(acr, c.crOf(v)) }
+    }
     var cs: []int = []
     for v in vals { append(mut &cs, c.consume(v, n.line)) }
     let an = c.fresh("a")
@@ -3594,6 +4150,7 @@ fn (c: mut &Checker) xArrlit(e: int, exp: int): Val {
     r.tmp = id
     r.root = tmpRoot(id)
     r.mutable = true
+    r.cr = acr
     return r
 }
 
@@ -3795,7 +4352,13 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         if len(ta) != len(own) {
             c.err(line, sig.label + " takes " + intToStr(len(own)) + " type arguments, not " + intToStr(len(ta)))
         }
-        for i in 0..len(own) { bindSet(mut &bind, own[i], c.resolve(ta[i], sema.P_TARG, line)) }
+        var given: []int = []
+        for i in 0..len(own) {
+            let t = c.resolve(ta[i], sema.P_TARG, line)
+            append(mut &given, t)
+            bindSet(mut &bind, own[i], t)
+        }
+        for i in 0..len(given) { c.pg.checkBorrowTarg(given[i], own[i], c.cx.mod, line) }
     }
     if exp >= 0 && exp != sema.T_VOID && c.pg.tk(sig.ret) != sema.TK_REF && c.hasTpIn(sig.ret, &tps) {
         var trial = copyInts(&bind)
@@ -3813,6 +4376,15 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     }
     var vals: []CArg = []
     for i in 0..nall { append(mut &vals, CArg{b: false, v: voidVal(false)}) }
+    var srcs: []int = []            // the roots of what the arguments that are or hold borrows hold
+    var isSrc: []bool = []
+    for i in 0..nall {
+        append(mut &srcs, -1)
+        append(mut &isSrc, false)
+    }
+    // whether the result may hold borrows: sig.ret is borrow-class before substitution exactly when it
+    // may be after (only a `borrow` type parameter takes a type argument that holds borrows)
+    let mayBC = c.pg.isBorrowClass(sig.ret)
     let cid = c.newCid()
     let mark = len(c.cx.pending)
     var lates: []Late = []
@@ -3907,10 +4479,18 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             }
             vals[i] = CArg{b: true, v: v}
         } else {
-            if c.pg.tk(v.t) == sema.TK_REF { v = c.deref(v) }
+            // a borrow passed where a type argument is a borrow (Some(&x) as an Option[&T]) stays one
+            let keepRef = c.pg.tk(c.pg.subst(pt, &bind)) == sema.TK_REF
+            if c.pg.tk(v.t) == sema.TK_REF && !keepRef { v = c.deref(v) }
             if v.t == sema.T_VOID { c.err(line, what + " has no value") }
             if !c.pg.unify(pt, v.t, mut &bind, &tps) {
                 c.err(line, what + " is " + c.tstr(c.pg.subst(pt, &bind)) + ", not " + c.tstr(v.t))
+            }
+            if c.pg.tk(v.t) == sema.TK_REF {
+                c.hold(v, hm(c.pg.tm(v.t)), cid, line)
+            } else if c.pg.isBorrowClass(v.t) {
+                // SPEC 10 rule 3: what a value holding borrows borrows is held while the call runs
+                c.holdRoots(c.crOf(v), c.pg.holdsMut(v.t), cid, line)
             }
             var later = false
             for p in pos + 1..len(effs) {
@@ -3919,6 +4499,13 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
             if later { v = c.snapVal(v) }
             if v.cat == CAT_PLACE && !c.isCopy(v.t) { c.hold(v, HM_MOVE, cid, line) }
             vals[i] = CArg{b: false, v: v}
+        }
+        if mayBC && ptk != sema.TK_CLO {
+            let pbc = c.pg.subst(pt, &bind)
+            if c.pg.isBorrowClass(pbc) {
+                isSrc[i] = true
+                srcs[i] = c.srcRoot(pbc, vals[i].v)
+            }
         }
         var rb = false
         for r in rechecks {
@@ -3987,9 +4574,25 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
     }
     c.cutPending(mark)
     let ret = c.pg.subst(sig.ret, &bind)
+    let retBC = c.pg.isBorrowClass(ret)
+    var rroot = R_FREE
+    if retBC {
+        // the result's root: its sources' (a function's bsrc, else every argument holding borrows)
+        var sel = copyBools(&isSrc)
+        if sig.kind == SK_FN && sig.fd >= 0 && len(c.pg.fns[sig.fd].bsrc) > 0 {
+            for k in 0..len(sel) { sel[k] = false }
+            for k in c.pg.fns[sig.fd].bsrc {
+                if k < len(sel) { sel[k] = isSrc[k] }
+            }
+        }
+        for k in 0..len(sel) {
+            if sel[k] { rroot = c.joinRoots(rroot, srcs[k]) }
+        }
+    }
     var text = -1
     if sig.kind == SK_CTOR {
-        return c.holdtmp(c.build(ret, sig.variant, &cs), ret)
+        let r = c.holdtmp(c.build(ret, sig.variant, &cs), ret)
+        return if retBC { c.withCr(r, rroot) } else { r }
     } else if sig.kind == SK_FN {
         var ta: []int = []
         for tp in sig.tps { append(mut &ta, bindGet(&bind, tp)) }
@@ -4053,22 +4656,31 @@ fn (c: mut &Checker) call(sig: &Sig, hasRecv: bool, recv: Val, args: &[]Arg, lin
         var bi = -1
         var nb = 0
         for k in 0..len(params) {
-            if c.pg.isBorrow(params[k]) {
+            if isSrc[k] {
                 if nb == 0 { bi = k }
                 nb += 1
             }
         }
         let n = c.fresh("b")
         if c.pg.tk(ret) == sema.TK_REF {
-            let ct = c.T(c.pg.ta(ret))
-            c.emit(c.x.decl(c.x.ptr(ct), n, text))
+            c.emit(c.x.decl(c.T(ret), n, text))
         } else {
             c.emit(c.x.decl(c.ct("obx_slice"), n, text))
         }
-        if nb == 1 { return rvAt(c.nm(n), ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*")) }
-        return rvAt(c.nm(n), ret, -1, "")
+        if nb == 1 && !c.inherits(c.pg.subst(params[bi], &bind)) {
+            return rvAt(c.nm(n), ret, vals[bi].v.root, pathAdd(vals[bi].v.path, "*"))
+        }
+        if nb == 0 { return rvAt(c.nm(n), ret, -1, "") }
+        return rvAt(c.nm(n), ret, rroot, pathAdd("", "*"))
     }
-    return c.holdtmp(text, ret)
+    let r = c.holdtmp(text, ret)
+    return if retBC { c.withCr(r, rroot) } else { r }
+}
+
+fn copyBools(xs: &[]bool): []bool {
+    var out: []bool = []
+    for x in xs { append(mut &out, x) }
+    return out
 }
 
 // SPEC 12: a call of a blocking extern f. The arguments go into slots of 8 bytes on the
@@ -4392,7 +5004,7 @@ fn (c: mut &Checker) onceCall(g: int, name: str, e: int): Val {
     if name == "get" {
         let m = c.x.cond(setn, c.x.str(msg + " is dropped"), c.x.str(msg + " is not set"))
         c.emit(c.x.if1(c.x.bin("!=", setn, c.lit(1)), c.x.sx(c.x.call("rt_trap", [c.lit(12), m, W]))))
-        return rvAt(c.x.par(c.x.pre("&", c.nm(cn))), c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
+        return rvAt(c.addrOf(gt, c.nm(cn)), c.pg.mkRef(gt, false), c.staticVar(sema.D_GLOBAL, g), "")
     }
     let v = c.seq(c.coerce(c.expr(c.item(n.b, 0), gt), gt, n.line, "the value of " + gname))
     let cc = c.consume(v, n.line)
@@ -4519,6 +5131,7 @@ fn (c: mut &Checker) bAppend(e: int): Val {
     a = c.before1(a, c.arg(e, 1))
     var v = c.expr(c.arg(e, 1), et)
     v = c.coerce(v, et, line, "the appended value")
+    if c.pg.isBorrowClass(et) { c.storeRoot(a.root, c.crOf(v), et, line) }
     if a.late { c.take(a, HM_MUT, c.newCid(), line) }
     let cc = c.consume(v, line)
     let n = c.fresh("ap")
@@ -4536,7 +5149,8 @@ fn (c: mut &Checker) bPop(e: int): Val {
     let et = c.pg.ta(c.pg.ta(a.t))
     let ct = c.T(et)
     let ct2 = c.T(et)
-    return c.holdtmp(c.x.at(ct, c.x.call("rt_arr_pop", [a.c, c.x.szof(ct2), c.W(c.line(e))])), et)
+    let r = c.holdtmp(c.x.at(ct, c.x.call("rt_arr_pop", [a.c, c.x.szof(ct2), c.W(c.line(e))])), et)
+    return if c.pg.isBorrowClass(et) { c.withCr(r, c.innerCr(a.root, -1, et)) } else { r }
 }
 
 fn (c: mut &Checker) bSwap(e: int): Val {
@@ -4565,6 +5179,9 @@ fn (c: mut &Checker) bReplace(e: int): Val {
     let t = c.pg.ta(p.t)
     p = c.before1(p, c.arg(e, 1))
     var v = c.coerce(c.expr(c.arg(e, 1), t), t, line, "the new value")
+    let bcT = c.pg.isBorrowClass(t)
+    let oldCr = if bcT { c.crOf(c.deref(p)) } else { -1 }
+    if bcT { c.storeRoot(p.root, c.crOf(v), t, line) }
     if c.checks(p.c) { v = c.seq(v) }         // the value's checks, then the place's again
     if p.late { c.take(p, HM_MUT, c.newCid(), line) }
     let cc = c.consume(v, line)
@@ -4573,12 +5190,13 @@ fn (c: mut &Checker) bReplace(e: int): Val {
     c.emit(c.x.decl(ct, n, c.x.pre("*", p.c)))
     c.emitx(c.x.asg(c.x.pre("*", p.c), cc))
     let nn = c.nm(n)
-    if c.pod(t) { return rv(nn, t) }
+    if c.pod(t) { return if bcT { c.withCr(rv(nn, t), oldCr) } else { rv(nn, t) } }
     let id = c.newTmp(nn, t)
     var r = val(nn, t, CAT_TMP)
     r.tmp = id
     r.root = tmpRoot(id)
     r.mutable = true
+    r.cr = oldCr
     return r
 }
 
@@ -4589,8 +5207,11 @@ fn (c: mut &Checker) bMove(e: int): Val {
     if c.kind(a) != sx.N_NAME || c.lookupVar(c.nd(a).s, true) < 0 { c.err(line, "move needs a local variable") }
     let v = c.expr(a, -1)
     if c.pg.tk(v.t) == sema.TK_REF { c.err(line, "cannot move the borrow '" + c.nd(a).s + "'") }
+    let mcr = c.crOf(v)
     let cc = c.consume(v, line)
-    return c.holdtmp(cc, v.t)
+    var r = c.holdtmp(cc, v.t)
+    r.cr = mcr
+    return r
 }
 
 fn (c: mut &Checker) bArray(e: int, exp: int): Val {
@@ -4674,6 +5295,14 @@ pub fn (c: mut &Checker) checkFn(f: int) {
         let v = c.newVar(p.name, "p_" + p.name, p.ty, p.isVar, VK_PARAM, p.line)
         append(mut &vs, v)
         if p.name == bp { c.cx.bvar = v }
+        c.paramContents(v)
+    }
+    if c.pg.isBorrowClass(c.pg.fns[f].ret) {
+        let bsrc = copyInts(&c.pg.fns[f].bsrc)
+        for i in bsrc {
+            let pv = vs[i]
+            append(mut &c.cx.rsrc, if c.vars[pv].croot >= 0 { c.vars[pv].croot } else { pv })
+        }
     }
     append(mut &c.cx.scopes, Scope{vars: vs, freezes: []})
     let line = c.pg.fns[f].line

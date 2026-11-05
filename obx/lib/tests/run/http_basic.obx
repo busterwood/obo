@@ -45,7 +45,7 @@ fn main() {
     task.scope(fn(s: mut &task.Scope) {
         let ln = net.listen("127.0.0.1:0").unwrap()
         let addr = ln.localAddr()
-        let p = strings.cut(addr, ":").unwrap().after
+        let p = strings.cut(&addr, ":").unwrap().after
         let base = "http://" + addr
         let srv = s.start(ht.serve, ln)
         let c = http.newClient(http.defaults())
@@ -145,7 +145,7 @@ fn main() {
         let gone = net.listen("127.0.0.1:0").unwrap()
         let nowhere = gone.localAddr()
         gone.close()
-        println(port(c.get("http://" + nowhere + "/").unwrapErr().toStr(), strings.cut(nowhere, ":").unwrap().after))
+        println(port(c.get("http://" + nowhere + "/").unwrapErr().toStr(), strings.cut(&nowhere, ":").unwrap().after))
         let s2 = c.stats()
         println("stats: open " + intToStr(s2.open) + ", idle " + intToStr(s2.idle) + ", waiting " + intToStr(s2.waiting))
     })

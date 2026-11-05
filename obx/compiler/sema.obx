@@ -107,6 +107,7 @@ pub type TParam = value record {
     pub line: int
     pub copy: bool
     pub cons: []int
+    pub borrow: bool   // `T: borrow`: may be a borrow-class type (design/borrow-types.md)
 }
 
 pub type Field = value record {
@@ -180,6 +181,7 @@ pub type FnDecl = value record {
     pub ownerKind: int
     pub owner: int
     pub bparam: str    // the borrowed parameter a borrow result comes from; ""
+    pub bsrc: []int    // a borrow-class result's sources: the parameters that are or hold borrows
 }
 
 // A folded constant (ref's (type, value, kind) tuple). ty is -1 for an
@@ -288,6 +290,8 @@ pub type Program = record {
     pub shared: int          // the TypeDecl of task.Shared (a lang item, SPEC 15), or -1
     pub where: int           // the TypeDecl of std.Where (a lang item, SPEC 15), or -1
     pub main: int
+    bcMemo: []int            // isBorrowClass per type: -1 unknown, 0, 1
+    bcDecl: []int            // declBC per declaration: -1 unknown, 0, 1, 2 (being computed)
 }
 
 // ---------------------------------------------------------------- errors
@@ -396,7 +400,7 @@ pub fn newProgram(stdPath: str, libroots: []str, mainFile: str): Program {
     var pg = Program{libroots: libroots, mainFile: mainFile, mods: [], modIndex: newMap(), types: [],
         variants: [], fns: [], consts: [], globals: [], tparams: [], tys: [], tlists: [], tindex: newMap(),
         primMethods: [], primMethodNames: [], prelude: newMap(), preludeNames: [], externs: newMap(),
-        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, shared: -1, where: -1, main: -1}
+        externNames: [], pending: [], resolved: false, wraps: [], gwrap: "", std: -1, shared: -1, where: -1, main: -1, bcMemo: [], bcDecl: []}
     let none: []int = []
     for p in 0..len(PRIM_NAMES) { pg.intern(TK_PRIM, p, 0, false, &none) }
     pg.intern(TK_SELF, 0, 0, false, &none)
@@ -665,6 +669,86 @@ fn (pg: mut &Program) isCopyAt(t: int, depth: int): bool {
     return true
 }
 
+// A borrow-class type (design/borrow-types.md): a borrow or a slice, a type parameter declared
+// `T: borrow`, or an array, value record or value closed type with a borrow-class element or field.
+// Its values are second class like borrows: they have a root, which they freeze.
+pub fn (pg: mut &Program) isBorrowClass(t: int): bool {
+    while len(pg.bcMemo) <= t { append(mut &pg.bcMemo, -1) }
+    if pg.bcMemo[t] >= 0 { return pg.bcMemo[t] == 1 }
+    let r = pg.bcOf(t, true)
+    while len(pg.bcMemo) <= t { append(mut &pg.bcMemo, -1) }
+    pg.bcMemo[t] = if r { 1 } else { 0 }
+    return r
+}
+
+// isBorrowClass without the memo: a type parameter counts when tps is set (it is a borrow one).
+// An instance holds borrows when its declaration does whatever its arguments, or when one of its
+// borrow type parameters has a borrow-class argument (only those may), so this terminates even for
+// a type naming a larger instance of itself.
+fn (pg: mut &Program) bcOf(t: int, tps: bool): bool {
+    match pg.tk(t) {
+        TK_REF, TK_SLICE { return true }
+        TK_ARR { return pg.bcOf(pg.ta(t), tps) }
+        TK_TP { return tps && pg.tparams[pg.ta(t)].borrow }
+        TK_INST {
+            let d = pg.ta(t)
+            if pg.declBC(d) { return true }
+            for i in 0..pg.tn(t) {
+                if i < len(pg.types[d].tparams) && pg.tparams[pg.types[d].tparams[i]].borrow &&
+                        pg.bcOf(pg.ti(t, i), tps) {
+                    return true
+                }
+            }
+            return false
+        }
+        else { return false }
+    }
+}
+
+// Whether declaration d's fields hold borrows whatever its type arguments.
+fn (pg: mut &Program) declBC(d: int): bool {
+    while len(pg.bcDecl) <= d { append(mut &pg.bcDecl, -1) }
+    if pg.bcDecl[d] >= 0 { return pg.bcDecl[d] == 1 }
+    let form = pg.types[d].form
+    if form != sx.F_RECORD && form != sx.F_CLOSED { return false }
+    pg.bcDecl[d] = 2
+    var r = false
+    if form == sx.F_RECORD {
+        for i in 0..len(pg.types[d].fields) {
+            if !r && pg.types[d].fields[i].ty >= 0 && pg.bcOf(pg.types[d].fields[i].ty, false) { r = true }
+        }
+    } else {
+        for j in 0..len(pg.types[d].variants) {
+            let v = pg.types[d].variants[j]
+            for i in 0..len(pg.variants[v].fields) {
+                if !r && pg.variants[v].fields[i].ty >= 0 && pg.bcOf(pg.variants[v].fields[i].ty, false) { r = true }
+            }
+        }
+    }
+    pg.bcDecl[d] = if r { 1 } else { 0 }
+    return r
+}
+
+// Whether t holds a mut borrow (a borrow-class value that freezes its root against any other use).
+pub fn (pg: mut &Program) holdsMut(t: int): bool { return pg.holdsMutAt(t, 0) }
+
+fn (pg: mut &Program) holdsMutAt(t: int, depth: int): bool {
+    if depth > 50 { return false }
+    match pg.tk(t) {
+        TK_REF, TK_SLICE { return pg.tm(t) }
+        TK_ARR { return pg.holdsMutAt(pg.ta(t), depth + 1) }
+        TK_INST {
+            if !pg.isBorrowClass(t) { return false }
+            let fts = pg.fieldTypes(t)
+            for ft in fts {
+                if pg.holdsMutAt(ft, depth + 1) { return true }
+            }
+            return false
+        }
+        else { return false }
+    }
+}
+
 // ---------------------------------------------------------------- AST access
 
 pub fn (pg: &Program) nd(m: int, n: int): sx.Node { return pg.mods[m].ast.nodes[n] }
@@ -841,7 +925,7 @@ fn (pg: mut &Program) collect(m: int) {
                 append(mut &pg.fns, FnDecl{node: a, mod: m, name: n.s, line: n.line, isPub: isPub,
                     isExtern: n.flags & sx.EXTERN != 0, lib: n.t, cname: n.u,
                     varargs: n.flags & sx.DOTS != 0, blocking: n.flags & sx.BLOCKING != 0, tps: [], params: [], ret: T_VOID,
-                    recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: ""})
+                    recvMode: RM_NONE, recvName: "", recvType: -1, ownerKind: O_NONE, owner: -1, bparam: "", bsrc: []})
                 let f = len(pg.fns) - 1
                 append(mut &pg.mods[m].fns, f)
                 if n.a < 0 { pg.add(m, n.s, Sym{k: D_FN, i: f}, n.line) }
@@ -923,6 +1007,12 @@ pub fn (pg: mut &Program) resolveAll() {
         }
     }
     for m in 0..nm {
+        for k in 0..len(pg.mods[m].scopeNames) {
+            let s = pg.scopeGet(m, pg.mods[m].scopeNames[k])
+            if s.k == D_TYPE { pg.checkBorrowFields(s.i) }
+        }
+    }
+    for m in 0..nm {
         for k in 0..len(pg.mods[m].fns) { pg.resolveFn(pg.mods[m].fns[k]) }
     }
     for m in 0..nm {
@@ -947,10 +1037,39 @@ pub fn (pg: mut &Program) resolveAll() {
     }
 }
 
+// Only a value record or value closed type may hold borrows (design/borrow-types.md); a boxed one
+// is owned on the heap and may outlive any root.
+fn (pg: mut &Program) checkBorrowFields(d: int) {
+    let form = pg.types[d].form
+    if form != sx.F_RECORD && form != sx.F_CLOSED { return }
+    var fs: []Field = []
+    if form == sx.F_RECORD {
+        for f in pg.types[d].fields { append(mut &fs, f) }
+    } else {
+        for v in pg.types[d].variants {
+            for f in pg.variants[v].fields { append(mut &fs, f) }
+        }
+    }
+    for f in fs {
+        if pg.isBorrowClass(f.ty) && !pg.types[d].value {
+            pg.err(pg.types[d].mod, pg.types[d].line, "field " + f.name + " of " + pg.types[d].name + " is " +
+                pg.tstr(f.ty) + ", which holds borrows: only a value record or value closed type can hold them")
+        }
+    }
+}
+
 // Whether the constraint list l (module m) contains `copy`.
 fn (pg: &Program) hasCopy(m: int, l: int): bool {
     for i in 0..pg.count(m, l) {
-        if pg.kind(m, pg.item(m, l, i)) == sx.N_COPY { return true }
+        if pg.kind(m, pg.item(m, l, i)) == sx.N_COPY && pg.nd(m, pg.item(m, l, i)).s == "" { return true }
+    }
+    return false
+}
+
+// Whether the constraint list l (module m) contains `borrow` (an N_COPY node with s "borrow").
+fn (pg: &Program) hasBorrow(m: int, l: int): bool {
+    for i in 0..pg.count(m, l) {
+        if pg.kind(m, pg.item(m, l, i)) == sx.N_COPY && pg.nd(m, pg.item(m, l, i)).s == "borrow" { return true }
     }
     return false
 }
@@ -965,7 +1084,8 @@ fn (pg: mut &Program) makeTparams(d: int) {
             if s == tn.s { pg.err(m, tn.line, "type parameter " + tn.s + " is declared twice") }
         }
         append(mut &seen, tn.s)
-        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: []})
+        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: [],
+            borrow: pg.hasBorrow(m, tn.a)})
         append(mut &pg.types[d].tparams, len(pg.tparams) - 1)
     }
 }
@@ -975,6 +1095,10 @@ fn (pg: mut &Program) resolveCons(tp: int, m: int, cons: int, env: &[]int, skipC
     for i in 0..pg.count(m, cons) {
         let c = pg.item(m, cons, i)
         if pg.kind(m, c) == sx.N_COPY {
+            if pg.nd(m, c).s == "borrow" {
+                if !skipCopy { pg.tparams[tp].borrow = true }
+                continue
+            }
             if !skipCopy { pg.tparams[tp].copy = true }
             continue
         }
@@ -1099,7 +1223,7 @@ pub fn (pg: mut &Program) resolveType(a: int, m: int, env: &[]int, pos: int, whe
     }
     match k {
         sx.N_TREF, sx.N_TSLICE {
-            if pos != P_PARAM && pos != P_RET && pos != P_LET {
+            if pos != P_PARAM && pos != P_RET && pos != P_LET && pos != P_FIELD && pos != P_ELEM && pos != P_TARG {
                 pg.err(m, pg.orWhere(where, m, a), "a borrow type cannot be " + posWhat(pos) +
                     ": borrows are second class")
             }
@@ -1180,6 +1304,24 @@ pub fn (pg: mut &Program) resolveType(a: int, m: int, env: &[]int, pos: int, whe
     return t
 }
 
+// A type argument t for type parameter p: a closure never, a borrow-class type only for `p: borrow`.
+pub fn (pg: mut &Program) checkBorrowTarg(t: int, p: int, m: int, line: int) {
+    let pn = pg.tparams[p].name
+    let k = pg.tk(t)
+    if k == TK_CLO {
+        pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
+            pn + "): borrows are second class")
+    }
+    if (k == TK_REF || k == TK_SLICE) && !pg.tparams[p].borrow {
+        pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
+            pn + "): borrows are second class, and only a parameter declared " + pn + ": borrow takes one")
+    }
+    if !pg.tparams[p].borrow && pg.isBorrowClass(t) {
+        pg.err(m, line, pg.tstr(t) + " holds borrows, so it cannot be a type argument for type parameter " + pn +
+            " (only a parameter declared " + pn + ": borrow takes one)")
+    }
+}
+
 // ref's check_targs: type arguments against their parameters' constraints.
 pub fn (pg: mut &Program) checkTargs(targs: &[]int, tparams: &[]int, m: int, line: int) {
     var env: []int = []
@@ -1197,11 +1339,7 @@ pub fn (pg: mut &Program) checkTargs(targs: &[]int, tparams: &[]int, m: int, lin
             pg.err(m, line, "type parameter " + pn + " cannot be " + what + ": never and no result are not " +
                 "types, so they cannot be type arguments")
         }
-        let k = pg.tk(t)
-        if k == TK_REF || k == TK_SLICE || k == TK_CLO {
-            pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
-                pn + "): borrows are second class")
-        }
+        pg.checkBorrowTarg(t, p, m, line)
         if pg.tparams[p].copy && !pg.isCopy(t) {
             pg.err(m, line, pg.tstr(t) + " is not a copy type (type parameter " + pn + " needs copy)")
         }
@@ -1335,7 +1473,8 @@ fn (pg: mut &Program) resolveFn(f: int) {
                 let nm = if isTp { xn.s } else { pg.nd(m, pg.item(m, xn.a, 0)).s }
                 if pg.envLookup(&env, nm) >= 0 { pg.err(m, xn.line, "type parameter " + nm + " is declared twice") }
                 let dp = pg.types[d].tparams[i]
-                append(mut &pg.tparams, TParam{name: nm, line: xn.line, copy: pg.tparams[dp].copy, cons: []})
+                append(mut &pg.tparams, TParam{name: nm, line: xn.line, copy: pg.tparams[dp].copy, cons: [],
+                    borrow: pg.tparams[dp].borrow})
                 append(mut &env, len(pg.tparams) - 1)
                 append(mut &extra, if isTp { xn.a } else { -1 })
             }
@@ -1375,7 +1514,8 @@ fn (pg: mut &Program) resolveFn(f: int) {
     for i in 0..pg.count(m, a.b) {
         let tn = pg.nd(m, pg.item(m, a.b, i))
         if pg.envLookup(&env, tn.s) >= 0 { pg.err(m, tn.line, "type parameter " + tn.s + " is declared twice") }
-        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: []})
+        append(mut &pg.tparams, TParam{name: tn.s, line: tn.line, copy: pg.hasCopy(m, tn.a), cons: [],
+            borrow: pg.hasBorrow(m, tn.a)})
         append(mut &env, len(pg.tparams) - 1)
     }
     for i in 0..pg.count(m, a.b) {
@@ -1413,26 +1553,50 @@ fn (pg: mut &Program) resolveFn(f: int) {
             pg.err(m, a.line, "a drop method takes `mut &` receiver and nothing else")
         }
         if pg.fns[f].ownerKind == O_PRIM { pg.err(m, a.line, "primitive types cannot have a drop method") }
-        pg.types[pg.fns[f].owner].drop = f
+        let od = pg.fns[f].owner
+        // design/borrow-types.md D8: a type that holds borrows has no drop method (none has a use yet)
+        var why = if pg.declBC(od) { "it holds borrows" } else { "" }
+        for tp in pg.types[od].tparams {
+            if why == "" && pg.tparams[tp].borrow {
+                why = "its type parameter " + pg.tparams[tp].name + " is declared borrow, so it may hold borrows"
+            }
+        }
+        if why != "" {
+            pg.err(m, a.line, pg.types[od].name + " cannot have a drop method: " + why + " (a type that holds " +
+                "borrows cannot have one)")
+        }
+        pg.types[od].drop = f
     }
     let ret = pg.fns[f].ret
+    if !pg.isBorrow(ret) && pg.isBorrowClass(ret) {
+        // a result that holds borrows: rooted at its sources, the parameters that are or hold borrows
+        for i in 0..len(pg.fns[f].params) {
+            if pg.isBorrowClass(pg.fns[f].params[i].ty) { append(mut &pg.fns[f].bsrc, i) }
+        }
+        // none: every borrow it returns is static (a string literal or constant; SPEC 10 rule 5)
+        if len(pg.fns[f].bsrc) > 0 { pg.fns[f].bparam = pg.fns[f].params[pg.fns[f].bsrc[0]].name }
+    }
     if pg.isBorrow(ret) {
         var count = 0
         var first = -1
         for i in 0..len(pg.fns[f].params) {
-            if pg.isBorrow(pg.fns[f].params[i].ty) {
+            if pg.isBorrowClass(pg.fns[f].params[i].ty) {
                 count += 1
                 if first < 0 { first = i }
             }
         }
-        if count != 1 {
-            pg.err(m, a.line, pg.label(f) + " returns a borrow, so it needs exactly one borrowed " +
-                "parameter, not " + intToStr(count))
+        // none: every borrow it returns is static (a string literal or constant; SPEC 10 rule 5)
+        if count > 1 || (count == 0 && pg.tm(ret)) {
+            pg.err(m, a.line, pg.label(f) + " returns a" + (if pg.tm(ret) { " mut" } else { "" }) + " borrow, so it " +
+                "needs exactly one borrowed parameter, not " + intToStr(count))
         }
-        if pg.tm(ret) && !pg.tm(pg.fns[f].params[first].ty) {
-            pg.err(m, a.line, pg.label(f) + " returns a mut borrow, so its borrowed parameter must " + "be mut &")
+        if count == 1 {
+            if pg.tm(ret) && !pg.tm(pg.fns[f].params[first].ty) {
+                pg.err(m, a.line, pg.label(f) + " returns a mut borrow, so its borrowed parameter must " + "be mut &")
+            }
+            pg.fns[f].bparam = pg.fns[f].params[first].name
+            append(mut &pg.fns[f].bsrc, first)
         }
-        pg.fns[f].bparam = pg.fns[f].params[first].name
     }
 }
 
@@ -1506,6 +1670,10 @@ fn (pg: mut &Program) resolveGlobal(g: int) {
     let a = pg.nd(m, pg.globals[g].node)
     let t = pg.resolveType(a.a, m, &[], P_GLOBAL, a.line)
     pg.globals[g].ty = t
+    if pg.isBorrowClass(t) {
+        pg.err(m, a.line, "global " + pg.globals[g].name + " cannot have the type " + pg.tstr(t) +
+            ": it holds borrows, which are second class")
+    }
     if !pg.isCopy(t) && !pg.globals[g].isOnce {
         let ts = pg.tstr(t)
         let gn = pg.globals[g].name
@@ -1552,6 +1720,9 @@ pub fn (pg: mut &Program) constValue(c: int): CVal {
         pg.consts[c].busy = true
         let a = pg.nd(m, pg.consts[c].node)
         let t = if a.a >= 0 { pg.resolveType(a.a, m, &[], P_GLOBAL, line) } else { -1 }
+        if t >= 0 && pg.isBorrowClass(t) {
+            pg.err(m, line, "const " + name + " cannot have the type " + pg.tstr(t) + ": it holds borrows")
+        }
         if t >= 0 && (pg.tk(t) == TK_ARR || pg.tk(t) == TK_INST) {     // a constant table, or a record/variant constant
             let et = if pg.tk(t) == TK_ARR { pg.ta(t) } else { t }
             if !pg.isCopy(et) { pg.err(m, line, "const " + name + ": " + pg.tstr(et) + " is not a copy type") }

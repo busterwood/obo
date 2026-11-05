@@ -10,8 +10,10 @@
 
 // ---------------------------------------------------------------- core sums
 
-pub type Option[T] = value closed { Some(T); None }
-pub type Result[T, E] = value closed { Ok(T); Err(E) }
+// T: borrow (design/borrow-types.md): an Option may hold a borrow, Option[&T], or a value holding
+// borrows; it is then second class like them.
+pub type Option[T: borrow] = value closed { Some(T); None }
+pub type Result[T: borrow, E: borrow] = value closed { Ok(T); Err(E) }
 pub type Unit = value record {}
 
 pub fn (o: &Option[T]) isSome(): bool {
@@ -1593,6 +1595,28 @@ pub fn (m: mut &Map[K, V]) atOrPut(k: K, d: V): mut &V {
 pub fn (m: &Map[K, V]) keyAt(i: int): &K { return &m.keys[i] }
 pub fn (m: &Map[K, V]) valAt(i: int): &V { return &m.vals[i] }
 pub fn (m: mut &Map[K, V]) valAtMut(i: int): mut &V { return mut &m.vals[i] }
+
+// Experimental (design/borrow-types.md): `for e in m.iter() { ... e.key ... e.value ... }` walks
+// the entries in insertion order. The entries borrow the map, not the iterator, so they may be
+// kept (and the map is frozen) while they are in scope.
+pub type MapIter[K: Eq + Hash, V] = value record {
+    m: &Map[K, V]
+    i: int
+}
+
+pub type MapEntry[K, V] = value record {
+    pub key: &K
+    pub value: &V
+}
+
+pub fn (m: &Map[K, V]) iter(): MapIter[K, V] { return MapIter{m: m, i: 0} }
+
+pub fn (it: mut &MapIter[K, V]) next(): Option[MapEntry[K, V]] {
+    if it.i >= len(it.m.keys) { return None }
+    let i = it.i
+    it.i += 1
+    return Some(MapEntry{key: &it.m.keys[i], value: &it.m.vals[i]})
+}
 
 // Calls f on each entry, in insertion order.
 pub fn (m: &Map[K, V]) each(f: &fn(&K, &V)) {

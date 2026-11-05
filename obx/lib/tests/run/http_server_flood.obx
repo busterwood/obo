@@ -153,11 +153,11 @@ fn main() {
     }
     print(io.read("flood_client.txt").unwrapOr("no client output\n"))
     let s = io.read("flood_server.txt").unwrapOr("no server output\n")
-    let ls = strings.splitOn(s, "\n")
+    let ls = strings.split(&s, "\n")
     var accepted = -1
     var late = -1
     if startsWith(ls[0], "accepted ") {
-        accepted = strings.parseInt(strings.splitOn(ls[0], ",")[0][9..len(strings.splitOn(ls[0], ",")[0])]).unwrapOr(-1)
+        accepted = strings.parseInt(strings.split(ls[0], ",")[0][9..]).unwrapOr(-1)
     }
     if len(ls) > 1 && startsWith(ls[1], "late ") { late = strings.parseInt(ls[1][5..len(ls[1])]).unwrapOr(-1) }
     println("server: " + (if accepted >= FLOOD + 2 && endsWith(ls[0], "open 0") { "accepted at least 1002, stopped with open 0" } else { ls[0] }))

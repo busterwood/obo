@@ -1,0 +1,4 @@
+// borrow-class types (design/borrow-types.md): a global cannot hold borrows.
+// error: it holds borrows, which are second class
+var g: []&str = []
+fn main() {}

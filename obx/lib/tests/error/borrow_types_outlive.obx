@@ -1,0 +1,22 @@
+// borrow-class types (design/borrow-types.md): a var cannot hold borrows of something that does not live as long.
+// error: 'line' does not live as long as 'keep'
+fn splitRef(s: &str, sep: byte): []&str {
+    var out: []&str = []
+    var start = 0
+    for i in 0..len(s) {
+        if s[i] == sep {
+            append(mut &out, &s[start..i])
+            start = i + 1
+        }
+    }
+    append(mut &out, &s[start..len(s)])
+    return out
+}
+fn main() {
+    var keep: []&str = []
+    if true {
+        let line = "a,b"
+        keep = splitRef(&line, ',')
+    }
+    println(intToStr(len(keep)))
+}

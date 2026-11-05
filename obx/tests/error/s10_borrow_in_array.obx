@@ -1,4 +1,4 @@
 // error: borrow|second|element|array
-fn main() {
-    var xs: []&int = []
-}
+// An array of borrows holds borrows (design/borrow-types.md), so it cannot be a global.
+var xs: []&int = []
+fn main() {}

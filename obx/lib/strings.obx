@@ -56,60 +56,101 @@ pub fn equalFold(a: str, b: str): bool {
 }
 
 // ------------------------------------------------------------ splitting
+//
+// The pieces are views (&str) of s: no copy and no count, valid while s is
+// (design/borrow-types.md; s is frozen while they live). A piece converts to
+// str where one is expected; owned(&pieces) keeps a whole array past s.
 
 // The pieces of s between occurrences of sep (sep not empty); "" gives [""].
-pub fn splitOn(s: str, sep: str): []str {
-    if len(sep) == 0 { panic("strings.splitOn: empty separator") }
-    var out: []str = []
-    var start = 0
-    var i = indexOf(s, sep, 0)
-    while i >= 0 {
-        append(mut &out, strSlice(s, start, i))
-        start = i + len(sep)
-        i = indexOf(s, sep, start)
-    }
-    append(mut &out, strSlice(s, start, len(s)))
-    return out
-}
+pub fn split(s: &str, sep: &str): []&str { return splitN(s, sep, -1) }
 
-// At most n pieces: the last one holds the rest of s.
-pub fn splitN(s: str, sep: str, n: int): []str {
-    if len(sep) == 0 { panic("strings.splitN: empty separator") }
-    var out: []str = []
+// At most n pieces (n < 0: all): the last one holds the rest of s.
+pub fn splitN(s: &str, sep: &str, n: int): []&str {
+    if len(sep) == 0 { panic("strings.split: empty separator") }
+    var out: []&str = []
     var start = 0
-    var i = indexOf(s, sep, 0)
-    while i >= 0 && len(out) < n - 1 {
-        append(mut &out, strSlice(s, start, i))
+    var i = strFind(s, 0, sep)
+    while i >= 0 && (n < 0 || len(out) < n - 1) {
+        append(mut &out, &s[start..i])
         start = i + len(sep)
-        i = indexOf(s, sep, start)
+        i = strFind(s, start, sep)
     }
-    append(mut &out, strSlice(s, start, len(s)))
+    append(mut &out, &s[start..len(s)])
     return out
 }
 
 // The words of s: the runs of non-space bytes.
-pub fn fields(s: str): []str {
-    var out: []str = []
+pub fn fields(s: &str): []&str {
+    var out: []&str = []
     var i = 0
     while i < len(s) {
-        while i < len(s) && isSpace(strByte(s, i)) { i += 1 }
+        while i < len(s) && isSpace(s[i]) { i += 1 }
         let start = i
-        while i < len(s) && !isSpace(strByte(s, i)) { i += 1 }
-        if i > start { append(mut &out, strSlice(s, start, i)) }
+        while i < len(s) && !isSpace(s[i]) { i += 1 }
+        if i > start { append(mut &out, &s[start..i]) }
     }
     return out
 }
 
-// The text before and after the first sep, if s contains it.
-pub type Cut = value record {
-    pub before: str
-    pub after: str
+// The pieces as owned strings, to keep past the text they view.
+pub fn owned(pieces: &[]&str): []str {
+    var out: []str = []
+    for p in pieces { append(mut &out, p) }
+    return out
 }
 
-pub fn cut(s: str, sep: str): Option[Cut] {
-    let i = indexOf(s, sep, 0)
+// An iterator over the lines of a text: `for line in strings.lines(&text)`.
+// Each line is a view without its '\n'; a final line without one is a line,
+// and a text ending in '\n' has no empty line after it ("" has no lines).
+pub type Lines = value record {
+    text: &str
+    pos: int
+}
+
+pub fn lines(text: &str): Lines { return Lines{text: text, pos: 0} }
+
+pub fn (it: mut &Lines) next(): Option[&str] {
+    let n = len(it.text)
+    if it.pos >= n { return None }
+    let start = it.pos
+    var e = strFindByte(it.text, start, '\n')
+    if e < 0 { e = n }
+    it.pos = e + 1
+    return Some(it.text[start..e])
+}
+
+// An iterator over the words of a text (fields', one at a time).
+pub type Fields = value record {
+    text: &str
+    pos: int
+}
+
+pub fn fieldsIter(text: &str): Fields { return Fields{text: text, pos: 0} }
+
+pub fn (it: mut &Fields) next(): Option[&str] {
+    let n = len(it.text)
+    var i = it.pos
+    while i < n && isSpace(it.text[i]) { i += 1 }
+    if i >= n {
+        it.pos = n
+        return None
+    }
+    let start = i
+    while i < n && !isSpace(it.text[i]) { i += 1 }
+    it.pos = i
+    return Some(it.text[start..i])
+}
+
+// The text before and after the first sep, if s contains it: views of s.
+pub type Cut = value record {
+    pub before: &str
+    pub after: &str
+}
+
+pub fn cut(s: &str, sep: &str): Option[Cut] {
+    let i = strFind(s, 0, sep)
     if i < 0 { return None }
-    return Some(Cut{before: strSlice(s, 0, i), after: strSlice(s, i + len(sep), len(s))})
+    return Some(Cut{before: s[0..i], after: s[i + len(sep)..len(s)]})
 }
 
 // The parts with sep between them.

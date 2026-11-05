@@ -1,0 +1,14 @@
+// borrow-class types (design/borrow-types.md): a value holding borrows passed by value holds its root while
+// the call's later arguments are evaluated (SPEC 10 rule 3), so a later argument cannot move it.
+// error: 'words' cannot be moved here: it overlaps a borrow held by the call being evaluated
+fn firsts(xs: &[]str): []&str {
+    var out: []&str = []
+    for i in 0..len(xs) { append(mut &out, &xs[i]) }
+    return out
+}
+fn count(parts: []&str, n: int): int { return len(parts) + n }
+fn eat(xs: []str): int { return len(xs) }
+fn main() {
+    let words = ["a", "b"]
+    println(count(firsts(&words), eat(words)))
+}

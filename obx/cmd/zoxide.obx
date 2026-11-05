@@ -630,7 +630,7 @@ fn lower(s: str): str {
 
 fn splitComps(path: str): []str {
     var out: []str = []
-    for c in strings.splitOn(path, "/") {
+    for c in strings.split(&path, "/") {
         if c != "" && c != "." { append(mut &out, c) }
     }
     return out
@@ -657,7 +657,7 @@ fn realpath(path: str): Result[str, int] {
     if len(path) == 0 || path[0] != '/' {
         for c in splitComps(os.cwd()) { append(mut &todo, c) }
     }
-    for c in strings.splitOn(path, "/") { append(mut &todo, c) }
+    for c in strings.split(&path, "/") { append(mut &todo, c) }
     // process todo from the front
     var pos = 0
     var links = 0
@@ -683,7 +683,7 @@ fn realpath(path: str): Result[str, int] {
                             for k in pos..len(todo) { append(mut &rest, todo[k]) }
                             var nt: []str = []
                             if len(target) > 0 && target[0] == '/' { stack = [] }
-                            for t in strings.splitOn(target, "/") { append(mut &nt, t) }
+                            for t in strings.split(&target, "/") { append(mut &nt, t) }
                             for r in rest { append(mut &nt, r) }
                             todo = nt
                             pos = 0
@@ -873,9 +873,9 @@ fn passwdHome(): Option[str] {
     var uid = ""
     match io.read("/proc/self/status") {
         Ok(t) {
-            for line in strings.splitOn(t, "\n") {
+            for line in strings.lines(&t) {
                 if startsWith(line, "Uid:") {
-                    let f = strings.fields(line)
+                    let f = strings.fields(&line)
                     if len(f) > 1 { uid = f[1] }
                 }
             }
@@ -885,8 +885,8 @@ fn passwdHome(): Option[str] {
     if uid == "" { return None }
     match io.read("/etc/passwd") {
         Ok(t) {
-            for line in strings.splitOn(t, "\n") {
-                let f = strings.splitOn(line, ":")
+            for line in strings.lines(&t) {
+                let f = strings.split(&line, ":")
                 if len(f) >= 6 && f[2] == uid && f[5] != "" { return Some(f[5]) }
             }
         }
@@ -933,7 +933,7 @@ fn excludeDirs(): []Glob {
     var out: []Glob = []
     match os.env("_ZO_EXCLUDE_DIRS") {
         Some(v) {
-            for p in strings.splitOn(v, ":") {
+            for p in strings.split(&v, ":") {
                 match globNew(p) {
                     Ok(g) { append(mut &out, g) }
                     Err(e) {
@@ -1493,6 +1493,12 @@ fn sigmoid(x: float): float {
     return 1.0 / (1.0 + (-x).exp())
 }
 
+// line without a final '\r'.
+fn noCR(line: &str): &str {
+    if len(line) > 0 && line[len(line) - 1] == '\r' { return line[..len(line) - 1] }
+    return line
+}
+
 fn cmdImport(a: &Args) {
     let path = a.pos[0]
     var buffer = ""
@@ -1508,12 +1514,11 @@ fn cmdImport(a: &Args) {
         die1("current database is not empty, specify --merge to continue anyway")
     }
     let from = a.get("from").unwrap()
-    for line in strings.splitOn(buffer, "\n") {
-        var l = line
-        if len(l) > 0 && l[len(l) - 1] == '\r' { l = l[..len(l) - 1] }
+    for line in strings.lines(&buffer) {
+        let l = noCR(&line)
         if l == "" { continue }
         if from == "autojump" {
-            let c = strings.cut(l, "\t")
+            let c = strings.cut(&l, "\t")
             match c {
                 None { die(["import error", "invalid entry: " + l]) }
                 Some(cut) {

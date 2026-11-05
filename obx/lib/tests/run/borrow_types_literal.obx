@@ -1,0 +1,79 @@
+// A string literal (or a str constant) is accepted where a &str is expected: its bytes are static,
+// so it has no root (SPEC 4.1, 10).
+// expect: 3
+// expect: none
+// expect: default
+// expect: name=obx
+// expect: kind=word
+// expect: alpha
+// expect: missing
+// expect: lit lit2
+// expect: [x] [y]
+// expect: err: empty
+const DEFAULT = "default"
+
+type Span = value record {
+    text: &str
+    kind: &str
+}
+
+fn size(s: &str): int { return len(s) }
+
+// returned with no root, from a function with a source
+fn orNone(s: &str): &str {
+    if len(s) == 0 { return "none" }
+    return s
+}
+
+// a function without sources may return a value holding only static borrows
+fn fallback(): &str { return DEFAULT }
+
+fn firstWord(s: &str): Option[&str] {
+    var i = 0
+    while i < len(s) && s[i] != ' ' { i += 1 }
+    if i == 0 { return None }
+    return Some(s[0..i])
+}
+
+fn nonEmpty(s: &str): Result[&str, &str] {
+    if len(s) == 0 { return Err("empty") }
+    return Ok(s)
+}
+
+fn main() {
+    println(size("abc"))
+    let e = ""
+    println(orNone(&e))
+    println(fallback())
+    let src = "obx"
+    let sp = Span{text: &src, kind: "word"}           // a literal stored beside a view
+    println("name=" + sp.text)
+    println("kind=" + sp.kind)
+    let line = "alpha beta"
+    let w = firstWord(&line)
+    let o: Option[&str] = Some("missing")
+    println(w.unwrapOr("?"))
+    println(o.unwrapOr("?"))
+    // joined with a root in an if expression
+    let pick: Option[&str] = if len(line) > 100 { Some(&line[0..1]) } else { Some("lit") }
+    let sp2 = if len(line) > 100 { Span{text: &line[0..1], kind: "a"} } else { Span{text: "lit2", kind: "b"} }
+    println(pick.unwrapOr("?") + " " + sp2.text)
+    var parts: []&str = []
+    append(mut &parts, "[x]")
+    append(mut &parts, &line[0..0])
+    append(mut &parts, "[y]")
+    var b = newStrBuf()
+    var sep = ""
+    for p in parts {
+        if len(p) > 0 {
+            b.add(sep + p)
+            sep = " "
+        }
+    }
+    println(b.toStr())
+    let x: &str = ""
+    match nonEmpty(x) {
+        Ok(v) { println("ok: " + v) }
+        Err(m) { println("err: " + m) }
+    }
+}

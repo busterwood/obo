@@ -1,0 +1,9 @@
+// borrow-class types (design/borrow-types.md): a value holding borrows has one root.
+// error: holds borrows of 'a', so it cannot also hold borrows of 'b'
+fn main() {
+    let a = "a"
+    let b = "b"
+    var xs: []&str = []
+    append(mut &xs, &a)
+    append(mut &xs, &b)
+}

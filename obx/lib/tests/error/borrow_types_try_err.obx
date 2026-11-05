@@ -1,0 +1,19 @@
+// borrow-class types (design/borrow-types.md, D4): try returns the Err of a result holding borrows, so
+// that result must be rooted at the function's own sources.
+// error: cannot return a value holding borrows of 'local'
+fn check(s: &str): Result[int, &str] {
+    if len(s) == 0 { return Err(s) }
+    return Ok(len(s))
+}
+fn lengthOf(s: &str): Result[int, &str] {
+    let local = "x" + s
+    let n = try check(&local)
+    return Ok(n)
+}
+fn main() {
+    let a = "abc"
+    match lengthOf(&a) {
+        Ok(n) { println(n) }
+        Err(e) { println(e) }
+    }
+}
