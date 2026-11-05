@@ -1027,11 +1027,10 @@ fn (p: mut &Parser) continueBlock(id: int): int {
             return 1
         }
         Kind.Item {
-            if p.blank {
-                if p.d.nodes[id].firstChild < 0 { return 1 }
-                p.advanceNextNonspace()
-            } else if p.indent >= p.d.nodes[id].pa + p.d.nodes[id].pb {
+            if p.indent >= p.d.nodes[id].pa + p.d.nodes[id].pb {
                 p.advanceOffset(p.d.nodes[id].pa + p.d.nodes[id].pb, true)
+            } else if p.blank && p.d.nodes[id].firstChild >= 0 {
+                p.advanceNextNonspace()
             } else {
                 return 1
             }
