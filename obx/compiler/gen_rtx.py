@@ -25,7 +25,9 @@ NAT = os.path.join(HERE, 'native')
 OUT = os.path.join(HERE, 'rtx.obx')
 # -falign-functions=64: without it a change elsewhere in rt.c moved the allocator and cost
 # bench alloc 26% of its cycles with the same instructions (2026-11-03).
-CFLAGS = ['-O2', '-falign-functions=64', '-std=gnu11', '-ffreestanding', '-fno-builtin', '-nostdlib', '-fno-pic', '-fno-pie',
+# -march=x86-64-v3: the CPU level programs require; -ffp-contract=off: the math port's floats keep
+# their bits (no a * b + c fused unless written as fma).
+CFLAGS = ['-O2', '-march=x86-64-v3', '-ffp-contract=off', '-falign-functions=64', '-std=gnu11', '-ffreestanding', '-fno-builtin', '-nostdlib', '-fno-pic', '-fno-pie',
           '-fno-stack-protector', '-fno-asynchronous-unwind-tables', '-fno-tree-loop-distribute-patterns',
           '-fcf-protection=none', '-fno-common', '-ffunction-sections', '-fdata-sections',
           '-Wall', '-Wno-builtin-declaration-mismatch', '-Werror']
