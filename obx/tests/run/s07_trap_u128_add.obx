@@ -1,0 +1,6 @@
+// exit: 10
+fn add(a: u128, b: u128): u128 { return a + b }
+fn main() {
+    let x = add(u128(1) << 127, u128(1) << 126)
+    println(add(x, x).toStr())
+}

@@ -3543,8 +3543,47 @@ fn (g: &Gen) quietList(l: int): bool {
     return true
 }
 
+// A 128-bit constant as its two words: the front end writes one above 2^64 as
+// ((unsigned __int128)HI << 64) | LO, and one below as a conversion of a 64-bit literal.
+type C128 = value record { ok: bool; lo: int; hi: int }
+
+fn (g: &Gen) const128(e: int): C128 {
+    let n = g.u.nodes[e]
+    let no = C128{ok: false, lo: 0, hi: 0}
+    if n.k == ir.E_CAST && g.is128(n.ty) {
+        let s = g.u.nodes[n.a]
+        if s.k != ir.E_INT || g.is128(s.ty) || g.isF(s.ty) || !g.u.isInt(s.ty) { return no }
+        let neg = g.u.isSigned(s.ty) && s.v < 0
+        return C128{ok: true, lo: s.v, hi: if neg { -1 } else { 0 }}
+    }
+    if n.k != ir.E_BIN || !g.is128(n.ty) || !g.is128(n.c) { return no }
+    if n.v == ir.OP_SHL {
+        let c = g.u.nodes[n.b]
+        let a = g.const128(n.a)
+        if !a.ok || c.k != ir.E_INT || c.v != 64 { return no }
+        return C128{ok: true, lo: 0, hi: a.lo}
+    }
+    if n.v == ir.OP_OR || n.v == ir.OP_AND || n.v == ir.OP_XOR {
+        let a = g.const128(n.a)
+        if !a.ok { return no }
+        let b = g.const128(n.b)
+        if !b.ok { return no }
+        if n.v == ir.OP_OR { return C128{ok: true, lo: a.lo | b.lo, hi: a.hi | b.hi} }
+        if n.v == ir.OP_AND { return C128{ok: true, lo: a.lo & b.lo, hi: a.hi & b.hi} }
+        return C128{ok: true, lo: a.lo ^ b.lo, hi: a.hi ^ b.hi}
+    }
+    return no
+}
+
 // a into rax:rdx, b into r8:r9 (128-bit).
 fn (g: mut &Gen) pair128(a: int, b: int) {
+    let kb = g.const128(b)
+    if kb.ok {
+        g.gen(a)
+        g.a.movRI(R8, kb.lo)
+        g.a.movRI(R9, kb.hi)
+        return
+    }
     g.gen(a)
     let s = g.temp(16, 16)
     g.a.store(8, rbp(s), RAX)
@@ -3597,6 +3636,10 @@ fn (g: mut &Gen) gen(e: int) {
         g.genAddr(e)
     } else if k == ir.E_CALL {
         g.genCall(e)
+    } else if (k == ir.E_CAST || k == ir.E_BIN) && g.is128(t) && g.const128(e).ok {
+        let c = g.const128(e)
+        g.a.movRI(RAX, c.lo)
+        g.a.movRI(RDX, c.hi)
     } else if k == ir.E_CAST {
         g.genCast(e)
     } else if k == ir.E_BIN {
@@ -4048,6 +4091,12 @@ fn (g: mut &Gen) genBin(e: int) {
     }
     if g.is128(c) {
         if op == ir.OP_SHL || op == ir.OP_SHR {
+            let cn = g.shiftConst(n.b)
+            if cn >= 0 {
+                g.gen(n.a)
+                g.shift128I(op, ck == ir.TY_I128, cn)
+                return
+            }
             g.gen(n.a)
             let s = g.temp(16, 16)
             g.a.store(8, rbp(s), RAX)
@@ -4071,13 +4120,7 @@ fn (g: mut &Gen) genBin(e: int) {
             g.a.alu(a, 8, RAX, R8)
             g.a.alu(a, 8, RDX, R9)
         } else if op == ir.OP_MUL {
-            g.a.movRR(8, R10, RDX)
-            g.a.imul(8, R10, R8)
-            g.a.movRR(8, R11, RAX)
-            g.a.imul(8, R11, R9)
-            g.a.alu(x64.ADD, 8, R10, R11)
-            g.a.unary(x64.MUL, 8, R8)
-            g.a.alu(x64.ADD, 8, RDX, R10)
+            g.mul128()
         } else {
             g.a.movRR(8, RDI, RAX)
             g.a.movRR(8, RSI, RDX)
@@ -4163,6 +4206,121 @@ fn (g: &Gen) rotl(e: int): int {
 }
 
 // rax:rdx shifted by cl (0 to 127).
+// The u128 runtime arithmetic op (rt_OP_u128) of call e inline, when it is one of: the
+// wrapping + - *, checked + and - (a carry is an overflow), and a shift by a constant count
+// (which cannot trap). False: nothing emitted.
+fn (g: mut &Gen) inlineU128(e: int, op: str, nargs: int): bool {
+    let n = g.u.nodes[e]
+    let a = g.u.listAt(n.b, 0)
+    if (op == "wmul" && nargs == 2 || op == "mul" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2))) &&
+        g.below64(a) && g.below64(g.u.listAt(n.b, 1)) {
+        // both factors below 2^64: one widening multiply, and the product cannot overflow
+        g.pair128(a, g.u.listAt(n.b, 1))
+        g.a.unary(x64.MUL, 8, R8)
+        return true
+    }
+    if (op == "wadd" || op == "wsub" || op == "wmul") && nargs == 2 {
+        g.pair128(a, g.u.listAt(n.b, 1))
+        if op == "wadd" {
+            g.a.alu(x64.ADD, 8, RAX, R8)
+            g.a.alu(x64.ADC, 8, RDX, R9)
+        } else if op == "wsub" {
+            g.a.alu(x64.SUB, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        } else {
+            g.mul128()
+        }
+        return true
+    }
+    if nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2)) { return false }
+    let w = g.u.listAt(n.b, 2)
+    if op == "add" || op == "sub" {
+        g.pair128(a, g.u.listAt(n.b, 1))
+        if op == "add" {
+            g.a.alu(x64.ADD, 8, RAX, R8)
+            g.a.alu(x64.ADC, 8, RDX, R9)
+        } else {
+            g.a.alu(x64.SUB, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        }
+        g.a.jcc(x64.CC_B, g.stub(10, "integer overflow", w))
+        return true
+    }
+    if op == "shl" || op == "shr" {
+        let c = g.shiftConst(g.u.listAt(n.b, 1))
+        if c < 0 { return false }
+        g.gen(a)
+        g.shift128I(if op == "shl" { ir.OP_SHL } else { ir.OP_SHR }, false, c)
+        return true
+    }
+    return false
+}
+
+// Whether the 128-bit value of e is below 2^64 by its form: an unsigned value of 64 bits or
+// fewer widened, a constant, an AND with such a value, or a shift right by 64 or more.
+fn (g: &Gen) below64(e: int): bool {
+    let n = g.u.nodes[e]
+    let k = g.const128(e)
+    if k.ok { return k.hi == 0 }
+    if n.k == ir.E_CAST && g.is128(n.ty) {
+        let s = g.u.nodes[n.a].ty
+        return g.u.isInt(s) && !g.u.isSigned(s) && !g.is128(s)
+    }
+    if n.k == ir.E_BIN && n.v == ir.OP_AND && g.is128(n.ty) { return g.below64(n.a) || g.below64(n.b) }
+    if n.k == ir.E_CALL && g.rtName(e) == "rt_shr_u128" && g.u.listLen(n.b) == 3 {
+        return g.shiftConst(g.u.listAt(n.b, 1)) >= 64
+    }
+    return false
+}
+
+// rax:rdx * r8:r9, the low 128 bits (clobbers r10, r11).
+fn (g: mut &Gen) mul128() {
+    g.a.movRR(8, R10, RDX)
+    g.a.imul(8, R10, R8)
+    g.a.movRR(8, R11, RAX)
+    g.a.imul(8, R11, R9)
+    g.a.alu(x64.ADD, 8, R10, R11)
+    g.a.unary(x64.MUL, 8, R8)
+    g.a.alu(x64.ADD, 8, RDX, R10)
+}
+
+// The count of a shift when it is a constant from 0 to 127 (an int literal, perhaps converted), else -1.
+fn (g: &Gen) shiftConst(e: int): int {
+    var n = g.u.nodes[e]
+    if n.k == ir.E_CAST && !g.is128(n.ty) && !g.isF(n.ty) { n = g.u.nodes[n.a] }
+    if n.k != ir.E_INT || g.is128(n.ty) || g.isF(n.ty) || !g.u.isInt(n.ty) || n.v < 0 || n.v > 127 { return -1 }
+    return n.v
+}
+
+// rax:rdx shifted by the constant c (0..127).
+fn (g: mut &Gen) shift128I(op: int, sgn: bool, c: int) {
+    if c == 0 { return }
+    if op == ir.OP_SHL {
+        if c < 64 {
+            g.a.shldI(RDX, RAX, c)
+            g.a.shiftI(x64.SHL, 8, RAX, c)
+        } else {
+            g.a.movRR(8, RDX, RAX)
+            if c > 64 { g.a.shiftI(x64.SHL, 8, RDX, c - 64) }
+            g.a.alu(x64.XOR, 4, RAX, RAX)
+        }
+        return
+    }
+    let sh = if sgn { x64.SAR } else { x64.SHR }
+    if c < 64 {
+        g.a.shrdI(RAX, RDX, c)
+        g.a.shiftI(sh, 8, RDX, c)
+    } else {
+        g.a.movRR(8, RAX, RDX)
+        if c > 64 { g.a.shiftI(sh, 8, RAX, c - 64) }
+        if sgn {
+            g.a.shiftI(x64.SAR, 8, RDX, 63)
+        } else {
+            g.a.alu(x64.XOR, 4, RDX, RDX)
+        }
+    }
+}
+
 fn (g: mut &Gen) shift128(op: int, sgn: bool) {
     let done = g.a.newLabel()
     if op == ir.OP_SHL {
@@ -5186,6 +5344,15 @@ fn (g: mut &Gen) arithInto(e: int, r: int, gen: bool): bool {
 fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     let n = g.u.nodes[e]
     let nargs = g.u.listLen(n.b)
+    if endsWith(name, "_u128") && g.inlineU128(e, name[3..len(name) - 5], nargs) { return true }
+    if name == "rt_cvu_u64" && nargs == 2 && g.isWhere(g.u.listAt(n.b, 1)) &&
+        g.is128(g.u.nodes[g.u.listAt(n.b, 0)].ty) {
+        // u128 to u64: the high word must be zero
+        g.gen(g.u.listAt(n.b, 0))
+        g.a.test(8, RDX, RDX)
+        g.a.jcc(x64.CC_NE, g.stub(10, "conversion out of range", g.u.listAt(n.b, 1)))
+        return true
+    }
     let ar = arOp(name)
     if ar.k >= 0 {
         let a = g.u.listAt(n.b, 0)

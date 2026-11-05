@@ -1,0 +1,7 @@
+// exit: 10
+// expect: 18446744073709551615
+fn conv(a: u128): u64 { return u64(a) }
+fn main() {
+    println(conv(18446744073709551615).toStr())
+    println(conv((u128(1) << 64) | 7).toStr())
+}

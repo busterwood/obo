@@ -1,0 +1,16 @@
+// expect: 340282366920938463426481119284349108225 337264356397531028994973048178108678400 107546032014518820210423771307856400 24090311171252216041959356964269510400 1505644448203263502622459810266844400 92233720368547758075
+// u128 products of factors below 2^64 (widened u64, masked low halves, high halves), checked and wrapping
+const M64: u128 = 0xffffffffffffffff
+fn wide(a: u64, b: u64): u128 { return u128(a) * u128(b) }
+fn lohi(a: u128, b: u128): u128 { return (a & M64) * (b >> 64) }
+fn hilo(a: u128, b: u128): u128 { return (a >> 64) *% (b & M64) }
+fn hihi(a: u128, b: u128): u128 { return (a >> 64) * (b >> 64) }
+fn lolo(a: u128, b: u128): u128 { return (a & M64) *% (b & M64) }
+fn small(a: u32, b: u64): u128 { return u128(a) * u128(b) }
+fn main() {
+    let a: u128 = 0x123456789abcdef0fedcba9876543210
+    let b: u128 = 0xfedcba98765432100123456789abcdef
+    let m: u64 = 18446744073709551615
+    println(wide(m, m).toStr() + " " + lohi(a, b).toStr() + " " + hilo(a, b).toStr() + " " +
+        hihi(a, b).toStr() + " " + lolo(a, b).toStr() + " " + small(5, m).toStr())
+}

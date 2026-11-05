@@ -1,6 +1,7 @@
 # Decimal performance: research and ranked options
 
-Status: research only. No code changed, no benchmarks run. Written 2026-11-05.
+Status: written 2026-11-05 as research; items 1 to 3 and 5 to 7 then committed on branch
+`decperf`, item 4 measured and not committed: see section 8, Results.
 Decided 2026-11-05: items 1 to 7 to be worked through on a branch, each committed only if measured
 faster; no cached digit count (the Decimal record keeps its shape); no instruction set beyond the
 baseline for now; item 8 not requested.
@@ -338,3 +339,84 @@ Not accessed or not read in full:
 - Cox: first 100,000 of about 105,000 characters read; Go benchmark numbers are in plots only.
 - Krapivensky: abstract only.
 - Cowlishaw's spec: not read.
+
+## 8. Results (2026-11-05, branch `decperf`)
+
+Measured with `obx/bench/decimal` (dbench M0-M10, `run.py`): user cycles from `perf stat -e
+instructions:u,cycles:u`, least of 5 (7 to 11 on the second run), the benchmark pinned to one CPU
+with `taskset -c 2` after other agents started benchmarking on the same machine. Each item was
+measured against the commit before it; ratios are new/old cycles, native then C. "Committed" needs
+5% on both backends, or 5% on one and no more than 1% worse on the other, on the item's own
+benchmarks, repeated on a second run. Every commit passed the differential test (`diff.py`:
+11 operations x 10^6 inputs, old and new, native and C, all four identical), the lib and native
+tests and the quick gate. The branch was rebased onto main at 641945a (x86-64-v3) after item 2;
+items 3 to 7 were measured on that base. No item uses an instruction beyond plain x86-64 (the
+runtime's `divq` in item 3); the x86-64-v3 approval came after the design and nothing here needed it.
+
+| Item | Commit | Benchmarks (native / C cycles, new/old) |
+|---|---|---|
+| (extra) 128-bit constants as two immediates (native) | ae8518f | M2-M7, M9 0.81-0.92 / C unchanged |
+| 1. digits() as a compare tree | f11d6f3 | M1:1/10/19/38 0.75/0.37/0.23/0.13 and 0.84/0.59/0.36/0.21; M2 0.46-0.78 / 0.49-0.88; M3:6/19 0.75/0.50 and 0.91/0.64; M10 0.28 / 0.30 |
+| (extra) u128 +% -% *%, checked + -, constant shifts, u64() inline (native) | 7c362b9 | M3 0.88-0.92, M5 0.86-0.88, M6 0.87-0.94, M7 0.85-0.90, M9 0.85-0.86 / C 1.00 |
+| 2. Exact division by 10 in the strip loops | 082e083 | M4:1/5 0.91/0.77 and 0.91/0.68; M2:tz 0.87 / 0.78; M7:20z 0.84 / 0.61; M4:0 1.015 / 0.996 |
+| 3. u128 text in 10^19 chunks (runtime) | 6ba1ce9 | M8 38 digits 0.44-0.50 / 0.44-0.46; 19 digits 0.91-0.92 / 0.90-0.91; 6 digits 0.96-0.98 / 0.97-0.99 |
+| 4. Per-k reciprocals for / 10^k (quantize) | not committed | see below |
+| 5. Widening 64x64 multiply (native) and mul128 written for it | fba6a68 | M3 0.92-0.93 / 1.00; M9:1/10 0.92/0.90 / 1.00 |
+| 6. 256-by-128 division by 64-bit digits (Knuth D) | bd0bc02 | M5:big 0.073 / 0.157; M9:40 0.093 / 0.175 |
+| 7. parse: digit runs 8 bytes at a time, 19 digits per u64 | fd8bb7b | M7:10 0.79-0.83 / 0.98-0.99; M7:20 0.64 / 0.76; M7:38 0.50 / 0.52; M7:20z 0.67 / 0.74 |
+
+Notes per item:
+
+- Item 1. The planned form (bit length times 1233 >> 12, then one table compare) was slower than
+  the old scan for one-digit values; a balanced compare tree over the powers of ten (one- to
+  four-digit values first) won everywhere.
+- Item 2. Three forms were measured. The rotate form (`x * INV5` rotated right by one, compared
+  with (2^128 - 1) / 10) lost in C on coefficients without trailing zeros (M2:6 1.10, M4:0 1.13).
+  Branching on parity first lost natively (M2:6 1.02) until the u128 inlining commit; the
+  committed form tests parity and divisibility in one compare (`q | (x << 127)`).
+  A first try that emitted u128 wrapping ops as C operators (instead of `rt_w*_u128` calls) made
+  C 4-5% slower on M5:big and M9:40 and was dropped; the native inlining replaced it.
+- Item 3. Without the two-digit table (19 single-digit divisions per chunk) 38-digit text was
+  0.73 / 0.73 (format) and 0.67 / 0.68 (canonical), and 19 digits 1.00-1.04; the table made both
+  better. Benchmarks that make no text keep their instruction counts but some move with the
+  layout: M0:lo C 1.05, M10:diff 1.03.
+- Item 4, not committed. quantize spends little of its time in the division. The reciprocal
+  version (k <= 19 and coefficient below 2^64: `(x >> k) * RECIP5[k]`, high word, shift; one
+  division and a multiply-subtract for the rest) gave M6:6/20/38 1.02/0.99/0.97 native and
+  0.99/1.03/1.05 C; native instructions went up 9% at 6 digits. A plain 64-bit `/` and `%` when
+  the coefficient fits gave 0.96/1.00/1.01 native and 0.98/1.23/1.25 C (the branch on the
+  coefficient's size mispredicts at 20 digits). Neither met the bar.
+- Item 5. The backend emits one `mul` for a u128 `*` or `*%` whose factors are both below 2^64 by
+  their form (a widened unsigned, a constant, an AND with one, a shift right by 64 or more);
+  mul128 names its halves as expressions so that the backend sees them. MULX would not add to it.
+- Item 6. Knuth's algorithm D in base 2^64 needs no runtime helper: each quotient digit's
+  estimate is the existing u128 `/` with a divisor below 2^64 (libgcc's one-`divq` path), so the
+  Möller-Granlund reciprocal was not needed for this gain. Checked on 131308 structured divisions
+  against Python, including 486 add-backs. In the C build gcc inlines std differently afterwards:
+  M8:f38 1.02 (4.8% more instructions) and M9:10 1.035-1.04.
+- Item 7. ParseAcc.take skips the second (fraction) call when there is no fraction; without that
+  M7:10 was 1.06-1.08 in C. Checked on 400000 generated texts (results and errors identical).
+
+End to end, main at 641945a against `decperf` at fd8bb7b (least of 9, pinned; native / C):
+
+| Benchmark | native | C |
+|---|---|---|
+| M1 digits() 1 / 19 / 38 digits | 0.61 / 0.22 / 0.12 | 0.85 / 0.36 / 0.21 |
+| M2 add 6 / 19 digits / trailing zeros | 0.61 / 0.45 / 0.43 | 0.90 / 0.63 / 0.66 |
+| M3 mul 6 / 19 digits / product above 2^128 | 0.49 / 0.31 / 0.62 | 0.83 / 0.54 / 0.99 |
+| M4 strip 0 / 5 zeros | 0.40 / 0.44 | 0.65 / 0.65 |
+| M5 div below 2^128 / divisor below 2^64 / big | 0.64 / 0.62 / 0.072 | 0.91 / 0.87 / 0.16 |
+| M6 quantize 6 / 20 / 38 digits | 0.58 / 0.54 / 0.51 | 0.93 / 0.76 / 0.70 |
+| M7 parse 10 / 20 / 38 digits | 0.49 / 0.41 / 0.30 | 0.87 / 0.64 / 0.47 |
+| M8 format 6 / 19 / 38 digits | 0.93 / 0.91 / 0.49 | 0.98 / 0.92 / 0.47 |
+| M9 rem exponent gap 1 / 10 / 40 | 0.64 / 0.61 / 0.068 | 0.92 / 1.00 / 0.18 |
+| M10 cmp | 0.27-0.28 | 0.28-0.30 |
+
+Not done: item 8 (toFloat; not requested); a BSR or LZCNT intrinsic for digits() (the compare
+tree made it cheap enough); constant-divisor multiplication for 64-bit `/` and `%` in the native
+backend (outside Decimal).
+
+Seen on the way, outside this work: main's switch to gcc -march=x86-64-v3 (641945a) made the C
+build of Decimal code slower, with the same instructions: against faf112b, M2:6 1.36, M6:6 1.37,
+M4:0 1.13, M2:19 1.10 in cycles; M5:big and M9:40 1.49 (also 1.4 times the instructions, in
+libgcc's division). The native build did not move.

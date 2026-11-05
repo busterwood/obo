@@ -1,0 +1,8 @@
+// expect: 340282366920938463463374607431768211455 0 18446744073709551615
+fn add(a: u128, b: u128): u128 { return a + b }
+fn sub(a: u128, b: u128): u128 { return a - b }
+fn conv(a: u128): u64 { return u64(a) }
+fn main() {
+    let m = add(sub(u128(1) << 127, 1), u128(1) << 127)
+    println(m.toStr() + " " + sub(m, m).toStr() + " " + conv(m >> 64).toStr())
+}

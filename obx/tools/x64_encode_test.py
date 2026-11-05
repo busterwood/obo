@@ -207,6 +207,10 @@ def gen(r):
     if k == 32:
         return (f'cvtsi2sd {a} {b}', f'cvtsi2sd xmm{a}, {R64[b]}') if r.random() < 0.5 else \
                (f'cvttsd2si {a} {b}', f'cvttsd2si {R64[a]}, xmm{b}')
+    if r.random() < 0.5:
+        n = r.randint(0, 63)
+        return (f'shldi {a} {b} {n}', f'shld {R64[a]}, {R64[b]}, {n}') if r.random() < 0.5 else \
+               (f'shrdi {a} {b} {n}', f'shrd {R64[a]}, {R64[b]}, {n}')
     return (f'shld {a} {b}', f'shld {R64[a]}, {R64[b]}, cl') if r.random() < 0.5 else \
            (f'shrd {a} {b}', f'shrd {R64[a]}, {R64[b]}, cl')
 

@@ -1058,3 +1058,33 @@ so waits for the old xmm1; after a call that was the last write inside the calle
 which tied each iteration of a float loop to the callee's whole latency (the
 first port of exp ran at half the speed of glibc's for that reason). It uses
 `movapd` now.
+
+## Decimal (2026-11-05)
+
+`obx/bench/decimal`: micro-benchmarks of the Decimal operations (`dbench.obx`,
+M0 to M10 on 4096 fixed-seed inputs each) and `run.py`, which builds them with
+two trees and compares user cycles and instructions (`perf stat`, least of N).
+`diff.py` is the differential test that every change to Decimal must pass: 11
+operations on 10^6 inputs each, old and new tree, native and C, identical text,
+errors and scales. The branch `decperf` (design/decimal-perf-research.md,
+section 8) changed digits(), the trailing-zero strip, u128 text, the 256-by-128
+division, parse, and the native backend's u128 code. Against main at 641945a,
+least of 9, one CPU (new/old cycles):
+
+| Operation | native | via C |
+|---|---|---|
+| digits(): 1 / 19 / 38 digits | 0.61 / 0.22 / 0.12 | 0.85 / 0.36 / 0.21 |
+| add: 6 / 19 digits | 0.61 / 0.45 | 0.90 / 0.63 |
+| mul: 6 / 19 digits | 0.49 / 0.31 | 0.83 / 0.54 |
+| div: numerator below 2^128 / above, divisor above 2^64 | 0.64 / 0.072 | 0.91 / 0.16 |
+| quantize to 2 places: 6 / 38 digits | 0.58 / 0.51 | 0.93 / 0.70 |
+| parse: 10 / 38 digits | 0.49 / 0.30 | 0.87 / 0.47 |
+| format: 6 / 38 digits | 0.93 / 0.49 | 0.98 / 0.47 |
+| rem: exponent gap 1 / 40 | 0.64 / 0.068 | 0.92 / 0.18 |
+| cmp | 0.27 | 0.29 |
+
+Per operation after the change (about, cycles, native / C, from the same run,
+input set-up included): add of 6-digit values 280 / 135, mul 330 / 165, parse of
+20 digits 320 / 180, format of 38 digits 450 / 380, cmp 80 / 35 to 40. The C build is still about twice as fast as
+native on the arithmetic: native u128 values live on the stack between
+operations.

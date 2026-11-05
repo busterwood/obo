@@ -1,0 +1,51 @@
+// expect: 154617968556488433452075029815219887583
+// u128 shifts by constant counts (0, 1..63, 64, 65..127) and the wrapping operators
+// +% -% *% on random values, checked against a run-time count and i128 shifts.
+var SEED: u64 = 12345
+
+fn next(): u64 {
+    SEED = SEED +% 0x9e3779b97f4a7c15
+    var z = SEED
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb
+    return z ^ (z >> 31)
+}
+
+fn mix(acc: u128, x: u128): u128 { return (acc ^ x) *% 0x100000001b3 }
+
+fn main() {
+    var acc: u128 = 0
+    for i in 0..20000 {
+        let x = (u128(next()) << 64) | u128(next())
+        let y = (u128(next()) << 64) | u128(next())
+        acc = mix(acc, x >> 0)
+        acc = mix(acc, x >> 1)
+        acc = mix(acc, x >> 13)
+        acc = mix(acc, x >> 63)
+        acc = mix(acc, x >> 64)
+        acc = mix(acc, x >> 65)
+        acc = mix(acc, x >> 100)
+        acc = mix(acc, x >> 127)
+        acc = mix(acc, x << 0)
+        acc = mix(acc, x << 1)
+        acc = mix(acc, x << 13)
+        acc = mix(acc, x << 63)
+        acc = mix(acc, x << 64)
+        acc = mix(acc, x << 65)
+        acc = mix(acc, x << 100)
+        acc = mix(acc, x << 127)
+        acc = mix(acc, x +% y)
+        acc = mix(acc, x -% y)
+        acc = mix(acc, x *% y)
+        acc = mix(acc, (x >> 64) *% (y & 0xffffffffffffffff))
+        acc = mix(acc, x *% 0xcccccccccccccccccccccccccccccccd)
+        let s = i % 128
+        acc = mix(acc, x >> s)
+        acc = mix(acc, x << s)
+        var t = i128(x >> 1)
+        if i % 2 == 0 { t = -t }
+        acc = mix(acc, u128(t >> 5 & 0x7fffffffffffffffffffffffffffffff))
+        acc = mix(acc, u128((t >> 70) & 0x7fffffffffffffffffffffffffffffff))
+    }
+    println(acc.toStr())
+}

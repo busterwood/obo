@@ -1,0 +1,344 @@
+// Decimal micro-benchmarks M0-M10 (design/decimal-perf-research.md, section 4).
+//
+//     dbench CASE [REPS]
+//
+// CASE is NAME:CLASS, e.g. M2:19 ("list" prints them all). Each case builds
+// 4096 inputs from a fixed seed, then runs the operation over them REPS times
+// (a default per case) and prints a checksum, so that builds against two
+// versions of the library (or two compilers) can be compared on the same work:
+// bench/decimal/run.py does that under perf stat.
+
+const N: int = 4096
+const CASES: str = "M0:lo M0:hi M1:1 M1:10 M1:19 M1:20 M1:38 M2:6 M2:15 M2:19 M2:tz M3:6 M3:19 M3:big M4:0 M4:1 M4:5 M5:s2 M5:small M5:big M6:6 M6:20 M6:38 M6:far M7:10 M7:20 M7:38 M7:20z M7:20f M8:f6 M8:f19 M8:f38 M8:c6 M8:c19 M8:c38 M9:1 M9:10 M9:40 M10:same M10:diff"
+
+var SEED: u64 = 0x2545f4914f6cdd1d
+
+// splitmix64
+fn next(): u64 {
+    SEED = SEED +% 0x9e3779b97f4a7c15
+    var z = SEED
+    z = (z ^ (z >> 30)) *% 0xbf58476d1ce4e5b9
+    z = (z ^ (z >> 27)) *% 0x94d049bb133111eb
+    return z ^ (z >> 31)
+}
+
+fn below(n: int): int { return int(next() % u64(n)) }
+
+fn p10(k: int): u128 {
+    var x: u128 = 1
+    for i in 0..k { x = x * 10 }
+    return x
+}
+
+// A random coefficient of exactly d digits (1..38).
+fn coefOf(d: int): u128 {
+    let lo = p10(d - 1)
+    let r = (u128(next()) << 64) | u128(next())
+    return lo + r % (p10(d) - lo)
+}
+
+// A random coefficient of d digits whose last digit is not 0.
+fn coefNZ(d: int): u128 {
+    var c = coefOf(d)
+    if c % 10 == 0 { c += 1 }
+    return c
+}
+
+fn dec(c: u128, scale: int, neg: bool): Decimal {
+    var u = i128(c)
+    if neg { u = -u }
+    return fromFraction(u, scale)
+}
+
+fn mixIn(acc: u64, x: u64): u64 { return (acc ^ x) *% 0x100000001b3 }
+
+fn intBits(a: int): u64 {
+    if a < 0 { return u64(-(a + 1)) ^ 0xffffffffffffffff }
+    return u64(a)
+}
+
+fn sumOf(acc: u64, d: &Decimal): u64 {
+    let c = d.coefficient()
+    var x = u64(c & 0xffffffffffffffff) ^ u64(c >> 64) ^ intBits(d.exponent()) ^ u64(d.scale())
+    if d.isNeg() { x = x ^ 1 }
+    return mixIn(acc, x)
+}
+
+fn errSum(acc: u64, r: Result[Decimal, DecError]): u64 {
+    match r {
+        Ok(d) { return sumOf(acc, &d) }
+        Err(e) { return mixIn(acc, u64(e.code())) }
+    }
+}
+
+fn strSum(acc: u64, s: str): u64 {
+    var a = mixIn(acc, u64(len(s)))
+    if len(s) > 0 { a = mixIn(a, u64(strByte(s, 0)) ^ u64(strByte(s, len(s) - 1)) << 8) }
+    return a
+}
+
+fn digitsOf(c: str): int {
+    match parseInt(c) {
+        Some(n) { return n }
+        None { return 0 }
+    }
+}
+
+// M0: u128 / and % by a 64-bit divisor that is not a constant (dividends below
+// 2^64: lo, or above: hi). The unit cost of a libgcc call.
+fn m0(cls: str, reps: int): u64 {
+    var xs: []u128 = []
+    var ds: []u128 = []
+    for i in 0..N {
+        if cls == "lo" { append(mut &xs, u128(next())) } else { append(mut &xs, (u128(next()) << 64) | u128(next())) }
+        append(mut &ds, u128(next() >> 1) | 1)
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N {
+            let q = xs[i] / ds[i]
+            let m = xs[i] % ds[i]
+            acc = mixIn(acc, u64(q & 0xffffffffffffffff) ^ u64(m))
+        }
+    }
+    return acc
+}
+
+// M1: digits() as cmp reaches it: same sign, different magnitude, so cmp is
+// two digits calls and an exponent compare. 1, 10, 19, 20, 38 digits.
+fn m1(cls: str, reps: int): u64 {
+    let d = digitsOf(cls)
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        append(mut &xs, dec(coefNZ(d), below(6), false))
+        append(mut &ys, dec(coefNZ(d), 10 + below(6), false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = mixIn(acc, u64(xs[i].cmp(&ys[i]) + 2)) }
+    }
+    return acc
+}
+
+// M2: addExact on the fast path, 6, 15 and 19 digits at 2 places, a quarter of
+// them negative; tz: sums with three or more trailing zeros.
+fn m2(cls: str, reps: int): u64 {
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        if cls == "tz" {
+            let a = coefNZ(15)
+            let c = coefNZ(14) * 1000
+            append(mut &xs, dec(a, 2, false))
+            append(mut &ys, dec(c - a, 2, false))
+        } else {
+            let d = digitsOf(cls)
+            append(mut &xs, dec(coefNZ(d), 2, below(4) == 0))
+            append(mut &ys, dec(coefNZ(d), 2, false))
+        }
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].addExact(ys[i])) }
+    }
+    return acc
+}
+
+// M3: mulExact; 6x6 and 19x19 digits (product below 2^128); big: 20x20 digits
+// (product above 2^128: the hi != 0 loop of makeDec, mostly Inexact).
+fn m3(cls: str, reps: int): u64 {
+    var d = digitsOf(cls)
+    if cls == "big" { d = 20 }
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        append(mut &xs, dec(coefNZ(d), 4, below(2) == 0))
+        append(mut &ys, dec(coefNZ(d), 3, false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].mulExact(ys[i])) }
+    }
+    return acc
+}
+
+// M4: the makeDec strip loop: 16-digit sums with exactly 0, 1 or 5 trailing zeros.
+fn m4(cls: str, reps: int): u64 {
+    let z = digitsOf(cls)
+    let pz = p10(z)
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        let a = coefNZ(15)
+        let s = coefNZ(16 - z) * pz
+        append(mut &xs, dec(a, 0, false))
+        append(mut &ys, dec(s - a, 0, false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].addExact(ys[i])) }
+    }
+    return acc
+}
+
+// M5: div (HALF_EVEN). s2: 12 by 6 digits at scale 2 (numerator below 2^128);
+// small: 30 by 15 digits at scale 20 (numerator above 2^128, divisor below
+// 2^64); big: 30 by 25 digits at scale 30 (numerator above 2^128, divisor
+// above 2^64: the bit loop).
+fn m5(cls: str, reps: int): u64 {
+    var da = 12
+    var db = 6
+    var sc = 2
+    if cls == "small" {
+        da = 30
+        db = 15
+        sc = 20
+    }
+    if cls == "big" {
+        da = 30
+        db = 25
+        sc = 30
+    }
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        append(mut &xs, dec(coefNZ(da), 2, below(2) == 0))
+        append(mut &ys, dec(coefNZ(db), 2, false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].div(ys[i], sc, Rounding.HALF_EVEN)) }
+    }
+    return acc
+}
+
+// M6: quantize to 2 places (HALF_EVEN) from 6, 20 and 38 digit values with 6
+// fraction digits; far: 10-digit values with 45 fraction digits (k above 38).
+fn m6(cls: str, reps: int): u64 {
+    var d = digitsOf(cls)
+    var fr = 6
+    if cls == "far" {
+        d = 10
+        fr = 45
+    }
+    var xs: []Decimal = []
+    for i in 0..N { append(mut &xs, dec(coefNZ(d), fr, below(2) == 0)) }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].quantize(2, Rounding.HALF_EVEN)) }
+    }
+    return acc
+}
+
+fn digitText(d: int): str { return u128ToStr(coefNZ(d)) }
+
+// M7: parse. 10: 10-digit integers; 20, 38: that many digits with a 4-digit
+// fraction; 20z: 20 digits ending in five zeros; 20f: "0." and 20 digits.
+// A third of them negative.
+fn m7(cls: str, reps: int): u64 {
+    var xs: []str = []
+    for i in 0..N {
+        var t = ""
+        if cls == "10" { t = digitText(10) }
+        if cls == "20" || cls == "38" {
+            let s = digitText(digitsOf(cls))
+            t = strSlice(s, 0, len(s) - 4) + "." + strSlice(s, len(s) - 4, len(s))
+        }
+        if cls == "20z" { t = digitText(15) + "00000" }
+        if cls == "20f" { t = "0." + digitText(20) }
+        if below(3) == 0 { t = "-" + t }
+        append(mut &xs, t)
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, Decimal.parse(xs[i])) }
+    }
+    return acc
+}
+
+// M8: toStr (f: fixed, display scale 2) and canonical (c) at 6, 19 and 38 digits.
+fn m8(cls: str, reps: int): u64 {
+    let d = digitsOf(strSlice(cls, 1, len(cls)))
+    let canon = strByte(cls, 0) == 'c'
+    var xs: []Decimal = []
+    for i in 0..N { append(mut &xs, dec(coefNZ(d), 2, below(3) == 0)) }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N {
+            if canon { acc = strSum(acc, xs[i].canonical()) } else { acc = strSum(acc, xs[i].toStr()) }
+        }
+    }
+    return acc
+}
+
+// M9: remExact of 30-digit values by 25-digit values whose exponent is 1, 10
+// or 40 lower (powMod10 and mulMod with a divisor above 2^64).
+fn m9(cls: str, reps: int): u64 {
+    let e = digitsOf(cls)
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        append(mut &xs, dec(coefNZ(30), 0, below(2) == 0))
+        append(mut &ys, dec(coefNZ(25), e, false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = errSum(acc, xs[i].remExact(ys[i])) }
+    }
+    return acc
+}
+
+// M10: cmp at the same leading digit position. same: equal lengths (10 to 30
+// digits); diff: different lengths (the shorter one is padded with pow10).
+fn m10(cls: str, reps: int): u64 {
+    var xs: []Decimal = []
+    var ys: []Decimal = []
+    for i in 0..N {
+        let da = 10 + below(21)
+        var db = da
+        if cls == "diff" { db = 5 + below(30) }
+        append(mut &xs, dec(coefNZ(da), da + 3, false))
+        append(mut &ys, dec(coefNZ(db), db + 3, false))
+    }
+    var acc: u64 = 0
+    for r in 0..reps {
+        for i in 0..N { acc = mixIn(acc, u64(xs[i].cmp(&ys[i]) + 2)) }
+    }
+    return acc
+}
+
+fn defaultReps(name: str): int {
+    if name == "M9" { return 20 }
+    if name == "M5" { return 30 }
+    if name == "M7" || name == "M8" { return 300 }
+    return 1000
+}
+
+fn main() {
+    let argv = args()
+    if len(argv) < 2 || argv[1] == "list" {
+        println(CASES)
+        return
+    }
+    let c = argv[1]
+    var at = 0
+    while at < len(c) && strByte(c, at) != ':' { at += 1 }
+    let name = strSlice(c, 0, at)
+    let cls = strSlice(c, at + 1, len(c))
+    var reps = defaultReps(name)
+    if len(argv) > 2 { reps = parseInt(argv[2]).unwrap() }
+    var acc: u64 = 0
+    if name == "M0" { acc = m0(cls, reps) }
+    if name == "M1" { acc = m1(cls, reps) }
+    if name == "M2" { acc = m2(cls, reps) }
+    if name == "M3" { acc = m3(cls, reps) }
+    if name == "M4" { acc = m4(cls, reps) }
+    if name == "M5" { acc = m5(cls, reps) }
+    if name == "M6" { acc = m6(cls, reps) }
+    if name == "M7" { acc = m7(cls, reps) }
+    if name == "M8" { acc = m8(cls, reps) }
+    if name == "M9" { acc = m9(cls, reps) }
+    if name == "M10" { acc = m10(cls, reps) }
+    println(c + " " + acc.toStr())
+}

@@ -473,6 +473,17 @@ pub fn (a: mut &Asm) shldCL(dst: int, src: int) { a.rr(0, true, 0x0FA5, src, dst
 
 pub fn (a: mut &Asm) shrdCL(dst: int, src: int) { a.rr(0, true, 0x0FAD, src, dst, false, false) }
 
+// shld dst, src, n and shrd dst, src, n (64-bit, n in 0..63).
+pub fn (a: mut &Asm) shldI(dst: int, src: int, n: int) {
+    a.rr(0, true, 0x0FA4, src, dst, false, false)
+    a.b(n)
+}
+
+pub fn (a: mut &Asm) shrdI(dst: int, src: int, n: int) {
+    a.rr(0, true, 0x0FAC, src, dst, false, false)
+    a.b(n)
+}
+
 // setcc r8.
 pub fn (a: mut &Asm) setcc(cc: int, r: int) { a.rr(0, false, 0x0F90 + cc, 0, r, false, true) }
 
@@ -891,6 +902,10 @@ fn (a: mut &Asm) testLine(l: str) {
         a.shldCL(num(w[1]), num(w[2]))
     } else if k == "shrd" {
         a.shrdCL(num(w[1]), num(w[2]))
+    } else if k == "shldi" {
+        a.shldI(num(w[1]), num(w[2]), num(w[3]))
+    } else if k == "shrdi" {
+        a.shrdI(num(w[1]), num(w[2]), num(w[3]))
     } else if k == "setcc" {
         a.setcc(num(w[1]), num(w[2]))
     } else if k == "cmov" {
