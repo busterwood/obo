@@ -151,8 +151,12 @@ fn gccCmd(exe: str, cfile: str, libs: &[]str, libm: bool): []str {
     // the fetch blocks (bench fib: 15%), so a change in the runtime's size must not move it.
     // -march=x86-64-v3: the CPU level the runtime requires (SPEC, exit code 16). -ffp-contract=off:
     // no a * b + c fused into one rounding unless the program asks (fma), so that floats have
-    // the native backend's bits.
-    var cmd: []str = ["gcc", "-O2", "-march=x86-64-v3", "-ffp-contract=off", "-falign-functions=64", "-w", "-std=gnu11",
+    // the native backend's bits. -mmove-max=128 -mstore-max=128: struct copies in 16-byte pieces at
+    // most; with AVX gcc copies a 32-byte value (Decimal) with one ymm load straight after the
+    // 8- and 16-byte stores that wrote it, which cannot be store-forwarded (C Decimal add 1.4x
+    // the cycles of the same build without AVX).
+    var cmd: []str = ["gcc", "-O2", "-march=x86-64-v3", "-mmove-max=128", "-mstore-max=128", "-ffp-contract=off",
+        "-falign-functions=64", "-w", "-std=gnu11",
         "-o", exe, cfile]
     for f in libFlags(libs) { append(mut &cmd, f) }
     if libm { append(mut &cmd, "-lm") }
