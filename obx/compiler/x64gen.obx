@@ -4091,6 +4091,12 @@ fn (g: mut &Gen) genBin(e: int) {
     }
     if g.is128(c) {
         if op == ir.OP_SHL || op == ir.OP_SHR {
+            let cn = g.shiftConst(n.b)
+            if cn >= 0 {
+                g.gen(n.a)
+                g.shift128I(op, ck == ir.TY_I128, cn)
+                return
+            }
             g.gen(n.a)
             let s = g.temp(16, 16)
             g.a.store(8, rbp(s), RAX)
@@ -4114,13 +4120,7 @@ fn (g: mut &Gen) genBin(e: int) {
             g.a.alu(a, 8, RAX, R8)
             g.a.alu(a, 8, RDX, R9)
         } else if op == ir.OP_MUL {
-            g.a.movRR(8, R10, RDX)
-            g.a.imul(8, R10, R8)
-            g.a.movRR(8, R11, RAX)
-            g.a.imul(8, R11, R9)
-            g.a.alu(x64.ADD, 8, R10, R11)
-            g.a.unary(x64.MUL, 8, R8)
-            g.a.alu(x64.ADD, 8, RDX, R10)
+            g.mul128()
         } else {
             g.a.movRR(8, RDI, RAX)
             g.a.movRR(8, RSI, RDX)
@@ -4206,6 +4206,97 @@ fn (g: &Gen) rotl(e: int): int {
 }
 
 // rax:rdx shifted by cl (0 to 127).
+// The u128 runtime arithmetic op (rt_OP_u128) of call e inline, when it is one of: the
+// wrapping + - *, checked + and - (a carry is an overflow), and a shift by a constant count
+// (which cannot trap). False: nothing emitted.
+fn (g: mut &Gen) inlineU128(e: int, op: str, nargs: int): bool {
+    let n = g.u.nodes[e]
+    let a = g.u.listAt(n.b, 0)
+    if (op == "wadd" || op == "wsub" || op == "wmul") && nargs == 2 {
+        g.pair128(a, g.u.listAt(n.b, 1))
+        if op == "wadd" {
+            g.a.alu(x64.ADD, 8, RAX, R8)
+            g.a.alu(x64.ADC, 8, RDX, R9)
+        } else if op == "wsub" {
+            g.a.alu(x64.SUB, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        } else {
+            g.mul128()
+        }
+        return true
+    }
+    if nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2)) { return false }
+    let w = g.u.listAt(n.b, 2)
+    if op == "add" || op == "sub" {
+        g.pair128(a, g.u.listAt(n.b, 1))
+        if op == "add" {
+            g.a.alu(x64.ADD, 8, RAX, R8)
+            g.a.alu(x64.ADC, 8, RDX, R9)
+        } else {
+            g.a.alu(x64.SUB, 8, RAX, R8)
+            g.a.alu(x64.SBB, 8, RDX, R9)
+        }
+        g.a.jcc(x64.CC_B, g.stub(10, "integer overflow", w))
+        return true
+    }
+    if op == "shl" || op == "shr" {
+        let c = g.shiftConst(g.u.listAt(n.b, 1))
+        if c < 0 { return false }
+        g.gen(a)
+        g.shift128I(if op == "shl" { ir.OP_SHL } else { ir.OP_SHR }, false, c)
+        return true
+    }
+    return false
+}
+
+// rax:rdx * r8:r9, the low 128 bits (clobbers r10, r11).
+fn (g: mut &Gen) mul128() {
+    g.a.movRR(8, R10, RDX)
+    g.a.imul(8, R10, R8)
+    g.a.movRR(8, R11, RAX)
+    g.a.imul(8, R11, R9)
+    g.a.alu(x64.ADD, 8, R10, R11)
+    g.a.unary(x64.MUL, 8, R8)
+    g.a.alu(x64.ADD, 8, RDX, R10)
+}
+
+// The count of a shift when it is a constant from 0 to 127 (an int literal, perhaps converted), else -1.
+fn (g: &Gen) shiftConst(e: int): int {
+    var n = g.u.nodes[e]
+    if n.k == ir.E_CAST && !g.is128(n.ty) && !g.isF(n.ty) { n = g.u.nodes[n.a] }
+    if n.k != ir.E_INT || g.is128(n.ty) || g.isF(n.ty) || !g.u.isInt(n.ty) || n.v < 0 || n.v > 127 { return -1 }
+    return n.v
+}
+
+// rax:rdx shifted by the constant c (0..127).
+fn (g: mut &Gen) shift128I(op: int, sgn: bool, c: int) {
+    if c == 0 { return }
+    if op == ir.OP_SHL {
+        if c < 64 {
+            g.a.shldI(RDX, RAX, c)
+            g.a.shiftI(x64.SHL, 8, RAX, c)
+        } else {
+            g.a.movRR(8, RDX, RAX)
+            if c > 64 { g.a.shiftI(x64.SHL, 8, RDX, c - 64) }
+            g.a.alu(x64.XOR, 4, RAX, RAX)
+        }
+        return
+    }
+    let sh = if sgn { x64.SAR } else { x64.SHR }
+    if c < 64 {
+        g.a.shrdI(RAX, RDX, c)
+        g.a.shiftI(sh, 8, RDX, c)
+    } else {
+        g.a.movRR(8, RAX, RDX)
+        if c > 64 { g.a.shiftI(sh, 8, RAX, c - 64) }
+        if sgn {
+            g.a.shiftI(x64.SAR, 8, RDX, 63)
+        } else {
+            g.a.alu(x64.XOR, 4, RDX, RDX)
+        }
+    }
+}
+
 fn (g: mut &Gen) shift128(op: int, sgn: bool) {
     let done = g.a.newLabel()
     if op == ir.OP_SHL {
@@ -5229,6 +5320,15 @@ fn (g: mut &Gen) arithInto(e: int, r: int, gen: bool): bool {
 fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     let n = g.u.nodes[e]
     let nargs = g.u.listLen(n.b)
+    if endsWith(name, "_u128") && g.inlineU128(e, name[3..len(name) - 5], nargs) { return true }
+    if name == "rt_cvu_u64" && nargs == 2 && g.isWhere(g.u.listAt(n.b, 1)) &&
+        g.is128(g.u.nodes[g.u.listAt(n.b, 0)].ty) {
+        // u128 to u64: the high word must be zero
+        g.gen(g.u.listAt(n.b, 0))
+        g.a.test(8, RDX, RDX)
+        g.a.jcc(x64.CC_NE, g.stub(10, "conversion out of range", g.u.listAt(n.b, 1)))
+        return true
+    }
     let ar = arOp(name)
     if ar.k >= 0 {
         let a = g.u.listAt(n.b, 0)

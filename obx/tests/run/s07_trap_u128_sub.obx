@@ -1,0 +1,5 @@
+// exit: 10
+fn sub(a: u128, b: u128): u128 { return a - b }
+fn main() {
+    println(sub(u128(5) << 64, (u128(5) << 64) + 1).toStr())
+}
