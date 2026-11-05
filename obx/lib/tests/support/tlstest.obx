@@ -137,13 +137,16 @@ pub type Server = record {
 var SERVERS: int = 0
 
 // Starts `openssl s_server -accept 127.0.0.1:0 ...args` in DIR and waits
-// until it listens; its output goes to DIR/s_server-N.out.
+// until it listens; its output goes to DIR/s_server-N.out. Dropping the
+// Server kills it; under `timeout 60` in a group of its own, it also ends
+// when a test that panicked or was killed cannot drop it.
 pub fn sServer(args: []str): Server {
     SERVERS += 1
     let out = "s_server-" + intToStr(SERVERS) + ".out"
-    var all = ["s_server", "-accept", "127.0.0.1:0"]
+    var all = ["60", "openssl", "s_server", "-accept", "127.0.0.1:0"]
     for a in args { append(mut &all, a) }
-    var c = proc.command("openssl", all)
+    var c = proc.command("timeout", all)
+    c.newGroup = true
     c.cwd = DIR
     c.stdin = proc.Stdio.Null
     c.stdout = proc.Stdio.File(abs(out))
