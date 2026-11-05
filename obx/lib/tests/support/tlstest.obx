@@ -160,7 +160,7 @@ pub fn sServer(args: []str): Server {
     let child = started.unwrap()
     for i in 0..500 {
         let text = io.read(path(out)).unwrapOr("")
-        match strings.cut(text, "ACCEPT 127.0.0.1:") {
+        match strings.cut(&text, "ACCEPT 127.0.0.1:") {
             Some(x) {
                 match strings.cut(x.after, "\n") {
                     Some(y) {
@@ -251,7 +251,7 @@ fn handle(p: Peer): int {
         let tag = "X-Conn: " + intToStr(id) + "\r\n"
         var path = head.target
         var q = ""
-        match strings.cut(head.target, "?") {
+        match strings.cut(&head.target, "?") {
             Some(x) {
                 path = x.before
                 q = x.after
