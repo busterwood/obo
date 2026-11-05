@@ -1,0 +1,114 @@
+// json: building and reading values, copy on write, key order, jq's order.
+// expect: obx
+// expect: 12.50
+// expect: 1000
+// expect: true
+// expect: 1.5
+// expect: true
+// expect: true
+// expect: "b"
+// expect: "a"
+// expect: object array number
+// expect: 5
+// expect:  a b
+// expect:  name tags price n f
+// expect: 3 stopped
+// expect: {"ok":0.1,"ids":[1,2,3]}
+// expect: {"ok":true,"ids":[1,2]}
+// expect: {"a":1,"b":["x",null]}
+// expect: ["p","q"]
+// expect: 12.50
+// expect: -9223372036854775807
+// expect: 3
+// expect: true
+// expect: 39 k4 k5 "five" 39
+// expect: false
+// expect: k3
+// expect: 9 0
+// expect: [null,false,true,1.0,1,3,"a","b",[1],[1,2],{"a":2},{"a":1,"b":0},{"b":1}]
+// expect: 1
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: -1
+import "json"
+
+fn main() {
+    let v = json.parse(`{"name": "obx", "tags": ["a", "b"], "price": 12.50, "n": 1e3, "f": 1.5}`).unwrap()
+    println(v.field("name").asStr().unwrapOr("?"))
+    println(v.field("price").asDecimal().unwrap())
+    println(v.field("n").asInt().unwrap())
+    println(v.field("f").asInt().isNone())
+    println(v.field("f").asFloat().unwrap())
+    println(v.field("missing").isNull())
+    println(v.get("missing").isNone())
+    println(v.field("tags").item(-1).toStr())
+    println(v.path(&["tags", "0"]).unwrap().toStr())
+    println(v.kind().toStr() + " " + v.field("tags").kind().toStr() + " " + v.field("n").kind().toStr())
+    println(v.size())
+    for t in v.field("tags").items() { print(" " + t.asStr().unwrap()) }
+    println("")
+    for k in v.keys() { print(" " + k) }
+    println("")
+    var count = 0
+    let all = v.eachEntry(fn(k: str, x: &json.Json): bool {
+        count += 1
+        return k != "price"
+    })
+    println(intToStr(count) + " " + (if all { "all" } else { "stopped" }))
+
+    // builders and copy on write
+    var out = json.object()
+    out.set("ok", json.boolean(true))
+    out.set("ids", json.arrayOf([json.integer(1), json.integer(2)]))
+    let copy = out.clone()
+    out.set("ok", json.number(0.1))
+    var ids = out.field("ids")
+    ids.push(json.integer(3))
+    out.set("ids", ids)
+    println(out.toStr())
+    println(copy.toStr())
+    let built = json.object().with("a", json.integer(1)).with("b", json.emptyArray().and(json.string("x")).and(json.null()))
+    println(built.toStr())
+    println(json.strings(&["p", "q"]).toStr())
+    println(json.decimal(Decimal.parse("12.50").unwrap()).toStr())
+    println(json.integer(-9223372036854775807).toStr())
+
+    // key order: set again keeps the place, remove closes the gap; big objects
+    var o = json.object()
+    for i in 0..40 { o.set("k" + intToStr(i), json.integer(i)) }
+    o.set("k5", json.string("five"))
+    let r = o.remove("k3")
+    println(r.unwrap().toStr())
+    println(o.remove("nope").isNone())
+    println(intToStr(o.size()) + " " + o.keyAt(3) + " " + o.keyAt(4) + " " + o.field("k5").toStr() + " " + o.field("k39").toStr())
+    println(o.has("k3"))
+    o.set("k3", json.null())
+    println(o.keyAt(o.size() - 1))
+    var arr = json.emptyArray()
+    arr.push(json.integer(1))
+    arr.setAt(0, json.integer(9))
+    println(arr.pop().unwrap().toStr() + " " + intToStr(arr.size()))
+
+    // jq's order
+    let xs = json.parse(`[{"b":1}, {"a":2}, [1,2], [1], "b", "a", 3, 1.0, 1, true, false, null, {"a":1,"b":0}]`).unwrap()
+    var items = xs.items()
+    // insertion sort with cmp
+    for i in 1..len(items) {
+        var k = i
+        while k > 0 && items[k - 1].cmp(&items[k]) > 0 {
+            swap(mut &items, k - 1, k)
+            k -= 1
+        }
+    }
+    println(json.arrayOf(items).toStr())
+    println(json.parse(`100000000000000000001`).unwrap().cmp(&json.parse(`100000000000000000000`).unwrap()))
+    println(json.parse(`1.0`).unwrap().eq(&json.integer(1)))
+    println(json.parse(`{"a":[1,{"b":2}]}`).unwrap().eq(&json.parse(`{"a":[1.0,{"b":2e0}]}`).unwrap()))
+    // leading zeros before and after the point (0.0001e4 is 1)
+    let one = json.integer(1)
+    println(json.parse(`0.0001e4`).unwrap().eq(&one))
+    println(json.parse(`0.000100000000000000000001e4`).unwrap().cmp(&json.parse(`1.00000000000000000001`).unwrap()) == 0)
+    println(json.parse(`0.0099999999999999999999e2`).unwrap().cmp(&one))
+}

@@ -1871,6 +1871,18 @@ pub fn (re: &Regex) submatchIndex(text: str): []int {
     return a
 }
 
+// As submatchIndex, for the leftmost match starting at pos or later (the
+// text before pos still counts for ^ and \b), so that a caller can step
+// through matches by rules of its own (jq's, after Oniguruma's).
+pub fn (re: &Regex) submatchIndexAt(text: str, pos: int): []int {
+    if pos < 0 || pos > len(text) { return [] }
+    var x = newExec()
+    var a: []int = []
+    if !re.execute(mut &x, text, pos, re.prog.numCap, mut &a) { return [] }
+    re.pad(mut &a)
+    return a
+}
+
 // The slots of at most n successive matches (n < 0: all).
 pub fn (re: &Regex) allSubmatchIndex(text: str, n: int): [][]int {
     var out: [][]int = []

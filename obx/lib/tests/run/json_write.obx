@@ -1,0 +1,119 @@
+// json: writing with options, string escapes, numbers as jq writes them.
+// expect: {"b":[1,{"z":null,"y":[]},{}],"a":"xé😀\u0001\u007f\"\\/"}
+// expect: {
+// expect:   "b": [
+// expect:     1,
+// expect:     {
+// expect:       "z": null,
+// expect:       "y": []
+// expect:     },
+// expect:     {}
+// expect:   ],
+// expect:   "a": "xé😀\u0001\u007f\"\\/"
+// expect: }
+// expect: {
+// expect:     "a": "xé😀\u0001\u007f\"\\/",
+// expect:     "b": [
+// expect:         1,
+// expect:         {
+// expect:             "y": [],
+// expect:             "z": null
+// expect:         },
+// expect:         {}
+// expect:     ]
+// expect: }
+// expect: {
+// expect: 	"b": [
+// expect: 		1,
+// expect: 		{
+// expect: 			"z": null,
+// expect: 			"y": []
+// expect: 		},
+// expect: 		{}
+// expect: 	],
+// expect: 	"a": "x\u00e9\ud83d\ude00\u0001\u007f\"\\/"
+// expect: }
+// expect: {
+// expect:  "a": "x\u00e9\ud83d\ude00\u0001\u007f\"\\/",
+// expect:  "b": [
+// expect:   1,
+// expect:   {
+// expect:    "y": [],
+// expect:    "z": null
+// expect:   },
+// expect:   {}
+// expect:  ]
+// expect: }
+// expect: line
+// expect: next�end
+// expect: "line\nnext�end"
+// expect: "line\nnext\ufffdend"
+// expect: {"b":[1,{"z":null,"y":[]},{}],"a":"xé😀\u0001\u007f\"\\/"}
+// expect: [1e2,12e-1,0.0000001,1.000,-0.0,1.0e2,100000000000000000001,1E400,0.1]
+// expect: [1E+2,1.2,1E-7,1.000,-0.0,1.0E+2,100000000000000000001,1E+400,0.1]
+// expect: [0.30000000000000004,1e17,1e16,1.2345678901234568e17,1e-5,0.0001,1.5e-7,1e300,-0,3,2.5,1e15,0.0001,0.001234]
+// expect: [0.30000000000000004,1e+17,1e+16,123456789012345680,1e-05,0.0001,1.5e-07,1e+300,-0,3,2.5,1000000000000000,0.0001,0.001234]
+// expect: [null,null,null]
+// expect: [null,1.7976931348623157e+308,-1.7976931348623157e+308]
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: true
+// expect: false
+// expect: 1.50
+// expect: true
+// expect: oké�
+import "json"
+import "io"
+
+fn opts(indent: int, tab: bool, sortKeys: bool, ascii: bool, raw: bool, jq: bool): json.WriteOptions {
+    return json.WriteOptions{indent: indent, tab: tab, sortKeys: sortKeys, ascii: ascii, raw: raw, jqNumbers: jq}
+}
+
+fn main() {
+    let v = json.parse(`{"b": [1, {"z": null, "y": []}, {}], "a": "xé😀\u0001\u007f\"\\/"}`).unwrap()
+    print(json.write(&v, &opts(0, false, false, false, false, false)))
+    println("")
+    print(json.write(&v, &json.pretty()))
+    print(json.write(&v, &opts(4, false, true, false, false, false)))
+    print(json.write(&v, &opts(0, true, false, true, false, false)))
+    print(json.write(&v, &opts(1, false, true, true, false, false)))
+    let s = json.string("line\nnext\xFFend")
+    println(json.write(&s, &opts(0, false, false, false, true, false)))
+    println(s.toStr())
+    println(json.write(&s, &opts(0, false, false, true, false, false)))
+    // to an io.Writer
+    var w = io.stdout()
+    json.writeTo(mut &w, &v, &json.compact())
+    w.writeByte('\n')
+    w.flush()
+
+    // numbers: literal text kept, doubles shortest, jq's forms
+    let nums = json.parse(`[1e2, 12e-1, 0.0000001, 1.000, -0.0, 1.0e2, 100000000000000000001, 1E400, 0.1]`).unwrap()
+    println(nums.toStr())
+    var jq = json.compact()
+    jq.jqNumbers = true
+    println(json.write(&nums, &jq))
+    let fs: []float = [0.1 + 0.2, 1e17, 1e16, 123456789012345678.0, 1e-5, 0.0001, 1.5e-7, 1e300, -0.0, 3.0, 2.5, 1e15, 1e-4, 0.001234]
+    var arr = json.emptyArray()
+    for f in fs { arr.push(json.number(f)) }
+    println(arr.toStr())
+    println(json.write(&arr, &jq))
+    let zero: float = 0.0
+    var odd = json.emptyArray()
+    odd.push(json.number(zero / zero))
+    odd.push(json.number(1.0 / zero))
+    odd.push(json.number(-1.0 / zero))
+    println(odd.toStr())
+    println(json.write(&odd, &jq))
+    println(json.floatOf("0.1") == 0.1)
+    println(json.floatOf("123456789012345678901234567890") == 123456789012345678901234567890.0)
+    println(json.floatOf("2.2250738585072014e-308") == 2.2250738585072014e-308)
+    println(json.floatOf("9007199254740993") == 9007199254740992.0)
+    println(json.isNumberText("-0.5e+10"))
+    println(json.isNumberText("1.e3"))
+    println(json.numberLiteral("1.50").unwrap().toStr())
+    println(json.numberLiteral("x").isNone())
+    println(json.validUtf8("ok\xC3\xA9\xC3"))
+}

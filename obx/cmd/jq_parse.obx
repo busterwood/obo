@@ -1,0 +1,1333 @@
+// jq_parse: the lexer, parser and name resolution of cmd/jq.obx.
+//
+// A program becomes a tree of Nodes in one array (Prog.nodes); a node names
+// its children by index. Names are resolved while parsing, as jq scopes them
+// lexically: a $variable to the number of environment frames to walk up
+// (hops), a call to a definition in a frame, a global definition (the ones
+// at the top of the builtins and of the program, which need no frame), or a
+// native builtin. Every scope entry the parser pushes is one frame the
+// evaluator pushes at run time, in the same order, so the hop counts agree.
+//
+// The grammar is jq 1.7.1's (its parser.y), with the same precedence, lowest
+// first: `|` (right), `,`, `//` (right), the assignments (= |= += -= *= /=
+// %= //=), or, and, the comparisons, + -, * / %. `def`, `as`, `label`
+// extend as far right as they can; `reduce`, `foreach`, `if`, `try` are terms.
+// The syntax error messages follow jq's (jq is MIT licensed, Copyright (C)
+// 2012 Stephen Dolan; see NOTICE).
+import "json"
+import "collections"
+import "./jq_lib"
+
+// node kinds
+pub const N_IDENT = 1       // .
+pub const N_LIT = 2         // value
+pub const N_INDEX = 3       // a[b]: b is evaluated against the input, a gives the container
+pub const N_SLICE = 4       // a[b:c], b or c -1 when absent
+pub const N_ITER = 5        // a[]
+pub const N_PIPE = 6        // a | b
+pub const N_COMMA = 7       // a, b
+pub const N_NEG = 8         // -a
+pub const N_BIN = 9         // a op b (arithmetic and comparison)
+pub const N_AND = 10
+pub const N_OR = 11
+pub const N_ALT = 12        // a // b
+pub const N_ASSIGN = 13     // a op b with op one of the assignments
+pub const N_IF = 14         // if a then b else c (c -1: identity)
+pub const N_TRY = 15        // try a catch b (b -1: none)
+pub const N_REDUCE = 16     // reduce a as list (b; c)
+pub const N_FOREACH = 17    // foreach a as list (b; c; d), d -1 when absent
+pub const N_AS = 18         // a as list | b
+pub const N_LABEL = 19      // label $name | a
+pub const N_BREAK = 20      // break $name: a = hops to the label's frame
+pub const N_DEF = 21        // def name(names): a; b   (op = arity; c = 1 when global)
+pub const N_CALL = 22       // name(list): op = C_*; a = hops or the def node
+pub const N_VAR = 23        // $name: op = 0 and a = hops, or op = 1 and a = global index
+pub const N_STR = 24        // a string with interpolations: list of parts, name = format or ""
+pub const N_FORMAT = 25     // @name
+pub const N_ARRAY = 26      // [a], a -1 for []
+pub const N_OBJECT = 27     // {list: key, value, key, value, ...}
+pub const N_RECURSE = 28    // .. (recurse)
+// patterns
+pub const P_VAR = 40        // $name
+pub const P_ARR = 41        // [list]
+pub const P_OBJ = 42        // {list of P_ENTRY}
+pub const P_ENTRY = 43      // key a (an expression), pattern b (-1: none), name: the $var it binds or ""
+
+// binary operators (N_BIN, and N_ASSIGN's arithmetic)
+pub const OP_ADD = 1
+pub const OP_SUB = 2
+pub const OP_MUL = 3
+pub const OP_DIV = 4
+pub const OP_MOD = 5
+pub const OP_EQ = 6
+pub const OP_NE = 7
+pub const OP_LT = 8
+pub const OP_LE = 9
+pub const OP_GT = 10
+pub const OP_GE = 11
+// assignments (N_ASSIGN op)
+pub const AS_SET = 20       // =
+pub const AS_UPDATE = 21    // |=
+pub const AS_ALT = 22       // //=
+// arithmetic updates are AS_ARITH + OP_*
+pub const AS_ARITH = 30
+
+// call targets (N_CALL op)
+pub const C_FRAME = 1       // a definition or a closure parameter in a frame, a = hops
+pub const C_GLOBAL = 2      // a global definition, a = its N_DEF node
+pub const C_NATIVE = 3      // a native builtin; name is "name/arity", c its code
+
+pub type Node = record {
+    pub kind: int
+    pub a: int
+    pub b: int
+    pub c: int
+    pub d: int
+    pub op: int
+    pub name: str
+    pub value: json.Json
+    pub list: []int
+    pub names: []str
+    pub line: int
+}
+
+pub type Prog = record {
+    pub nodes: []Node
+    pub gvars: []str        // the global $variables, by index
+    pub main: int
+}
+
+// scope entries
+const S_VAR = 1
+const S_FUNC = 2
+const S_PARAM = 3
+const S_LABEL = 4
+
+type Scope = value record {
+    kind: int
+    name: str
+    arity: int
+    node: int
+}
+
+type GlobalFn = value record {
+    name: str
+    arity: int
+    node: int
+}
+
+// token kinds
+const T_EOF = 0
+const T_IDENT = 1
+const T_FIELD = 2
+const T_VAR = 3
+const T_NUM = 4
+const T_STR = 5
+const T_FORMAT = 6
+const T_OP = 7
+const T_INVALID = 8   // a byte jq's lexer rejects, or a closing bracket with no opening one
+
+type Tok = value record {
+    kind: int
+    text: str
+    pos: int
+    end: int
+}
+
+pub type Parser = record {
+    src: str
+    pos: int
+    tok: Tok
+    nodes: []Node
+    scope: []Scope
+    globals: []GlobalFn
+    gvars: []str
+    natives: Map[str, int]
+    errors: []str
+    lineBase: int
+    lastPos: int   // where the token before the current one started
+    depth: int     // open brackets, as jq's lexer counts them
+}
+
+// natives: the "name/arity" keys of the native builtins; gvars: the global
+// variables ($ENV, $__prog_args, --arg names).
+pub fn newParser(natives: &[str], gvars: &[str]): Parser {
+    var m: Map[str, int] = newMap()
+    for i in 0..len(natives) { m.put(natives[i], i) }
+    var gv: []str = []
+    for g in gvars { append(mut &gv, g) }
+    return Parser{src: "", pos: 0, tok: Tok{kind: T_EOF, text: "", pos: 0, end: 0}, nodes: [], scope: [],
+                  globals: [], gvars: gv, natives: m, errors: [], lineBase: 0, lastPos: 0, depth: 0}
+}
+
+// Parses definitions only (the builtins written in jq); they become global.
+pub fn (p: mut &Parser) parseDefs(src: str): Result[Unit, str] {
+    p.src = src
+    p.pos = 0
+    p.depth = 0
+    try p.next()
+    while p.isIdent("def") {
+        let d = try p.parseDef(true)
+    }
+    if p.tok.kind != T_EOF { return Err(p.syntaxError()) }
+    if len(p.errors) > 0 { return Err(p.errors[0]) }
+    return Ok(Unit{})
+}
+
+// Parses the program; Err holds the compile errors, one per line.
+pub fn (p: mut &Parser) parseMain(src: str): Result[int, []str] {
+    p.src = src
+    p.pos = 0
+    p.depth = 0
+    match p.mainBody() {
+        Ok(n) {
+            if len(p.errors) > 0 {
+                var errs: []str = []
+                for x in p.errors { append(mut &errs, x) }
+                return Err(errs)
+            }
+            return Ok(n)
+        }
+        Err(e) {
+            var errs: []str = []
+            for x in p.errors { append(mut &errs, x) }
+            append(mut &errs, e)
+            return Err(errs)
+        }
+    }
+}
+
+fn (p: mut &Parser) mainBody(): Result[int, str] {
+    try p.next()
+    if p.isIdent("module") {
+        // the metadata of a module: a constant object, otherwise unused
+        let at = p.tok.pos
+        try p.next()
+        let meta = try p.parsePipe()
+        try p.expectOp(";")
+        if !p.isConst(meta) {
+            append(mut &p.errors, p.locatedAt("jq: error: Module metadata must be constant", at))
+        } else if !(p.nodes[meta].kind == N_OBJECT || (p.nodes[meta].kind == N_LIT && p.nodes[meta].value.isObject())) {
+            append(mut &p.errors, p.locatedAt("jq: error: Module metadata must be an object", at))
+        }
+    }
+    if p.isIdent("import") || p.isIdent("include") {
+        // there are no modules: every one is missing, as jq says when it
+        // finds none on its search path
+        try p.next()
+        if p.tok.kind != T_STR { return Err(p.syntaxError()) }
+        var e = p.tok.pos + 1
+        while e < len(p.src) && p.src[e] != '"' {
+            if p.src[e] == '\\' { e += 1 }
+            e += 1
+        }
+        let name = p.src[min(p.tok.pos + 1, len(p.src))..min(e, len(p.src))]
+        return Err("jq: error: module not found: " + name + "\n")
+    }
+    while p.isIdent("def") {
+        let d = try p.parseDef(true)
+    }
+    if p.tok.kind == T_EOF { return Ok(p.node(N_IDENT, -1, -1, -1)) }
+    if !p.canStart() { return Err(p.syntaxErrorExpecting("end of file")) }
+    let n = try p.parsePipe()
+    if p.tok.kind != T_EOF { return Err(p.syntaxErrorExpecting("end of file")) }
+    return Ok(n)
+}
+
+pub fn (p: mut &Parser) finish(main: int): Prog {
+    let nodes = replace(mut &p.nodes, [])
+    var gv: []str = []
+    for g in p.gvars { append(mut &gv, g) }
+    return Prog{nodes: nodes, gvars: gv, main: main}
+}
+
+// ---------------------------------------------------------------- lexer
+
+fn identStart(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' }
+fn identByte(c: byte): bool { return identStart(c) || (c >= '0' && c <= '9') }
+
+// The end of an identifier at i (with :: parts).
+fn identEnd(s: &str, start: int): int {
+    var i = start
+    while true {
+        while i < len(s) && identByte(s[i]) { i += 1 }
+        if i + 2 < len(s) && s[i] == ':' && s[i + 1] == ':' && identStart(s[i + 2]) {
+            i += 2
+        } else {
+            return i
+        }
+    }
+    return i
+}
+
+const OPS3 = "?//"
+const OPS2: []str = ["//=", "|=", "+=", "-=", "*=", "/=", "%=", "==", "!=", "<=", ">=", "//", ".."]
+
+fn (p: mut &Parser) next(): Result[Unit, str] {
+    p.lastPos = p.tok.pos
+    let s = p.src
+    var i = p.pos
+    while i < len(s) {
+        let c = s[i]
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+            i += 1
+        } else if c == '#' {
+            while i < len(s) && s[i] != '\n' { i += 1 }
+        } else {
+            break
+        }
+    }
+    if i >= len(s) {
+        p.tok = Tok{kind: T_EOF, text: "", pos: i, end: i}
+        p.pos = i
+        return Ok(Unit{})
+    }
+    let c = s[i]
+    var kind = T_OP
+    var text = ""
+    var end = i + 1
+    if identStart(c) {
+        end = identEnd(&s, i)
+        kind = T_IDENT
+        text = s[i..end]
+    } else if c == '$' && i + 1 < len(s) && identStart(s[i + 1]) {
+        end = identEnd(&s, i + 1)
+        kind = T_VAR
+        text = s[i + 1..end]
+    } else if c == '@' && i + 1 < len(s) && identStart(s[i + 1]) {
+        end = i + 1
+        while end < len(s) && identByte(s[end]) { end += 1 }
+        kind = T_FORMAT
+        text = s[i + 1..end]
+    } else if c == '.' && i + 1 < len(s) && identStart(s[i + 1]) {
+        end = i + 1
+        while end < len(s) && identByte(s[end]) { end += 1 }
+        kind = T_FIELD
+        text = s[i + 1..end]
+    } else if isDigit(c) || (c == '.' && i + 1 < len(s) && isDigit(s[i + 1])) {
+        end = i
+        while end < len(s) && isDigit(s[end]) { end += 1 }
+        if end < len(s) && s[end] == '.' {
+            end += 1
+            while end < len(s) && isDigit(s[end]) { end += 1 }
+        }
+        if end < len(s) && (s[end] == 'e' || s[end] == 'E') {
+            var e = end + 1
+            if e < len(s) && (s[e] == '+' || s[e] == '-') { e += 1 }
+            if e < len(s) && isDigit(s[e]) {
+                while e < len(s) && isDigit(s[e]) { e += 1 }
+                end = e
+            }
+        }
+        kind = T_NUM
+        text = s[i..end]
+    } else if c == '"' {
+        kind = T_STR
+        text = "\""
+    } else {
+        text = s[i..i + 1]
+        if i + 3 <= len(s) && s[i..i + 3] == OPS3 {
+            text = OPS3
+        } else if i + 2 <= len(s) {
+            let two = s[i..i + 2]
+            for o in OPS2 {
+                if two == o {
+                    text = o
+                    break
+                }
+            }
+            if text == "//" && i + 3 <= len(s) && s[i + 2] == '=' { text = "//=" }
+        }
+        end = i + len(text)
+        if !contains(".[]{}()|,:;=<>+-*/%?!", s[i..i + 1]) || text == "!" {
+            kind = T_INVALID
+        } else if text == "(" || text == "[" || text == "{" {
+            p.depth += 1
+        } else if text == ")" || text == "]" || text == "}" {
+            if p.depth == 0 {
+                kind = T_INVALID
+            } else {
+                p.depth -= 1
+            }
+        }
+    }
+    p.tok = Tok{kind: kind, text: text, pos: i, end: end}
+    p.pos = end
+    return Ok(Unit{})
+}
+
+fn (p: &Parser) isOp(s: str): bool { return p.tok.kind == T_OP && p.tok.text == s }
+fn (p: &Parser) isIdent(s: str): bool { return p.tok.kind == T_IDENT && p.tok.text == s }
+
+fn (p: &Parser) lineAt(pos: int): int {
+    var line = 1
+    var i = 0
+    while i < pos && i < len(p.src) {
+        if p.src[i] == '\n' { line += 1 }
+        i += 1
+    }
+    return line
+}
+
+// A compile error in jq's form: the message, where, and the program.
+fn (p: &Parser) located(msg: str): str { return p.locatedAt(msg, p.tok.pos) }
+
+// As jq's locfile_locate: the line holding pos, then spaces up to pos.
+fn (p: &Parser) locatedAt(msg: str, pos: int): str {
+    var start = pos
+    if start > len(p.src) { start = len(p.src) }
+    while start > 0 && p.src[start - 1] != '\n' { start -= 1 }
+    var end = start
+    while end < len(p.src) && p.src[end] != '\n' { end += 1 }
+    var b = newStrBuf()
+    b.add(msg + " at <top-level>, line " + intToStr(p.lineAt(pos)) + ":\n")
+    b.add(p.src[start..end])
+    for i in start..pos { b.addByte(' ') }
+    return b.toStr()
+}
+
+// Whether n is a constant, as jq's block_is_const sees one.
+fn (p: &Parser) isConst(n: int): bool {
+    let k = p.nodes[n].kind
+    if k == N_LIT { return true }
+    if k == N_COMMA { return p.isConst(p.nodes[n].a) && p.isConst(p.nodes[n].b) }
+    if k == N_ARRAY { return p.nodes[n].a < 0 || p.isConst(p.nodes[n].a) }
+    if k == N_OBJECT {
+        for x in p.nodes[n].list {
+            if !p.isConst(x) { return false }
+        }
+        return true
+    }
+    return false
+}
+
+// Whether the token can begin an expression.
+fn (p: &Parser) canStart(): bool {
+    let k = p.tok.kind
+    if k == T_INVALID { return false }
+    if k == T_IDENT {
+        let w = p.tok.text
+        return !(w == "then" || w == "elif" || w == "else" || w == "end" || w == "as" || w == "catch" ||
+                 w == "and" || w == "or")
+    }
+    if k == T_OP {
+        let t = p.tok.text
+        return t == "." || t == ".." || t == "[" || t == "{" || t == "(" || t == "-"
+    }
+    return true
+}
+
+const KEYWORDS: []str = ["def", "as", "if", "then", "elif", "else", "end", "and", "or", "reduce", "foreach",
+                         "try", "catch", "label", "import", "include", "module", "__loc__"]
+
+fn isKeyword(w: str): bool {
+    for k in KEYWORDS {
+        if k == w { return true }
+    }
+    return false
+}
+
+fn (p: &Parser) syntaxError(): str { return p.syntaxErrorExpecting("") }
+
+// expecting: bison's list of the tokens it wanted, when it gives one.
+fn (p: &Parser) syntaxErrorExpecting(expecting: str): str {
+    var what = ""
+    if p.tok.kind == T_EOF {
+        what = "end of file"
+    } else if p.tok.kind == T_IDENT {
+        what = if isKeyword(p.tok.text) { p.tok.text } else { "IDENT" }
+    } else if p.tok.kind == T_STR {
+        what = "QQSTRING_START"
+    } else if p.tok.kind == T_NUM {
+        what = "LITERAL"
+    } else if p.tok.kind == T_FIELD {
+        what = "FIELD"
+    } else if p.tok.kind == T_VAR {
+        what = "BINDING"
+    } else if p.tok.kind == T_FORMAT {
+        what = "FORMAT"
+    } else if p.tok.kind == T_INVALID {
+        what = "INVALID_CHARACTER"
+    } else if len(p.tok.text) > 1 {
+        what = p.tok.text
+    } else {
+        what = "'" + p.tok.text + "'"
+    }
+    let at = if p.tok.kind == T_EOF { p.lastPos } else { p.tok.pos }
+    let exp = if len(expecting) > 0 { ", expecting " + expecting } else { "" }
+    return p.locatedAt("jq: error: syntax error, unexpected " + what + exp + " (Unix shell quoting issues?)", at)
+}
+
+fn (p: mut &Parser) expectOp(s: str): Result[Unit, str] { return p.expectOpWith(s, "") }
+
+fn (p: mut &Parser) expectOpWith(s: str, expecting: str): Result[Unit, str] {
+    if !p.isOp(s) { return Err(p.syntaxErrorExpecting(expecting)) }
+    try p.next()
+    return Ok(Unit{})
+}
+
+fn (p: mut &Parser) expectIdent(s: str): Result[Unit, str] {
+    if !p.isIdent(s) { return Err(p.syntaxError()) }
+    try p.next()
+    return Ok(Unit{})
+}
+
+// ---------------------------------------------------------------- nodes
+
+fn (p: mut &Parser) node(kind: int, a: int, b: int, c: int): int {
+    append(mut &p.nodes, Node{kind: kind, a: a, b: b, c: c, d: -1, op: 0, name: "", value: json.null(),
+                              list: [], names: [], line: p.lineBase + p.lineAt(p.tok.pos)})
+    return len(p.nodes) - 1
+}
+
+fn (p: mut &Parser) lit(v: json.Json): int {
+    let n = p.node(N_LIT, -1, -1, -1)
+    p.nodes[n].value = v
+    return n
+}
+
+fn (p: mut &Parser) strLit(s: str): int { return p.lit(json.string(s)) }
+
+// A literal piece of an interpolated string (op 1), as opposed to an
+// interpolated string literal.
+fn (p: mut &Parser) fragment(s: str): int {
+    let n = p.lit(json.string(s))
+    p.nodes[n].op = 1
+    return n
+}
+
+fn (p: mut &Parser) index(t: int, key: int): int { return p.node(N_INDEX, t, key, -1) }
+
+fn (p: mut &Parser) call0(name: str): Result[int, str] {
+    var none: []int = []
+    return p.resolveCall(name, none, p.tok.pos)
+}
+
+// ---------------------------------------------------------------- expressions
+
+fn precOf(p: &Parser): int {
+    let t = p.tok
+    if t.kind == T_IDENT {
+        if t.text == "or" { return 5 }
+        if t.text == "and" { return 6 }
+        return 0
+    }
+    if t.kind != T_OP { return 0 }
+    let s = t.text
+    if s == "|" { return 1 }
+    if s == "," { return 2 }
+    if s == "//" { return 3 }
+    if s == "=" || s == "|=" || s == "+=" || s == "-=" || s == "*=" || s == "/=" || s == "%=" || s == "//=" { return 4 }
+    if s == "==" || s == "!=" || s == "<" || s == "<=" || s == ">" || s == ">=" { return 7 }
+    if s == "+" || s == "-" { return 8 }
+    if s == "*" || s == "/" || s == "%" { return 9 }
+    return 0
+}
+
+fn arithOp(s: str): int {
+    if s == "+" || s == "+=" { return OP_ADD }
+    if s == "-" || s == "-=" { return OP_SUB }
+    if s == "*" || s == "*=" { return OP_MUL }
+    if s == "/" || s == "/=" { return OP_DIV }
+    if s == "%" || s == "%=" { return OP_MOD }
+    if s == "==" { return OP_EQ }
+    if s == "!=" { return OP_NE }
+    if s == "<" { return OP_LT }
+    if s == "<=" { return OP_LE }
+    if s == ">" { return OP_GT }
+    if s == ">=" { return OP_GE }
+    return 0
+}
+
+fn (p: mut &Parser) parsePipe(): Result[int, str] { return p.parseBin(1) }
+
+fn (p: mut &Parser) parseBin(minPrec: int): Result[int, str] {
+    var lhs = try p.parseUnary()
+    while true {
+        let prec = precOf(p)
+        if prec == 0 || prec < minPrec { break }
+        let op = p.tok.text
+        try p.next()
+        let right = prec == 1 || prec == 3
+        let rhs = try p.parseBin(if right { prec } else { prec + 1 })
+        if op == "|" {
+            lhs = p.node(N_PIPE, lhs, rhs, -1)
+        } else if op == "," {
+            lhs = p.node(N_COMMA, lhs, rhs, -1)
+        } else if op == "//" {
+            lhs = p.node(N_ALT, lhs, rhs, -1)
+        } else if op == "or" {
+            lhs = p.node(N_OR, lhs, rhs, -1)
+        } else if op == "and" {
+            lhs = p.node(N_AND, lhs, rhs, -1)
+        } else if prec == 4 {
+            let n = p.node(N_ASSIGN, lhs, rhs, -1)
+            if op == "=" {
+                p.nodes[n].op = AS_SET
+            } else if op == "|=" {
+                p.nodes[n].op = AS_UPDATE
+            } else if op == "//=" {
+                p.nodes[n].op = AS_ALT
+            } else {
+                p.nodes[n].op = AS_ARITH + arithOp(op)
+            }
+            lhs = n
+        } else {
+            let n = p.node(N_BIN, lhs, rhs, -1)
+            p.nodes[n].op = arithOp(op)
+            lhs = n
+        }
+        // the assignments and comparisons do not chain
+        if (prec == 4 || prec == 7) && precOf(p) == prec { return Err(p.syntaxError()) }
+    }
+    return Ok(lhs)
+}
+
+fn (p: mut &Parser) parseUnary(): Result[int, str] {
+    if p.isOp("-") {
+        try p.next()
+        let x = try p.parseUnary()
+        return Ok(p.node(N_NEG, x, -1, -1))
+    }
+    if p.isIdent("def") {
+        let d = try p.parseDef(false)
+        let rest = try p.parsePipe()
+        p.nodes[d].b = rest
+        // the definition's scope entry ends with the expression
+        pop(mut &p.scope)
+        return Ok(d)
+    }
+    return p.parsePostfix(true)
+}
+
+fn (p: mut &Parser) parsePostfix(allowAs: bool): Result[int, str] {
+    var t = try p.parseTerm()
+    while true {
+        if p.tok.kind == T_FIELD {
+            let k = p.strLit(p.tok.text)
+            try p.next()
+            t = p.index(t, k)
+        } else if p.isOp(".") {
+            // ."field" or .[...] after a term
+            try p.next()
+            if p.tok.kind == T_STR {
+                let k = try p.stringLit("")
+                t = p.index(t, k)
+            } else if p.isOp("[") {
+                t = try p.bracket(t)
+            } else {
+                return Err(p.syntaxErrorExpecting("FORMAT or QQSTRING_START or '['"))
+            }
+        } else if p.isOp("[") {
+            t = try p.bracket(t)
+        } else if p.isOp("?") {
+            try p.next()
+            t = p.node(N_TRY, t, -1, -1)
+        } else if allowAs && p.isIdent("as") {
+            try p.next()
+            let mark = len(p.scope)
+            let pats = try p.parsePatterns()
+            let names = p.scopeNames(mark)
+            try p.expectOpWith("|", "'|'")
+            let body = try p.parsePipe()
+            let n = p.node(N_AS, t, body, -1)
+            p.nodes[n].list = pats
+            p.nodes[n].names = names
+            p.popScope(mark)
+            return Ok(n)
+        } else {
+            break
+        }
+    }
+    return Ok(t)
+}
+
+fn (p: mut &Parser) bracket(t: int): Result[int, str] {
+    try p.expectOp("[")
+    if p.isOp("]") {
+        try p.next()
+        return Ok(p.node(N_ITER, t, -1, -1))
+    }
+    if p.isOp(":") {
+        try p.next()
+        let to = try p.parsePipe()
+        try p.expectOp("]")
+        return Ok(p.node(N_SLICE, t, -1, to))
+    }
+    let e = try p.parsePipe()
+    if p.isOp(":") {
+        try p.next()
+        if p.isOp("]") {
+            try p.next()
+            return Ok(p.node(N_SLICE, t, e, -1))
+        }
+        let to = try p.parsePipe()
+        try p.expectOp("]")
+        return Ok(p.node(N_SLICE, t, e, to))
+    }
+    try p.expectOp("]")
+    return Ok(p.index(t, e))
+}
+
+fn (p: mut &Parser) locLit(): int {
+    var o = json.object()
+    o.set("file", json.string("<top-level>"))
+    o.set("line", json.integer(p.lineAt(p.tok.pos)))
+    return p.lit(o)
+}
+
+fn (p: mut &Parser) parseTerm(): Result[int, str] {
+    let t = p.tok
+    if t.kind == T_FIELD {
+        let k = p.strLit(t.text)
+        try p.next()
+        let id = p.node(N_IDENT, -1, -1, -1)
+        return Ok(p.index(id, k))
+    }
+    if t.kind == T_NUM {
+        try p.next()
+        match json.lenientNumber(t.text) {
+            Some(v) { return Ok(p.lit(v)) }
+            None { return Err(p.located("jq: error: Invalid numeric literal " + t.text)) }
+        }
+    }
+    if t.kind == T_STR { return p.stringLit("") }
+    if t.kind == T_FORMAT {
+        try p.next()
+        if p.tok.kind == T_STR { return p.stringLit(t.text) }
+        let n = p.node(N_FORMAT, -1, -1, -1)
+        p.nodes[n].name = t.text
+        return Ok(n)
+    }
+    if t.kind == T_VAR {
+        try p.next()
+        if t.text == "__loc__" { return Ok(p.locLit()) }
+        return p.resolveVar(t.text, t.pos)
+    }
+    if t.kind == T_OP {
+        if t.text == "." {
+            try p.next()
+            let id = p.node(N_IDENT, -1, -1, -1)
+            if p.tok.kind == T_STR {
+                let k = try p.stringLit("")
+                return Ok(p.index(id, k))
+            }
+            return Ok(id)
+        }
+        if t.text == ".." {
+            try p.next()
+            return Ok(p.node(N_RECURSE, -1, -1, -1))
+        }
+        if t.text == "(" {
+            try p.next()
+            let e = try p.parsePipe()
+            try p.expectOp(")")
+            return Ok(e)
+        }
+        if t.text == "[" {
+            try p.next()
+            if p.isOp("]") {
+                try p.next()
+                return Ok(p.node(N_ARRAY, -1, -1, -1))
+            }
+            let e = try p.parsePipe()
+            try p.expectOp("]")
+            return Ok(p.node(N_ARRAY, e, -1, -1))
+        }
+        if t.text == "{" { return p.parseObject() }
+        return Err(p.syntaxError())
+    }
+    if t.kind == T_IDENT {
+        let w = t.text
+        if w == "null" || w == "true" || w == "false" {
+            try p.next()
+            if w == "null" { return Ok(p.lit(json.null())) }
+            return Ok(p.lit(json.boolean(w == "true")))
+        }
+        if w == "if" { return p.parseIf() }
+        if w == "try" {
+            try p.next()
+            let body = try p.parsePostTerm()
+            var handler = -1
+            if p.isIdent("catch") {
+                try p.next()
+                handler = try p.parsePostTerm()
+            }
+            return Ok(p.node(N_TRY, body, handler, -1))
+        }
+        if w == "reduce" || w == "foreach" {
+            try p.next()
+            let src = try p.parsePostfix(false)
+            try p.expectIdent("as")
+            let mark = len(p.scope)
+            // the init sees none of the pattern's variables: parse the patterns,
+            // then hide their scope entries while the init is parsed
+            let pats = try p.parsePatterns()
+            let names = p.scopeNames(mark)
+            var hidden: []Scope = []
+            while len(p.scope) > mark { append(mut &hidden, pop(mut &p.scope)) }
+            try p.expectOp("(")
+            let init = try p.parsePipe()
+            try p.expectOp(";")
+            while len(hidden) > 0 { append(mut &p.scope, pop(mut &hidden)) }
+            let update = try p.parsePipe()
+            var extract = -1
+            if w == "foreach" && p.isOp(";") {
+                try p.next()
+                extract = try p.parsePipe()
+            }
+            try p.expectOp(")")
+            p.popScope(mark)
+            let n = p.node(if w == "reduce" { N_REDUCE } else { N_FOREACH }, src, init, update)
+            p.nodes[n].d = extract
+            p.nodes[n].list = pats
+            p.nodes[n].names = names
+            return Ok(n)
+        }
+        if w == "label" {
+            try p.next()
+            if p.tok.kind != T_VAR { return Err(p.syntaxError()) }
+            let name = p.tok.text
+            try p.next()
+            try p.expectOpWith("|", "'|'")
+            let mark = len(p.scope)
+            append(mut &p.scope, Scope{kind: S_LABEL, name: name, arity: 0, node: -1})
+            let body = try p.parsePipe()
+            p.popScope(mark)
+            let n = p.node(N_LABEL, body, -1, -1)
+            p.nodes[n].name = name
+            return Ok(n)
+        }
+        if w == "break" {
+            try p.next()
+            if p.tok.kind != T_VAR { return Err(p.syntaxError()) }
+            let name = p.tok.text
+            try p.next()
+            let n = p.node(N_BREAK, -1, -1, -1)
+            p.nodes[n].name = name
+            var i = len(p.scope) - 1
+            var found = false
+            while i >= 0 {
+                if p.scope[i].kind == S_LABEL && p.scope[i].name == name {
+                    p.nodes[n].a = len(p.scope) - 1 - i
+                    found = true
+                    break
+                }
+                i -= 1
+            }
+            if !found { append(mut &p.errors, p.locatedAt("jq: error: $*label-" + name + " is not defined", t.pos)) }
+            return Ok(n)
+        }
+        if w == "def" {
+            let d = try p.parseDef(false)
+            let rest = try p.parsePipe()
+            p.nodes[d].b = rest
+            pop(mut &p.scope)
+            return Ok(d)
+        }
+        if w == "then" || w == "elif" || w == "else" || w == "end" || w == "as" || w == "catch" ||
+           w == "and" || w == "or" || w == "import" || w == "include" || w == "module" {
+            return Err(p.syntaxError())
+        }
+        try p.next()
+        var args: []int = []
+        if p.isOp("(") {
+            try p.next()
+            while true {
+                let a = try p.parsePipe()
+                append(mut &args, a)
+                if p.isOp(";") {
+                    try p.next()
+                } else {
+                    break
+                }
+            }
+            try p.expectOpWith(")", "';' or ')'")
+        }
+        return p.resolveCall(w, args, t.pos)
+    }
+    return Err(p.syntaxError())
+}
+
+// The body of try or catch: a postfix term (try binds tighter than every
+// binary operator).
+fn (p: mut &Parser) parsePostTerm(): Result[int, str] {
+    if p.isOp("-") {
+        try p.next()
+        let x = try p.parsePostTerm()
+        return Ok(p.node(N_NEG, x, -1, -1))
+    }
+    return p.parsePostfix(false)
+}
+
+fn (p: mut &Parser) parseIf(): Result[int, str] { return p.parseIfAt(p.tok.pos) }
+
+// at: where the `if` is, for jq's note on an unterminated one.
+fn (p: mut &Parser) parseIfAt(at: int): Result[int, str] {
+    try p.next()   // if or elif
+    let cond = try p.parsePipe()
+    try p.expectIdent("then")
+    let then = try p.parsePipe()
+    var other = -1
+    if p.isIdent("elif") {
+        other = try p.parseIfAt(at)
+        return Ok(p.node(N_IF, cond, then, other))
+    }
+    if p.isIdent("else") {
+        try p.next()
+        other = try p.parsePipe()
+    }
+    if p.tok.kind == T_EOF {
+        append(mut &p.errors, p.syntaxError())
+        return Err(p.locatedAt("jq: error: Possibly unterminated 'if' statement", at))
+    }
+    try p.expectIdent("end")
+    return Ok(p.node(N_IF, cond, then, other))
+}
+
+
+fn (p: mut &Parser) parseObject(): Result[int, str] {
+    try p.expectOp("{")
+    var parts: []int = []
+    if p.isOp("}") {
+        try p.next()
+        let n = p.node(N_OBJECT, -1, -1, -1)
+        return Ok(n)
+    }
+    while true {
+        let t = p.tok
+        var key = -1
+        var val = -1
+        if t.kind == T_VAR {
+            try p.next()
+            if t.text == "__loc__" {
+                key = p.strLit("__loc__")
+                val = p.locLit()
+            } else if p.isOp(":") {
+                try p.next()
+                key = try p.resolveVar(t.text, t.pos)
+                val = try p.objVal()
+            } else {
+                key = p.strLit(t.text)
+                val = try p.resolveVar(t.text, t.pos)
+            }
+        } else if t.kind == T_IDENT {
+            try p.next()
+            key = p.strLit(t.text)
+            if p.isOp(":") {
+                try p.next()
+                val = try p.objVal()
+            } else {
+                let id = p.node(N_IDENT, -1, -1, -1)
+                val = p.index(id, key)
+            }
+        } else if t.kind == T_STR || t.kind == T_FORMAT {
+            var fmt = ""
+            if t.kind == T_FORMAT {
+                fmt = t.text
+                try p.next()
+                if p.tok.kind != T_STR {
+                    if p.isOp(":") {
+                        append(mut &p.errors, p.locatedAt("jq: error: syntax error, unexpected ':', expecting QQSTRING_START (Unix shell quoting issues?)", p.tok.pos))
+                        return Err(p.locatedAt("jq: error: May need parentheses around object key expression", t.pos))
+                    }
+                    return Err(p.syntaxError())
+                }
+            }
+            key = try p.stringLit(fmt)
+            if p.isOp(":") {
+                try p.next()
+                val = try p.objVal()
+            } else {
+                let id = p.node(N_IDENT, -1, -1, -1)
+                val = p.index(id, key)
+            }
+        } else if t.kind == T_NUM {
+            append(mut &p.errors, p.syntaxError())
+            return Err(p.locatedAt("jq: error: May need parentheses around object key expression", t.pos))
+        } else if p.isOp("(") {
+            try p.next()
+            key = try p.parsePipe()
+            try p.expectOp(")")
+            // a constant key that is not a string fails when jq compiles
+            if p.nodes[key].kind == N_LIT && p.nodes[key].op != 1 && !jq_lib.isStr(&p.nodes[key].value) {
+                let kv = p.nodes[key].value.clone()
+                append(mut &p.errors, p.locatedAt("jq: error: Cannot use " + jq_lib.typeName(&kv) + " (" + jq_lib.dump(&kv) +
+                                                  ") as object key", t.pos))
+            }
+            try p.expectOp(":")
+            val = try p.objVal()
+        } else {
+            return Err(p.syntaxError())
+        }
+        append(mut &parts, key)
+        append(mut &parts, val)
+        if p.isOp(",") {
+            try p.next()
+            if p.isOp("}") { break }
+        } else {
+            break
+        }
+    }
+    try p.expectOpWith("}", "'}'")
+    let n = p.node(N_OBJECT, -1, -1, -1)
+    p.nodes[n].list = parts
+    return Ok(n)
+}
+
+// An object value: terms joined by |, each maybe negated (jq's ExpD).
+fn (p: mut &Parser) objVal(): Result[int, str] {
+    var v = -1
+    if p.isOp("-") {
+        try p.next()
+        let x = try p.objVal()
+        v = p.node(N_NEG, x, -1, -1)
+    } else {
+        v = try p.parsePostfix(false)
+    }
+    if p.isOp("|") {
+        try p.next()
+        let rest = try p.objVal()
+        v = p.node(N_PIPE, v, rest, -1)
+    }
+    return Ok(v)
+}
+
+// A string literal at the current token; with a format, the
+// interpolations are formatted with it.
+fn (p: mut &Parser) stringLit(fmt: str): Result[int, str] {
+    let s = p.src
+    var i = p.tok.pos + 1
+    var parts: []int = []
+    var interp = false
+    var b = newStrBuf()
+    while true {
+        if i >= len(s) {
+            p.tok = Tok{kind: T_EOF, text: "", pos: len(s), end: len(s)}
+            return Err(p.syntaxError())
+        }
+        let c = s[i]
+        if c == '"' {
+            i += 1
+            break
+        }
+        if c == '\\' {
+            if i + 1 >= len(s) { return Err(p.located("jq: error: unterminated string")) }
+            let e = s[i + 1]
+            if e == '(' {
+                if b.size() > 0 {
+                    append(mut &parts, p.fragment(b.toStr()))
+                    b.clear()
+                }
+                p.pos = i + 2
+                p.depth += 1
+                try p.next()
+                let x = try p.parsePipe()
+                if !p.isOp(")") { return Err(p.syntaxError()) }
+                append(mut &parts, x)
+                interp = true
+                i = p.tok.end
+            } else if e == 'u' {
+                var cp = hex4(&s, i + 2)
+                if cp < 0 { return Err(p.located("jq: error: Invalid escape")) }
+                i += 6
+                if cp >= 0xD800 && cp < 0xDC00 && i + 6 <= len(s) && s[i] == '\\' && s[i + 1] == 'u' {
+                    let lo = hex4(&s, i + 2)
+                    if lo >= 0xDC00 && lo < 0xE000 {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00)
+                        i += 6
+                    }
+                }
+                json.addCodePoint(mut &b, cp)
+            } else {
+                var r: byte = 0
+                if e == '"' || e == '\\' || e == '/' {
+                    r = e
+                } else if e == 'n' {
+                    r = '\n'
+                } else if e == 't' {
+                    r = '\t'
+                } else if e == 'r' {
+                    r = '\r'
+                } else if e == 'b' {
+                    r = 0x08
+                } else if e == 'f' {
+                    r = 0x0C
+                } else {
+                    let msg = "jq: error: Invalid escape at line 1, column " + intToStr(i + 3 - p.tok.pos) +
+                              " (while parsing '" + s[p.tok.pos..min(len(s), i + 3)] + "')"
+                    return Err(p.locatedAt(msg, p.tok.pos + 1))
+                }
+                b.addByte(r)
+                i += 2
+            }
+        } else {
+            b.addByte(c)
+            i += 1
+        }
+    }
+    p.pos = i
+    try p.next()
+    if !interp && len(fmt) == 0 { return Ok(p.strLit(b.toStr())) }
+    if b.size() > 0 || len(parts) == 0 { append(mut &parts, p.fragment(b.toStr())) }
+    let n = p.node(N_STR, -1, -1, -1)
+    p.nodes[n].list = parts
+    p.nodes[n].name = fmt
+    return Ok(n)
+}
+
+fn hex4(s: &str, at: int): int {
+    if at + 4 > len(s) { return -1 }
+    var r = 0
+    for k in 0..4 {
+        let c = s[at + k]
+        var v = -1
+        if c >= '0' && c <= '9' { v = int(c - '0') }
+        if c >= 'a' && c <= 'f' { v = int(c - 'a') + 10 }
+        if c >= 'A' && c <= 'F' { v = int(c - 'A') + 10 }
+        if v < 0 { return -1 }
+        r = r * 16 + v
+    }
+    return r
+}
+
+// ---------------------------------------------------------------- patterns
+
+// Patterns separated by ?//; the variables they bind are pushed on the scope
+// in order of first appearance.
+fn (p: mut &Parser) parsePatterns(): Result[[]int, str] {
+    var pats: []int = []
+    let first = try p.parsePattern()
+    append(mut &pats, first)
+    while p.isOp("?//") {
+        try p.next()
+        let x = try p.parsePattern()
+        append(mut &pats, x)
+    }
+    return Ok(pats)
+}
+
+fn (p: mut &Parser) bindName(name: str) {
+    // a name already bound by this pattern group is not bound twice
+    for i in 0..len(p.scope) {
+        if p.scope[i].kind == S_VAR && p.scope[i].name == name && p.scope[i].node == -2 { return }
+    }
+    append(mut &p.scope, Scope{kind: S_VAR, name: name, arity: 0, node: -2})
+}
+
+fn (p: mut &Parser) parsePattern(): Result[int, str] {
+    if p.tok.kind == T_VAR {
+        let name = p.tok.text
+        try p.next()
+        p.bindName(name)
+        let n = p.node(P_VAR, -1, -1, -1)
+        p.nodes[n].name = name
+        return Ok(n)
+    }
+    if p.isOp("[") {
+        try p.next()
+        var elems: []int = []
+        if p.isOp("]") { return Err(p.syntaxErrorExpecting("BINDING or '[' or '{'")) }   // jq has no empty array pattern
+        if !p.isOp("]") {
+            while true {
+                let e = try p.parsePattern()
+                append(mut &elems, e)
+                if p.isOp(",") {
+                    try p.next()
+                } else {
+                    break
+                }
+            }
+        }
+        try p.expectOpWith("]", "',' or ']'")
+        let n = p.node(P_ARR, -1, -1, -1)
+        p.nodes[n].list = elems
+        return Ok(n)
+    }
+    if p.isOp("{") {
+        try p.next()
+        var entries: []int = []
+        while true {
+            let t = p.tok
+            var key = -1
+            var sub = -1
+            var bind = ""
+            if t.kind == T_VAR {
+                try p.next()
+                key = p.strLit(t.text)
+                bind = t.text
+                p.bindName(t.text)
+                if p.isOp(":") {
+                    try p.next()
+                    sub = try p.parsePattern()
+                }
+            } else if t.kind == T_IDENT {
+                try p.next()
+                key = p.strLit(t.text)
+                try p.expectOpWith(":", "':'")
+                sub = try p.parsePattern()
+            } else if t.kind == T_STR {
+                key = try p.stringLit("")
+                try p.expectOp(":")
+                sub = try p.parsePattern()
+            } else if p.isOp("(") {
+                try p.next()
+                key = try p.parsePipe()
+                try p.expectOp(")")
+                try p.expectOp(":")
+                sub = try p.parsePattern()
+            } else {
+                return Err(p.syntaxError())
+            }
+            let e = p.node(P_ENTRY, key, sub, -1)
+            p.nodes[e].name = bind
+            append(mut &entries, e)
+            if p.isOp(",") {
+                try p.next()
+            } else {
+                break
+            }
+        }
+        try p.expectOp("}")
+        let n = p.node(P_OBJ, -1, -1, -1)
+        p.nodes[n].list = entries
+        return Ok(n)
+    }
+    return Err(p.syntaxErrorExpecting("BINDING or '[' or '{'"))
+}
+
+// The names of the scope entries from mark up (the variables a pattern
+// bound), and marks them as ordinary variables.
+fn (p: mut &Parser) scopeNames(mark: int): []str {
+    var out: []str = []
+    for i in mark..len(p.scope) {
+        append(mut &out, p.scope[i].name)
+        p.scope[i].node = -1
+    }
+    return out
+}
+
+fn (p: mut &Parser) popScope(mark: int) {
+    while len(p.scope) > mark { pop(mut &p.scope) }
+}
+
+// ---------------------------------------------------------------- definitions
+
+// def name(params): body;  A global definition needs no frame: its body
+// sees the earlier globals and itself. Otherwise the definition's scope
+// entry stays pushed for the expression after it (the caller pops it).
+fn (p: mut &Parser) parseDef(global: bool): Result[int, str] {
+    try p.expectIdent("def")
+    if p.tok.kind != T_IDENT { return Err(p.syntaxError()) }
+    let name = p.tok.text
+    try p.next()
+    var params: []str = []
+    if p.isOp("(") {
+        try p.next()
+        while true {
+            if p.tok.kind == T_IDENT {
+                append(mut &params, p.tok.text)
+            } else if p.tok.kind == T_VAR {
+                append(mut &params, "$" + p.tok.text)
+            } else {
+                return Err(p.syntaxError())
+            }
+            try p.next()
+            if p.isOp(";") {
+                try p.next()
+            } else {
+                break
+            }
+        }
+        try p.expectOp(")")
+        try p.expectOp(":")
+    } else {
+        try p.expectOpWith(":", "'(' or ':'")
+    }
+    let d = p.node(N_DEF, -1, -1, if global { 1 } else { 0 })
+    p.nodes[d].name = name
+    p.nodes[d].op = len(params)
+    p.nodes[d].names = collections.copyOf(&params)
+    // the scope while the body is parsed
+    var saved: []Scope = []
+    if global {
+        saved = replace(mut &p.scope, [])
+        append(mut &p.globals, GlobalFn{name: name, arity: len(params), node: d})
+    } else {
+        append(mut &p.scope, Scope{kind: S_FUNC, name: name, arity: len(params), node: d})
+    }
+    let mark = len(p.scope)
+    for x in params {
+        let pn = if startsWith(x, "$") { x[1..] } else { x }
+        append(mut &p.scope, Scope{kind: S_PARAM, name: pn, arity: 0, node: -1})
+    }
+    for x in params {
+        if startsWith(x, "$") { append(mut &p.scope, Scope{kind: S_VAR, name: x[1..], arity: 0, node: -1}) }
+    }
+    let body = try p.parsePipe()
+    try p.expectOp(";")
+    p.popScope(mark)
+    if global { p.scope = replace(mut &saved, []) }
+    p.nodes[d].a = body
+    return Ok(d)
+}
+
+// ---------------------------------------------------------------- resolution
+
+fn (p: mut &Parser) resolveVar(name: str, pos: int): Result[int, str] {
+    let n = p.node(N_VAR, -1, -1, -1)
+    p.nodes[n].name = name
+    var i = len(p.scope) - 1
+    while i >= 0 {
+        if p.scope[i].kind == S_VAR && p.scope[i].name == name {
+            p.nodes[n].a = len(p.scope) - 1 - i
+            return Ok(n)
+        }
+        i -= 1
+    }
+    var g = len(p.gvars) - 1
+    while g >= 0 {
+        if p.gvars[g] == name {
+            p.nodes[n].op = 1
+            p.nodes[n].a = g
+            return Ok(n)
+        }
+        g -= 1
+    }
+    append(mut &p.errors, p.locatedAt("jq: error: $" + name + " is not defined", pos))
+    return Ok(n)
+}
+
+fn (p: mut &Parser) resolveCall(name: str, args: []int, pos: int): Result[int, str] {
+    let arity = len(args)
+    let n = p.node(N_CALL, -1, -1, -1)
+    p.nodes[n].name = name
+    p.nodes[n].list = args
+    var i = len(p.scope) - 1
+    while i >= 0 {
+        let s = p.scope[i]
+        if (s.kind == S_FUNC && s.name == name && s.arity == arity) || (s.kind == S_PARAM && arity == 0 && s.name == name) {
+            p.nodes[n].op = C_FRAME
+            p.nodes[n].a = len(p.scope) - 1 - i
+            return Ok(n)
+        }
+        i -= 1
+    }
+    var g = len(p.globals) - 1
+    while g >= 0 {
+        if p.globals[g].name == name && p.globals[g].arity == arity {
+            p.nodes[n].op = C_GLOBAL
+            p.nodes[n].a = p.globals[g].node
+            return Ok(n)
+        }
+        g -= 1
+    }
+    let key = name + "/" + intToStr(arity)
+    if p.natives.has(&key) {
+        p.nodes[n].op = C_NATIVE
+        p.nodes[n].name = key
+        return Ok(n)
+    }
+    append(mut &p.errors, p.locatedAt("jq: error: " + key + " is not defined", pos))
+    return Ok(n)
+}

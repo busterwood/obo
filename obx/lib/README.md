@@ -46,6 +46,7 @@ for leaks.
 | `regex_dfa.obx` | 1,420 | the regex engine's lazy DFA (after RE2's) and literal searches (after Rust's regex) |
 | `regex_syntax.obx` | 3,060 | the regex parser, simplifier and compiler to a program, forward and reversed (Go's regexp/syntax) |
 | `regex_unicode.obx` | 2,020 | generated (`gen_regex_unicode.py`): Unicode 15.0.0 categories, scripts and simple case folding |
+| `json.obx` | 1,930 | JSON values (shared, copy on write; objects in insertion order), parsing with positioned errors, a decoder for sequences, compact and indented writing with jq's options |
 
 ### std (prelude)
 
@@ -1054,6 +1055,52 @@ matching state, so a `findAll` reuses them but separate calls rebuild them
 (a `Searcher` keeps them).
 Speed: `PERFORMANCE.md` (via C 1.3 to 2.6 times Rust's `regex` on the
 benchmark set, 2 to 650 times faster than Go's `regexp`).
+
+### json
+
+JSON (RFC 8259) values, parsing and writing. Where JSON leaves a choice,
+the module follows jq 1.7 (design/json.md).
+
+```obx
+import "json"
+
+let v = try json.parse(`{"name": "obx", "tags": ["a", "b"], "price": 12.50}`)
+v.field("name").asStr()             // Some("obx"); field of a missing key is null
+v.field("price").asDecimal()        // Some(12.50), read from the literal exactly
+for t in v.field("tags").items() { ... }
+var out = json.object().with("ok", json.boolean(true))
+out.set("ids", json.arrayOf([json.integer(1), json.integer(2)]))
+out.toStr()                         // {"ok":true,"ids":[1,2]}
+json.write(&out, &json.pretty())    // two spaces per level, newline at the end
+```
+
+- **Values.** A `Json` is `Null`, `Bool`, `Num`, `Str`, `Arr` or `Obj`.
+  Arrays and objects are counted and shared: `clone()` is cheap, and
+  changing a shared one copies it first. Readers (`field`, `item`, `items`)
+  return owned values; `eachItem`, `eachEntry` and `withItems` lend them.
+- **Objects** keep their keys in insertion order. A lookup scans up to 16
+  keys; larger objects use a hash index.
+- **Numbers** keep their literal text and the nearest double. `asInt` and
+  `asDecimal` read the text exactly, and writing gives the text back.
+  `cmp` and `eq` compare the texts exactly, so `1.0 == 1` and
+  `0.0001e4 == 1`.
+- **Strings** are bytes. Invalid UTF-8 and lone low surrogates become
+  U+FFFD, as in jq; with `strictUtf8` they are errors.
+- **Parsing.**
+  - `parse(s)` reads one value.
+  - `parseWith(s, options)` takes `maxDepth` (default 512), `strictUtf8`,
+    and `lenient` (jq's `nan`, `+1` and the like).
+  - `decoder(s).next()` reads a sequence of values.
+  - An `Error` has a kind, a message, a byte offset, and the line and
+    column.
+- **Writing.** `write(&j, &options)` returns the text;
+  `writeTo(mut &sink, &j, &options)` streams it. `WriteOptions` has
+  `indent`, `tab`, `sortKeys`, `ascii`, `raw` and `jqNumbers`.
+- **Order.** `cmp` is jq's total order.
+
+**Tests:** `tests/run/json_*.obx`, and `tests/jsonsuite.py`, which runs
+JSONTestSuite (fetched at test time). **Speed:** `bench/json/bench.py`; the
+results are in design/json.md, section 9.
 
 ### sqldialect, sqlite, postgres, mssql
 

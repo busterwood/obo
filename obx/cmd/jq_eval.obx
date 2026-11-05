@@ -1,0 +1,2247 @@
+// jq_eval: the evaluator of cmd/jq.obx.
+//
+// jq programs are generators: an expression produces any number of outputs,
+// lazily, and backtracks into its sources for more. The evaluator is written
+// in continuation-passing style: eval(n, input, k) calls k once per output of
+// node n and returns a status. ST_OK means "carry on"; anything else (an
+// error, a break to a label, halt) unwinds every generator up to the place
+// that handles it (try, label, the main loop). So `first(range(1; infinite))`
+// stops range as soon as first has its output, and nothing is computed that
+// nobody asked for. Continuations are obx's second-class closures (&fn), so
+// they cost no allocation; the native stack holds the generators' state.
+//
+// Variables, closure parameters, definitions and labels live in frames in
+// one arena (Interp.frames), pushed and popped in stack order: a frame is
+// only referenced while the eval that pushed it is still running. A frame's
+// parent is its lexical scope; the parser resolved every name to the number
+// of frames to walk up (hops).
+//
+// Path expressions (path(f), assignments, del, paths, ...) use the same
+// eval with tracking on: every output then carries its path from the input
+// (an array), or null when the output is not a path (a literal, a sum).
+//
+// The semantics follow jq 1.7.1 (MIT licensed, Copyright (C) 2012 Stephen
+// Dolan; see NOTICE), including evaluation orders and error messages.
+import "json"
+import "io"
+import "fs"
+import "os"
+import "time"
+import "collections"
+import "./jq_parse"
+import "./jq_lib"
+
+pub type J = json.Json
+
+pub const ST_OK = 0
+pub const ST_ERR = 1
+pub const ST_BREAK = 2
+pub const ST_HALT = 3
+const ST_EMPTY = 4          // eval1: no output (never returned by eval)
+
+const F_VAR = 1
+const F_CLOSURE = 2
+const F_DEF = 3
+const F_LABEL = 4
+
+type Frame = record {
+    parent: int
+    kind: int
+    node: int      // F_CLOSURE: the argument; F_DEF: the definition; F_LABEL: the label's id
+    env: int       // F_CLOSURE: the frame the argument is evaluated in
+    value: J       // F_VAR
+}
+
+// Where the inputs come from: files (or stdin), as JSON texts or raw lines.
+//
+// jq runs one parser over all its files, one after another (a value may
+// even run on from one file into the next), and reads them a line at a time
+// when its parser runs out of text. The name and line number in messages
+// depend on how far it has read, so this keeps the same account over the
+// files read whole: fed is how much of the text jq would have read, eof
+// whether a read of the current file has met its end. A read after the end
+// moves to the next file, or to none (then the name is "<unknown>").
+type Seg = record {
+    name: str
+    start: int
+    end: int
+    failed: str         // the message when the file could not be opened
+}
+
+pub type Inputs = record {
+    pub files: []str
+    pub raw: bool
+    pub name: str          // the current input's name; "" for none
+    pub line: int          // newline-terminated lines read of the current input
+    loaded: bool
+    text: str              // the files, one after another
+    segs: []Seg
+    cur: int               // the current file, -1 before the first read
+    noInput: bool          // jq's current_input is NULL
+    fed: int
+    eof: bool
+    dec: json.Decoder
+    pub ioFailed: bool     // a file could not be read (jq then exits 2)
+    pub parseFailed: bool
+}
+
+pub fn newInputs(files: []str, raw: bool): Inputs {
+    return Inputs{files: files, raw: raw, name: "", line: 0, loaded: false, text: "", segs: [], cur: -1,
+                  noInput: true, fed: 0, eof: false, dec: json.decoder(""), ioFailed: false, parseFailed: false}
+}
+
+fn jqParseOpts(): json.ParseOptions {
+    var o = json.parseOptions()
+    o.lenient = true
+    o.maxDepth = 256
+    return o
+}
+
+fn (s: mut &Inputs) load() {
+    s.loaded = true
+    var b = newStrBuf()
+    var names: []str = []
+    if len(s.files) == 0 {
+        append(mut &names, "-")
+    } else {
+        for f in s.files { append(mut &names, f) }
+    }
+    for f in names {
+        let start = b.size()
+        if f == "-" {
+            match io.readStdin() {
+                Ok(t) { b.add(t) }
+                Err(e) {}
+            }
+            append(mut &s.segs, Seg{name: "<stdin>", start: start, end: b.size(), failed: ""})
+        } else {
+            match io.read(f) {
+                Ok(t) {
+                    b.add(t)
+                    append(mut &s.segs, Seg{name: f, start: start, end: b.size(), failed: ""})
+                }
+                Err(e) {
+                    let msg = "jq: error: Could not open file " + f + ": " + io.errorText(e.errno)
+                    append(mut &s.segs, Seg{name: f, start: start, end: start, failed: msg})
+                }
+            }
+        }
+    }
+    s.text = b.toStr()
+    // jq's parser skips a byte order mark at the start of its input
+    var at = 0
+    if !s.raw && startsWith(s.text, "\xef\xbb\xbf") { at = 3 }
+    if !s.raw { s.dec = json.decoderWith(s.text[at..], jqParseOpts()) }
+    s.fed = 0
+}
+
+// jq_util_input_read_more: one line of the current file, first moving to
+// the next file when the current one is at its end. Returns jq's is_last
+// (no more files and the current one is at its end) and sets got to what
+// was read.
+fn (s: mut &Inputs) readMore(got: mut &jq_lib.Span): bool {
+    got = jq_lib.Span{start: s.fed, end: s.fed}
+    if s.noInput || s.eof {
+        if !s.noInput {
+            s.noInput = true
+            s.name = ""
+            s.line = 0
+        }
+        if s.cur + 1 < len(s.segs) {
+            s.cur += 1
+            let failed = s.segs[s.cur].failed
+            s.name = s.segs[s.cur].name
+            s.line = 0
+            s.eof = false
+            if len(failed) > 0 {
+                eprintln(failed)
+                s.ioFailed = true
+            } else {
+                s.noInput = false
+            }
+        }
+    }
+    if !s.noInput {
+        let end = s.segs[s.cur].end
+        if s.fed >= end {
+            s.eof = true
+        } else {
+            var at = s.fed
+            while at < end && s.text[at] != '\n' { at += 1 }
+            if at < end {
+                s.fed = at + 1
+                s.line += 1
+            } else {
+                s.fed = end
+                s.eof = true
+            }
+            got = jq_lib.Span{start: got.start, end: s.fed}
+        }
+    }
+    return s.cur + 1 >= len(s.segs) && (s.noInput || s.eof)
+}
+
+fn isWordByte(c: byte): bool {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '+' || c == '-'
+}
+
+// The next input value; Err holds jq's message for a JSON text error.
+pub fn (s: mut &Inputs) read(): Result[Option[J], str] {
+    if !s.loaded { s.load() }
+    var got = jq_lib.Span{start: 0, end: 0}
+    if s.raw {
+        // a line, which may run on from one file into the next
+        var b = newStrBuf()
+        var some = false
+        while true {
+            let last = s.readMore(mut &got)
+            if got.end > got.start {
+                some = true
+                if s.text[got.end - 1] == '\n' {
+                    b.add(s.text[got.start..got.end - 1])
+                    return Ok(Some(json.string(json.validUtf8(b.toStr()))))
+                }
+                b.add(s.text[got.start..got.end])
+            }
+            if last { break }
+        }
+        if some { return Ok(Some(json.string(json.validUtf8(b.toStr())))) }
+        return Ok(None)
+    }
+    let bom = if startsWith(s.text, "\xef\xbb\xbf") { 3 } else { 0 }
+    let start = s.dec.offset() + bom
+    let r = s.dec.next()
+    match move(r) {
+        Ok(x) {
+            match move(x) {
+                Some(v) {
+                    // complete once its last byte is read, or the byte after a
+                    // number or literal
+                    let e = s.dec.offset() + bom
+                    var need = e
+                    if e > 0 && e < len(s.text) && isWordByte(s.text[e - 1]) { need = e + 1 }
+                    while s.fed < need {
+                        let last = s.readMore(mut &got)
+                        if last && got.end == got.start { break }
+                    }
+                    return Ok(Some(v))
+                }
+                None {
+                    // the rest is white space: read to the end
+                    while true {
+                        let last = s.readMore(mut &got)
+                        if last { break }
+                    }
+                    return Ok(None)
+                }
+            }
+        }
+        Err(e) {
+            s.parseFailed = true
+            var msg = jq_lib.jqParseError(s.text, start)
+            if len(msg) == 0 { msg = e.msg }
+            while s.fed < len(s.text) {
+                let last = s.readMore(mut &got)
+                if last { break }
+            }
+            return Err(msg)
+        }
+    }
+}
+
+// The whole of the inputs as one string (-R with -s).
+pub fn (s: mut &Inputs) readAllRaw(): str {
+    if !s.loaded { s.load() }
+    var got = jq_lib.Span{start: 0, end: 0}
+    var b = newStrBuf()
+    while true {
+        let last = s.readMore(mut &got)
+        b.add(s.text[got.start..got.end])
+        if last { break }
+    }
+    return json.validUtf8(b.toStr())
+}
+
+pub type Interp = record {
+    pub nodes: []jq_parse.Node
+    frames: []Frame
+    pub gvals: []J
+    pub err: J
+    pub breakId: int
+    labels: int
+    pub haltCode: int
+    pub haltMsg: Option[J]
+    pub inputs: Inputs
+    pub stderrBuf: io.Writer
+    pub progOrigin: str     // get_prog_origin: the directory of -f's file, else the current one
+    one: []bool             // per node: at most one output (see singleOutputs)
+    regexes: jq_lib.RegexCache
+}
+
+pub fn newInterp(prog: jq_parse.Prog, gvals: []J, inputs: Inputs): Interp {
+    var pg = prog
+    var ip = Interp{nodes: replace(mut &pg.nodes, []), frames: [], gvals: gvals, err: json.null(), breakId: 0, labels: 0,
+                    haltCode: 0, haltMsg: None, inputs: inputs, stderrBuf: io.stderr(), progOrigin: "", one: [],
+                    regexes: jq_lib.newRegexCache()}
+    for i in 0..len(ip.nodes) {
+        if ip.nodes[i].kind == jq_parse.N_CALL && ip.nodes[i].op == jq_parse.C_NATIVE {
+            ip.nodes[i].c = codeOf(ip.nodes[i].name)
+        }
+    }
+    ip.one = singleOutputs(&ip.nodes)
+    return ip
+}
+
+// ---------------------------------------------------------------- single outputs
+
+// Which nodes have at most one output, whatever their input. The evaluator
+// runs those to completion before it continues (eval1), so that the native
+// stack unwinds: in continuation-passing style the rest of the program runs
+// inside the evaluation of each operand, and a recursive jq function such as
+// def fib: if . < 2 then . else (.-1|fib) + (.-2|fib) end; would otherwise
+// nest as deep as the number of calls, not the depth of the recursion.
+//
+// The greatest fixed point: every node starts as single and loses it when a
+// part of it does not have it, so recursive definitions keep it. Calls of
+// definitions in frames (nested defs, closure parameters) are not followed
+// here; callDef and closures check their body when they run.
+fn singleOutputs(nodes: &[jq_parse.Node]): []bool {
+    var one: []bool = []
+    for i in 0..len(nodes) { append(mut &one, true) }
+    var changed = true
+    while changed {
+        changed = false
+        for i in 0..len(nodes) {
+            if one[i] && !nodeSingle(nodes, &one, i) {
+                one[i] = false
+                changed = true
+            }
+        }
+    }
+    return one
+}
+
+fn opt(one: &[]bool, n: int): bool { return n < 0 || one[n] }
+
+fn nodeSingle(nodes: &[jq_parse.Node], one: &[]bool, n: int): bool {
+    let kind = nodes[n].kind
+    let a = nodes[n].a
+    let b = nodes[n].b
+    let c = nodes[n].c
+    if kind == jq_parse.N_IDENT || kind == jq_parse.N_LIT || kind == jq_parse.N_VAR || kind == jq_parse.N_FORMAT ||
+       kind == jq_parse.N_BREAK || kind == jq_parse.N_ARRAY {
+        return true
+    }
+    if kind == jq_parse.N_INDEX || kind == jq_parse.N_PIPE || kind == jq_parse.N_BIN || kind == jq_parse.N_AND ||
+       kind == jq_parse.N_OR || kind == jq_parse.N_ALT {
+        return one[a] && one[b]
+    }
+    if kind == jq_parse.N_SLICE { return one[a] && opt(one, b) && opt(one, c) }
+    if kind == jq_parse.N_NEG || kind == jq_parse.N_LABEL { return one[a] }
+    if kind == jq_parse.N_IF { return one[a] && one[b] && opt(one, c) }
+    if kind == jq_parse.N_TRY { return one[a] && opt(one, b) }
+    if kind == jq_parse.N_REDUCE { return one[b] }
+    if kind == jq_parse.N_ASSIGN { return one[b] }
+    if kind == jq_parse.N_DEF { return opt(one, b) }
+    if kind == jq_parse.N_AS {
+        return len(nodes[n].list) == 1 && nodes[nodes[n].list[0]].kind == jq_parse.P_VAR && one[a] && one[b]
+    }
+    if kind == jq_parse.N_STR || kind == jq_parse.N_OBJECT {
+        for x in nodes[n].list {
+            if !one[x] { return false }
+        }
+        return true
+    }
+    if kind == jq_parse.N_CALL {
+        let op = nodes[n].op
+        if op == jq_parse.C_GLOBAL { return one[nodes[a].a] && valueArgsSingle(nodes, one, a, n) }
+        if op != jq_parse.C_NATIVE { return false }
+        let code = nodes[n].c
+        // the natives with closure arguments that still give one output at most
+        if code == K_FIRST || code == K_LAST || code == K_ISEMPTY || code == K_MAP { return true }
+        let single = code == K_EMPTY || code == K_NOT || code == K_ERROR0 || code == K_ERROR1 || code == K_GETPATH ||
+                     (code >= K_INPUT && code != K_INPUTS && code < K_MAP) || code >= K_ADD
+        if !single { return false }
+        for x in nodes[n].list {
+            if !one[x] { return false }
+        }
+        return true
+    }
+    return false
+}
+
+// Whether the arguments of call n for the $parameters of definition d have
+// one output at most: each of their outputs is a separate run of the body.
+fn valueArgsSingle(nodes: &[jq_parse.Node], one: &[]bool, d: int, n: int): bool {
+    for j in 0..nodes[d].op {
+        if startsWith(nodes[d].names[j], "$") && !one[nodes[n].list[j]] { return false }
+    }
+    return true
+}
+
+// The output of n (one at most: ip.one[n]) for input v into out: ST_OK, or
+// ST_EMPTY when there is none, or the status that stopped it.
+fn eval1(ip: mut &Interp, n: int, env: int, v: &J, out: mut &J): int {
+    match simple(ip, n, env, v) {
+        Some(x) {
+            let old = replace(out, x)
+            return ST_OK
+        }
+        None {}
+    }
+    var got = false
+    var res = json.null()
+    let nul = json.null()
+    let st = eval(ip, n, env, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        res = x1.clone()
+        got = true
+        return ST_OK
+    })
+    if st != ST_OK { return st }
+    if !got { return ST_EMPTY }
+    let old = replace(out, res)
+    return ST_OK
+}
+
+// The zone strftime's %Z gives for jq's broken-down times (glibc's
+// tzname[0]): the name at the start of $TZ, else GMT. Zones from the tz
+// database (TZ=Europe/Paris or /etc/localtime) are not read.
+fn zoneName(): str {
+    match os.env("TZ") {
+        Some(tz) {
+            var i = 0
+            while i < len(tz) && ((tz[i] >= 'A' && tz[i] <= 'Z') || (tz[i] >= 'a' && tz[i] <= 'z')) { i += 1 }
+            if i >= 3 { return tz[0..i] }
+            return "GMT"
+        }
+        None { return "GMT" }
+    }
+}
+
+const MIN_NORMAL: float = 2.2250738585072014e-308
+
+// ---------------------------------------------------------------- natives
+
+// The builtins implemented here rather than in the jq prelude, by
+// "name/arity" (the arity jq programs call them with).
+const NATIVES: []str = [
+    "empty/0", "not/0", "path/1", "error/0", "error/1", "getpath/1", "select/1", "recurse/0", "recurse/1",
+    "first/1", "last/1", "limit/2", "nth/2", "isempty/1", "until/2", "while/2", "repeat/1", "range/1",
+    "range/2", "range/3", "input/0", "inputs/0", "debug/0", "stderr/0", "input_filename/0",
+    "input_line_number/0", "halt/0", "halt_error/1", "env/0", "builtins/0", "now/0", "get_search_list/0",
+    "get_prog_origin/0", "get_jq_origin/0", "modulemeta/0", "map/1", "add/0",
+    // value builtins of the input only
+    "length/0", "utf8bytelength/0", "type/0", "keys/0", "keys_unsorted/0", "tostring/0", "tonumber/0",
+    "tojson/0", "fromjson/0", "explode/0", "implode/0", "ascii_downcase/0", "ascii_upcase/0", "sort/0",
+    "min/0", "max/0", "infinite/0", "nan/0", "isinfinite/0", "isnan/0", "isnormal/0", "mktime/0",
+    "gmtime/0", "localtime/0", "frexp/0", "modf/0", "lgamma_r/0", "to_entries/0",
+    // value builtins with arguments (codes from K_HAS)
+    "has/1", "contains/1", "startswith/1", "endswith/1", "ltrimstr/1", "rtrimstr/1", "split/1",
+    "_strindices/1", "setpath/2", "delpaths/1", "format/1", "strptime/1", "strftime/1", "strflocaltime/1",
+    "_sort_by_impl/1", "_group_by_impl/1", "_min_by_impl/1", "_max_by_impl/1", "_match_impl/3", "fma/3",
+    "join/1"
+]
+
+const K_EMPTY = 0
+const K_NOT = 1
+const K_PATH = 2
+const K_ERROR0 = 3
+const K_ERROR1 = 4
+const K_GETPATH = 5
+const K_SELECT = 6
+const K_RECURSE0 = 7
+const K_RECURSE1 = 8
+const K_FIRST = 9
+const K_LAST = 10
+const K_LIMIT = 11
+const K_NTH = 12
+const K_ISEMPTY = 13
+const K_UNTIL = 14
+const K_WHILE = 15
+const K_REPEAT = 16
+const K_RANGE1 = 17
+const K_RANGE2 = 18
+const K_RANGE3 = 19
+const K_INPUT = 20
+const K_INPUTS = 21
+const K_DEBUG = 22
+const K_STDERR = 23
+const K_INPUT_FILENAME = 24
+const K_INPUT_LINE = 25
+const K_HALT = 26
+const K_HALT_ERROR = 27
+const K_ENV = 28
+const K_BUILTINS = 29
+const K_NOW = 30
+const K_SEARCH_LIST = 31
+const K_PROG_ORIGIN = 32
+const K_JQ_ORIGIN = 33
+const K_MODULEMETA = 34
+const K_MAP = 35
+const K_ADD = 36
+const K_LENGTH = 37
+const K_UTF8LEN = 38
+const K_TYPE = 39
+const K_KEYS = 40
+const K_KEYS_UNSORTED = 41
+const K_TOSTRING = 42
+const K_TONUMBER = 43
+const K_TOJSON = 44
+const K_FROMJSON = 45
+const K_EXPLODE = 46
+const K_IMPLODE = 47
+const K_DOWNCASE = 48
+const K_UPCASE = 49
+const K_SORT = 50
+const K_MIN = 51
+const K_MAX = 52
+const K_INFINITE = 53
+const K_NAN = 54
+const K_ISINFINITE = 55
+const K_ISNAN = 56
+const K_ISNORMAL = 57
+const K_MKTIME = 58
+const K_GMTIME = 59
+const K_LOCALTIME = 60
+const K_FREXP = 61
+const K_MODF = 62
+const K_LGAMMA_R = 63
+const K_TO_ENTRIES = 64
+
+const K_HAS = 1000
+const K_CONTAINS = 1001
+const K_STARTSWITH = 1002
+const K_ENDSWITH = 1003
+const K_LTRIMSTR = 1004
+const K_RTRIMSTR = 1005
+const K_SPLIT1 = 1006
+const K_STRINDICES = 1007
+const K_SETPATH = 1008
+const K_DELPATHS = 1009
+const K_FORMAT = 1010
+const K_STRPTIME = 1011
+const K_STRFTIME = 1012
+const K_STRFLOCALTIME = 1013
+const K_SORT_BY_IMPL = 1014
+const K_GROUP_BY_IMPL = 1015
+const K_MIN_BY_IMPL = 1016
+const K_MAX_BY_IMPL = 1017
+const K_MATCH_IMPL = 1018
+const K_FMA = 1019
+const K_JOIN = 1020
+const K_MATH1 = 2000       // + the index in MATH1
+const K_MATH2 = 3000       // + the index in MATH2
+const K_NONE = -1
+
+const MATH1: []str = ["floor", "sqrt", "ceil", "round", "fabs", "trunc", "rint", "nearbyint", "sin", "cos", "tan",
+    "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "exp", "exp2", "exp10", "pow10",
+    "expm1", "log", "log2", "log10", "log1p", "logb", "cbrt", "erf", "erfc", "gamma", "lgamma", "tgamma",
+    "significand", "j0", "j1", "y0", "y1"]
+const MATH2: []str = ["pow", "atan2", "fmod", "hypot", "copysign", "drem", "remainder", "fdim", "fmax", "fmin",
+    "ldexp", "scalb", "scalbln", "nextafter", "nexttoward", "jn", "yn"]
+
+// The keys of every native builtin, for the parser.
+pub fn nativeKeys(): []str {
+    var out: []str = []
+    for i in 0..len(NATIVES) {
+        if codeOf(NATIVES[i]) != K_NONE { append(mut &out, NATIVES[i]) }
+    }
+    for m in MATH1 { append(mut &out, m + "/0") }
+    for m in MATH2 { append(mut &out, m + "/2") }
+    return out
+}
+
+fn codeOf(key: str): int {
+    for i in 0..len(MATH1) {
+        if key == MATH1[i] + "/0" { return K_MATH1 + i }
+    }
+    for i in 0..len(MATH2) {
+        if key == MATH2[i] + "/2" { return K_MATH2 + i }
+    }
+    if key == "has/1" { return K_HAS }
+    if key == "contains/1" { return K_CONTAINS }
+    if key == "startswith/1" { return K_STARTSWITH }
+    if key == "endswith/1" { return K_ENDSWITH }
+    if key == "ltrimstr/1" { return K_LTRIMSTR }
+    if key == "rtrimstr/1" { return K_RTRIMSTR }
+    if key == "split/1" { return K_SPLIT1 }
+    if key == "_strindices/1" { return K_STRINDICES }
+    if key == "setpath/2" { return K_SETPATH }
+    if key == "delpaths/1" { return K_DELPATHS }
+    if key == "format/1" { return K_FORMAT }
+    if key == "strptime/1" { return K_STRPTIME }
+    if key == "strftime/1" { return K_STRFTIME }
+    if key == "strflocaltime/1" { return K_STRFLOCALTIME }
+    if key == "_sort_by_impl/1" { return K_SORT_BY_IMPL }
+    if key == "_group_by_impl/1" { return K_GROUP_BY_IMPL }
+    if key == "_min_by_impl/1" { return K_MIN_BY_IMPL }
+    if key == "_max_by_impl/1" { return K_MAX_BY_IMPL }
+    if key == "_match_impl/3" { return K_MATCH_IMPL }
+    if key == "fma/3" { return K_FMA }
+    if key == "join/1" { return K_JOIN }
+    // the codes below K_HAS are the index in NATIVES
+    for i in 0..K_TO_ENTRIES + 1 {
+        if NATIVES[i] == key { return i }
+    }
+    return K_NONE
+}
+
+// ---------------------------------------------------------------- frames
+
+fn pushFrame(ip: mut &Interp, parent: int, kind: int, node: int, env: int, value: J): int {
+    append(mut &ip.frames, Frame{parent: parent, kind: kind, node: node, env: env, value: value})
+    return len(ip.frames) - 1
+}
+
+fn popTo(ip: mut &Interp, mark: int) {
+    while len(ip.frames) > mark { let f = pop(mut &ip.frames) }
+}
+
+fn walkUp(ip: &Interp, env: int, hops: int): int {
+    var f = env
+    for i in 0..hops { f = ip.frames[f].parent }
+    return f
+}
+
+pub fn fail(ip: mut &Interp, msg: str): int {
+    ip.err = json.string(msg)
+    return ST_ERR
+}
+
+fn failWith(ip: mut &Interp, r: Result[J, str]): int {
+    match r {
+        Err(e) { return fail(ip, e) }
+        Ok(x) { return ST_OK }
+    }
+}
+
+fn pathAdd(p: &J, k: J): J {
+    var q = p.clone()
+    q.push(k)
+    return q
+}
+
+// ---------------------------------------------------------------- simple values
+
+// The single output of n when it is cheap to know it without generators:
+// ., literals, variables, and .k / .[lit] of those. None otherwise (also when
+// it would be an error; the general path then reports it).
+fn simple(ip: &Interp, n: int, env: int, v: &J): Option[J] {
+    let kind = ip.nodes[n].kind
+    if kind == jq_parse.N_IDENT { return Some(v.clone()) }
+    if kind == jq_parse.N_LIT { return Some(ip.nodes[n].value.clone()) }
+    if kind == jq_parse.N_VAR {
+        if ip.nodes[n].op == 1 { return Some(ip.gvals[ip.nodes[n].a].clone()) }
+        let f = walkUp(ip, env, ip.nodes[n].a)
+        return Some(ip.frames[f].value.clone())
+    }
+    if kind == jq_parse.N_INDEX {
+        let kn = ip.nodes[n].b
+        if ip.nodes[kn].kind != jq_parse.N_LIT { return None }
+        match simple(ip, ip.nodes[n].a, env, v) {
+            Some(t) {
+                match jq_lib.index(&t, &ip.nodes[kn].value) {
+                    Ok(x) { return Some(x) }
+                    Err(e) { return None }
+                }
+            }
+            None { return None }
+        }
+    }
+    return None
+}
+
+// ---------------------------------------------------------------- eval
+
+// Calls k with each output of node n for input v (and its path vp when
+// tracking paths); returns ST_OK or the status that stopped it.
+pub fn eval(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let kind = ip.nodes[n].kind
+    let a = ip.nodes[n].a
+    let b = ip.nodes[n].b
+    let c = ip.nodes[n].c
+    let nul = json.null()
+    if kind == jq_parse.N_IDENT { return k(ip, v, vp) }
+    if kind == jq_parse.N_LIT {
+        let x = ip.nodes[n].value.clone()
+        return k(ip, &x, &nul)
+    }
+    if kind == jq_parse.N_PIPE {
+        if !tr && ip.one[a] {
+            var x = json.null()
+            let st = eval1(ip, a, env, v, mut &x)
+            if st == ST_EMPTY { return ST_OK }
+            if st != ST_OK { return st }
+            return eval(ip, b, env, &x, &nul, false, k)
+        }
+        return eval(ip, a, env, v, vp, tr, fn(ip1: mut &Interp, x1: &J, p1: &J): int { return eval(ip1, b, env, x1, p1, tr, k) })
+    }
+    if kind == jq_parse.N_INDEX || kind == jq_parse.N_SLICE { return evalIndex(ip, n, env, v, vp, tr, k) }
+    if kind == jq_parse.N_ITER {
+        if ip.nodes[a].kind == jq_parse.N_IDENT { return iterStep(ip, v, vp, tr, k) }
+        return eval(ip, a, env, v, vp, tr, fn(ip2: mut &Interp, x2: &J, p2: &J): int { return iterStep(ip2, x2, p2, tr, k) })
+    }
+    if kind == jq_parse.N_COMMA {
+        let st = eval(ip, a, env, v, vp, tr, k)
+        if st != ST_OK { return st }
+        return eval(ip, b, env, v, vp, tr, k)
+    }
+    if kind == jq_parse.N_VAR {
+        if ip.nodes[n].op == 1 {
+            let x = ip.gvals[a].clone()
+            return k(ip, &x, &nul)
+        }
+        let f = walkUp(ip, env, a)
+        let x = ip.frames[f].value.clone()
+        return k(ip, &x, &nul)
+    }
+    if kind == jq_parse.N_CALL { return evalCall(ip, n, env, v, vp, tr, k) }
+    if kind == jq_parse.N_BIN { return evalBin(ip, n, env, v, k) }
+    if kind == jq_parse.N_NEG {
+        return eval(ip, a, env, v, &nul, false, fn(ip3: mut &Interp, x3: &J, p3: &J): int {
+            match jq_lib.negate(x3) {
+                Ok(r) {
+                    let np = json.null()
+                    return k(ip3, &r, &np)
+                }
+                Err(e) { return fail(ip3, e) }
+            }
+        })
+    }
+    if kind == jq_parse.N_AND || kind == jq_parse.N_OR {
+        let isAnd = kind == jq_parse.N_AND
+        return eval(ip, a, env, v, &nul, false, fn(ip4: mut &Interp, x4: &J, p4: &J): int {
+            let t4 = jq_lib.truthy(x4)
+            if isAnd && !t4 { return k(ip4, &json.boolean(false), p4) }
+            if !isAnd && t4 { return k(ip4, &json.boolean(true), p4) }
+            return eval(ip4, b, env, v, p4, false, fn(ip5: mut &Interp, x5: &J, p5: &J): int {
+                return k(ip5, &json.boolean(jq_lib.truthy(x5)), p5)
+            })
+        })
+    }
+    if kind == jq_parse.N_ALT {
+        var anyTrue = false
+        let st = eval(ip, a, env, v, vp, tr, fn(ip6: mut &Interp, x6: &J, p6: &J): int {
+            if !jq_lib.truthy(x6) { return ST_OK }
+            anyTrue = true
+            return k(ip6, x6, p6)
+        })
+        if st != ST_OK || anyTrue { return st }
+        return eval(ip, b, env, v, vp, tr, k)
+    }
+    if kind == jq_parse.N_IF {
+        if ip.one[a] {
+            var cv = json.null()
+            let st = eval1(ip, a, env, v, mut &cv)
+            if st == ST_EMPTY { return ST_OK }
+            if st != ST_OK { return st }
+            if jq_lib.truthy(&cv) { return eval(ip, b, env, v, vp, tr, k) }
+            if c < 0 { return k(ip, v, vp) }
+            return eval(ip, c, env, v, vp, tr, k)
+        }
+        return eval(ip, a, env, v, &nul, false, fn(ip7: mut &Interp, x7: &J, p7: &J): int {
+            if jq_lib.truthy(x7) { return eval(ip7, b, env, v, vp, tr, k) }
+            if c < 0 { return k(ip7, v, vp) }
+            return eval(ip7, c, env, v, vp, tr, k)
+        })
+    }
+    if kind == jq_parse.N_TRY {
+        var down = false
+        let st = eval(ip, a, env, v, vp, tr, fn(ip8: mut &Interp, x8: &J, p8: &J): int {
+            let s8 = k(ip8, x8, p8)
+            if s8 == ST_ERR { down = true }
+            return s8
+        })
+        if st != ST_ERR || down { return st }
+        if b < 0 { return ST_OK }
+        let e = ip.err.clone()
+        return eval(ip, b, env, &e, &nul, false, k)
+    }
+    if kind == jq_parse.N_ARRAY {
+        var items: []J = []
+        if a >= 0 {
+            let st = eval(ip, a, env, v, &nul, false, fn(ip9: mut &Interp, x9: &J, p9: &J): int {
+                append(mut &items, x9.clone())
+                return ST_OK
+            })
+            if st != ST_OK { return st }
+        }
+        let arr = json.arrayOf(items)
+        return k(ip, &arr, &nul)
+    }
+    if kind == jq_parse.N_OBJECT {
+        let o = json.object()
+        return objectFrom(ip, n, 0, env, v, &o, k)
+    }
+    if kind == jq_parse.N_STR {
+        let cnt = len(ip.nodes[n].list)
+        var parts: []str = []
+        for i in 0..cnt { append(mut &parts, "") }
+        return strFrom(ip, n, cnt - 1, env, v, mut &parts, k)
+    }
+    if kind == jq_parse.N_FORMAT {
+        match jq_lib.format(ip.nodes[n].name, v) {
+            Ok(r) { return k(ip, &r, &nul) }
+            Err(e) { return fail(ip, e) }
+        }
+    }
+    if kind == jq_parse.N_RECURSE { return recurseAll(ip, v, vp, tr, k) }
+    if kind == jq_parse.N_AS {
+        if ip.one[a] {
+            var sv = json.null()
+            let st = eval1(ip, a, env, v, mut &sv)
+            if st == ST_EMPTY { return ST_OK }
+            if st != ST_OK { return st }
+            return asBody(ip, n, env, &sv, v, vp, tr, k)
+        }
+        return eval(ip, a, env, v, &nul, false, fn(ip10: mut &Interp, s10: &J, q10: &J): int {
+            return asBody(ip10, n, env, s10, v, vp, tr, k)
+        })
+    }
+    if kind == jq_parse.N_REDUCE || kind == jq_parse.N_FOREACH { return evalFold(ip, n, env, v, vp, tr, k) }
+    if kind == jq_parse.N_LABEL {
+        ip.labels += 1
+        let id = ip.labels
+        let mark = len(ip.frames)
+        let f = pushFrame(ip, env, F_LABEL, id, -1, json.null())
+        let st = eval(ip, a, f, v, vp, tr, k)
+        popTo(ip, mark)
+        if st == ST_BREAK && ip.breakId == id { return ST_OK }
+        return st
+    }
+    if kind == jq_parse.N_BREAK {
+        let f = walkUp(ip, env, a)
+        ip.breakId = ip.frames[f].node
+        return ST_BREAK
+    }
+    if kind == jq_parse.N_DEF {
+        let mark = len(ip.frames)
+        let f = pushFrame(ip, env, F_DEF, n, -1, json.null())
+        let st = eval(ip, b, f, v, vp, tr, k)
+        popTo(ip, mark)
+        return st
+    }
+    if kind == jq_parse.N_ASSIGN { return evalAssign(ip, n, env, v, k) }
+    return fail(ip, "jq: internal error: node kind " + intToStr(kind))
+}
+
+fn evalIndex(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let kind = ip.nodes[n].kind
+    let a = ip.nodes[n].a
+    let b = ip.nodes[n].b
+    let c = ip.nodes[n].c
+    let nul = json.null()
+    if kind == jq_parse.N_INDEX {
+        if ip.nodes[b].kind == jq_parse.N_LIT {
+            let key = ip.nodes[b].value.clone()
+            if ip.nodes[a].kind == jq_parse.N_IDENT { return indexStep(ip, v, vp, &key, tr, k) }
+            return eval(ip, a, env, v, vp, tr, fn(ip1: mut &Interp, t1: &J, tp1: &J): int { return indexStep(ip1, t1, tp1, &key, tr, k) })
+        }
+        return eval(ip, b, env, v, &nul, false, fn(ip2: mut &Interp, key2: &J, kp2: &J): int {
+            return eval(ip2, a, env, v, vp, tr, fn(ip3: mut &Interp, t3: &J, tp3: &J): int { return indexStep(ip3, t3, tp3, key2, tr, k) })
+        })
+    }
+    // a slice: from outer, to inner, then the target
+    return sliceBound(ip, b, env, v, fn(ip4: mut &Interp, from4: &J): int {
+        return sliceBound(ip4, c, env, v, fn(ip5: mut &Interp, to5: &J): int {
+            var key = json.object()
+            key.set("start", from4.clone())
+            key.set("end", to5.clone())
+            return eval(ip5, a, env, v, vp, tr, fn(ip6: mut &Interp, t6: &J, tp6: &J): int { return indexStep(ip6, t6, tp6, &key, tr, k) })
+        })
+    })
+}
+
+fn sliceBound(ip: mut &Interp, n: int, env: int, v: &J, k: &fn(mut &Interp, &J): int): int {
+    let nul = json.null()
+    if n < 0 { return k(ip, &nul) }
+    return eval(ip, n, env, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int { return k(ip1, x1) })
+}
+
+fn indexStep(ip: mut &Interp, t: &J, tp: &J, key: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    if tr && tp.isNull() {
+        return fail(ip, "Invalid path expression near attempt to access element " + jq_lib.dumpTrunc(key, 15) +
+                        " of " + jq_lib.dumpTrunc(t, 30))
+    }
+    match jq_lib.index(t, key) {
+        Ok(x) {
+            if tr {
+                let np = pathAdd(tp, key.clone())
+                return k(ip, &x, &np)
+            }
+            return k(ip, &x, tp)
+        }
+        Err(e) { return fail(ip, e) }
+    }
+}
+
+fn iterStep(ip: mut &Interp, t: &J, tp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    if tr && tp.isNull() { return fail(ip, "Invalid path expression near attempt to iterate through " + jq_lib.dumpTrunc(t, 30)) }
+    if t.isArray() {
+        let items = t.items()
+        for i in 0..len(items) {
+            var st = ST_OK
+            if tr {
+                let np = pathAdd(tp, json.integer(i))
+                st = k(ip, &items[i], &np)
+            } else {
+                st = k(ip, &items[i], tp)
+            }
+            if st != ST_OK { return st }
+        }
+        return ST_OK
+    }
+    if t.isObject() {
+        let n = t.size()
+        for i in 0..n {
+            let x = t.valueAt(i)
+            var st = ST_OK
+            if tr {
+                let np = pathAdd(tp, json.string(t.keyAt(i)))
+                st = k(ip, &x, &np)
+            } else {
+                st = k(ip, &x, tp)
+            }
+            if st != ST_OK { return st }
+        }
+        return ST_OK
+    }
+    return fail(ip, "Cannot iterate over " + jq_lib.typeName(t) + " (" + jq_lib.dumpTrunc(t, 15) + ")")
+}
+
+// .. : the input, then recursively everything in it, depth first.
+fn recurseAll(ip: mut &Interp, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let st = k(ip, v, vp)
+    if st != ST_OK { return st }
+    if v.isArray() {
+        let items = v.items()
+        for i in 0..len(items) {
+            var s = ST_OK
+            if tr {
+                let np = pathAdd(vp, json.integer(i))
+                s = recurseAll(ip, &items[i], &np, tr, k)
+            } else {
+                s = recurseAll(ip, &items[i], vp, tr, k)
+            }
+            if s != ST_OK { return s }
+        }
+    } else if v.isObject() {
+        for i in 0..v.size() {
+            let x = v.valueAt(i)
+            var s = ST_OK
+            if tr {
+                let np = pathAdd(vp, json.string(v.keyAt(i)))
+                s = recurseAll(ip, &x, &np, tr, k)
+            } else {
+                s = recurseAll(ip, &x, vp, tr, k)
+            }
+            if s != ST_OK { return s }
+        }
+    }
+    return ST_OK
+}
+
+fn arith(op: int, l: &J, r: &J): Result[J, str] {
+    if op == jq_parse.OP_ADD { return jq_lib.add(l, r) }
+    if op == jq_parse.OP_SUB { return jq_lib.sub(l, r) }
+    if op == jq_parse.OP_MUL { return jq_lib.mul(l, r) }
+    if op == jq_parse.OP_DIV { return jq_lib.div(l, r) }
+    if op == jq_parse.OP_MOD { return jq_lib.modulo(l, r) }
+    return Ok(json.boolean(jq_lib.compare(op, l, r)))
+}
+
+fn binStep(ip: mut &Interp, op: int, l: &J, r: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    match arith(op, l, r) {
+        Ok(x) { return k(ip, &x, &nul) }
+        Err(e) { return fail(ip, e) }
+    }
+}
+
+// a op b: b is the outer loop, as in jq.
+fn evalBin(ip: mut &Interp, n: int, env: int, v: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    let a = ip.nodes[n].a
+    let b = ip.nodes[n].b
+    let op = ip.nodes[n].op
+    let nul = json.null()
+    if ip.one[b] {
+        var r = json.null()
+        let st = eval1(ip, b, env, v, mut &r)
+        if st == ST_EMPTY { return ST_OK }
+        if st != ST_OK { return st }
+        if ip.one[a] {
+            var l = json.null()
+            let st2 = eval1(ip, a, env, v, mut &l)
+            if st2 == ST_EMPTY { return ST_OK }
+            if st2 != ST_OK { return st2 }
+            return binStep(ip, op, &l, &r, k)
+        }
+        return eval(ip, a, env, v, &nul, false, fn(ip0: mut &Interp, l0: &J, q0: &J): int { return binStep(ip0, op, l0, &r, k) })
+    }
+    return eval(ip, b, env, v, &nul, false, fn(ip1: mut &Interp, r1: &J, q1: &J): int {
+        return eval(ip1, a, env, v, q1, false, fn(ip2: mut &Interp, l2: &J, q2: &J): int { return binStep(ip2, op, l2, r1, k) })
+    })
+}
+
+// {k: v, ...}: the first entry is the outer loop, its key outside its value.
+fn objectFrom(ip: mut &Interp, n: int, i: int, env: int, v: &J, acc: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    if i >= len(ip.nodes[n].list) { return k(ip, acc, &nul) }
+    let kn = ip.nodes[n].list[i]
+    let vn = ip.nodes[n].list[i + 1]
+    return eval(ip, kn, env, v, &nul, false, fn(ip1: mut &Interp, key1: &J, p1: &J): int {
+        if !jq_lib.isStr(key1) {
+            return fail(ip1, "Cannot use " + jq_lib.typeName(key1) + " (" + jq_lib.dumpTrunc(key1, 15) + ") as object key")
+        }
+        return eval(ip1, vn, env, v, p1, false, fn(ip2: mut &Interp, val2: &J, p2: &J): int {
+            var o = acc.clone()
+            o.set(jq_lib.strVal(key1), val2.clone())
+            return objectFrom(ip2, n, i + 2, env, v, &o, k)
+        })
+    })
+}
+
+// "...\(a)...\(b)": the last interpolation is the outer loop.
+fn strFrom(ip: mut &Interp, n: int, i: int, env: int, v: &J, parts: mut &[]str, k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    if i < 0 {
+        var b = newStrBuf()
+        for p in parts { b.add(p) }
+        let s = json.string(b.toStr())
+        return k(ip, &s, &nul)
+    }
+    let pn = ip.nodes[n].list[i]
+    if ip.nodes[pn].kind == jq_parse.N_LIT && ip.nodes[pn].op == 1 {
+        parts[i] = jq_lib.strVal(&ip.nodes[pn].value)
+        return strFrom(ip, n, i - 1, env, v, parts, k)
+    }
+    let fmt = ip.nodes[n].name
+    return eval(ip, pn, env, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        if len(fmt) == 0 {
+            parts[i] = jq_lib.tostring(x1)
+        } else {
+            match jq_lib.format(fmt, x1) {
+                Ok(s) { parts[i] = jq_lib.strVal(&s) }
+                Err(e) { return fail(ip1, e) }
+            }
+        }
+        return strFrom(ip1, n, i - 1, env, v, parts, k)
+    })
+}
+
+// ---------------------------------------------------------------- patterns
+
+fn nameIndex(ip: &Interp, n: int, name: str): int {
+    for i in 0..len(ip.nodes[n].names) {
+        if ip.nodes[n].names[i] == name { return i }
+    }
+    return 0
+}
+
+// Destructures val by pattern pat into binding sets (one per combination of
+// the outputs of key expressions), appended to out.
+fn destructure(ip: mut &Interp, owner: int, pat: int, env: int, val: &J, cur: &[]J, out: mut &[][]J): int {
+    let kind = ip.nodes[pat].kind
+    if kind == jq_parse.P_VAR {
+        let i = nameIndex(ip, owner, ip.nodes[pat].name)
+        var set: []J = []
+        for x in cur { append(mut &set, x.clone()) }
+        set[i] = val.clone()
+        append(out, set)
+        return ST_OK
+    }
+    var sets: [][]J = []
+    var first: []J = []
+    for x in cur { append(mut &first, x.clone()) }
+    append(mut &sets, first)
+    let cnt = len(ip.nodes[pat].list)
+    for e in 0..cnt {
+        let en = ip.nodes[pat].list[e]
+        var next: [][]J = []
+        if kind == jq_parse.P_ARR {
+            match jq_lib.index(val, &json.integer(e)) {
+                Ok(item) {
+                    for s in sets {
+                        let st = destructure(ip, owner, en, env, &item, &s, mut &next)
+                        if st != ST_OK { return st }
+                    }
+                }
+                Err(m) { return fail(ip, m) }
+            }
+        } else {
+            // an object entry: its keys may be a generator
+            let keyNode = ip.nodes[en].a
+            let sub = ip.nodes[en].b
+            let bind = ip.nodes[en].name
+            var keys: []J = []
+            let nul = json.null()
+            let st = eval(ip, keyNode, env, val, &nul, false, fn(ip1: mut &Interp, k1: &J, p1: &J): int {
+                append(mut &keys, k1.clone())
+                return ST_OK
+            })
+            if st != ST_OK { return st }
+            for key in keys {
+                if !jq_lib.isStr(&key) {
+                    return fail(ip, "Cannot index " + jq_lib.typeName(val) + " with " + jq_lib.typeName(&key))
+                }
+                match jq_lib.index(val, &key) {
+                    Ok(item) {
+                        for s in sets {
+                            var s2: []J = []
+                            for x in s { append(mut &s2, x.clone()) }
+                            if len(bind) > 0 { s2[nameIndex(ip, owner, bind)] = item.clone() }
+                            if sub >= 0 {
+                                let st2 = destructure(ip, owner, sub, env, &item, &s2, mut &next)
+                                if st2 != ST_OK { return st2 }
+                            } else {
+                                append(mut &next, s2)
+                            }
+                        }
+                    }
+                    Err(m) { return fail(ip, m) }
+                }
+            }
+        }
+        sets = next
+    }
+    for s in sets {
+        var s2: []J = []
+        for x in s { append(mut &s2, x.clone()) }
+        append(out, s2)
+    }
+    return ST_OK
+}
+
+// The binding sets of value s for the patterns of node n (alternative alt).
+fn bindings(ip: mut &Interp, n: int, alt: int, env: int, s: &J, out: mut &[][]J): int {
+    var init: []J = []
+    for i in 0..len(ip.nodes[n].names) { append(mut &init, json.null()) }
+    return destructure(ip, n, ip.nodes[n].list[alt], env, s, &init, out)
+}
+
+fn pushSet(ip: mut &Interp, env: int, set: &[]J): int {
+    var f = env
+    for x in set { f = pushFrame(ip, f, F_VAR, -1, -1, x.clone()) }
+    return f
+}
+
+fn singleVar(ip: &Interp, n: int): bool {
+    return len(ip.nodes[n].list) == 1 && ip.nodes[ip.nodes[n].list[0]].kind == jq_parse.P_VAR
+}
+
+// The body of `src as patterns | body` for one output s of src.
+fn asBody(ip: mut &Interp, n: int, env: int, s: &J, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let body = ip.nodes[n].b
+    if singleVar(ip, n) {
+        let mark = len(ip.frames)
+        let f = pushFrame(ip, env, F_VAR, -1, -1, s.clone())
+        let st = eval(ip, body, f, v, vp, tr, k)
+        popTo(ip, mark)
+        return st
+    }
+    let alts = len(ip.nodes[n].list)
+    for alt in 0..alts {
+        let last = alt == alts - 1
+        var sets: [][]J = []
+        let st = bindings(ip, n, alt, env, s, mut &sets)
+        if st == ST_ERR && !last { continue }
+        if st != ST_OK { return st }
+        var failed = false
+        for set in sets {
+            let mark = len(ip.frames)
+            let f = pushSet(ip, env, &set)
+            var down = false
+            let st2 = eval(ip, body, f, v, vp, tr, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+                let s1 = k(ip1, x1, p1)
+                if s1 == ST_ERR { down = true }
+                return s1
+            })
+            popTo(ip, mark)
+            if st2 == ST_ERR && !down && !last {
+                failed = true
+                break
+            }
+            if st2 != ST_OK { return st2 }
+        }
+        if !failed { return ST_OK }
+    }
+    return ST_OK
+}
+
+// Calls body with the frame of each binding set of s (the first
+// alternative that destructures).
+fn bindEach(ip: mut &Interp, n: int, env: int, s: &J, body: &fn(mut &Interp, int): int): int {
+    if singleVar(ip, n) {
+        let mark = len(ip.frames)
+        let f = pushFrame(ip, env, F_VAR, -1, -1, s.clone())
+        let st = body(ip, f)
+        popTo(ip, mark)
+        return st
+    }
+    let alts = len(ip.nodes[n].list)
+    for alt in 0..alts {
+        var sets: [][]J = []
+        let st = bindings(ip, n, alt, env, s, mut &sets)
+        if st == ST_ERR && alt < alts - 1 { continue }
+        if st != ST_OK { return st }
+        for set in sets {
+            let mark = len(ip.frames)
+            let f = pushSet(ip, env, &set)
+            let st2 = body(ip, f)
+            popTo(ip, mark)
+            if st2 != ST_OK { return st2 }
+        }
+        return ST_OK
+    }
+    return ST_OK
+}
+
+// ---------------------------------------------------------------- reduce, foreach
+
+// The updates of reduce and foreach take their state by value, so an
+// unshared state is changed in place (. + [$x], .[$k] = $v, .[$k] += 1).
+fn evalFold(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let src = ip.nodes[n].a
+    let init = ip.nodes[n].b
+    let upd = ip.nodes[n].c
+    let extract = ip.nodes[n].d
+    let isReduce = ip.nodes[n].kind == jq_parse.N_REDUCE
+    let nul = json.null()
+    return eval(ip, init, env, v, vp, tr, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        var state = x1.clone()
+        var sp = p1.clone()
+        let st = eval(ip1, src, env, v, &nul, false, fn(ip2: mut &Interp, s2: &J, q2: &J): int {
+            return bindEach(ip2, n, env, s2, fn(ip3: mut &Interp, env3: int): int {
+                if isReduce {
+                    var next = json.null()
+                    var np = json.null()
+                    let cur = replace(mut &state, json.null())
+                    let st3 = updateOwned(ip3, upd, env3, cur, &sp, tr, fn(ip4: mut &Interp, u4: J, up4: &J): int {
+                        next = u4
+                        np = up4.clone()
+                        return ST_OK
+                    })
+                    state = next
+                    sp = np
+                    return st3
+                }
+                // foreach: every output of the update is emitted; the last is the state
+                var next = json.null()
+                var np = json.null()
+                var got = false
+                let cur = replace(mut &state, json.null())
+                let st3 = updateOwned(ip3, upd, env3, cur, &sp, tr, fn(ip5: mut &Interp, u5: J, up5: &J): int {
+                    next = u5
+                    np = up5.clone()
+                    got = true
+                    if extract < 0 { return k(ip5, &next, &np) }
+                    return eval(ip5, extract, env3, &next, &np, tr, k)
+                })
+                state = next
+                sp = np
+                return st3
+            })
+        })
+        if st != ST_OK { return st }
+        if isReduce { return k(ip1, &state, &sp) }
+        return ST_OK
+    })
+}
+
+// Each output of upd for an owned input, owned.
+fn updateOwned(ip: mut &Interp, upd: int, env: int, v: J, vp: &J, tr: bool, k: &fn(mut &Interp, J, &J): int): int {
+    let kind = ip.nodes[upd].kind
+    let nul = json.null()
+    if !tr && kind == jq_parse.N_BIN && ip.nodes[upd].op == jq_parse.OP_ADD && ip.nodes[ip.nodes[upd].a].kind == jq_parse.N_IDENT {
+        var rs: []J = []
+        let st = eval(ip, ip.nodes[upd].b, env, &v, &nul, false, fn(ip1: mut &Interp, r1: &J, q1: &J): int {
+            append(mut &rs, r1.clone())
+            return ST_OK
+        })
+        if st != ST_OK { return st }
+        if len(rs) == 0 { return ST_OK }
+        for i in 0..len(rs) - 1 {
+            match jq_lib.addOwned(v.clone(), &rs[i]) {
+                Ok(x) {
+                    let s = k(ip, x, &nul)
+                    if s != ST_OK { return s }
+                }
+                Err(e) { return fail(ip, e) }
+            }
+        }
+        match jq_lib.addOwned(v, &rs[len(rs) - 1]) {
+            Ok(x) { return k(ip, x, &nul) }
+            Err(e) { return fail(ip, e) }
+        }
+    }
+    if !tr && kind == jq_parse.N_ASSIGN { return assignOwned(ip, upd, env, v, k) }
+    if !tr && kind == jq_parse.N_PIPE {
+        let b = ip.nodes[upd].b
+        return updateOwned(ip, ip.nodes[upd].a, env, v, vp, tr, fn(ip2: mut &Interp, x2: J, p2: &J): int {
+            return updateOwned(ip2, b, env, x2, p2, tr, k)
+        })
+    }
+    return eval(ip, upd, env, &v, vp, tr, fn(ip3: mut &Interp, x3: &J, p3: &J): int { return k(ip3, x3.clone(), p3) })
+}
+
+// ---------------------------------------------------------------- assignments
+
+fn evalAssign(ip: mut &Interp, n: int, env: int, v: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    return assignOwned(ip, n, env, v.clone(), fn(ip1: mut &Interp, x1: J, p1: &J): int { return k(ip1, &x1, p1) })
+}
+
+// The paths of lhs in root.
+fn collectPaths(ip: mut &Interp, lhs: int, env: int, root: &J, out: mut &[]J): int {
+    let empty = json.emptyArray()
+    return eval(ip, lhs, env, root, &empty, true, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        if p1.isNull() { return fail(ip1, "Invalid path expression with result " + jq_lib.dumpTrunc(x1, 30)) }
+        append(out, p1.clone())
+        return ST_OK
+    })
+}
+
+// lhs = rhs, lhs |= f, lhs op= rhs, lhs //= rhs, consuming the input.
+fn assignOwned(ip: mut &Interp, n: int, env: int, v: J, k: &fn(mut &Interp, J, &J): int): int {
+    let op = ip.nodes[n].op
+    let lhs = ip.nodes[n].a
+    let rhs = ip.nodes[n].b
+    let nul = json.null()
+    if op == jq_parse.AS_UPDATE { return modify(ip, lhs, env, v, rhs, 0, &nul, k) }
+    // the right side is evaluated against the input, as the outer loop
+    var xs: []J = []
+    let st = eval(ip, rhs, env, &v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        append(mut &xs, x1.clone())
+        return ST_OK
+    })
+    if st != ST_OK { return st }
+    if len(xs) == 0 { return ST_OK }
+    for i in 0..len(xs) - 1 {
+        let s = assignOne(ip, n, op, lhs, env, v.clone(), &xs[i], k)
+        if s != ST_OK { return s }
+    }
+    return assignOne(ip, n, op, lhs, env, v, &xs[len(xs) - 1], k)
+}
+
+fn assignOne(ip: mut &Interp, n: int, op: int, lhs: int, env: int, v: J, x: &J, k: &fn(mut &Interp, J, &J): int): int {
+    let nul = json.null()
+    if op == jq_parse.AS_SET {
+        var paths: []J = []
+        let st = collectPaths(ip, lhs, env, &v, mut &paths)
+        if st != ST_OK { return st }
+        var root = v
+        for p in paths {
+            match jq_lib.setpath(root, &p, x.clone()) {
+                Ok(r) { root = r }
+                Err(e) { return fail(ip, e) }
+            }
+        }
+        return k(ip, root, &nul)
+    }
+    // arithmetic and //=: lhs |= . op $x
+    let mop = if op == jq_parse.AS_ALT { -1 } else { op - jq_parse.AS_ARITH }
+    return modify(ip, lhs, env, v, -1, mop, x, k)
+}
+
+// _modify(paths; update): each path's value replaced by the first output of
+// the update (upd, or `. op x` when upd is -1; op -1 is //); paths whose
+// update is empty are deleted at the end.
+fn modify(ip: mut &Interp, lhs: int, env: int, v: J, upd: int, op: int, x: &J, k: &fn(mut &Interp, J, &J): int): int {
+    let nul = json.null()
+    var paths: []J = []
+    let st = collectPaths(ip, lhs, env, &v, mut &paths)
+    if st != ST_OK { return st }
+    var root = v
+    var dels: []J = []
+    for p in paths {
+        var cur = json.null()
+        match jq_lib.getpath(&root, &p) {
+            Ok(g) { cur = g }
+            Err(e) { return fail(ip, e) }
+        }
+        var got = false
+        var nv = json.null()
+        if upd < 0 {
+            got = true
+            if op < 0 {
+                nv = if jq_lib.truthy(&cur) { cur } else { x.clone() }
+            } else {
+                match arith(op, &cur, x) {
+                    Ok(r) { nv = r }
+                    Err(e) { return fail(ip, e) }
+                }
+            }
+        } else {
+            ip.labels += 1
+            let id = ip.labels
+            let s = eval(ip, upd, env, &cur, &nul, false, fn(ip1: mut &Interp, u1: &J, q1: &J): int {
+                nv = u1.clone()
+                got = true
+                ip1.breakId = id
+                return ST_BREAK
+            })
+            if s != ST_OK && !(s == ST_BREAK && ip.breakId == id) { return s }
+        }
+        if got {
+            match jq_lib.setpath(root, &p, nv) {
+                Ok(r) { root = r }
+                Err(e) { return fail(ip, e) }
+            }
+        } else {
+            append(mut &dels, p.clone())
+        }
+    }
+    if len(dels) > 0 {
+        match jq_lib.delpaths(root, &json.arrayOf(dels)) {
+            Ok(r) { root = r }
+            Err(e) { return fail(ip, e) }
+        }
+    }
+    return k(ip, root, &nul)
+}
+
+// ---------------------------------------------------------------- calls
+
+fn evalCall(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let op = ip.nodes[n].op
+    if op == jq_parse.C_NATIVE { return callNative(ip, n, env, v, vp, tr, k) }
+    if op == jq_parse.C_GLOBAL { return callDef(ip, ip.nodes[n].a, -1, n, env, v, vp, tr, k) }
+    let f = walkUp(ip, env, ip.nodes[n].a)
+    if ip.frames[f].kind == F_CLOSURE {
+        let body = ip.frames[f].node
+        let cenv = ip.frames[f].env
+        if !tr && ip.one[body] {
+            var x = json.null()
+            let st = eval1(ip, body, cenv, v, mut &x)
+            if st == ST_EMPTY { return ST_OK }
+            if st != ST_OK { return st }
+            let nul = json.null()
+            return k(ip, &x, &nul)
+        }
+        return eval(ip, body, cenv, v, vp, tr, k)
+    }
+    return callDef(ip, ip.frames[f].node, f, n, env, v, vp, tr, k)
+}
+
+// Calls definition d (its frame base, -1 for a global) from call node n in
+// env cenv: a closure frame per parameter, then a value frame per $param
+// (the first $param the outer loop).
+fn callDef(ip: mut &Interp, d: int, base: int, n: int, cenv: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let arity = ip.nodes[d].op
+    let body = ip.nodes[d].a
+    if !tr && ip.one[body] && valueArgsSingle(&ip.nodes, &ip.one, d, n) {
+        // run the body to its end, its frames popped, then go on
+        var got = false
+        var res = json.null()
+        let nul = json.null()
+        let st = callDefWith(ip, d, base, n, cenv, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+            res = x1.clone()
+            got = true
+            return ST_OK
+        })
+        if st != ST_OK || !got { return st }
+        return k(ip, &res, &nul)
+    }
+    return callDefWith(ip, d, base, n, cenv, v, vp, tr, k)
+}
+
+fn callDefWith(ip: mut &Interp, d: int, base: int, n: int, cenv: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let arity = ip.nodes[d].op
+    let body = ip.nodes[d].a
+    if arity == 0 { return eval(ip, body, base, v, vp, tr, k) }
+    let mark = len(ip.frames)
+    var f = base
+    for i in 0..arity { f = pushFrame(ip, f, F_CLOSURE, ip.nodes[n].list[i], cenv, json.null()) }
+    let st = bindParams(ip, d, 0, f, n, cenv, v, vp, tr, k)
+    popTo(ip, mark)
+    return st
+}
+
+fn bindParams(ip: mut &Interp, d: int, i: int, f: int, n: int, cenv: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let arity = ip.nodes[d].op
+    var j = i
+    while j < arity && !startsWith(ip.nodes[d].names[j], "$") { j += 1 }
+    if j >= arity { return eval(ip, ip.nodes[d].a, f, v, vp, tr, k) }
+    let nul = json.null()
+    let arg = ip.nodes[n].list[j]
+    return eval(ip, arg, cenv, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int {
+        let mark = len(ip1.frames)
+        let f2 = pushFrame(ip1, f, F_VAR, -1, -1, x1.clone())
+        let st = bindParams(ip1, d, j + 1, f2, n, cenv, v, vp, tr, k)
+        popTo(ip1, mark)
+        return st
+    })
+}
+
+fn arg(ip: &Interp, n: int, i: int): int { return ip.nodes[n].list[i] }
+
+// The outputs of an argument for input v, as values.
+fn argVals(ip: mut &Interp, n: int, i: int, env: int, v: &J, k: &fn(mut &Interp, &J): int): int {
+    let a = ip.nodes[n].list[i]
+    if ip.one[a] {
+        var x = json.null()
+        let st = eval1(ip, a, env, v, mut &x)
+        if st == ST_EMPTY { return ST_OK }
+        if st != ST_OK { return st }
+        return k(ip, &x)
+    }
+    let nul = json.null()
+    return eval(ip, a, env, v, &nul, false, fn(ip1: mut &Interp, x1: &J, p1: &J): int { return k(ip1, x1) })
+}
+
+fn emit(ip: mut &Interp, r: Result[J, str], k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    match r {
+        Ok(x) { return k(ip, &x, &nul) }
+        Err(e) { return fail(ip, e) }
+    }
+}
+
+fn callNative(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let code = ip.nodes[n].c
+    let nul = json.null()
+    let arity = len(ip.nodes[n].list)
+    if code >= K_MATH1 && code < K_MATH2 {
+        let name = MATH1[code - K_MATH1]
+        if !jq_lib.isNum(v) { return fail(ip, jq_lib.typeErr(v, "number required")) }
+        return emit(ip, Ok(jq_lib.num(jq_lib.math1(name, jq_lib.numVal(v)))), k)
+    }
+    if code >= K_MATH2 {
+        let name = MATH2[code - K_MATH2]
+        // the last argument is the outer loop, as for every C builtin
+        return argVals(ip, n, 1, env, v, fn(ip1: mut &Interp, y1: &J): int {
+            return argVals(ip1, n, 0, env, v, fn(ip2: mut &Interp, x2: &J): int {
+                if !jq_lib.isNum(x2) { return fail(ip2, jq_lib.typeErr(x2, "number required")) }
+                if !jq_lib.isNum(y1) { return fail(ip2, jq_lib.typeErr(y1, "number required")) }
+                return emit(ip2, Ok(jq_lib.num(jq_lib.math2(name, jq_lib.numVal(x2), jq_lib.numVal(y1)))), k)
+            })
+        })
+    }
+    if code >= K_HAS {
+        if arity == 1 {
+            return argVals(ip, n, 0, env, v, fn(ip3: mut &Interp, x3: &J): int {
+                return emit(ip3, value2(ip3, code, v, x3, &json.null(), &json.null()), k)
+            })
+        }
+        if arity == 2 {
+            return argVals(ip, n, 1, env, v, fn(ip4: mut &Interp, y4: &J): int {
+                return argVals(ip4, n, 0, env, v, fn(ip5: mut &Interp, x5: &J): int {
+                    return emit(ip5, value2(ip5, code, v, x5, y4, &json.null()), k)
+                })
+            })
+        }
+        return argVals(ip, n, 2, env, v, fn(ip6: mut &Interp, z6: &J): int {
+            return argVals(ip6, n, 1, env, v, fn(ip7: mut &Interp, y7: &J): int {
+                return argVals(ip7, n, 0, env, v, fn(ip8: mut &Interp, x8: &J): int {
+                    return emit(ip8, value2(ip8, code, v, x8, y7, z6), k)
+                })
+            })
+        })
+    }
+    if code >= K_LENGTH { return emit(ip, value1(ip, code, v), k) }
+    if code == K_EMPTY { return ST_OK }
+    if code == K_NOT { return k(ip, &json.boolean(!jq_lib.truthy(v)), &nul) }
+    if code == K_PATH {
+        let empty = json.emptyArray()
+        return eval(ip, arg(ip, n, 0), env, v, &empty, true, fn(ip9: mut &Interp, x9: &J, p9: &J): int {
+            if p9.isNull() { return fail(ip9, "Invalid path expression with result " + jq_lib.dumpTrunc(x9, 30)) }
+            let np = json.null()
+            return k(ip9, p9, &np)
+        })
+    }
+    if code == K_ERROR0 {
+        ip.err = v.clone()
+        return ST_ERR
+    }
+    if code == K_ERROR1 {
+        return argVals(ip, n, 0, env, v, fn(ip10: mut &Interp, m10: &J): int {
+            ip10.err = m10.clone()
+            return ST_ERR
+        })
+    }
+    if code == K_GETPATH {
+        return argVals(ip, n, 0, env, v, fn(ip11: mut &Interp, p11: &J): int {
+            match jq_lib.getpath(v, p11) {
+                Ok(x) {
+                    if tr && !vp.isNull() && p11.isArray() {
+                        var np = vp.clone()
+                        np.extend(p11)
+                        return k(ip11, &x, &np)
+                    }
+                    let np2 = json.null()
+                    return k(ip11, &x, &np2)
+                }
+                Err(e) { return fail(ip11, e) }
+            }
+        })
+    }
+    if code == K_SELECT {
+        let a0 = arg(ip, n, 0)
+        match simple(ip, a0, env, v) {
+            Some(c) {
+                if jq_lib.truthy(&c) { return k(ip, v, vp) }
+                return ST_OK
+            }
+            None {}
+        }
+        return eval(ip, a0, env, v, &nul, false, fn(ip12: mut &Interp, c12: &J, q12: &J): int {
+            if jq_lib.truthy(c12) { return k(ip12, v, vp) }
+            return ST_OK
+        })
+    }
+    if code == K_RECURSE0 { return recurse0(ip, v, vp, tr, k) }
+    if code == K_RECURSE1 { return recurse1(ip, arg(ip, n, 0), env, v, vp, tr, k) }
+    if code == K_FIRST {
+        ip.labels += 1
+        let id = ip.labels
+        let st = eval(ip, arg(ip, n, 0), env, v, vp, tr, fn(ip13: mut &Interp, x13: &J, p13: &J): int {
+            let s = k(ip13, x13, p13)
+            if s != ST_OK { return s }
+            ip13.breakId = id
+            return ST_BREAK
+        })
+        if st == ST_BREAK && ip.breakId == id { return ST_OK }
+        return st
+    }
+    if code == K_LAST {
+        var lastv = json.null()
+        var lastp = json.null()
+        let st = eval(ip, arg(ip, n, 0), env, v, vp, tr, fn(ip14: mut &Interp, x14: &J, p14: &J): int {
+            lastv = x14.clone()
+            lastp = p14.clone()
+            return ST_OK
+        })
+        if st != ST_OK { return st }
+        return k(ip, &lastv, &lastp)
+    }
+    if code == K_LIMIT || code == K_NTH {
+        let isLimit = code == K_LIMIT
+        return argVals(ip, n, 0, env, v, fn(ip15: mut &Interp, c15: &J): int {
+            if !jq_lib.isNum(c15) {
+                if isLimit { return fail(ip15, jq_lib.typeErr2(c15, &json.integer(0), "cannot be compared")) }
+                return fail(ip15, jq_lib.typeErr2(c15, &json.integer(0), "cannot be compared"))
+            }
+            let lim = jq_lib.numVal(c15)
+            if !isLimit && lim < float(0) { return fail(ip15, "nth doesn't support negative indices") }
+            if isLimit && lim <= float(0) {
+                if lim == float(0) { return ST_OK }
+                return eval(ip15, arg(ip15, n, 1), env, v, vp, tr, k)
+            }
+            ip15.labels += 1
+            let id = ip15.labels
+            var count = float(0)
+            let st = eval(ip15, arg(ip15, n, 1), env, v, vp, tr, fn(ip16: mut &Interp, x16: &J, p16: &J): int {
+                count += float(1)
+                if isLimit {
+                    let s = k(ip16, x16, p16)
+                    if s != ST_OK { return s }
+                    if count >= lim {
+                        ip16.breakId = id
+                        return ST_BREAK
+                    }
+                    return ST_OK
+                }
+                if count > lim {
+                    let s = k(ip16, x16, p16)
+                    if s != ST_OK { return s }
+                    ip16.breakId = id
+                    return ST_BREAK
+                }
+                return ST_OK
+            })
+            if st == ST_BREAK && ip15.breakId == id { return ST_OK }
+            return st
+        })
+    }
+    if code == K_ISEMPTY {
+        ip.labels += 1
+        let id = ip.labels
+        var empty = true
+        let st = eval(ip, arg(ip, n, 0), env, v, &nul, false, fn(ip17: mut &Interp, x17: &J, p17: &J): int {
+            empty = false
+            ip17.breakId = id
+            return ST_BREAK
+        })
+        if st != ST_OK && !(st == ST_BREAK && ip.breakId == id) { return st }
+        return k(ip, &json.boolean(empty), &nul)
+    }
+    if code == K_UNTIL || code == K_WHILE { return loop(ip, n, env, v.clone(), code == K_WHILE, k) }
+    if code == K_REPEAT {
+        let a0 = arg(ip, n, 0)
+        while true {
+            let st = eval(ip, a0, env, v, &nul, false, k)
+            if st != ST_OK { return st }
+        }
+        return ST_OK
+    }
+    if code == K_RANGE1 {
+        return argVals(ip, n, 0, env, v, fn(ip18: mut &Interp, e18: &J): int { return rangeNum(ip18, &json.integer(0), e18, k) })
+    }
+    if code == K_RANGE2 {
+        return argVals(ip, n, 0, env, v, fn(ip19: mut &Interp, s19: &J): int {
+            return argVals(ip19, n, 1, env, v, fn(ip20: mut &Interp, e20: &J): int { return rangeNum(ip20, s19, e20, k) })
+        })
+    }
+    if code == K_RANGE3 {
+        return argVals(ip, n, 0, env, v, fn(ip21: mut &Interp, s21: &J): int {
+            return argVals(ip21, n, 1, env, v, fn(ip22: mut &Interp, e22: &J): int {
+                return argVals(ip22, n, 2, env, v, fn(ip23: mut &Interp, b23: &J): int { return rangeBy(ip23, s21, e22, b23, k) })
+            })
+        })
+    }
+    if code == K_INPUT {
+        match ip.inputs.read() {
+            Ok(x) {
+                match x {
+                    Some(val) { return k(ip, &val, &nul) }
+                    None { return fail(ip, "break") }
+                }
+            }
+            Err(e) { return fail(ip, e) }
+        }
+    }
+    if code == K_INPUTS {
+        while true {
+            match ip.inputs.read() {
+                Ok(x) {
+                    match x {
+                        Some(val) {
+                            let st = k(ip, &val, &nul)
+                            if st != ST_OK { return st }
+                        }
+                        None { return ST_OK }
+                    }
+                }
+                Err(e) { return fail(ip, e) }
+            }
+        }
+        return ST_OK
+    }
+    if code == K_DEBUG {
+        ip.stderrBuf.write("[\"DEBUG:\"," + jq_lib.dump(v) + "]\n")
+        let r = ip.stderrBuf.flush()
+        return k(ip, v, vp)
+    }
+    if code == K_STDERR {
+        // a string as it is, anything else as compact JSON; no newline
+        match v {
+            json.Json.Str(t) { ip.stderrBuf.write(t) }
+            else { ip.stderrBuf.write(jq_lib.dump(v)) }
+        }
+        let r = ip.stderrBuf.flush()
+        return k(ip, v, vp)
+    }
+    if code == K_INPUT_FILENAME {
+        let nm = ip.inputs.name
+        if len(nm) == 0 { return k(ip, &nul, &nul) }
+        return k(ip, &json.string(nm), &nul)
+    }
+    if code == K_INPUT_LINE { return k(ip, &json.integer(ip.inputs.line), &nul) }
+    if code == K_HALT {
+        ip.haltCode = 0
+        ip.haltMsg = None
+        return ST_HALT
+    }
+    if code == K_HALT_ERROR {
+        return argVals(ip, n, 0, env, v, fn(ip24: mut &Interp, c24: &J): int {
+            if !jq_lib.isNum(c24) { return fail(ip24, jq_lib.typeErr(v, "halt_error/1: number required")) }
+            ip24.haltCode = int(jq_lib.numVal(c24))
+            ip24.haltMsg = Some(v.clone())
+            return ST_HALT
+        })
+    }
+    if code == K_ENV {
+        let e = envObject()
+        return k(ip, &e, &nul)
+    }
+    if code == K_BUILTINS {
+        let b = builtinList()
+        return k(ip, &b, &nul)
+    }
+    if code == K_NOW {
+        let t = time.now()
+        return k(ip, &jq_lib.num(float(t.sec) + float(t.nsec) / float(1000000000)), &nul)
+    }
+    if code == K_SEARCH_LIST {
+        let l = json.strings(&["~/.jq", "$ORIGIN/../lib/jq", "$ORIGIN/../lib"])
+        return k(ip, &l, &nul)
+    }
+    if code == K_PROG_ORIGIN {
+        if len(ip.progOrigin) == 0 { return k(ip, &nul, &nul) }
+        return k(ip, &json.string(ip.progOrigin), &nul)
+    }
+    if code == K_JQ_ORIGIN { return k(ip, &json.string(jqOrigin()), &nul) }
+    if code == K_MODULEMETA {
+        if !jq_lib.isStr(v) { return fail(ip, "modulemeta input module name must be a string") }
+        return fail(ip, "module not found: " + jq_lib.strVal(v))
+    }
+    if code == K_MAP {
+        var items: []J = []
+        let a0 = arg(ip, n, 0)
+        let st = iterStep(ip, v, &nul, false, fn(ip25: mut &Interp, x25: &J, p25: &J): int {
+            return eval(ip25, a0, env, x25, &nul, false, fn(ip26: mut &Interp, y26: &J, q26: &J): int {
+                append(mut &items, y26.clone())
+                return ST_OK
+            })
+        })
+        if st != ST_OK { return st }
+        let arr = json.arrayOf(items)
+        return k(ip, &arr, &nul)
+    }
+    if code == K_ADD {
+        // reduce .[] as $x (null; . + $x)
+        var acc = json.null()
+        let st = iterStep(ip, v, &nul, false, fn(ip27: mut &Interp, x27: &J, p27: &J): int {
+            let cur = replace(mut &acc, json.null())
+            match jq_lib.addOwned(cur, x27) {
+                Ok(r) {
+                    acc = r
+                    return ST_OK
+                }
+                Err(e) { return fail(ip27, e) }
+            }
+        })
+        if st != ST_OK { return st }
+        return k(ip, &acc, &nul)
+    }
+    return fail(ip, "jq: internal error: native " + ip.nodes[n].name)
+}
+
+fn recurse0(ip: mut &Interp, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    return recurseAll(ip, v, vp, tr, k)
+}
+
+// recurse(f): def r: ., (f | r); r
+fn recurse1(ip: mut &Interp, f: int, env: int, v: &J, vp: &J, tr: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let st = k(ip, v, vp)
+    if st != ST_OK { return st }
+    return eval(ip, f, env, v, vp, tr, fn(ip1: mut &Interp, x1: &J, p1: &J): int { return recurse1(ip1, f, env, x1, p1, tr, k) })
+}
+
+// until(cond; next) and while(cond; update), iterating while each step has
+// one output (recursing for generators).
+fn loop(ip: mut &Interp, n: int, env: int, start: J, isWhile: bool, k: &fn(mut &Interp, &J, &J): int): int {
+    let cond = arg(ip, n, 0)
+    let upd = arg(ip, n, 1)
+    let nul = json.null()
+    var x = start
+    while true {
+        var cs: []bool = []
+        let st = eval(ip, cond, env, &x, &nul, false, fn(ip1: mut &Interp, c1: &J, p1: &J): int {
+            append(mut &cs, jq_lib.truthy(c1))
+            return ST_OK
+        })
+        if st != ST_OK { return st }
+        if len(cs) == 1 {
+            if isWhile {
+                if !cs[0] { return ST_OK }
+                let s = k(ip, &x, &nul)
+                if s != ST_OK { return s }
+            } else if cs[0] {
+                return k(ip, &x, &nul)
+            }
+            var nx: []J = []
+            let st2 = eval(ip, upd, env, &x, &nul, false, fn(ip2: mut &Interp, y2: &J, q2: &J): int {
+                append(mut &nx, y2.clone())
+                return ST_OK
+            })
+            if st2 != ST_OK { return st2 }
+            if len(nx) == 1 {
+                x = pop(mut &nx)
+                continue
+            }
+            for yi in 0..len(nx) {
+                let s = loop(ip, n, env, replace(mut &nx[yi], json.null()), isWhile, k)
+                if s != ST_OK { return s }
+            }
+            return ST_OK
+        }
+        // a condition with several outputs: each is a branch
+        for c in cs {
+            if isWhile {
+                if !c { continue }
+                let s = k(ip, &x, &nul)
+                if s != ST_OK { return s }
+            } else if c {
+                let s = k(ip, &x, &nul)
+                if s != ST_OK { return s }
+                continue
+            }
+            var nx: []J = []
+            let st3 = eval(ip, upd, env, &x, &nul, false, fn(ip3: mut &Interp, y3: &J, q3: &J): int {
+                append(mut &nx, y3.clone())
+                return ST_OK
+            })
+            if st3 != ST_OK { return st3 }
+            for yi in 0..len(nx) {
+                let s = loop(ip, n, env, replace(mut &nx[yi], json.null()), isWhile, k)
+                if s != ST_OK { return s }
+            }
+        }
+        return ST_OK
+    }
+    return ST_OK
+}
+
+fn rangeNum(ip: mut &Interp, from: &J, to: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    if !jq_lib.isNum(from) || !jq_lib.isNum(to) { return fail(ip, "Range bounds must be numeric") }
+    let e = jq_lib.numVal(to)
+    var x = jq_lib.numVal(from)
+    // whole numbers keep their exact form
+    while x < e {
+        let st = k(ip, &jq_lib.num(x), &nul)
+        if st != ST_OK { return st }
+        x += float(1)
+    }
+    return ST_OK
+}
+
+// range($init; $upto; $by)
+fn rangeBy(ip: mut &Interp, from: &J, to: &J, by: &J, k: &fn(mut &Interp, &J, &J): int): int {
+    let nul = json.null()
+    let zero = json.integer(0)
+    let up = jq_lib.compare(jq_parse.OP_GT, by, &zero)
+    let down = jq_lib.compare(jq_parse.OP_LT, by, &zero)
+    if !up && !down { return ST_OK }
+    var x = from.clone()
+    while true {
+        let go = if up { jq_lib.compare(jq_parse.OP_LT, &x, to) } else { jq_lib.compare(jq_parse.OP_GT, &x, to) }
+        if !go { return ST_OK }
+        let st = k(ip, &x, &nul)
+        if st != ST_OK { return st }
+        match jq_lib.add(&x, by) {
+            Ok(y) { x = y }
+            Err(e) { return fail(ip, e) }
+        }
+    }
+    return ST_OK
+}
+
+fn jqOrigin(): str {
+    match fs.readlink("/proc/self/exe") {
+        Ok(p) {
+            var i = len(p) - 1
+            while i > 0 && p[i] != '/' { i -= 1 }
+            return p[..i]
+        }
+        Err(e) { return "" }
+    }
+}
+
+// $ENV and env: the process environment.
+pub fn envObject(): J {
+    var o = json.object()
+    match io.read("/proc/self/environ") {
+        Ok(t) {
+            var start = 0
+            for i in 0..len(t) + 1 {
+                if i == len(t) || t[i] == 0 {
+                    if i > start {
+                        let e = t[start..i]
+                        let eq = indexOf(e, "=", 0)
+                        if eq < 0 {
+                            o.set(e, json.null())
+                        } else {
+                            o.set(e[..eq], json.string(e[eq + 1..]))
+                        }
+                    }
+                    start = i + 1
+                }
+            }
+        }
+        Err(e) {}
+    }
+    return o
+}
+
+const BUILTIN_NAMES = "input_line_number/0 significand/0 drem/2 ldexp/2 scalb/2 scalbln/2 nearbyint/0 trunc/0 ltrimstr/1 rtrimstr/1 startswith/1 endswith/1 utf8bytelength/0 explode/0 implode/0 split/1 setpath/2 getpath/1 delpaths/1 has/1 contains/1 length/0 type/0 isinfinite/0 isnan/0 isnormal/0 infinite/0 nan/0 sort/0 min/0 max/0 error/0 format/1 env/0 halt/0 halt_error/1 get_search_list/0 get_prog_origin/0 get_jq_origin/0 modulemeta/0 input/0 debug/0 stderr/0 strptime/1 strftime/1 strflocaltime/1 mktime/0 gmtime/0 localtime/0 now/0 input_filename/0 acos/0 acosh/0 asin/0 asinh/0 atan/0 atanh/0 cbrt/0 ceil/0 cos/0 cosh/0 erf/0 erfc/0 exp/0 exp10/0 exp2/0 expm1/0 fabs/0 floor/0 gamma/0 j0/0 j1/0 lgamma/0 log/0 log10/0 log1p/0 log2/0 logb/0 pow10/0 rint/0 round/0 sin/0 sinh/0 sqrt/0 tan/0 tanh/0 tgamma/0 y0/0 y1/0 atan2/2 copysign/2 fdim/2 fmax/2 fmin/2 fmod/2 hypot/2 jn/2 nextafter/2 nexttoward/2 pow/2 remainder/2 yn/2 fma/3 frexp/0 modf/0 lgamma_r/0 tojson/0 fromjson/0 tonumber/0 tostring/0 keys/0 keys_unsorted/0 empty/0 not/0 path/1 range/2 halt_error/0 error/1 map/1 select/1 sort_by/1 group_by/1 unique/0 unique_by/1 max_by/1 min_by/1 add/0 del/1 abs/0 map_values/1 recurse/1 recurse/2 recurse/0 to_entries/0 from_entries/0 with_entries/1 reverse/0 indices/1 index/1 rindex/1 paths/0 paths/1 isfinite/0 arrays/0 objects/0 iterables/0 booleans/0 numbers/0 normals/0 finites/0 strings/0 nulls/0 values/0 scalars/0 join/1 flatten/1 flatten/0 range/1 fromdateiso8601/0 todateiso8601/0 fromdate/0 todate/0 match/2 match/1 test/2 test/1 capture/2 capture/1 scan/2 scan/1 splits/2 splits/1 split/2 sub/3 sub/2 gsub/3 gsub/2 while/2 until/2 limit/2 range/3 first/1 isempty/1 all/2 any/2 all/1 any/1 all/0 any/0 last/1 nth/2 first/0 last/0 nth/1 combinations/0 combinations/1 transpose/0 in/1 inside/1 repeat/1 inputs/0 ascii_downcase/0 ascii_upcase/0 truncate_stream/1 fromstream/1 tostream/0 bsearch/1 walk/1 pick/1 debug/1 INDEX/2 INDEX/1 JOIN/2 JOIN/3 JOIN/4 IN/1 IN/2 builtins/0"
+
+fn builtinList(): J {
+    var out: []J = []
+    var start = 0
+    let s = BUILTIN_NAMES
+    for i in 0..len(s) + 1 {
+        if i == len(s) || s[i] == ' ' {
+            if i > start { append(mut &out, json.string(s[start..i])) }
+            start = i + 1
+        }
+    }
+    return json.arrayOf(out)
+}
+
+// ---------------------------------------------------------------- value builtins
+
+fn value1(ip: mut &Interp, code: int, v: &J): Result[J, str] {
+    if code == K_LENGTH { return jq_lib.length(v) }
+    if code == K_UTF8LEN {
+        if !jq_lib.isStr(v) { return Err(jq_lib.typeErr(v, "only strings have UTF-8 byte length")) }
+        return Ok(json.integer(len(jq_lib.strVal(v))))
+    }
+    if code == K_TYPE { return Ok(json.string(jq_lib.typeName(v))) }
+    if code == K_KEYS { return jq_lib.keys(v, true) }
+    if code == K_KEYS_UNSORTED { return jq_lib.keys(v, false) }
+    if code == K_TOSTRING { return Ok(json.string(jq_lib.tostring(v))) }
+    if code == K_TONUMBER {
+        if jq_lib.isNum(v) { return Ok(v.clone()) }
+        if jq_lib.isStr(v) {
+            let r = try jq_lib.parseOne(jq_lib.strVal(v))
+            if jq_lib.isNum(&r) { return Ok(r) }
+        }
+        return Err(jq_lib.typeErr(v, "cannot be parsed as a number"))
+    }
+    if code == K_TOJSON { return Ok(json.string(jq_lib.dump(v))) }
+    if code == K_FROMJSON {
+        if !jq_lib.isStr(v) { return Err(jq_lib.typeErr(v, "only strings can be parsed")) }
+        return jq_lib.parseOne(jq_lib.strVal(v))
+    }
+    if code == K_EXPLODE {
+        if !jq_lib.isStr(v) { return Err("explode input must be a string") }
+        return Ok(jq_lib.explode(&jq_lib.strVal(v)))
+    }
+    if code == K_IMPLODE {
+        if !v.isArray() { return Err("implode input must be an array") }
+        for x in v.items() {
+            if !jq_lib.isNum(&x) || jq_lib.numVal(&x).isNaN() { return Err(jq_lib.typeErr(&x, "can't be imploded, unicode codepoint needs to be numeric")) }
+        }
+        return jq_lib.implode(v)
+    }
+    if code == K_DOWNCASE || code == K_UPCASE {
+        if !jq_lib.isStr(v) { return Err("explode input must be a string") }
+        return Ok(json.string(jq_lib.asciiCase(jq_lib.strVal(v), code == K_UPCASE)))
+    }
+    if code == K_SORT {
+        if !v.isArray() { return Err(jq_lib.typeErr(v, "cannot be sorted, as it is not an array")) }
+        var xs = v.items()
+        jq_lib.sortJson(mut &xs)
+        return Ok(json.arrayOf(xs))
+    }
+    if code == K_MIN || code == K_MAX { return minMaxBy(v, v, code == K_MIN) }
+    if code == K_INFINITE { return Ok(jq_lib.num(math_inf())) }
+    if code == K_NAN { return Ok(jq_lib.num(math_nan())) }
+    if code == K_ISINFINITE {
+        if !jq_lib.isNum(v) { return Ok(json.boolean(false)) }
+        let f = jq_lib.numVal(v)
+        return Ok(json.boolean(f == f && !f.isFinite()))
+    }
+    if code == K_ISNAN {
+        if !jq_lib.isNum(v) { return Ok(json.boolean(false)) }
+        let f = jq_lib.numVal(v)
+        return Ok(json.boolean(f != f))
+    }
+    if code == K_ISNORMAL {
+        if !jq_lib.isNum(v) { return Ok(json.boolean(false)) }
+        let f = jq_lib.numVal(v).abs()
+        return Ok(json.boolean(f.isFinite() && f >= MIN_NORMAL))
+    }
+    if code == K_MKTIME { return jq_lib.mktime(v) }
+    if code == K_GMTIME || code == K_LOCALTIME {
+        if !jq_lib.isNum(v) {
+            return Err(if code == K_GMTIME { "gmtime() requires numeric inputs" } else { "localtime() requires numeric inputs" })
+        }
+        return jq_lib.gmtime(v)
+    }
+    if code == K_FREXP || code == K_MODF || code == K_LGAMMA_R {
+        if !jq_lib.isNum(v) { return Err(jq_lib.typeErr(v, "number required")) }
+        let f = jq_lib.numVal(v)
+        if code == K_FREXP { return Ok(jq_lib.frexpOf(f)) }
+        if code == K_MODF { return Ok(jq_lib.modfOf(f)) }
+        return Ok(jq_lib.lgammaR(f))
+    }
+    if code == K_TO_ENTRIES {
+        let ks = try jq_lib.keys(v, false)
+        var out: []J = []
+        for key in ks.items() {
+            var o = json.object()
+            let val = try jq_lib.index(v, &key)
+            o.set("key", key.clone())
+            o.set("value", val)
+            append(mut &out, o)
+        }
+        return Ok(json.arrayOf(out))
+    }
+    return Err("jq: internal error: builtin " + intToStr(code))
+}
+
+fn math_inf(): float {
+    let one: float = 1.0
+    let zero: float = 0.0
+    return one / zero
+}
+
+fn math_nan(): float {
+    let zero: float = 0.0
+    return zero / zero
+}
+
+fn minMaxBy(values: &J, keys: &J, isMin: bool): Result[J, str] {
+    if !values.isArray() || !keys.isArray() { return Err(jq_lib.typeErr2(values, keys, "cannot be iterated over")) }
+    if values.size() != keys.size() { return Err(jq_lib.typeErr2(values, keys, "have wrong length")) }
+    if values.size() == 0 { return Ok(json.null()) }
+    var best = 0
+    for i in 1..values.size() {
+        let c = keys.item(i).cmp(&keys.item(best))
+        if (c < 0) == isMin { best = i }
+    }
+    return Ok(values.item(best))
+}
+
+fn sortByKeys(values: &J, keys: &J): Result[[]int, str] {
+    if !values.isArray() || !keys.isArray() || values.size() != keys.size() {
+        return Err(jq_lib.typeErr2(values, keys, "cannot be sorted, as they are not both arrays"))
+    }
+    let ks = keys.items()
+    var idx: []int = []
+    for i in 0..len(ks) { append(mut &idx, i) }
+    collections.sortBy(mut &idx, fn(x, y) { return ks[x].cmp(&ks[y]) })
+    return Ok(idx)
+}
+
+fn value2(ip: mut &Interp, code: int, v: &J, x: &J, y: &J, z: &J): Result[J, str] {
+    if code == K_HAS { return jq_lib.has(v, x) }
+    if code == K_CONTAINS {
+        if v.kind() != x.kind() || (v.kind() == json.Kind.Bool && v.asBool() != x.asBool()) {
+            return Err(jq_lib.typeErr2(v, x, "cannot have their containment checked"))
+        }
+        return Ok(json.boolean(jq_lib.contains(v, x)))
+    }
+    if code == K_STARTSWITH || code == K_ENDSWITH {
+        if !jq_lib.isStr(v) || !jq_lib.isStr(x) {
+            return Err(if code == K_STARTSWITH { "startswith() requires string inputs" } else { "endswith() requires string inputs" })
+        }
+        let s = jq_lib.strVal(v)
+        let t = jq_lib.strVal(x)
+        return Ok(json.boolean(if code == K_STARTSWITH { startsWith(s, t) } else { endsWith(s, t) }))
+    }
+    if code == K_LTRIMSTR || code == K_RTRIMSTR {
+        if !jq_lib.isStr(v) || !jq_lib.isStr(x) { return Ok(v.clone()) }
+        let s = jq_lib.strVal(v)
+        let t = jq_lib.strVal(x)
+        if code == K_LTRIMSTR && startsWith(s, t) { return Ok(json.string(s[len(t)..])) }
+        if code == K_RTRIMSTR && endsWith(s, t) && len(t) > 0 { return Ok(json.string(s[..len(s) - len(t)])) }
+        return Ok(v.clone())
+    }
+    if code == K_SPLIT1 {
+        if !jq_lib.isStr(v) || !jq_lib.isStr(x) { return Err("split input and separator must be strings") }
+        return Ok(jq_lib.splitStr(jq_lib.strVal(v), jq_lib.strVal(x)))
+    }
+    if code == K_STRINDICES {
+        if !jq_lib.isStr(v) || !jq_lib.isStr(x) { return Err("_strindices requires string inputs") }
+        return Ok(jq_lib.strIndices(jq_lib.strVal(v), jq_lib.strVal(x)))
+    }
+    if code == K_SETPATH { return jq_lib.setpath(v.clone(), x, y.clone()) }
+    if code == K_DELPATHS { return jq_lib.delpaths(v.clone(), x) }
+    if code == K_FORMAT {
+        if !jq_lib.isStr(x) { return Err(jq_lib.typeErr(x, "is not a valid format")) }
+        return jq_lib.format(jq_lib.strVal(x), v)
+    }
+    if code == K_STRPTIME {
+        if !jq_lib.isStr(v) || !jq_lib.isStr(x) { return Err("strptime/1 requires string inputs and arguments") }
+        return jq_lib.strptime(jq_lib.strVal(v), jq_lib.strVal(x))
+    }
+    if code == K_STRFTIME || code == K_STRFLOCALTIME {
+        let name = if code == K_STRFTIME { "strftime/1" } else { "strflocaltime/1" }
+        var t = v.clone()
+        if jq_lib.isNum(v) {
+            t = try jq_lib.gmtime(v)
+        } else if !v.isArray() {
+            return Err(name + " requires parsed datetime inputs")
+        }
+        if !jq_lib.isStr(x) { return Err(name + " requires a string format") }
+        match jq_lib.jsonToTm(&t) {
+            Some(tm) { return Ok(json.string(jq_lib.strftime(&tm, jq_lib.strVal(x), zoneName()))) }
+            None { return Err(name + " requires parsed datetime inputs") }
+        }
+    }
+    if code == K_SORT_BY_IMPL {
+        let idx = try sortByKeys(v, x)
+        var out: []J = []
+        for i in idx { append(mut &out, v.item(i)) }
+        return Ok(json.arrayOf(out))
+    }
+    if code == K_GROUP_BY_IMPL {
+        let idx = try sortByKeys(v, x)
+        var groups: []J = []
+        var cur: []J = []
+        var prev = -1
+        for i in idx {
+            if prev >= 0 && !x.item(i).eq(&x.item(prev)) {
+                append(mut &groups, json.arrayOf(cur))
+                cur = []
+            }
+            append(mut &cur, v.item(i))
+            prev = i
+        }
+        if prev >= 0 { append(mut &groups, json.arrayOf(cur)) }
+        return Ok(json.arrayOf(groups))
+    }
+    if code == K_MIN_BY_IMPL || code == K_MAX_BY_IMPL { return minMaxBy(v, x, code == K_MIN_BY_IMPL) }
+    if code == K_MATCH_IMPL { return jq_lib.matchImpl(v, x, y, jq_lib.truthy(z), mut &ip.regexes) }
+    if code == K_FMA {
+        if !jq_lib.isNum(x) { return Err(jq_lib.typeErr(x, "number required")) }
+        if !jq_lib.isNum(y) { return Err(jq_lib.typeErr(y, "number required")) }
+        if !jq_lib.isNum(z) { return Err(jq_lib.typeErr(z, "number required")) }
+        return Ok(jq_lib.num(jq_lib.fmaOf(jq_lib.numVal(x), jq_lib.numVal(y), jq_lib.numVal(z))))
+    }
+    if code == K_JOIN { return join(v, x) }
+    return Err("jq: internal error: builtin " + intToStr(code))
+}
+
+// def join($x): reduce .[] as $i (null; (if .==null then "" else .+$x end) +
+//     ($i | if type=="boolean" or type=="number" then tostring else .//"" end)) // "";
+fn join(v: &J, sep: &J): Result[J, str] {
+    let nul = json.null()
+    if v.isNull() { return Ok(json.string("")) }
+    var acc = json.null()
+    var buf = newStrBuf()
+    var strMode = true    // acc is the string in buf
+    var count = 0
+    let fast = jq_lib.isStr(sep)
+    let sepS = jq_lib.strVal(sep)
+    let items = if v.isArray() || v.isObject() { v.isArray() } else { false }
+    if !v.isArray() && !v.isObject() {
+        return Err("Cannot iterate over " + jq_lib.typeName(v) + " (" + jq_lib.dumpTrunc(v, 15) + ")")
+    }
+    var xs: []J = []
+    if v.isArray() {
+        xs = v.items()
+    } else {
+        for i in 0..v.size() { append(mut &xs, v.valueAt(i)) }
+    }
+    if fast {
+        for i in 0..len(xs) {
+            if i > 0 { buf.add(sepS) }
+            let x = &xs[i]
+            match x {
+                json.Json.Null {}
+                json.Json.Bool(b) { buf.add(if b { "true" } else { "false" }) }
+                json.Json.Num(_) { buf.add(jq_lib.dump(x)) }
+                json.Json.Str(s) { buf.add(s) }
+                else {
+                    let left = json.string(buf.toStr())
+                    return Err(jq_lib.typeErr2(&left, x, "cannot be added"))
+                }
+            }
+        }
+        if len(xs) == 0 { return Ok(json.string("")) }
+        return Ok(json.string(buf.toStr()))
+    }
+    // a separator that is not a string: the general definition
+    for i in 0..len(xs) {
+        var left = json.null()
+        if acc.isNull() {
+            left = json.string("")
+        } else {
+            left = try jq_lib.add(&acc, sep)
+        }
+        let x = &xs[i]
+        var right = json.null()
+        match x {
+            json.Json.Bool(_) { right = json.string(jq_lib.dump(x)) }
+            json.Json.Num(_) { right = json.string(jq_lib.dump(x)) }
+            else { right = if jq_lib.truthy(x) { x.clone() } else { json.string("") } }
+        }
+        acc = try jq_lib.add(&left, &right)
+    }
+    if !jq_lib.truthy(&acc) { return Ok(json.string("")) }
+    return Ok(acc)
+}

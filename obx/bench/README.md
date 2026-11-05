@@ -33,6 +33,14 @@ The results, with eza and the compiler, are in
 3 MB corpus with obx (native and via C), Go's `regexp`, Rust's `regex`
 crate (built offline; skipped if it cannot be) and ripgrep.
 
+`json/` is the JSON library's benchmark (design/json.md, section 9).
+`python3 obx/bench/json/bench.py` generates an 80 MB file. On it, it
+compares:
+
+- the library (native and through C) with Python's `json`;
+- `cmd/jq.obx` (native and through C) with jq 1.7.1, running the same
+  filters.
+
 `--obo` adds a column for obx's predecessor, the archived obo 0.19
 (`archive/obo/obo`; build it with `make -C archive/obo`), running the same
 programs from `archive/obo/bench/*_obo.obx`. The programs came from obo's

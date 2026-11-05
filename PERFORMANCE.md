@@ -305,6 +305,72 @@ obx is faster on case-insensitive patterns (`-i 'OMEGA BETA'`), on
 `a.*z.*e` and `^[0-9]+7[0-9]`, and when every line matches (`-v '^0'`). The two are
 close on `-w`.
 
+## jq
+
+[obx/cmd/jq.obx](obx/cmd/jq.obx), the jq 1.7.1 port, against jq 1.7.1
+built from its release tarball (`./configure --with-oniguruma=builtin`,
+the default `-O2`). Measured on 5 November 2026 (branch `jq`), best of
+3 or 5 wall times, on a machine shared with other agents: figures vary by
+10–20% between runs.
+
+**Large input.** `python3 obx/bench/json/bench.py`, run on an 80 MB file
+of 182,290 generated records. The output goes to a file, and the three
+outputs of each filter must be identical.
+
+| filter | jq 1.7.1 | native | via C |
+|---|---:|---:|---:|
+| `.` | 2.48 s | 1.86 s | 1.93 s |
+| `-c .` | 2.20 s | 1.71 s | 1.67 s |
+| `length` | 1.42 s | 1.15 s | 1.09 s |
+| `[.[].items[].qty] \| add` | 1.77 s | 1.30 s | 1.23 s |
+| `map(select(.active and .score > 0) \| {id, city: .address.city})` | 1.69 s | 1.36 s | 1.44 s |
+| `group_by(.address.city) \| map({city: .[0].address.city, n: length})` | 1.97 s | 1.92 s | 1.82 s |
+
+**Computation.** Programs with no input (`jq -n`); the outputs are
+identical.
+
+| program | jq 1.7.1 | native | via C |
+|---|---:|---:|---:|
+| `1` (start-up) | 2 ms | 4 ms | 3 ms |
+| `reduce range(3000000) as $i (0; . + $i)` | 475 ms | 479 ms | 333 ms |
+| `[range(1000000)] \| map(. * 2) \| add` | 388 ms | 267 ms | 233 ms |
+| `[range(200000) \| tostring] \| sort \| length` | 112 ms | 82 ms | 64 ms |
+| `def fib: ...; 25 \| fib` (recursive, 250,000 calls) | 57 ms | 110 ms | 87 ms |
+| `[limit(100000; repeat(1))] \| length` | 43 ms | 10 ms | 8 ms |
+| `[range(100000) \| {a: ., b: "x\(.)"}] \| group_by(.a % 10) \| map(length)` | 207 ms | 271 ms | 226 ms |
+| `[range(50000) \| tostring \| test("7$")] \| map(select(.)) \| length` | 70 ms | 78 ms | 59 ms |
+
+**Where the port wins.** It is faster wherever JSON is parsed or written.
+jq builds a decNumber for every literal, and its writer goes through
+`jv_dump_term`. The JSON library keeps the literal's text and writes it
+back. The port also wins on simple generators: `limit`, `range` and `map`
+are native in the port, and continuation calls cost less than jq's
+bytecode with its fork points.
+
+**Where jq wins:**
+
+- **Calls of jq-defined functions.** `fib` is 1.5–2× slower: each call
+  pushes frames and closures, and runs its body through a capturing
+  continuation.
+- **Start-up.** The port parses and resolves `builtin.jq` on every run
+  (2 ms).
+- **Sorting objects by key.** `sort_by` and `group_by` on objects are a
+  little slower: the comparison walks the counted boxes.
+
+**What made the difference.** Two changes on the branch:
+
+- **Expressions with at most one output run to completion first.** In
+  continuation-passing style the rest of the program otherwise runs
+  inside each operand, and `25 | fib` overflowed the stack. This also
+  saves stack traffic generally.
+- **Compiled regexes are cached** for the run. `test("7$")` over 50,000
+  strings went from 245 ms to 78 ms.
+
+`json.cmpArrays` also stopped copying elements, which took sorting 100,000
+one-element arrays from 271 ms to 156 ms. The library's own numbers
+against Python's `json` are in [obx/design/json.md](obx/design/json.md),
+section 9.
+
 ## The compiler
 
 The obx compiler compiling itself (`obx/compiler/main.obx`), built each way:

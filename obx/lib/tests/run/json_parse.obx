@@ -1,0 +1,166 @@
+// json: parsing values, the errors and where they are, UTF-8 and escapes.
+// expect: {"name":"obx","tags":["a","b"],"price":12.50,"big":100000000000000000001}
+// expect: [1,2.5e3,-0,0.10,1E400,true,false,null,{},[],""]
+// expect: "é😀A\n\t\"\\/\b\f\r"
+// expect: {"a":3,"b":2}
+// expect: json: no value at line 1, column 1
+// expect: json: no value at line 1, column 4
+// expect: json: unexpected ']', expected a value at line 1, column 4
+// expect: json: expected ',' or ']', found '2' at line 1, column 4
+// expect: json: expected ':', found '1' at line 1, column 6
+// expect: json: expected a string key, found 'a' at line 1, column 2
+// expect: json: unexpected '}', expected a value at line 2, column 8
+// expect: json: unfinished string at line 1, column 5
+// expect: json: invalid literal "tru" at line 1, column 1
+// expect: json: invalid literal "nul" at line 1, column 1
+// expect: json: invalid number "01" at line 1, column 1
+// expect: json: invalid number "1." at line 1, column 1
+// expect: json: invalid literal ".5" at line 1, column 1
+// expect: json: invalid number "-" at line 1, column 1
+// expect: json: invalid number "1e" at line 1, column 1
+// expect: json: invalid literal "+1" at line 1, column 1
+// expect: json: invalid literal "NaN" at line 1, column 1
+// expect: json: unexpected text after the value at line 1, column 5
+// expect: json: invalid escape \x at line 1, column 2
+// expect: json: invalid \u escape at line 1, column 2
+// expect: json: unpaired surrogate in \u escape at line 1, column 2
+// expect: json: unpaired surrogate in \u escape at line 1, column 2
+// expect: json: control character byte 0x09 in a string at line 1, column 3
+// expect: json: unexpected ']', expected a value at line 1, column 1
+// expect: 3 12 4 3 invalid literal "?"
+// expect: "�x"
+// expect: "a�b"
+// expect: "�"
+// expect: "�x"
+// expect: "��"
+// expect: "�"
+// expect: "�"
+// expect: "��"
+// expect: json: invalid UTF-8 in a string at line 1, column 3
+// expect: json: nested too deep at line 1, column 513
+// expect: [[[1]]]
+// expect: json: nested too deep at line 1, column 4
+// expect: [nan,NaN,-nan,infinity,-Infinity,1.,.5,007,+3,1e1000] [null,null,null,1.7976931348623157e+308,-1.7976931348623157e+308,1,0.5,7,3,1E+1000]
+// expect: json: invalid literal "nul" at line 1, column 1
+// expect: [1e2,12e-1,0.0000001,1.000,-0.0,1.0e2,100000000000000000001] [1E+2,1.2,1E-7,1.000,-0.0,1.0E+2,100000000000000000001]
+// expect: 1;[2];{"a":3};"x";true;null;4;
+// expect: 1;2;json: unexpected end of the text at line 1, column 8
+// expect: {"k":[true]}
+import "json"
+
+fn show(s: str) {
+    match json.parse(s) {
+        Ok(v) { println(v.toStr()) }
+        Err(e) { println(e.toStr()) }
+    }
+}
+
+fn lenient(s: str) {
+    var o = json.parseOptions()
+    o.lenient = true
+    match json.parseWith(s, o) {
+        Ok(v) { println(v.toStr() + " " + json.write(&v, &jqOpts())) }
+        Err(e) { println(e.toStr()) }
+    }
+}
+
+fn jqOpts(): json.WriteOptions {
+    var o = json.compact()
+    o.jqNumbers = true
+    return o
+}
+
+fn drain(s: str) {
+    var d = json.decoder(s)
+    while true {
+        match d.next() {
+            Ok(o) {
+                match o {
+                    Some(v) { print(v.toStr() + ";") }
+                    None {
+                        println("")
+                        return
+                    }
+                }
+            }
+            Err(e) {
+                println(e.toStr())
+                return
+            }
+        }
+    }
+}
+
+fn main() {
+    show(`{"name": "obx", "tags": ["a", "b"], "price": 12.50, "big": 100000000000000000001}`)
+    show(` [1, 2.5e3, -0, 0.10, 1E400, true, false, null, {}, [], ""] `)
+    show(`"\u00e9\ud83d\ude00\u0041\n\t\"\\\/\b\f\r"`)
+    show(`{"a": 1, "b": 2, "a": 3}`)
+    // errors: kind, message and position
+    show(``)
+    show(`   `)
+    show(`[1,]`)
+    show(`[1 2]`)
+    show(`{"a" 1}`)
+    show(`{a: 1}`)
+    show("{\"a\": 1,\n  \"b\": }")
+    show(`"abc`)
+    show(`tru`)
+    show(`nul`)
+    show(`01`)
+    show(`1.`)
+    show(`.5`)
+    show(`-`)
+    show(`1e`)
+    show(`+1`)
+    show(`NaN`)
+    show(`[1] x`)
+    show(`"\x"`)
+    show(`"\u12g4"`)
+    show(`"\ud800"`)
+    show(`"\ud800A"`)
+    show("\"a\tb\"")
+    show(`]`)
+    match json.parse("[\n [\n  1,\n  ?") {
+        Ok(_) {}
+        Err(e) { println(intToStr(e.kind.code()) + " " + intToStr(e.offset) + " " + intToStr(e.line) + " " + intToStr(e.column) + " " + e.msg) }
+    }
+    // a lone low surrogate escape is U+FFFD
+    show(`"\udc00x"`)
+    // invalid UTF-8 becomes U+FFFD, jq's way
+    println(json.parse("\"a\xFFb\"").unwrap().toStr())
+    println(json.parse("\"\xC3\"").unwrap().toStr())
+    println(json.parse("\"\xE2\x82x\"").unwrap().toStr())
+    println(json.parse("\"\xC0\xAF\"").unwrap().toStr())
+    println(json.parse("\"\xED\xA0\x80\"").unwrap().toStr())
+    println(json.parse("\"\xF4\x90\x80\x80\"").unwrap().toStr())
+    println(json.parse("\"\x80\x80\"").unwrap().toStr())
+    var strict = json.parseOptions()
+    strict.strictUtf8 = true
+    match json.parseWith("\"a\xFFb\"", strict) {
+        Ok(_) {}
+        Err(e) { println(e.toStr()) }
+    }
+    // depth
+    var deep = ""
+    for i in 0..600 { deep = deep + "[" }
+    show(deep)
+    var o = json.parseOptions()
+    o.maxDepth = 3
+    match json.parseWith(`[[[1]]]`, o) {
+        Ok(v) { println(v.toStr()) }
+        Err(e) { println(e.toStr()) }
+    }
+    match json.parseWith(`[[[[1]]]]`, o) {
+        Ok(v) { println(v.toStr()) }
+        Err(e) { println(e.toStr()) }
+    }
+    // jq's lenient numbers
+    lenient(`[nan, NaN, -nan, infinity, -Infinity, 1., .5, 007, +3, 1e1000]`)
+    lenient(`nul`)
+    lenient(`[1e2, 12e-1, 0.0000001, 1.000, -0.0, 1.0e2, 100000000000000000001]`)
+    // a stream of values
+    drain(` 1 [2] {"a":3}"x"true null 4`)
+    drain(`1 2 [3,`)
+    println(json.parseBytes(&strToBytes(`{"k":[true]}`)).unwrap().toStr())
+}

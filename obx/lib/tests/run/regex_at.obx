@@ -1,0 +1,31 @@
+// submatchIndexAt: a search from a position, with the text before it still
+// seen by \b and ^.
+// expect: [2 3 2 3]
+// expect: [4 4 -1 -1]
+// expect: []
+// expect: [0 0 -1 -1] [1 1 -1 -1]
+// expect: []
+import "regex"
+
+fn show(a: []int) {
+    var s = "["
+    for i in 0..len(a) {
+        if i > 0 { s = s + " " }
+        s = s + intToStr(a[i])
+    }
+    println(s + "]")
+}
+
+fn main() {
+    let re = regex.compile(`(b)|\bx*$`).unwrap()
+    show(re.submatchIndexAt("a b", 1))
+    show(re.submatchIndexAt("a bc", 3))
+    let caret = regex.compile(`^a`).unwrap()
+    show(caret.submatchIndexAt("aa", 1))
+    let empty = regex.compile(`( )*`).unwrap()
+    let a = empty.submatchIndexAt("ab", 0)
+    let b = empty.submatchIndexAt("ab", 1)
+    print("[" + intToStr(a[0]) + " " + intToStr(a[1]) + " " + intToStr(a[2]) + " " + intToStr(a[3]) + "] ")
+    println("[" + intToStr(b[0]) + " " + intToStr(b[1]) + " " + intToStr(b[2]) + " " + intToStr(b[3]) + "]")
+    show(empty.submatchIndexAt("ab", 3))
+}
