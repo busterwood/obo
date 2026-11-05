@@ -75,6 +75,7 @@ obx_arr rt_arr_new(int64_t n, size_t size);
 obx_arr rt_arr_fill(int64_t n, size_t size, const char* w);
 void rt_arr_free(obx_arr a);
 void* rt_arr_push(obx_arr* a, size_t size);
+void rt_str_append(obx_arr* a, obx_str s);
 void* rt_arr_pop(obx_arr* a, size_t size, const char* w);
 void rt_swap(obx_slice a, int64_t i, int64_t j, size_t size, const char* w);
 obx_slice rt_as_slice(obx_arr* a);

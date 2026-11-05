@@ -1036,7 +1036,7 @@ fn (o: mut &Loops) hoistStr(x: int, out: mut &[]int): bool {
 
 // What the runtime function name writes (RW_*), for those not classed pure (rtClass).
 fn rtWrites(name: str): int {
-    if name == "rt_arr_push" || name == "rt_arr_pop" || name == "rt_parse_float" || name == "rt_read_file" ||
+    if name == "rt_arr_push" || name == "rt_arr_pop" || name == "rt_str_append" || name == "rt_parse_float" || name == "rt_read_file" ||
         name == "rt_getenv" {
         return RW_ARGS
     }

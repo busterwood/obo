@@ -93,8 +93,8 @@ for leaks.
   `sqrt cbrt pow powi exp ln log2 log10 sin cos tan asin acos atan atan2 sinh
   cosh tanh floor ceil trunc round roundEven abs mod hypot copySign isNaN
   isInf isFinite`.
-- **StrBuf**: `newStrBuf`, `add`, `addByte`, `addInt`, `addLine`, `size`,
-  `clear`, `toStr`. Strings: `substr`, `indexOf(s, sub, from)`, `startsWith`,
+- **StrBuf**: `newStrBuf`, `add` (one copy of the string's bytes,
+  `appendStr`), `addByte`, `addInt`, `addLine`, `size`, `clear`, `toStr`. Strings: `substr`, `indexOf(s, sub, from)`, `startsWith`,
   `endsWith`, `contains`, `split(s, sep: byte)`, `trim`, `isSpace`, `isDigit`,
   `parseInt(s): Option[int]`, `repeat`.
 - **Decimal**: a coefficient below 10^38, an exponent and a
@@ -1191,7 +1191,9 @@ Intrinsics: `strByte`, `strSlice`, `strFromBytes`, `strToBytes`, `intToStr`,
 `strFind` and `strFindPair` (the first index at or after `from` of a byte,
 of any byte of a set, of a string, of a position `p` with `s[p + i1]` in one
 set and `s[p + i2]` in another; 16 bytes a step with SSE2, for the regex
-prefilters), and the built-ins `isNull`, `exit`, `panic`. `task` also uses the library-only intrinsics `intoPtr` and
+prefilters), `appendStr(mut &bytes, s)` (the bytes of `s` at the end of a
+`[]byte` in one copy: `StrBuf.add`), and the built-ins `isNull`, `exit`,
+`panic`. `task` also uses the library-only intrinsics `intoPtr` and
 `fromPtr` (SPEC 15), to keep a task's argument and result and a `Shared`
 or `Frozen` value in the runtime's structures.
 

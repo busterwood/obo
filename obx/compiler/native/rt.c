@@ -1283,6 +1283,22 @@ obx_slice rt_sub(obx_slice s, int64_t lo, int64_t hi, size_t size, const char* w
     if (lo < 0 || hi < lo || hi > s.len) rt_trap(3, "slice range out of bounds", w);
     return (obx_slice){(char*)s.data + (size_t)lo * size, hi - lo};
 }
+/* appendStr(mut &bytes, s): the bytes of s at the end of a, in one copy (the capacity at
+   least doubles when it grows, as rt_arr_push's does) */
+void rt_str_append(obx_arr* a, obx_str s) {
+    if (s.len == 0) return;
+    int64_t n = a->len + (int64_t)s.len;
+    if (n > a->cap) {
+        int64_t nc = a->cap ? a->cap * 2 : 16;
+        while (nc < n) nc *= 2;
+        void* d = realloc(a->data, (size_t)nc);
+        if (!d) rt_trap(2, "out of memory", "runtime");
+        if (!a->data && rt_check) rt_live++;
+        a->data = d; a->cap = nc;
+    }
+    memcpy((char*)a->data + a->len, RT_SP(s), (size_t)s.len);
+    a->len = n;
+}
 obx_arr rt_str_to_bytes(obx_str s) {
     obx_arr a = rt_arr_new(s.len, 1);
     if (s.len) memcpy(a.data, RT_SP(s), (size_t)s.len);
