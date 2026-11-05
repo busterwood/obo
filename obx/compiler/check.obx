@@ -742,6 +742,11 @@ fn (c: mut &Checker) checkResult(r: int, shown: int, line: int, isB: bool) {
     }
     let rs = if shown != -1 { shown } else { r }
     let name = c.rootDesc(rs)
+    if len(bsrc) == 0 {
+        c.err(line, "cannot return " + (if isB { "a borrow" } else { "a value holding borrows" }) + " of " + name +
+            ": " + c.cx.label + " has no borrowed parameter, so its result may only borrow static strings " +
+            "(literals and constants)")
+    }
     if isB && !anyInh {
         c.err(line, "cannot return a borrow of " + name + ": a borrow result must be rooted at the " +
             "borrowed parameter '" + c.pg.fns[f].bparam + "', not a local or temporary")
@@ -2303,7 +2308,7 @@ fn (c: mut &Checker) sReturn(s: int) {
             v = c.coerce(v, ret, n.line, "the returned borrow")
             var r = v.root
             while r >= 0 && c.vars[r].broot != -1 { r = c.vars[r].broot }
-            if len(c.cx.rsrc) > 0 {
+            if c.cx.fd >= 0 && (len(c.cx.rsrc) > 0 || v.root == R_FREE || c.cx.bvar < 0) {
                 c.checkResult(c.ultimate(v.root), v.root, n.line, true)
             } else if r != c.cx.bvar {
                 let name = c.rootName(v.root, "a temporary")
@@ -2314,7 +2319,7 @@ fn (c: mut &Checker) sReturn(s: int) {
             cc = v.c
         } else {
             v = c.coerce(v, ret, n.line, "the returned value")
-            if len(c.cx.rsrc) > 0 && c.pg.isBorrowClass(ret) { c.checkResult(c.crOf(v), -1, n.line, false) }
+            if c.cx.fd >= 0 && c.pg.isBorrowClass(ret) { c.checkResult(c.crOf(v), -1, n.line, false) }
             cc = c.consume(v, n.line)
         }
         let rn = c.fresh("r")
@@ -2639,7 +2644,7 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
     }
     return match k {
         sx.N_CHAR { rv(c.x.pcast(c.ct("uint8_t"), c.lit(c.nd(e).a)), sema.T_BYTE) }
-        sx.N_STR { rv(c.hole(mkHole(H_STR, -1, c.nd(e).s)), sema.T_STR) }
+        sx.N_STR { c.strLit(c.nd(e).s, exp) }
         sx.N_BOOL { rv(c.nm(if c.flag(e, sx.TRUE) { "true" } else { "false" }), sema.T_BOOL) }
         sx.N_TARG { c.err(c.line(e), "a type is not a value") }
         sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp) }
@@ -3070,7 +3075,17 @@ fn (c: mut &Checker) constVal(k: int, exp: int, line: int): Val {
     if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp) }
     if kind == sema.CK_FLOAT { return rv(c.x.num(num.pyFloatRepr(v.f)), sema.T_FLOAT) }
     if kind == sema.CK_BOOL { return rv(c.nm(if v.b { "true" } else { "false" }), sema.T_BOOL) }
-    return rv(c.hole(mkHole(H_STR, -1, v.s)), sema.T_STR)
+    return c.strLit(v.s, exp)
+}
+
+// A string literal or str constant: a str, or where a shared &str is expected a view of static bytes,
+// which has no root (SPEC 4.1).
+fn (c: mut &Checker) strLit(s: str, exp: int): Val {
+    let h = c.hole(mkHole(H_STR, -1, s))
+    if exp >= 0 && c.pg.tk(exp) == sema.TK_REF && !c.pg.tm(exp) && c.pg.ta(exp) == sema.T_STR {
+        return rvAt(h, exp, R_FREE, "")
+    }
+    return rv(h, sema.T_STR)
 }
 
 fn (c: mut &Checker) xField(e: int, exp: int): Val {

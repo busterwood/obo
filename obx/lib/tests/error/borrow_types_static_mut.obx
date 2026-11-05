@@ -1,0 +1,4 @@
+// borrow-class types (SPEC 10 rule 5): a mut borrow result still needs its one mut & parameter.
+// error: next returns a mut borrow, so it needs exactly one borrowed parameter, not 0
+fn next(): mut &int { panic("no") }
+fn main() { next() }

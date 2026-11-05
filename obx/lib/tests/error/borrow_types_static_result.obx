@@ -1,0 +1,9 @@
+// borrow-class types (SPEC 10 rule 5): a function without a borrowed parameter may return only
+// static borrows (string literals and constants).
+// error: cannot return a borrow of 'local': kindName has no borrowed parameter, so its result may only borrow static strings
+fn kindName(k: int): &str {
+    if k == 0 { return "zero" }
+    let local = intToStr(k)
+    return &local
+}
+fn main() { println(kindName(1)) }

@@ -1573,11 +1573,8 @@ fn (pg: mut &Program) resolveFn(f: int) {
         for i in 0..len(pg.fns[f].params) {
             if pg.isBorrowClass(pg.fns[f].params[i].ty) { append(mut &pg.fns[f].bsrc, i) }
         }
-        if len(pg.fns[f].bsrc) == 0 {
-            pg.err(m, a.line, pg.label(f) + " returns " + pg.tstr(ret) + ", which holds borrows, so it needs a " +
-                "borrowed parameter (or one that holds borrows) for them to come from")
-        }
-        pg.fns[f].bparam = pg.fns[f].params[pg.fns[f].bsrc[0]].name
+        // none: every borrow it returns is static (a string literal or constant; SPEC 10 rule 5)
+        if len(pg.fns[f].bsrc) > 0 { pg.fns[f].bparam = pg.fns[f].params[pg.fns[f].bsrc[0]].name }
     }
     if pg.isBorrow(ret) {
         var count = 0
@@ -1588,15 +1585,18 @@ fn (pg: mut &Program) resolveFn(f: int) {
                 if first < 0 { first = i }
             }
         }
-        if count != 1 {
-            pg.err(m, a.line, pg.label(f) + " returns a borrow, so it needs exactly one borrowed " +
-                "parameter, not " + intToStr(count))
+        // none: every borrow it returns is static (a string literal or constant; SPEC 10 rule 5)
+        if count > 1 || (count == 0 && pg.tm(ret)) {
+            pg.err(m, a.line, pg.label(f) + " returns a" + (if pg.tm(ret) { " mut" } else { "" }) + " borrow, so it " +
+                "needs exactly one borrowed parameter, not " + intToStr(count))
         }
-        if pg.tm(ret) && !pg.tm(pg.fns[f].params[first].ty) {
-            pg.err(m, a.line, pg.label(f) + " returns a mut borrow, so its borrowed parameter must " + "be mut &")
+        if count == 1 {
+            if pg.tm(ret) && !pg.tm(pg.fns[f].params[first].ty) {
+                pg.err(m, a.line, pg.label(f) + " returns a mut borrow, so its borrowed parameter must " + "be mut &")
+            }
+            pg.fns[f].bparam = pg.fns[f].params[first].name
+            append(mut &pg.fns[f].bsrc, first)
         }
-        pg.fns[f].bparam = pg.fns[f].params[first].name
-        append(mut &pg.fns[f].bsrc, first)
     }
 }
 
