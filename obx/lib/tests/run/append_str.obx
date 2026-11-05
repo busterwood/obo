@@ -1,0 +1,34 @@
+// appendStr: a string's bytes at the end of a []byte in one copy (StrBuf.add uses it).
+// expect: 2117 1118000
+// expect: hello, 0123456789
+// expect: 0123456789
+// expect: built 29 [one-two-three|one-two-three|]
+fn main() {
+    var b: []byte = []
+    appendStr(mut &b, "")
+    appendStr(mut &b, "hello")
+    appendStr(mut &b, ", ")
+    var big = ""
+    for i in 0..100 { big = big + intToStr(i % 10) }
+    appendStr(mut &b, big)
+    appendStr(mut &b, big[10..20])          // a slice of a str: its own offset
+    // the length is read again after each append in a loop (nothing hoists it)
+    var n = 0
+    for i in 0..1000 {
+        appendStr(mut &b, "xy")
+        n += len(b)
+    }
+    println(intToStr(len(b)) + " " + intToStr(n))
+    println(strFromBytes(&b[0..17]))
+    println(strFromBytes(&b[107..117]))
+    var sb = newStrBuf()
+    for k in 0..2 {
+        sb.add("one")
+        sb.addByte('-')
+        sb.add("two-three")
+        sb.add("|")
+    }
+    sb.add("]")
+    let s = "[" + sb.toStr()
+    println("built " + intToStr(sb.size()) + " " + s)
+}

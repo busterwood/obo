@@ -806,7 +806,7 @@ including `print`, `println`, string formatting and parsing, is in `std`.
 | `exit(code)` | stop the program with `code`, without drops (and without the `OBX_CHECK` leak check) |
 
 String and runtime intrinsics used by `std` (`strByte`, `strSlice`,
-`strFromBytes`, `strToBytes`, `intToStr`, `floatToStr`, `parseFloat`,
+`strFromBytes`, `strToBytes`, `appendStr`, `intToStr`, `floatToStr`, `parseFloat`,
 `writeFd`, `readFile`, `args`, `getenv`) are built-ins too; they are listed
 with `std`, not here, because ordinary code calls the `std` wrappers. They are
 not reserved: a module's own declaration of the same name wins. The two

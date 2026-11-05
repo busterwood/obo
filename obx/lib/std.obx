@@ -644,9 +644,7 @@ pub type StrBuf = record { bytes: []byte }
 
 pub fn newStrBuf(): StrBuf { return StrBuf{bytes: []} }
 
-pub fn (b: mut &StrBuf) add(s: str) {
-    for i in 0..len(s) { append(mut &b.bytes, strByte(s, i)) }
-}
+pub fn (b: mut &StrBuf) add(s: str) { appendStr(mut &b.bytes, s) }
 
 pub fn (b: mut &StrBuf) addByte(c: byte) { append(mut &b.bytes, c) }
 
