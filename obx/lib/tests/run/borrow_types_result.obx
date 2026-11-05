@@ -1,0 +1,57 @@
+// Borrow-class types (design/borrow-types.md, D4): Result[T: borrow, E: borrow] may hold views; the
+// value of `?` and of a match arm has the result's root.
+// expect: key=name
+// expect: value=obx
+// expect: error: no '=' in 'broken'
+// expect: bad: broken
+// expect: 2
+type KV = value record {
+    key: &str
+    value: &str
+}
+
+fn splitKV(line: &str): Result[KV, str] {
+    for i in 0..len(line) {
+        if line[i] == '=' { return Ok(KV{key: line[0..i], value: line[i + 1..len(line)]}) }
+    }
+    return Err("no '=' in '" + line + "'")
+}
+
+// an error that is a view of the input
+fn firstBad(lines: &[]str): Result[int, &str] {
+    for i in 0..len(lines) {
+        if !contains(lines[i], "=") { return Err(&lines[i]) }
+    }
+    return Ok(len(lines))
+}
+
+fn keyOf(line: &str): Result[&str, str] {
+    let kv = try splitKV(line)
+    return Ok(kv.key)
+}
+
+fn main() {
+    let a = "name=obx"
+    match splitKV(&a) {
+        Ok(kv) {
+            println("key=" + kv.key)
+            println("value=" + kv.value)
+        }
+        Err(e) { println("error: " + e) }
+    }
+    let b = "broken"
+    let r = splitKV(&b)
+    match r {
+        Ok(kv) { println(kv.key) }
+        Err(e) { println("error: " + e) }
+    }
+    let lines = ["a=1", "broken", "c=3"]
+    match firstBad(&lines) {
+        Ok(n) { println(n) }
+        Err(l) { println("bad: " + l) }
+    }
+    match keyOf(&a) {
+        Ok(k) { println(len(k) - 2) }
+        Err(e) { println(e) }
+    }
+}

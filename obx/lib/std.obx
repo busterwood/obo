@@ -13,7 +13,7 @@
 // T: borrow (design/borrow-types.md): an Option may hold a borrow, Option[&T], or a value holding
 // borrows; it is then second class like them.
 pub type Option[T: borrow] = value closed { Some(T); None }
-pub type Result[T, E] = value closed { Ok(T); Err(E) }
+pub type Result[T: borrow, E: borrow] = value closed { Ok(T); Err(E) }
 pub type Unit = value record {}
 
 pub fn (o: &Option[T]) isSome(): bool {

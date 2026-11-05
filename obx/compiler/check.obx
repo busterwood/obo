@@ -72,10 +72,11 @@ pub const H_CL = 7
 pub const H_TRAMP = 8
 pub const H_IMETH = 9
 pub const H_IASSOC = 10
-// H_ADDR, H_DEREF, H_SHARE: t (the referent type, which mentions type parameters) and the C x. A
-// shared &str is the string's header copied without its count (borrow-types prototype), so a
-// shared borrow of a str is its value, not its address: these become &x / *x / x for other types
-// and x / x / *x for str, per instance (H_SHARE: a mut &T used as a &T).
+// H_ADDR, H_DEREF, H_SHARE: t (the referent type, a type parameter) and the C x. A shared &str is
+// the string's header copied without its count (design/borrow-types.md), so a shared borrow of a
+// str is its value, not its address: these become &x / *x / x for other types and x / x / *x for
+// str, per instance (H_SHARE: a mut &T used as a &T). Only a bare type parameter can become str,
+// so any other type is decided when the generic body is checked.
 pub const H_ADDR = 11
 pub const H_DEREF = 12
 pub const H_SHARE = 13
@@ -450,21 +451,21 @@ fn (c: mut &Checker) ct(s: str): int { return c.x.ct(s) }
 // shared &str is the header, uncounted), or a hole when t mentions type parameters.
 fn (c: mut &Checker) addrOf(t: int, x: int): int {
     if t == sema.T_STR { return x }
-    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_ADDR, t, x)) }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_ADDR, t, x)) }
     return c.x.par(c.x.pre("&", x))
 }
 
 // The C of the place a shared borrow x of a t points to.
 fn (c: mut &Checker) derefOf(t: int, x: int): int {
     if t == sema.T_STR { return x }
-    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_DEREF, t, x)) }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_DEREF, t, x)) }
     return c.x.par(c.x.pre("*", x))
 }
 
 // The C of a mut &t borrow x used as a shared &t.
 fn (c: mut &Checker) shareOf(t: int, x: int): int {
     if t == sema.T_STR { return c.x.par(c.x.pre("*", x)) }
-    if c.pg.hasTp(t, &[]) { return c.hole(mkHoleX(H_SHARE, t, x)) }
+    if c.pg.tk(t) == sema.TK_TP { return c.hole(mkHoleX(H_SHARE, t, x)) }
     return x
 }
 
@@ -3823,6 +3824,10 @@ fn (c: mut &Checker) xTry(e: int, exp: int): Val {
     let sep = if value { "." } else { "->" }
     let sn = c.fresh("tr")
     let ct = c.T(t)
+    // a result holding borrows (design/borrow-types.md): the Ok value has its root, and so has the
+    // Err value returned, which must be rooted at the function's sources
+    let tcr = if c.pg.isBorrowClass(t) { c.crOf(v) } else { R_FREE }
+    if c.pg.isBorrowClass(a.erT) && len(c.cx.rsrc) > 0 { c.checkResult(tcr, -1, n.line, false) }
     let cv = c.consume(v, n.line)
     c.emit(c.x.decl(ct, sn, cv))
     let snn = c.nm(sn)
@@ -3848,7 +3853,8 @@ fn (c: mut &Checker) xTry(e: int, exp: int): Val {
         c.emitx(c.x.call("rt_free", [snn]))
         oc = c.nm(on)
     }
-    return c.holdtmp(oc, a.okT)
+    let ov = c.holdtmp(oc, a.okT)
+    return if c.pg.isBorrowClass(a.okT) { c.withCr(ov, tcr) } else { ov }
 }
 
 // ---- literals and constructors
