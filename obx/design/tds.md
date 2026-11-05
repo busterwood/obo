@@ -226,7 +226,7 @@ Each stage is one branch, merged after the full gate.
 |---|---|---|
 | T0 | `lib/tls.obx` (OpenSSL; socket and memory modes), https in http.obx | branch `tls` (running) |
 | T1 | transport, packets, PRELOGIN with TLS inside, LOGIN7 (SQL authentication), SQLBatch, the core tokens, int/float/nvarchar/varchar (UTF-8 collations), buffered `query`, `exec`; the connection string | logs in to the live server under Encrypt=yes, runs batches, the first differential cases pass |
-| T2 | every type of the table, collations 1252 and Latin-1, RPC `sp_executesql` with parameters, multiple results, ERROR/INFO with their state and severity, row counts, `transaction[T]`, ENVCHANGE | the full type matrix and the error cases match ODBC |
+| T2 | every type of the table, collations 1252 and Latin-1, RPC `sp_executesql` with parameters, multiple results, ERROR/INFO with their state and severity, row counts, `transaction[T]`, ENVCHANGE | the full type matrix and the error cases match ODBC (built: section 9) |
 | T3 | streamed `Rows`, ATTENTION with deadlines and cancellation (section 2), `Pool`/`Lease`, the http_gate `--db` SQL Server load, PERFORMANCE.md | load numbers against ODBC; cancellation tests; no leak under OBX_CHECK=1 |
 | T4 | Sybase ASE over TDS 5.0 (`sybase` module) | the differential suite against ASE (needs a server) |
 | T5 | bulk copy (BULK LOAD, packet type 7) for fast inserts; NTLM; TDS 8.0 strict; Azure AD tokens; table-valued parameters | each as needed |
@@ -321,3 +321,103 @@ names and D3's buffered `query`; `mssql` is unchanged. Written from MS-TDS.
   streamed rows, pools. The recorded-exchange server of section 5 is the
   scripted `sqlserver_fake` for now; TLS inside PRELOGIN is tested live
   only.
+
+## 9. Stage T2, as built (2026-11-05)
+
+Branch `tds-t2`. No change to the compiler, time.obx, decimal or sqldialect;
+`Cell` gained variants (`Dec`, `Date`, `Time`, `DateTime`, `Offset`,
+`Guid`), so a program matching on `tds.Cell` needs the new arms or `else`.
+
+- **Types:** decimal and numeric become `Decimal` straight from the sign
+  byte and the 4-, 8-, 12- or 16-byte magnitude (`fromFraction`, no text in
+  between); money (high int32, then low uint32) and smallmoney are
+  `Decimal`s of scale 4. date is days since 0001-01-01; time(n) 3 to 5
+  bytes of 10^-n s; datetime2 that time, then the date; datetimeoffset the
+  UTC time and date, then the offset in minutes, turned into the local
+  date-time at that offset (`time.OffsetDateTime`, D5). datetime is days
+  since 1900-01-01 and 1/300 s ticks; **its rounding:** milliseconds =
+  (ticks * 10 + 1) / 3, integer division, which gives .000, .003, .007,
+  .010, ...: what `CONVERT(..., 121)`, `CONVERT(..., 126)` and the ODBC
+  driver give. (CAST to datetime2(7) rounds to 100 ns instead, .0033333;
+  the differential test checks every tick of a second and the last 300 of
+  a day against CONVERT style 126.) smalldatetime is days since 1900 and
+  minutes. uniqueidentifier is canonical upper-case text from the
+  mixed-endian bytes (the first three groups little-endian). xml is the
+  PLP UTF-16 text, a byte order mark dropped. Bytes framed right but out of
+  range (a time past midnight, a day past 9999-12-31, 39 digits, an offset
+  of 24 hours) are a `Cell.Failed` naming why; a decimal TYPE_INFO of a bad
+  length or precision is `E_PROTOCOL`. sql_variant, UDTs (CLR types:
+  geography, geometry, hierarchyid) stay `E_TYPE` naming the type.
+  `tds.cellText` writes every cell as SQL Server and ODBC do.
+- **RPC:** `sp_executesql` by its ProcID (10), `@stmt` and `@params`
+  unnamed and positional, then `@p1`, `@p2`, ... Int bigint, Float float
+  (the exact bits: obx has no float-to-bits builtin, so `tds.bitsOfFloat`
+  computes them; NaN, the infinities and subnormals are refused), Bool
+  bit, Text nvarchar(4000) or nvarchar(max) as PLP beyond 4,000 UTF-16
+  units (always nvarchar: `codepage.encode` is not needed for parameters),
+  Bytes varbinary(8000) or varbinary(max), Dec decimal(p, s) with p and s
+  from the value (decimal(4,2) for 12.50; 39 digits or more than 38
+  fraction digits are an error). NULL is `NULL_TYPE`, nvarchar(4000): it
+  converts to every type but binary ones (257 from the server, live: ODBC
+  fails alike); sql_variant was tried and converts to nothing implicitly,
+  and `sp_describe_undeclared_parameters` (ODBC's SQLDescribeParam) fails
+  for temporary tables and for a parameter used twice, and would doom an
+  open transaction under XACT_ABORT. `call` declares OUTPUT parameters
+  from SQL type names (`typeInfoOf`: the integer types, bit, real, float,
+  money, smallmoney, datetime, smalldatetime, uniqueidentifier, date, xml,
+  decimal/numeric(p, s), time/datetime2/datetimeoffset(n),
+  (n)char/(n)varchar/binary/varbinary(n or max)).
+- **Results:** `queryAll` keeps every result set and every DONE,
+  DONEPROC and DONEINPROC with a count, in order, each tied to the result
+  set it ends (`StatementCount{token, rows, resultSet}`); sp_executesql's
+  own DONEPROC is left out. A reply may end with DONEPROC.
+- **ERROR and INFO:** all kept with number, state, class, text, server,
+  procedure and line (`errors()`, `diagnostics()`, reset by each call);
+  the first ERROR is the Err. The server sends RAISERROR at severity 10 as
+  class 0.
+- **RETURNVALUE and RETURNSTATUS:** RETURNVALUE is parsed with its
+  TYPE_INFO (an encrypted one is `E_PROTOCOL`); status 1 values are
+  `Results.outputs`, one row. Every RETURNSTATUS is kept; sp_executesql's
+  own (the last) is dropped. Through sp_executesql the server sends no
+  RETURNSTATUS for an EXEC inside (found live), so `returnStatus` is for
+  batches; with parameters write `EXEC @r = p ...` and an Out `@r`.
+- **transaction[T]:** a Transaction Manager request (packet type 14)
+  begins (BEGIN_XACT, the descriptor arrives in ENVCHANGE 8 and goes in
+  every ALL_HEADERS after it), commits (7) on Ok and rolls back (8) on Err,
+  keeping the body's errors and infos over the rollback's. If the server
+  ended the transaction itself (XACT_ABORT, a COMMIT in the SQL, an error
+  that dooms it), there is no rollback, and an Ok is `E_INPUT`, as nothing
+  was committed. The body is `fn(mut &Conn)`, not a closure over the
+  connection as in postgres: obx lets one place change the connection at a
+  time, so the body is lent it.
+- **ENVCHANGE:** database, language, charset, sort locale and flags,
+  collation, packet size, the transaction descriptors (begin, commit,
+  rollback, enlist, defect, ended), mirror partner, user instance and reset
+  acknowledgements are kept or applied; routing (20) fails `open` with a
+  message naming it.
+- **Tests:** `tds_codec` decodes every type from bytes (ordinary values,
+  NULLs, the limits, bad content) and checks the RPC, parameter, TM and
+  float-bit bytes; `tds_malformed` adds a T2 reply's truncations and 4000
+  mutations (every decoded cell formatted), RETURNVALUE and decimal cases,
+  fuzzed type names and GUID text: no trap. `sqlserver_fake` checks two
+  RPCs and two transactions byte by byte against the scripted server.
+  Live, `sqlserver_live_diff` gives no difference against ODBC on the full
+  matrix (section 3's types at their limits and NULL, every scale of time,
+  datetime2 and datetimeoffset, decimal(38) at both ends and scale 38, every
+  datetime tick), on parameters of every Value variant (selected and
+  stored), on result sets and counts, and on errors (syntax, unknown
+  procedure, unique index, NOT NULL, conversions, overflow, RAISERROR at
+  severities 0 to 18 and states 0 to 255, in a parameter, mid-batch); the
+  typed values match the server's CONVERT, and the errors its
+  ERROR_*() in a CATCH. One disagreement was ours (a subnormal float
+  parameter, fixed); ODBC's Err keeps only the first of several errors.
+  All pass under OBX_CHECK=1 on both backends.
+- **Proposals:** `Value` variants for dates and times (`Date`, `Time`,
+  `DateTime`, `Offset`) and for GUIDs, so that parameters carry their
+  type (they go in as text now, which the server converts); and a typed
+  NULL (`Value.NullOf(type)` or a `Param` type) for binary columns.
+- **Left for T3:** streamed `Rows` (D3), ATTENTION with deadlines and
+  cancellation, `Pool`/`Lease`, the load test. Later: sql_variant, table
+  parameters, UDTs, routing, ALTMETADATA/ALTROW (COMPUTE), DATACLASSIFICATION,
+  an RPC to a procedure by name (its RETURNSTATUS and outputs without
+  sp_executesql), Encrypt=strict.
