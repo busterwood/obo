@@ -10,13 +10,21 @@
 //         println((try rows.int(r, 0)).toStr() + " " + try rows.text(r, 1))
 //     }
 //
-// Stage T1 (design/tds.md): SQL authentication, encryption by TLS (inside
-// PRELOGIN, as MS-TDS says), SQL batches without parameters, and the types
-// tinyint, smallint, int, bigint, bit, real, float, nchar, nvarchar, char
-// and varchar in a UTF-8 collation (another code page is an error naming
-// it, when that cell is read), binary and varbinary. Other types decode to
-// an E_TYPE error for their cells. Parameters (RPC), multiple result sets,
-// the other types and pools come in T2 and T3.
+// Stages T1 and T2 (design/tds.md): SQL authentication, encryption by TLS
+// (inside PRELOGIN, as MS-TDS says), SQL batches; parameters @p1, @p2, ...
+// through sp_executesql (query, run, queryAll, call with OUTPUT
+// parameters); every result set and row count of a batch (queryAll); every
+// ERROR of a call (errors(), the first is the Err) and its INFOs
+// (diagnostics()); procedures' return status; transaction[T] by Transaction
+// Manager requests. Types: tinyint, smallint, int, bigint, bit, real,
+// float, decimal, numeric, money, smallmoney, nchar, nvarchar, char and
+// varchar (a UTF-8 collation, code page 1252 or ISO-8859-1; another code
+// page is an error naming it, when that cell is read), binary, varbinary,
+// date, time, datetime2, datetimeoffset, datetime, smalldatetime,
+// uniqueidentifier, xml, and their (max) forms. sql_variant, UDTs and table
+// types are an E_TYPE error naming the type for their cells. Rows are read
+// whole (no streaming); ATTENTION (cancelling a running call) and pools come
+// in T3.
 //
 // Connection strings (design/tds.md, section 4) take the ADO.NET keywords
 // and the ODBC ones that mssql is given, so one string serves both modules:
@@ -53,10 +61,12 @@ import "tds"
 import "sqldialect"
 import "strings"
 import "task"
+import "time"
 
 pub type Value = sqldialect.Value
 pub type Error = sqldialect.DbError
 pub type Message = tds.Message
+type Sql = sqldialect.Sql
 
 var OPEN: int = 0
 
@@ -354,31 +364,102 @@ pub fn (c: &Conn) diagnostics(): []Message {
 // larger one is E_LIMIT and breaks the connection.
 pub fn (c: mut &Conn) setMaxReply(n: int) { c.s.maxReply = max(n, 4096) }
 
-fn (c: mut &Conn) batch(sql: str, w: Where): Result[tds.Reply, Error] {
-    let r = try c.s.batch(sql, w)
+// The ERROR messages of the last call, every one (the call's Err is the
+// first): number, state, class (severity), text, server, procedure, line.
+pub fn (c: &Conn) errors(): []Message {
+    var out: []Message = []
+    for m in c.s.errors { append(mut &out, m) }
+    return out
+}
+
+// The session's language (ENVCHANGE): "us_english".
+pub fn (c: &Conn) language(): str { return c.s.language }
+
+// The reply of one request, its first ERROR as the Err.
+fn checked(r: tds.Reply): Result[tds.Reply, Error] {
     if len(r.errors) > 0 { return Err(tds.serverError(&r.errors[0])) }
     return Ok(r)
 }
 
-// Runs a batch of any number of statements, without parameters. Its first
-// error is the result (the statements before it have run).
-pub fn (c: mut &Conn) exec(sql: str, w: Where): Result[Unit, Error] {
-    let r = try c.batch(sql, w)
-    return Ok(Unit{})
-}
+// An output parameter of call: its name ("@total") and its SQL type
+// ("int", "decimal(12,2)", "nvarchar(100)", "nvarchar(max)", "datetime2(7)",
+// ...; the names tds.typeInfoOf knows). It goes in as NULL.
+pub type Out = value record { pub name: str; pub sqlType: str }
 
-fn noParams(args: &[Value]): Result[Unit, Error] {
-    if len(args) > 0 {
-        return Err(sqldialect.inputError("parameters are not supported yet (" + len(args).toStr() + " given)"))
+// The type a NULL parameter is declared as: NULL carries no type. nvarchar
+// converts implicitly to every type a value can be stored in or compared
+// with except binary and varbinary (error 257); for those, write
+// CONVERT(varbinary(10), @p1) in the SQL text. (Asking the server for the
+// type, as ODBC's SQLDescribeParam does through
+// sp_describe_undeclared_parameters, fails for temporary tables and for a
+// parameter used twice, and its error rolls back an open transaction under
+// XACT_ABORT ON: it is not done.)
+pub const NULL_TYPE = "nvarchar(4000)"
+
+// The RPC parameter for v, named name.
+fn paramOf(v: &Value, name: str, coll: &tds.Collation): Result[tds.Param, Error] {
+    var p = match v {
+        Value.Null { try tds.nullParam(NULL_TYPE, coll) }
+        Value.Int(n) { tds.intParam(n) }
+        Value.Float(f) { try tds.floatParam(f) }
+        Value.Bool(b) { tds.bitParam(b) }
+        Value.Text(t) { try tds.textParam(t, coll) }
+        Value.Bytes(b) { tds.bytesParam(b) }
+        Value.Dec(d) { try tds.decimalParam(d) }
     }
+    p.name = name
+    return Ok(p)
+}
+
+// Sends sql: as a SQL batch without parameters or outputs, else through
+// sp_executesql with args as @p1, @p2, ... and the outputs after them.
+fn (c: mut &Conn) send(sql: str, args: &[Value], outs: &[Out], w: Where): Result[tds.Reply, Error] {
+    if len(args) == 0 && len(outs) == 0 { return checked(try c.s.batch(sql, w)) }
+    if len(args) + len(outs) > tds.MAX_PARAMS {
+        return Err(sqldialect.inputError("more than " + tds.MAX_PARAMS.toStr() + " parameters"))
+    }
+    var ps: []tds.Param = []
+    for i in 0..len(args) { append(mut &ps, try paramOf(&args[i], "@p" + (i + 1).toStr(), &c.s.collation)) }
+    for o in outs {
+        if len(o.name) < 2 || o.name[0] != '@' {
+            return Err(sqldialect.inputError("an output parameter's name must start with @"))
+        }
+        var p = try tds.nullParam(o.sqlType, &c.s.collation)
+        p.name = o.name
+        p.output = true
+        append(mut &ps, p)
+    }
+    var r = try c.s.executeSql(sql, &ps, w)
+    // sp_executesql's own RETURNSTATUS (0) comes last: it is not the SQL's
+    if len(r.statuses) > 0 {
+        let n = len(r.statuses) - 1
+        let own = r.statuses[n]
+        var rest: []int = []
+        for i in 0..n { append(mut &rest, r.statuses[i]) }
+        r.statuses = rest
+        r.returnStatus = if n > 0 { Some(r.statuses[n - 1]) } else { None }
+    }
+    return checked(r)
+}
+
+// Runs a batch of any number of statements, without parameters. Its first
+// error is the result; every error is in errors() (the statements after an
+// error may have run: SQL Server goes on after most errors in a batch).
+pub fn (c: mut &Conn) exec(sql: str, w: Where): Result[Unit, Error] {
+    let r = try c.send(sql, &[], &[], w)
     return Ok(Unit{})
 }
 
-// Runs sql and returns its first result set with columns, every row read
-// (Rows do not hold the connection). args must be empty in stage T1.
+// Runs sql with @p1, @p2, ... bound to args, in order (through
+// sp_executesql; without args, as a SQL batch), and returns its first result
+// set with columns, every row read (Rows do not hold the connection).
+//
+// Parameters: Int is sent as bigint, Float as float (exact), Bool as bit,
+// Text as nvarchar(4000) (nvarchar(max) beyond 4,000 UTF-16 units), Bytes
+// as varbinary(8000) (varbinary(max) beyond), Dec as decimal(p, s) from the
+// value, NULL as NULL_TYPE. Dates go in as text, which the server converts.
 pub fn (c: mut &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
-    try noParams(args)
-    var r = try c.batch(sql, w)
+    var r = try c.send(sql, args, &[], w)
     let sets = len(r.results)
     if sets == 0 { return Ok(Rows{cols: [], rows: [], affected: r.affected, sets: 0}) }
     let first = replace(mut &r.results[0], tds.ResultSet{columns: [], rows: [], count: -1})
@@ -386,12 +467,98 @@ pub fn (c: mut &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Er
     return Ok(Rows{cols: cols, rows: rows, affected: r.affected, sets: sets})
 }
 
-// Runs sql (args empty in stage T1): the rows changed by its last statement
-// that has no result set, -1 when none says.
+pub fn (c: mut &Conn) querySql(q: &Sql, w: Where): Result[Rows, Error] {
+    return c.query(q.render(sqldialect.Dialect.SqlServer), q.args(), w)
+}
+
+// Runs sql (with parameters as query): the rows changed by its last
+// statement that has no result set, -1 when none says.
 pub fn (c: mut &Conn) run(sql: str, args: &[Value], w: Where): Result[int, Error] {
-    try noParams(args)
-    let r = try c.batch(sql, w)
+    let r = try c.send(sql, args, &[], w)
     return Ok(r.affected)
+}
+
+// What a batch gave: every result set, every statement's row count, the
+// return status of a procedure it ran, and output parameters.
+pub type Results = record {
+    pub sets: []Rows                    // every result set with columns, in order
+    pub counts: []StatementCount        // every row count, in order: of result sets and of changes
+    pub returnStatus: Option[int]       // the last RETURNSTATUS of a procedure a batch ran (EXEC); with
+                                        // parameters (sp_executesql) the server does not send it: write
+                                        // EXEC @r = p ... with an Out "@r"
+    pub outputs: Rows                   // call's output parameters: one row, a column each (named as the parameter)
+}
+
+pub type StatementCount = tds.StatementCount
+
+// Runs sql (with parameters as query) and returns every result set and
+// every row count.
+pub fn (c: mut &Conn) queryAll(sql: str, args: &[Value], w: Where): Result[Results, Error] {
+    return c.call(sql, args, &[], w)
+}
+
+// queryAll with output parameters: outs are declared OUTPUT after args, the
+// SQL sets them (SET @total = ..., EXEC p @x OUTPUT), and they come back in
+// Results.outputs, in the order the server sends them.
+pub fn (c: mut &Conn) call(sql: str, args: &[Value], outs: &[Out], w: Where): Result[Results, Error] {
+    var r = try c.send(sql, args, outs, w)
+    var sets: []Rows = []
+    for k in 0..len(r.results) {
+        let rs = replace(mut &r.results[k], tds.ResultSet{columns: [], rows: [], count: -1})
+        let tds.ResultSet{columns: cols, rows: rows, count: n} = move(rs)
+        append(mut &sets, Rows{cols: cols, rows: rows, affected: n, sets: 1})
+    }
+    var counts: []StatementCount = []
+    let rpc = len(args) > 0 || len(outs) > 0
+    for x in r.counts {
+        if !(rpc && x.token == tds.TK_DONEPROC) { append(mut &counts, x) }
+    }
+    var ocols: []tds.Column = []
+    var orow: []tds.Cell = []
+    for v in r.returnValues {
+        if v.status == 1 {
+            append(mut &ocols, v.column)
+            append(mut &orow, v.value)
+        }
+    }
+    let outputs = Rows{cols: ocols, rows: if len(ocols) > 0 { [orow] } else { [] }, affected: -1, sets: 0}
+    return Ok(Results{sets: sets, counts: counts, returnStatus: r.returnStatus, outputs: outputs})
+}
+
+// ---------------------------------------------------------------- transactions
+
+// Runs body in a transaction: begins one (a Transaction Manager request; the
+// server's descriptor goes with every request after it), then commits when
+// body returns Ok and rolls back when it returns Err, whose error is the
+// result. body gets the connection: obx lets one place change it at a time.
+// Transactions do not nest (E_INPUT). When the server has ended the
+// transaction itself (an error that dooms it, XACT_ABORT, a COMMIT or
+// ROLLBACK in the SQL), there is nothing to roll back; an Ok from body is
+// then E_INPUT, as nothing was committed. After a rollback for an error the
+// connection is usable.
+pub fn (c: mut &Conn) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: Where): Result[T, Error] {
+    if c.inTransaction() { return Err(sqldialect.inputError("a transaction is already open")) }
+    let b = try checked(try c.s.transact(tds.TM_BEGIN_XACT, w))
+    if !c.inTransaction() { return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tds: BEGIN gave no transaction descriptor")) }
+    match body(c) {
+        Ok(v) {
+            if !c.inTransaction() {
+                return Err(sqldialect.inputError("the transaction ended inside the body: nothing was committed"))
+            }
+            let r = try checked(try c.s.transact(tds.TM_COMMIT_XACT, w))
+            return Ok(v)
+        }
+        Err(e) {
+            if c.inTransaction() && !c.s.broken {
+                let errs = replace(mut &c.s.errors, [])
+                let infos = replace(mut &c.s.infos, [])
+                let r = c.s.transact(tds.TM_ROLLBACK_XACT, w)
+                c.s.errors = errs               // the body's messages, not the rollback's
+                c.s.infos = infos
+            }
+            return Err(e)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- rows
@@ -408,11 +575,13 @@ pub fn (r: &Rows) rowCount(): int { return len(r.rows) }
 
 pub fn (r: &Rows) columnCount(): int { return len(r.cols) }
 
-// Rows changed by the batch's last statement without a result set, or -1.
+// From query and run: rows changed by the batch's last statement without a
+// result set, or -1. In Results.sets: the result set's own row count (its
+// DONE), or -1.
 pub fn (r: &Rows) affected(): int { return r.affected }
 
-// The number of result sets with columns the batch gave (only the first is
-// kept in stage T1).
+// The number of result sets with columns the batch gave (query keeps only
+// the first: queryAll has them all).
 pub fn (r: &Rows) resultSets(): int { return r.sets }
 
 fn (r: &Rows) col(col: int): Result[int, Error] {
@@ -434,6 +603,21 @@ pub fn (r: &Rows) columnTypeName(col: int): Result[str, Error] { return Ok(r.col
 pub fn (r: &Rows) columnSize(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].size) }
 
 pub fn (r: &Rows) column(col: int): Result[tds.Column, Error] { return Ok(r.cols[try r.col(col)]) }
+
+pub type DecimalType = value record { pub precision: int; pub scale: int }
+
+// The precision and scale of a decimal or numeric column (money: 19, 4;
+// smallmoney: 10, 4); E_TYPE for another.
+pub fn (r: &Rows) decimalType(col: int): Result[DecimalType, Error] {
+    let c = r.cols[try r.col(col)]
+    let t = c.tdsType
+    if t == tds.T_DECIMAL || t == tds.T_DECIMALN || t == tds.T_NUMERIC || t == tds.T_NUMERICN {
+        return Ok(DecimalType{precision: c.precision, scale: c.scale})
+    }
+    if t == tds.T_MONEY4 || (t == tds.T_MONEYN && c.size == 4) { return Ok(DecimalType{precision: 10, scale: 4}) }
+    if t == tds.T_MONEY || t == tds.T_MONEYN { return Ok(DecimalType{precision: 19, scale: 4}) }
+    return Err(typeError(col, "a decimal"))
+}
 
 fn (r: &Rows) cell(row: int, col: int): Result[tds.Cell, Error] {
     let k = try r.col(col)
@@ -490,31 +674,99 @@ pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
 }
 
 // The value as text: a text value as it is (NUL characters kept), an
-// integer's or float's digits. E_TYPE for a binary value.
+// integer's or float's digits, a decimal with its column's scale, dates,
+// times and uniqueidentifiers as SQL Server writes them (tds.cellText:
+// "2026-11-05 13:45:07.1234567"). E_TYPE for a binary value.
 pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
-    match try r.cell(row, col) {
-        tds.Cell.Text(t) { return Ok(t) }
-        tds.Cell.Int(n) { return Ok(n.toStr()) }
-        tds.Cell.Float(f) { return Ok(f.toStr()) }
+    let c = try r.cell(row, col)
+    match c {
         tds.Cell.Null { return Err(nullError(col)) }
         tds.Cell.Failed(why) { return Err(failed(col, why)) }
-        tds.Cell.Bytes(_) { return Err(typeError(col, "text")) }
+        else {}
+    }
+    match tds.cellText(&r.cols[col], &c) {
+        Some(t) { return Ok(t) }
+        None { return Err(typeError(col, "text")) }
     }
 }
 
-// The exact bytes of a binary value, or the UTF-8 bytes of a text value.
+// The exact bytes of a binary value, or the UTF-8 bytes of a text value
+// (and of a uniqueidentifier's text).
 pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
     match try r.cell(row, col) {
         tds.Cell.Bytes(b) { return Ok(b) }
         tds.Cell.Text(t) { return Ok(t) }
+        tds.Cell.Guid(g) { return Ok(g) }
         tds.Cell.Null { return Err(nullError(col)) }
         tds.Cell.Failed(why) { return Err(failed(col, why)) }
         else { return Err(typeError(col, "binary or text")) }
     }
 }
 
-// The value by its column's type: Null, Bool (bit), Int, Float, Text or
-// Bytes; E_TYPE for a type not supported yet.
+// A decimal, numeric, money or smallmoney value as an exact Decimal with the
+// column's scale as its display scale (money's is 4), or an integer (scale
+// 0). E_INEXACT for float and real, E_TYPE otherwise.
+pub fn (r: &Rows) decimal(row: int, col: int): Result[Decimal, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Dec(d) { return Ok(d) }
+        tds.Cell.Int(n) { return Ok(decimalOf(n)) }
+        tds.Cell.Float(_) { return Err(sqldialect.dbError(sqldialect.E_INEXACT, "column " + col.toStr() + " is a binary float")) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a decimal")) }
+    }
+}
+
+// None for NULL (never zero), otherwise as decimal().
+pub fn (r: &Rows) decimalOrNull(row: int, col: int): Result[Option[Decimal], Error] {
+    if try r.isNull(row, col) { return Ok(None) }
+    return Ok(Some(try r.decimal(row, col)))
+}
+
+// A date value.
+pub fn (r: &Rows) date(row: int, col: int): Result[time.Date, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Date(d) { return Ok(d) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a date")) }
+    }
+}
+
+// A time(n) value.
+pub fn (r: &Rows) timeOfDay(row: int, col: int): Result[time.TimeOfDay, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Time(t) { return Ok(t) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a time")) }
+    }
+}
+
+// A datetime2(n), datetime or smalldatetime value (datetime's 1/300 s
+// rounded to the millisecond, as the server writes it: see tds).
+pub fn (r: &Rows) localDateTime(row: int, col: int): Result[time.LocalDateTime, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.DateTime(l) { return Ok(l) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a datetime2, datetime or smalldatetime")) }
+    }
+}
+
+// A datetimeoffset(n) value: its local date-time and offset.
+pub fn (r: &Rows) offsetDateTime(row: int, col: int): Result[time.OffsetDateTime, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Offset(o) { return Ok(o) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a datetimeoffset")) }
+    }
+}
+
+// The value by its column's type: Null, Bool (bit), Int, Float, Dec
+// (decimal, numeric, money, smallmoney), Bytes (binary types) or Text (text
+// types, xml; and dates, times and uniqueidentifiers as text() gives them).
 pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
     let c = try r.cell(row, col)
     let t = r.cols[col].tdsType
@@ -524,6 +776,8 @@ pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
         tds.Cell.Float(f) { return Ok(Value.Float(f)) }
         tds.Cell.Text(s) { return Ok(Value.Text(s)) }
         tds.Cell.Bytes(b) { return Ok(Value.Bytes(b)) }
+        tds.Cell.Dec(d) { return Ok(Value.Dec(d)) }
         tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Ok(Value.Text(tds.cellText(&r.cols[col], &c).unwrapOr(""))) }
     }
 }

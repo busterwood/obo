@@ -4,6 +4,9 @@
 // never answers (Connect Timeout), a refused login, and a session with a
 // plain login (Encrypt=no, the server NOT_SUP): the negotiated packet size
 // of 512 for a long batch, a reply split over many packets, a server error,
+// sp_executesql RPCs (a query with parameters, a call with an output
+// parameter), a transaction committed and one rolled back after an error
+// (Transaction Manager requests, the descriptor in every request between),
 // and the server closing in the middle of a reply (the connection broken).
 // needs: ssl
 // expect: closed at once: error 1023
@@ -15,10 +18,13 @@
 // expect: run: 3
 // expect: rows: 300 sum 44850 last row 299 é affected -1
 // expect: server error: error 208: Invalid object name 'nope'. | idle true
-// expect: parameters: error 1000
+// expect: rpc query: v 7 é | sets 1
+// expect: rpc call: @o 42 | return status none | counts 0
+// expect: transaction: ok 1 | in transaction false | idle true
+// expect: failed transaction: error 2627: Violation of PRIMARY KEY constraint. | errors 2 | in transaction false | idle true
 // expect: cut: error 1023: tds: the server closed the connection | idle false
 // expect: after: error 1023: tds: the connection is broken by an earlier error
-// expect: server: prelogin type 18 bytes 39 | silent: the client closed | login7 type 16 user u db app app fake test password scrambled true | batch type 1 packets 5 largest 512 chars 1206 starts INSERT
+// expect: server: prelogin type 18 bytes 39 | silent: the client closed | login7 type 16 user u db app app fake test password scrambled true | batch type 1 packets 5 largest 512 chars 1206 starts INSERT | rpc type 3 proc 10 stmt "SELECT @p1 AS v, @p2 AS t" params "@p1 bigint, @p2 nvarchar(4000)" | rpc type 3 proc 10 stmt "SET @o = @p1 * 6" params "@p1 bigint, @o bigint OUTPUT" | begin type 14 request 5 | batch in transaction true | commit request 7 with descriptor true | begin type 14 request 5 | rollback request 8 with descriptor true
 // expect: open handles: 0
 
 import "sqlserver"
@@ -101,6 +107,79 @@ fn field(s: str, at: int): str {
 fn done(status: int, count: int): str {
     var b = tt.bytesOf()
     b.done(tds.TK_DONE, status, 0xC1, count)
+    return b.str()
+}
+
+// An sp_executesql RPC's @stmt and @params (both nvarchar(4000)).
+fn rpcText(m: &Msg): str {
+    let d = m.data
+    let at = le16(d, 0)                                 // past ALL_HEADERS
+    var i = at + 6                                      // 0xFFFF, the proc id, the option flags
+    var out = "rpc type " + m.ptype.toStr() + " proc " + le16(d, at + 2).toStr()
+    for name in ["stmt", "params"] {
+        i += 1 + 2 * int(d[i]) + 1                      // name, status
+        i += 1 + 2 + 5                                  // type, max length, collation
+        let n = le16(d, i)
+        out = out + " " + name + " \"" + tds.fromUtf16(d[i + 2..i + 2 + n]).unwrap() + "\""
+        i += 2 + n
+    }
+    return out
+}
+
+// A one-column bigint result set "v" of x, a DONEINPROC, RETURNVALUEs and
+// sp_executesql's RETURNSTATUS and DONEPROC.
+fn rpcReply(rows: bool, out: bool): str {
+    var b = tt.bytesOf()
+    if rows {
+        b.u8(tds.TK_COLMETADATA)
+        b.u16(2)
+        b.col("v", tds.T_INTN)
+        b.u8(8)
+        b.name("v")
+        b.col("t", tds.T_NVARCHAR)
+        b.u16(8000)
+        b.collation(0x0409, 1, 52)
+        b.name("t")
+        b.u8(tds.TK_ROW)
+        b.u8(8)
+        b.u64(7)
+        b.utf16Value("é")
+        b.done(tds.TK_DONEINPROC, 0x10, 0xC1, 1)
+    }
+    if out {
+        b.u8(tds.TK_RETURNVALUE)
+        b.u16(1)
+        b.bvarchar("@o")
+        b.u8(1)
+        b.u32(0)
+        b.u16(1)
+        b.u8(tds.T_INTN)
+        b.u8(8)
+        b.u8(8)
+        b.u64(42)
+    }
+    b.u8(tds.TK_RETURNSTATUS)
+    b.u32(0)
+    b.done(tds.TK_DONEPROC, 0, 0xE0, 0)
+    return b.str()
+}
+
+// An ENVCHANGE of a transaction descriptor: kind 8 (begin) with it new, 9 or
+// 10 (commit, rollback) with it old.
+fn txnEnv(kind: int, desc: str): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_ENVCHANGE)
+    b.u16(1 + 1 + len(desc) + 1)
+    b.u8(kind)
+    if kind == 8 {
+        b.u8(len(desc))
+        b.raw(desc)
+        b.u8(0)
+    } else {
+        b.u8(0)
+        b.u8(len(desc))
+        b.raw(desc)
+    }
     return b.str()
 }
 
@@ -188,6 +267,39 @@ fn serve(ln: net.Listener): str {
     er.message(tds.TK_ERROR, 208, 1, 16, "Invalid object name 'nope'.", 1)
     er.raw(done(0x02, 0))
     c.send(tds.PT_REPLY, er.str(), 512)
+    // an RPC with parameters, then one with an output parameter
+    let p1 = c.message().unwrap()
+    append(mut &log, rpcText(&p1))
+    c.send(tds.PT_REPLY, rpcReply(true, false), 512)
+    let p2 = c.message().unwrap()
+    append(mut &log, rpcText(&p2))
+    c.send(tds.PT_REPLY, rpcReply(false, true), 512)
+    // a transaction: begin, a batch with its descriptor, commit
+    let desc = "\x11\x22\x33\x44\x00\x00\x00\x01"
+    let t1 = c.message().unwrap()
+    append(mut &log, "begin type " + t1.ptype.toStr() + " request " + le16(t1.data, 22).toStr())
+    c.send(tds.PT_REPLY, txnEnv(8, desc) + done(0, 0), 512)
+    let t2 = c.message().unwrap()
+    append(mut &log, "batch in transaction " + (t2.data[10..18] == desc).toStr())
+    c.send(tds.PT_REPLY, done(0x10, 1), 512)
+    let t3 = c.message().unwrap()
+    append(mut &log, "commit request " + le16(t3.data, 22).toStr() + " with descriptor " + (t3.data[10..18] == desc).toStr())
+    c.send(tds.PT_REPLY, txnEnv(9, desc) + done(0, 0), 512)
+    // a transaction whose batch fails: two errors, then a rollback
+    let u1 = c.message().unwrap()
+    append(mut &log, "begin type " + u1.ptype.toStr() + " request " + le16(u1.data, 22).toStr())
+    c.send(tds.PT_REPLY, txnEnv(8, desc) + done(0, 0), 512)
+    let u2 = c.message().unwrap()
+    var ue = tt.bytesOf()
+    ue.message(tds.TK_ERROR, 2627, 1, 14, "Violation of PRIMARY KEY constraint.", 1)
+    ue.message(tds.TK_ERROR, 3621, 0, 10, "The statement has been terminated.", 1)
+    ue.raw(done(0x02, 0))
+    c.send(tds.PT_REPLY, ue.str(), 512)
+    let u3 = c.message().unwrap()
+    append(mut &log, "rollback request " + le16(u3.data, 22).toStr() + " with descriptor " + (u3.data[10..18] == desc).toStr())
+    var rb = tt.bytesOf()
+    rb.message(tds.TK_INFO, 0, 1, 0, "rolled back", 1)
+    c.send(tds.PT_REPLY, rb.str() + txnEnv(10, desc) + done(0, 0), 512)
     // closes in the middle of a reply
     let b4 = c.message().unwrap()
     let part = tds.packets(tds.PT_REPLY, rowsReply(50), 512)
@@ -242,7 +354,26 @@ fn main() {
             Ok(_) { println("server error: ok") }
             Err(e) { println("server error: " + e.toStr() + " | idle " + c.idle().toStr()) }
         }
-        println("parameters: " + code(c.query("SELECT ?", &[sqlserver.Value.Int(1)])))
+        let rq = c.query("SELECT @p1 AS v, @p2 AS t", &[sqlserver.Value.Int(7), sqlserver.Value.Text("é")]).unwrap()
+        println("rpc query: v " + rq.int(0, 0).unwrap().toStr() + " " + rq.text(0, 1).unwrap() + " | sets " + rq.resultSets().toStr())
+        let rc = c.call("SET @o = @p1 * 6", &[sqlserver.Value.Int(7)], &[sqlserver.Out{name: "@o", sqlType: "bigint"}]).unwrap()
+        println("rpc call: " + rc.outputs.columnName(0).unwrap() + " " + rc.outputs.int(0, 0).unwrap().toStr() + " | return status " +
+                (if rc.returnStatus.isSome() { "some" } else { "none" }) + " | counts " + len(rc.counts).toStr())
+        let tr = c.transaction(fn(k: mut &sqlserver.Conn): Result[int, sqlserver.Error] {
+            return k.run("INSERT", &[])
+        })
+        println("transaction: ok " + tr.unwrap().toStr() + " | in transaction " + c.inTransaction().toStr() + " | idle " +
+                c.idle().toStr())
+        let tf = c.transaction(fn(k: mut &sqlserver.Conn): Result[int, sqlserver.Error] {
+            return k.run("INSERT", &[])
+        })
+        match tf {
+            Ok(_) { println("failed transaction: ok") }
+            Err(e) {
+                println("failed transaction: " + e.toStr() + " | errors " + len(c.errors()).toStr() + " | in transaction " +
+                        c.inTransaction().toStr() + " | idle " + c.idle().toStr())
+            }
+        }
         match c.query("SELECT", &[]) {
             Ok(_) { println("cut: ok") }
             Err(e) { println("cut: " + e.toStr() + " | idle " + c.idle().toStr()) }

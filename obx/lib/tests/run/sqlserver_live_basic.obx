@@ -5,8 +5,11 @@
 // Encrypt=no, a wrong password, batches with row counts, PRINT as a
 // diagnostic, server errors, every T1 type at its limits, varchar in a UTF-8
 // and in a code-page collation, nvarchar(max) longer than a packet, a long
-// batch, 20000 rows, transactions by batch, USE and the type not supported
-// yet.
+// batch, 20000 rows, transactions by batch, USE; T2: parameters, a date and
+// a decimal, sql_variant (not supported yet), transaction[T] committed and
+// rolled back, every ERROR of a call, INFO after one, a procedure's return
+// status and output parameters, the session's language. (The full type
+// matrix and the comparison with ODBC are in sqlserver_live_diff.)
 // needs: ssl
 // expect: encrypt=yes: full tds 0x74000004 idle true collation true
 // expect: encrypt=no: true
@@ -21,7 +24,7 @@
 // expect: duplicate: 2627, rows now 5
 // expect: divide: error 8134
 // expect: raiserror 16: error 50000
-// expect: parameters: error 1000
+// expect: parameters: 2 | null true | 4001 chars 4001 | twice 'ab' 'ab'
 // expect: ints: 255 0 -32768 32767 -2147483648 2147483647 -9223372036854775808 9223372036854775807 true false
 // expect: floats: 0.10000000149011612 -3.3999999521443642e38 0.1 1.7976931348623157e308 0 0 1.1754943508222875e-38
 // expect: texts: '' 'café 😀 日本' 'ab  ' NULL 'naïve' 'naïve' error 1002 x'00ff10' NULL
@@ -34,11 +37,15 @@
 // expect: long batch: 5000
 // expect: packet size: 16384 batch ok 40000
 // expect: many: 20000 sum 200010000
-// expect: not yet: error 1002 error 1002 date decimal
+// expect: date and decimal: 2026-11-05 1.50 date decimal | sql_variant: error 1002 sql_variant
 // expect: begin: true idle false
 // expect: rollback: false rows 0
 // expect: commit: false rows 1
 // expect: use: tempdb back ok true
+// expect: transaction[T]: ok 1, rows 1 | failed: error 2627, rows 0, idle true
+// expect: errors: 2 | 50000 state 3 class 16 line 1 'first' | 50000 state 4 class 11 line 1 'second' | infos 1 'note'
+// expect: procedure: batch return status 7 | rpc true | outputs @o 42 @r 7 | sets 1
+// expect: language: us_english
 // expect: open handles: 0
 
 import "sqlserver"
@@ -124,7 +131,11 @@ fn main() {
     }
     println("divide: " + code(c.query("SELECT 1/0", &[])))
     println("raiserror 16: " + code(c.exec("RAISERROR('bad %d', 16, 1, 42)")))
-    println("parameters: " + code(c.query("SELECT @p", &[sqlserver.Value.Int(1)])))
+    let pr = c.query("SELECT @p1 + 1, CASE WHEN @p2 IS NULL THEN 1 ELSE 0 END, LEN(@p3), @p4 + @p4",
+                     &[sqlserver.Value.Int(1), sqlserver.Value.Null, sqlserver.Value.Text(strings.padLeft("", 4001, 'y')),
+                       sqlserver.Value.Text("ab")]).unwrap()
+    println("parameters: " + pr.int(0, 0).unwrap().toStr() + " | null " + (pr.int(0, 1).unwrap() == 1).toStr() + " | 4001 chars " +
+            pr.int(0, 2).unwrap().toStr() + " | twice '" + pr.text(0, 3).unwrap()[0..2] + "' '" + pr.text(0, 3).unwrap()[2..] + "'")
 
     // types
     let ints = c.query("SELECT CAST(255 AS tinyint), CAST(0 AS tinyint), CAST(-32768 AS smallint), CAST(32767 AS smallint), " +
@@ -200,9 +211,10 @@ fn main() {
     var sum = 0
     for i in 0..many.rowCount() { sum += many.int(i, 0).unwrap() }
     println("many: " + many.rowCount().toStr() + " sum " + sum.toStr())
-    let dt = c.query("SELECT CAST('2026-11-05' AS date), CAST(1.5 AS decimal(5,2))", &[]).unwrap()
-    println("not yet: " + code(dt.value(0, 0)) + " " + code(dt.value(0, 1)) + " " + dt.columnTypeName(0).unwrap() + " " +
-            dt.columnTypeName(1).unwrap())
+    let dt = c.query("SELECT CAST('2026-11-05' AS date), CAST(1.5 AS decimal(5,2)), CAST(1 AS sql_variant)", &[]).unwrap()
+    println("date and decimal: " + dt.date(0, 0).unwrap().toStr() + " " + dt.decimal(0, 1).unwrap().toStr() + " " +
+            dt.columnTypeName(0).unwrap() + " " + dt.columnTypeName(1).unwrap() + " | sql_variant: " + code(dt.value(0, 2)) + " " +
+            dt.columnTypeName(2).unwrap())
 
     // transactions and USE
     c.exec("BEGIN TRANSACTION").unwrap()
@@ -215,6 +227,36 @@ fn main() {
     let db = c.database()
     c.exec("USE tempdb").unwrap()
     println("use: " + c.database() + " back " + code(c.exec("USE [" + db + "]")) + " " + (c.database() == db).toStr())
+
+    // T2: transaction[T], errors, infos, procedures, the session
+    c.exec("CREATE TABLE #x(id int PRIMARY KEY)").unwrap()
+    let ok = c.transaction(fn(k: mut &sqlserver.Conn): Result[int, sqlserver.Error] {
+        return k.run("INSERT INTO #x VALUES (@p1)", &[sqlserver.Value.Int(1)])
+    })
+    let okRows = c.query("SELECT COUNT(*) FROM #x", &[]).unwrap().int(0, 0).unwrap()
+    let bad = c.transaction(fn(k: mut &sqlserver.Conn): Result[int, sqlserver.Error] {
+        let n = try k.run("INSERT INTO #x VALUES (2)", &[])
+        return k.run("INSERT INTO #x VALUES (1)", &[])
+    })
+    let badRows = c.query("SELECT COUNT(*) FROM #x WHERE id = 2", &[]).unwrap().int(0, 0).unwrap()
+    println("transaction[T]: ok " + ok.unwrap().toStr() + ", rows " + okRows.toStr() + " | failed: " + code(bad) +
+            ", rows " + badRows.toStr() + ", idle " + c.idle().toStr())
+    let me = c.exec("RAISERROR('first', 16, 3); PRINT 'note'; RAISERROR('second', 11, 4)")
+    var es: []str = [len(c.errors()).toStr()]
+    for m in c.errors() {
+        append(mut &es, m.number.toStr() + " state " + m.state.toStr() + " class " + m.class.toStr() + " line " + m.line.toStr() +
+               " '" + m.text + "'")
+    }
+    println("errors: " + strings.join(&es, " | ") + " | infos " + len(c.diagnostics()).toStr() + " '" + c.diagnostics()[0].text + "'")
+    c.exec("CREATE PROCEDURE #p @a int, @o int OUTPUT AS BEGIN SELECT @a AS a; SET @o = @a * 6; RETURN 7 END").unwrap()
+    let pb = c.queryAll("DECLARE @o int; EXEC #p 7, @o OUTPUT", &[]).unwrap()
+    // through sp_executesql the procedure's RETURNSTATUS is not sent: EXEC @r = ... with @r an output
+    let pc = c.call("EXEC @r = #p @p1, @o OUTPUT", &[sqlserver.Value.Int(7)],
+                    &[sqlserver.Out{name: "@o", sqlType: "int"}, sqlserver.Out{name: "@r", sqlType: "int"}]).unwrap()
+    println("procedure: batch return status " + pb.returnStatus.unwrap().toStr() + " | rpc " + pc.returnStatus.isNone().toStr() +
+            " | outputs " + pc.outputs.columnName(0).unwrap() + " " + pc.outputs.int(0, 0).unwrap().toStr() + " " +
+            pc.outputs.columnName(1).unwrap() + " " + pc.outputs.int(0, 1).unwrap().toStr() + " | sets " + len(pc.sets).toStr())
+    println("language: " + c.language())
     c.close()
     println("open handles: " + sqlserver.openHandles().toStr())
 }

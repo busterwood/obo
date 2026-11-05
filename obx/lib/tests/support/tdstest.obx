@@ -221,6 +221,177 @@ pub fn stream(): str {
     return b.str()
 }
 
+// Little-endian, n bytes of v.
+pub fn (b: mut &B) le(v: int, n: int) {
+    for k in 0..n { b.u8((v >> (8 * k)) & 0xff) }
+}
+
+// A column of an exact or civil type: its TYPE_INFO after the type byte.
+fn (b: mut &B) typed(name: str, ty: int, info: &[int]) {
+    b.col(name, ty)
+    for x in info { b.u8(x) }
+    b.name(name)
+}
+
+// stream2(): a reply with every T2 type (MS-TDS 2.2.5.5.1): decimal and
+// numeric, money, smallmoney and the fixed money, date, time(7), time(0),
+// datetime2(3), datetimeoffset(7), datetime, smalldatetime and the fixed
+// datetime, uniqueidentifier, xml and sql_variant (not decoded); rows of
+// ordinary values, NULLs and the limits; then two RETURNVALUEs, a
+// RETURNSTATUS and the RPC's final DONEPROC.
+pub fn stream2(): str {
+    var b = bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(16)
+    b.typed("dec", tds.T_DECIMALN, &[17, 38, 10])
+    b.typed("num", tds.T_NUMERICN, &[5, 9, 2])
+    b.typed("m", tds.T_MONEYN, &[8])
+    b.typed("sm", tds.T_MONEYN, &[4])
+    b.typed("mf", tds.T_MONEY, &[])
+    b.typed("d", tds.T_DATEN, &[])
+    b.typed("t7", tds.T_TIMEN, &[7])
+    b.typed("t0", tds.T_TIMEN, &[0])
+    b.typed("dt2", tds.T_DATETIME2N, &[3])
+    b.typed("dto", tds.T_DATETIMEOFFSETN, &[7])
+    b.typed("dt", tds.T_DATETIMN, &[8])
+    b.typed("sdt", tds.T_DATETIMN, &[4])
+    b.typed("dtf", tds.T_DATETIME, &[])
+    b.typed("g", tds.T_GUID, &[16])
+    b.col("x", tds.T_XML)
+    b.u8(0)                                  // no schema
+    b.name("x")
+    b.col("v", tds.T_SSVARIANT)
+    b.u32(8016)
+    b.name("v")
+    let tod = (13 * 3600 + 45 * 60 + 7)      // 13:45:07
+    // ROW 0: ordinary values
+    b.u8(tds.TK_ROW)
+    b.u8(17)
+    b.u8(0)                                  // negative
+    b.u64(1234567890123456789)
+    b.u64(0)
+    b.u8(5)
+    b.u8(1)
+    b.u32(12345)
+    b.u8(8)
+    b.u32(0)
+    b.u32(123400)                            // 12.34
+    b.u8(4)
+    b.u32(-15000)                            // -1.5
+    b.u32(0x80000000)
+    b.u32(0)                                 // the smallest money
+    b.u8(3)
+    b.le(739924, 3)                          // 2026-11-05
+    b.u8(5)
+    b.le(tod * 10000000 + 1234567, 5)
+    b.u8(3)
+    b.le(86399, 3)                           // 23:59:59
+    b.u8(7)
+    b.le(tod * 1000 + 123, 4)
+    b.le(739924, 3)
+    b.u8(10)
+    b.le((tod - 5400) * 10000000 + 1234567, 5)   // UTC 12:15:07.1234567
+    b.le(739924, 3)
+    b.le(90, 2)                              // +01:30
+    b.u8(8)
+    b.u32(46329)
+    b.u32(tod * 300 + 1)                     // one tick: .003
+    b.u8(4)
+    b.u16(46329)
+    b.u16(825)                               // 13:45
+    b.u32(-53690)
+    b.u32(0)                                 // 1753-01-01
+    b.u8(16)
+    b.raw("\xff\x19\x96\x6f\x86\x8b\x11\xd0\xb4\x2d\x00\xc0\x4f\xc9\x64\xff")
+    b.u64(-2)                                // xml: PLP of unknown length, with a byte order mark
+    b.u32(2)
+    b.raw("\xff\xfe")
+    b.u32(16)
+    b.utf16("<a>é</a>")
+    b.u32(0)
+    b.u32(3)
+    b.raw("\x38\x01\x07")                   // a sql_variant
+    // NBCROW 1: all NULL but the two fixed types
+    b.u8(tds.TK_NBCROW)
+    b.u8(0xef)
+    b.u8(0xef)
+    b.u32(0)
+    b.u32(5000)                              // mf: 0.5
+    b.u32(0)
+    b.u32(0)                                 // dtf: 1900-01-01
+    // ROW 2: the limits
+    b.u8(tds.TK_ROW)
+    b.u8(17)
+    b.u8(0)
+    b.u64(0x098a223fffffffff)
+    b.u64(0x4b3b4ca85a86c47a)                // -(10^38 - 1) * 10^-10
+    b.u8(5)
+    b.u8(0)
+    b.u32(0)                                 // a negative zero
+    b.u8(8)
+    b.u32(0x7fffffff)
+    b.u32(0xffffffff)                        // the largest money
+    b.u8(4)
+    b.u32(0x80000000)                        // the smallest smallmoney
+    b.u32(0)
+    b.u32(0)
+    b.u8(3)
+    b.le(0, 3)                               // 0001-01-01
+    b.u8(5)
+    b.le(863999999999, 5)                    // 23:59:59.9999999
+    b.u8(3)
+    b.le(0, 3)
+    b.u8(7)
+    b.le(86399999, 4)
+    b.le(3652058, 3)                         // 9999-12-31 23:59:59.999
+    b.u8(10)
+    b.le(14 * 3600 * 10000000, 5)            // UTC 0001-01-01 14:00, at -14:00
+    b.le(0, 3)
+    b.le(-840, 2)
+    b.u8(8)
+    b.u32(2958463)
+    b.u32(25919999)                          // 9999-12-31 23:59:59.997
+    b.u8(4)
+    b.u16(65535)
+    b.u16(1439)                              // 2079-06-06 23:59
+    b.u32(2958463)
+    b.u32(0)
+    b.u8(16)
+    for i in 0..16 { b.u8(0) }
+    b.u64(0)                                 // xml: empty
+    b.u32(0)
+    b.u32(0)                                 // sql_variant NULL
+    b.done(tds.TK_DONEINPROC, 0x10, 0xC1, 3)
+    // RETURNVALUEs: @o bigint 42, @s nvarchar(max) 'x21'
+    b.u8(tds.TK_RETURNVALUE)
+    b.u16(1)
+    b.bvarchar("@o")
+    b.u8(1)
+    b.u32(0)
+    b.u16(1)
+    b.u8(tds.T_INTN)
+    b.u8(8)
+    b.u8(8)
+    b.u64(42)
+    b.u8(tds.TK_RETURNVALUE)
+    b.u16(2)
+    b.bvarchar("@s")
+    b.u8(1)
+    b.u32(0)
+    b.u16(1)
+    b.u8(tds.T_NVARCHAR)
+    b.u16(0xFFFF)
+    b.collation(0x0409, 0x01, 52)
+    b.u64(6)
+    b.u32(6)
+    b.utf16("x21")
+    b.u32(0)
+    b.u8(tds.TK_RETURNSTATUS)
+    b.u32(0)
+    b.done(tds.TK_DONEPROC, 0, 0xE0, 0)
+    return b.str()
+}
+
 // A LOGINACK for TDS 7.4 from "Microsoft SQL Server" 17.0.5035.
 pub fn (b: mut &B) loginAck() {
     var a = bytesOf()
