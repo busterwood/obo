@@ -548,19 +548,9 @@ fn sipKeyedStr(k0: u64, k1: u64, s: &str): u64 {
     let n = len(s)
     let end = n - (n & 7)
     var i = 0
-    while true {
-        // the 8-byte blocks (little-endian), then the last: the rest of the bytes, the length
-        var m: u64 = 0
-        if i < end {
-            m = strWord(s, i)
-        } else {
-            var j = n
-            while j > end {
-                j -= 1
-                m = m << 8 | u64(strByte(s, j))
-            }
-            m |= u64(n & 255) << 56
-        }
+    while i < end {
+        // the 8-byte blocks, little-endian
+        let m = strWord(s, i)
         v3 ^= m
         v0 = v0 +% v1
         v1 = (v1 << 13 | v1 >> 51) ^ v0
@@ -573,22 +563,66 @@ fn sipKeyedStr(k0: u64, k1: u64, s: &str): u64 {
         v1 = (v1 << 17 | v1 >> 47) ^ v2
         v2 = v2 << 32 | v2 >> 32
         v0 ^= m
-        if i >= end { break }
         i += 8
     }
-    v2 ^= 0xff
-    for r in 0..3 {
-        v0 = v0 +% v1
-        v1 = (v1 << 13 | v1 >> 51) ^ v0
-        v0 = v0 << 32 | v0 >> 32
-        v2 = v2 +% v3
-        v3 = (v3 << 16 | v3 >> 48) ^ v2
-        v0 = v0 +% v3
-        v3 = (v3 << 21 | v3 >> 43) ^ v0
-        v2 = v2 +% v1
-        v1 = (v1 << 17 | v1 >> 47) ^ v2
-        v2 = v2 << 32 | v2 >> 32
+    // the last block: the rest of the bytes, then the length in the top byte. A string of 8
+    // bytes or more has them at the top of its last 8 bytes.
+    var m: u64 = 0
+    if n & 7 != 0 {
+        if n >= 8 {
+            m = strWord(s, n - 8) >> (64 - 8 * (n & 7))
+        } else {
+            var j = n
+            while j > 0 {
+                j -= 1
+                m = m << 8 | u64(strByte(s, j))
+            }
+        }
     }
+    m |= u64(n & 255) << 56
+    v3 ^= m
+    v0 = v0 +% v1
+    v1 = (v1 << 13 | v1 >> 51) ^ v0
+    v0 = v0 << 32 | v0 >> 32
+    v2 = v2 +% v3
+    v3 = (v3 << 16 | v3 >> 48) ^ v2
+    v0 = v0 +% v3
+    v3 = (v3 << 21 | v3 >> 43) ^ v0
+    v2 = v2 +% v1
+    v1 = (v1 << 17 | v1 >> 47) ^ v2
+    v2 = v2 << 32 | v2 >> 32
+    v0 ^= m
+    v2 ^= 0xff
+    v0 = v0 +% v1
+    v1 = (v1 << 13 | v1 >> 51) ^ v0
+    v0 = v0 << 32 | v0 >> 32
+    v2 = v2 +% v3
+    v3 = (v3 << 16 | v3 >> 48) ^ v2
+    v0 = v0 +% v3
+    v3 = (v3 << 21 | v3 >> 43) ^ v0
+    v2 = v2 +% v1
+    v1 = (v1 << 17 | v1 >> 47) ^ v2
+    v2 = v2 << 32 | v2 >> 32
+    v0 = v0 +% v1
+    v1 = (v1 << 13 | v1 >> 51) ^ v0
+    v0 = v0 << 32 | v0 >> 32
+    v2 = v2 +% v3
+    v3 = (v3 << 16 | v3 >> 48) ^ v2
+    v0 = v0 +% v3
+    v3 = (v3 << 21 | v3 >> 43) ^ v0
+    v2 = v2 +% v1
+    v1 = (v1 << 17 | v1 >> 47) ^ v2
+    v2 = v2 << 32 | v2 >> 32
+    v0 = v0 +% v1
+    v1 = (v1 << 13 | v1 >> 51) ^ v0
+    v0 = v0 << 32 | v0 >> 32
+    v2 = v2 +% v3
+    v3 = (v3 << 16 | v3 >> 48) ^ v2
+    v0 = v0 +% v3
+    v3 = (v3 << 21 | v3 >> 43) ^ v0
+    v2 = v2 +% v1
+    v1 = (v1 << 17 | v1 >> 47) ^ v2
+    v2 = v2 << 32 | v2 >> 32
     return v0 ^ v1 ^ v2 ^ v3
 }
 
