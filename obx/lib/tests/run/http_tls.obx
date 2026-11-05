@@ -1,0 +1,167 @@
+// http: https, against an https server in the program (tls.server) with
+// certificates made at test time (skipped without the openssl command):
+// requests on one kept-alive connection, a body both ways, a large body,
+// the connection the server closes, the system's store refusing the test
+// CA, a certificate expired, a server name the certificate does not have,
+// insecureSkipVerify, bad TLS options (before connecting), redirects from
+// http to https (followed) and from https to http (refused unless
+// allowed), separate pools per scheme, and many requests in tasks.
+// needs: ssl
+// expect: GET: 200 hello, X-Conn 1
+// expect: keep-alive: 6 requests, X-Conn 1, dials 1, reuses 5
+// expect: POST: POST /echo?a=1 | Content-Length: 11 | hello there
+// expect: big: 1048576 bytes, all x: true
+// expect: close: bye, then a new connection: true
+// expect: system store: http: tls: verify: unable to get local issuer certificate (https://localhost:PORT/hello)
+// expect: by address: 200 hello
+// expect: expired: http: tls: verify: certificate has expired (https://localhost:PORT2/hello)
+// expect: other name: http: tls: verify: hostname mismatch (https://localhost:PORT3/hello)
+// expect: insecureSkipVerify: 200 hello
+// expect: bad CA file: http: tls: config: the CA file nope.pem: No such file or directory (https://localhost:PORT/hello), dials 0
+// expect: http to https: 200 hello, final https://localhost:PORT/hello
+// expect: https to http: http: redirects: a redirect from https to http: http://127.0.0.1:HTTP/hello (https://localhost:PORT/redirect?to=http%3A%2F%2F127.0.0.1%3AHTTP%2Fhello)
+// expect: https to http allowed: 200 hello
+// expect: pools: open 2, idle 2
+// expect: 50 in tasks: 50 ok, connections at most 8: true
+import "task"
+import "net"
+import "http"
+import "url"
+import "strings"
+import "tls"
+import "../support/tlstest" as tt
+import "../support/httptest" as ht
+
+var PORTS: str = ""            // the ports, separated by spaces
+
+// Replaces the test's ports by names.
+fn ports(s: str): str {
+    var t = s
+    let names = ["PORT", "PORT2", "PORT3", "HTTP"]
+    let ps = split(PORTS, ' ')
+    for i in 0..len(ps) { t = strings.replaceAll(t, ":" + ps[i] + "/", ":" + names[i] + "/") }
+    for i in 0..len(ps) { t = strings.replaceAll(t, "%3A" + ps[i] + "%2F", "%3A" + names[i] + "%2F") }
+    return t
+}
+
+fn errText(r: Result[http.Response, http.Error]): str {
+    return match r {
+        Ok(x) { "status " + intToStr(x.status) }
+        Err(e) { ports(e.toStr()) }
+    }
+}
+
+fn hello(r: Result[http.Response, http.Error]): str {
+    match move(r) {
+        Ok(x) {
+            let st = x.status
+            return intToStr(st) + " " + x.text().unwrap()
+        }
+        Err(e) { return ports(e.toStr()) }
+    }
+}
+
+fn start(s: mut &task.Scope, servers: mut &[]task.Future[int], cert: str): str {
+    let ln = net.listen("127.0.0.1:0").unwrap()
+    let port = strings.cut(ln.localAddr(), ":").unwrap().after
+    PORTS = if len(PORTS) == 0 { port } else { PORTS + " " + port }
+    append(servers, s.start(tt.serveHttps, tt.Https{ctx: tt.serverContext(cert), ln: ln}))
+    return "https://localhost:" + port
+}
+
+type Job = record { c: http.Client; u: str }
+
+fn fetch(j: Job): bool {
+    let r = j.c.get(j.u)
+    if r.isErr() { return false }
+    return r.unwrap().text().unwrap() == "hello"
+}
+
+fn main() {
+    tt.pki()
+    task.scope(fn(s: mut &task.Scope) {
+        var servers: []task.Future[int] = []
+        let base = start(s, mut &servers, "srv")
+        let expired = start(s, mut &servers, "expired")
+        let other = start(s, mut &servers, "other")
+        let pln = net.listen("127.0.0.1:0").unwrap()
+        let plain = "http://" + pln.localAddr()
+        PORTS = PORTS + " " + strings.cut(pln.localAddr(), ":").unwrap().after
+        let psrv = s.start(ht.serve, pln)
+
+        var o = http.defaults()
+        o.tls.caFile = tt.path("ca.pem")
+        let c = http.newClient(o)
+
+        let r1 = c.get(base + "/hello").unwrap()
+        let st1 = r1.status
+        let x1 = r1.header("X-Conn").unwrap()
+        println("GET: " + intToStr(st1) + " " + r1.text().unwrap() + ", X-Conn " + x1)
+
+        var conn = ""
+        for i in 0..5 {
+            let r = c.get(base + "/hello").unwrap()
+            conn = r.header("X-Conn").unwrap()
+            let t = r.text().unwrap()
+        }
+        let s1 = c.stats()
+        println("keep-alive: 6 requests, X-Conn " + conn + ", dials " + intToStr(s1.dials) + ", reuses " + intToStr(s1.reuses))
+
+        let t2 = c.post(base + "/echo?a=1", "text/plain", "hello there").unwrap().text().unwrap()
+        println("POST: " + strings.cut(t2, "\n").unwrap().before + " | Content-Length: " + intToStr(len(t2) - len("POST /echo?a=1\n")) +
+                " | " + strings.cut(t2, "\n").unwrap().after)
+
+        let big = c.get(base + "/big?n=1048576").unwrap().text().unwrap()
+        var allX = true
+        for i in 0..len(big) { if big[i] != 'x' { allX = false } }
+        println("big: " + intToStr(len(big)) + " bytes, all x: " + allX.toStr())
+
+        let before = c.stats().dials
+        let bye = c.get(base + "/close").unwrap().text().unwrap()
+        let again = c.get(base + "/hello").unwrap().text().unwrap()
+        println("close: " + bye + ", then a new connection: " + (c.stats().dials == before + 1).toStr())
+
+        let sys = http.newClient(http.defaults())
+        println("system store: " + errText(sys.get(base + "/hello")))
+
+        let byAddr = strings.replaceAll(base, "localhost", "127.0.0.1")
+        println("by address: " + hello(c.get(byAddr + "/hello")))
+        println("expired: " + errText(c.get(expired + "/hello")))
+        println("other name: " + errText(c.get(other + "/hello")))
+
+        var io = http.defaults()
+        io.tls.insecureSkipVerify = true
+        let insecure = http.newClient(io)
+        println("insecureSkipVerify: " + hello(insecure.get(other + "/hello")))
+
+        var bo = http.defaults()
+        bo.tls.caFile = "nope.pem"
+        let bad = http.newClient(bo)
+        println("bad CA file: " + errText(bad.get(base + "/hello")) + ", dials " + intToStr(bad.stats().dials))
+
+        let up = c.get(plain + "/redirect?code=302&to=" + url.encode(base + "/hello")).unwrap()
+        let fin = up.url.toStr()
+        println("http to https: " + hello(Ok(up)) + ", final " + ports(fin))
+        println("https to http: " + errText(c.get(base + "/redirect?to=" + url.encode(plain + "/hello"))))
+        var ao = http.defaults()
+        ao.tls.caFile = tt.path("ca.pem")
+        ao.allowHttpsToHttp = true
+        let down = http.newClient(ao)
+        println("https to http allowed: " + hello(down.get(base + "/redirect?to=" + url.encode(plain + "/hello"))))
+        let ds = down.stats()
+        println("pools: open " + intToStr(ds.open) + ", idle " + intToStr(ds.idle))
+
+        var po = http.defaults()
+        po.tls.caFile = tt.path("ca.pem")
+        po.maxPerHost = 8
+        let pc = http.newClient(po)
+        let conns0 = tt.conns()
+        var fs: []task.Future[bool] = []
+        for i in 0..50 { append(mut &fs, s.start(fetch, Job{c: pc, u: base + "/hello"})) }
+        var ok = 0
+        for f in task.all(fs).unwrap() { if f { ok += 1 } }
+        println("50 in tasks: " + intToStr(ok) + " ok, connections at most 8: " + (pc.stats().dials <= 8).toStr())
+        servers = []
+        let gone = move(psrv)
+    })
+}

@@ -29,7 +29,8 @@
 // expect: http: invalid request: an invalid header name 'Bad Name' (http://127.0.0.1:PORT/hello)
 // expect: http: invalid request: a Content-Length that is not the body's length (http://127.0.0.1:PORT/hello)
 // expect: http: invalid request: Transfer-Encoding is set (request bodies are sent with a Content-Length) (http://127.0.0.1:PORT/hello)
-// expect: http: tls: https is not supported yet (plain http only) (https://127.0.0.1:PORT/hello)
+// expect: server: a bare LF
+// expect: http: tls: handshake: the peer closed the connection during the handshake (https://127.0.0.1:PORT/hello)
 // expect: http: connect: connect 127.0.0.1:PORT: Connection refused (http://127.0.0.1:PORT/)
 // expect: stats: open 1, idle 1, waiting 0
 import "task"

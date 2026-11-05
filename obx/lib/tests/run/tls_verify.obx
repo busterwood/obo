@@ -18,7 +18,7 @@
 // expect: TLS 1.1 only: handshake true
 // expect: no name: tls: config: a server name is needed to verify the server's certificate
 // expect: bad pin: tls: config: a pin that is not a SHA-256 fingerprint (64 hex digits): abc
-// expect: bad CA file: tls: config: No such file or directory; no such file; system lib (CA file nope.pem)
+// expect: bad CA file: tls: config: the CA file nope.pem: No such file or directory
 // expect: min above max: tls: config: minVersion is above maxVersion
 // expect: no server certificate: tls: config: a server needs a certificate (certFile)
 // expect: handles 0

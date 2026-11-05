@@ -44,6 +44,7 @@
 // at each call.
 
 import "io"
+import "fs"
 import "net"
 import "ffi"
 import "time"
@@ -233,6 +234,22 @@ fn queueFail(k: Kind, what: str, peer: str): Error {
     return fail(k, q.text, q.code, peer)
 }
 
+// A file of the options that OpenSSL could not load: "the CA file x.pem: No
+// such file or directory" when it cannot be read, else OpenSSL's reasons
+// ("the CA file x.pem: no certificate or crl found").
+fn fileFail(what: str, file: str): Error {
+    match fs.stat(file) {
+        Err(e) {
+            ERR_clear_error()
+            return fail(Kind.Config, what + " " + file + ": " + io.errorText(e.errno), e.errno, "")
+        }
+        Ok(_) {
+            let q = drainQueue("cannot load it")
+            return fail(Kind.Config, what + " " + file + ": " + q.text, q.code, "")
+        }
+    }
+}
+
 // ---------------------------------------------------------------- options
 
 // The lowest or highest protocol version to use. Older versions than 1.2
@@ -366,14 +383,15 @@ fn newContext(o: &Options, server: bool): Result[Context, Error] {
     }
     if len(o.certFile) > 0 {
         if SSL_CTX_use_certificate_chain_file(h, o.certFile) != 1 {
-            return Err(queueFail(Kind.Config, "cannot load the certificate", "certificate file " + o.certFile))
+            return Err(fileFail("the certificate file", o.certFile))
         }
         let key = if len(o.keyFile) > 0 { o.keyFile } else { o.certFile }
         if SSL_CTX_use_PrivateKey_file(h, key, i32(SSL_FILETYPE_PEM)) != 1 {
-            return Err(queueFail(Kind.Config, "cannot load the private key", "key file " + key))
+            return Err(fileFail("the key file", key))
         }
         if SSL_CTX_check_private_key(h) != 1 {
-            return Err(queueFail(Kind.Config, "the private key does not match the certificate", "key file " + key))
+            ERR_clear_error()
+            return Err(fail(Kind.Config, "the key file " + key + " does not match the certificate", 0, ""))
         }
     } else if server {
         return Err(fail(Kind.Config, "a server needs a certificate (certFile)", 0, ""))
@@ -393,10 +411,10 @@ fn newContext(o: &Options, server: bool): Result[Context, Error] {
 
 fn loadCas(h: ptr, file: str, dir: str): Result[Unit, Error] {
     if len(file) > 0 && SSL_CTX_load_verify_file(h, file) != 1 {
-        return Err(queueFail(Kind.Config, "cannot load the CA file", "CA file " + file))
+        return Err(fileFail("the CA file", file))
     }
     if len(dir) > 0 && SSL_CTX_load_verify_dir(h, dir) != 1 {
-        return Err(queueFail(Kind.Config, "cannot load the CA directory", "CA directory " + dir))
+        return Err(fileFail("the CA directory", dir))
     }
     return Ok(Unit{})
 }

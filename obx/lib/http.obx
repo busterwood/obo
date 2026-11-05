@@ -1,5 +1,5 @@
 // http: an HTTP/1.1 client for tasks, and the header parsing it shares with
-// servers (design/http-client.md, phase H1: plain TCP; https is H2).
+// servers (design/http-client.md): http and https (TLS through tls).
 //
 //     let r = try http.get("http://api.example.com/v1/rates?ccy=EUR")
 //     if r.status != 200 { ... }                 // a status is not an error
@@ -13,6 +13,10 @@
 //     rq.header("Content-Type", "application/json")
 //     rq.body = json
 //     let r = try c.send(&rq)
+//
+//     var o = http.defaults()                     // https: verification is on; another CA,
+//     o.tls.caFile = "corp-ca.pem"                // or (for tests only) none at all
+//     o.tls.insecureSkipVerify = true
 //
 //     var buf = array(65536, byte(0))             // streaming a large body
 //     var r = try c.get(u)
@@ -50,6 +54,7 @@ import "io"
 import "os"
 import "time"
 import "url"
+import "tls"
 
 pub const MAX_HEAD = 65536         // bytes of a reply head (status line and headers), or of trailers
 pub const MAX_HEADERS = 100        // header lines of a head, or trailer lines
@@ -65,8 +70,10 @@ const EBADF = 9
 
 // ---------------------------------------------------------------- errors
 
-// What went wrong. Tls is for https (phase H2). Process: a client used in
-// another process than the one that made it (after a fork).
+// What went wrong. Tls: https's own failures (the server's certificate not
+// verified, a failed handshake, bad TLS options, a damaged record); the
+// msg says which, "verify: certificate has expired". Process: a client used
+// in another process than the one that made it (after a fork).
 pub type Kind = value closed {
     Url; Invalid; Dns; Connect; Tls; Timeout; Cancelled; Io; Protocol; TooLarge; Redirects; Process
 }
@@ -102,8 +109,10 @@ pub fn (e: Error) toStr(): str {
 
 fn err(k: Kind, msg: str, u: str): Error { return Error{kind: k, msg: msg, url: u} }
 
-// The error of a failed socket call.
-fn ioErr(e: io.IoError, connecting: bool, u: str): Error {
+// The error of a failed stream call.
+fn ioErr(x: SErr, connecting: bool, u: str): Error {
+    if len(x.tls) > 0 { return err(Kind.Tls, x.tls, u) }
+    let e = x.io
     if e.isTimeout() { return err(Kind.Timeout, "deadline passed (" + e.op + ")", u) }
     if e.isCancelled() { return err(Kind.Cancelled, "cancelled (" + e.op + ")", u) }
     if e.isLookup() { return err(Kind.Dns, e.toStr(), u) }
@@ -465,13 +474,18 @@ pub type Options = value record {
     pub allowHttpsToHttp: bool     // follow a redirect from https to http
     pub idleTimeoutMs: int         // how long an idle connection is kept
     pub userAgent: str             // the User-Agent header, unless a request sets one ("": none)
+    pub tls: tls.Options           // for https: tls.defaults() (verification against the system's
+                                   // store) with ALPN http/1.1; caFile, insecureSkipVerify, pins, ...
 }
 
 // maxPerHost 16, timeoutMs 30,000, maxBody 16 MiB, redirects on, at most
-// 10, not from https to http, idle connections kept 90 s, User-Agent obx.
+// 10, not from https to http, idle connections kept 90 s, User-Agent obx,
+// TLS as tls.defaults() offering http/1.1.
 pub fn defaults(): Options {
+    var t = tls.defaults()
+    t.alpn = "http/1.1"
     return Options{maxPerHost: 16, timeoutMs: 30000, maxBody: 16777216, redirects: true, maxRedirects: 10,
-                   allowHttpsToHttp: false, idleTimeoutMs: 90000, userAgent: "obx"}
+                   allowHttpsToHttp: false, idleTimeoutMs: 90000, userAgent: "obx", tls: t}
 }
 
 // A client: its options and a pool of kept-alive connections per server. A
@@ -504,6 +518,7 @@ type PoolState = record {
     dials: int
     reuses: int
     retries: int
+    tlsCtx: Option[tls.Context]    // made at the first https request, shared by its connections
 }
 
 type Host = record {
@@ -522,7 +537,7 @@ pub fn newClient(o: Options): Client {
     if opts.maxRedirects < 0 { opts.maxRedirects = 0 }
     if opts.maxBody < 0 { opts.maxBody = 0 }
     let none = url.Url{scheme: "", host: "", port: 0, path: "", query: "", hasQuery: false, fragment: "", hasFragment: false}
-    let st = PoolState{opts: opts, lastText: "", last: none, hosts: newMap(), nextId: 0, dials: 0, reuses: 0, retries: 0}
+    let st = PoolState{opts: opts, lastText: "", last: none, hosts: newMap(), nextId: 0, dials: 0, reuses: 0, retries: 0, tlsCtx: None}
     return Client{sh: task.shared(st), pid: os.pid()}
 }
 
@@ -560,48 +575,159 @@ pub fn (c: &Client) closeIdle() {
     })
 }
 
+// The client's TLS context, made from its options at the first https
+// request (loading the system's trust store takes milliseconds).
+fn tlsContext(sh: &task.Shared[PoolState], us: str): Result[tls.Context, Error] {
+    var got: Option[tls.Context] = None
+    var o = tls.defaults()
+    sh.with(fn(st: mut &PoolState) {
+        match st.tlsCtx {
+            Some(x) { got = Some(x.share()) }
+            None { o = st.opts.tls }
+        }
+    })
+    match replace(mut &got, None) {
+        Some(x) { return Ok(x) }
+        None {}
+    }
+    let ctx = match tls.client(o) {
+        Ok(x) { x }
+        Err(e) { return Err(err(Kind.Tls, e.kind.toStr() + ": " + e.msg, us)) }
+    }
+    var keep = Some(ctx.share())
+    sh.with(fn(st: mut &PoolState) {
+        if st.tlsCtx.isNone() { st.tlsCtx = replace(mut &keep, None) }
+    })
+    return Ok(ctx)
+}
+
 // ---------------------------------------------------------------- connections
 
-// What a connection reads and writes through: plain TCP now; H2 adds TLS
-// as a variant here, under the same calls.
+// What a connection reads and writes through: plain TCP, or TLS over TCP
+// (https).
 type Stream = value closed {
     Tcp(net.Conn)
+    Tls(tls.Conn)
     Gone
 }
 
-fn (s: &Stream) read(b: mut &[byte], w: Where): Result[int, io.IoError] {
+// A stream's error: a socket's (io, its errno), or, with tls set, one of
+// TLS itself (verification, the handshake, a damaged record), errno 0.
+type SErr = value record {
+    errno: int
+    io: io.IoError
+    tls: str           // "verify: certificate has expired", or ""
+}
+
+fn sockErr(e: io.IoError): SErr { return SErr{errno: e.errno, io: e, tls: ""} }
+
+fn tlsErr(e: tls.Error): SErr {
+    if e.kind == tls.Kind.Io || e.kind == tls.Kind.Timeout || e.kind == tls.Kind.Cancelled { return sockErr(e.cause) }
+    return SErr{errno: 0, io: io.ioError(0, "", ""), tls: e.kind.toStr() + ": " + e.msg}
+}
+
+fn (s: &Stream) isTls(): bool {
     match s {
-        Stream.Tcp(c) { return c.read(b, w) }
-        Stream.Gone { return Err(io.ioError(EBADF, "read", "")) }
+        Stream.Tls(_) { return true }
+        else { return false }
     }
 }
 
-fn (s: &Stream) write(data: &[byte], w: Where): Result[Unit, io.IoError] {
-    match s {
-        Stream.Tcp(c) { return c.write(data, w) }
-        Stream.Gone { return Err(io.ioError(EBADF, "write", "")) }
+// The TLS connection, out of the stream for a call that changes it (a
+// match binds it read-only); give it back with s.put.
+fn (s: mut &Stream) takeTls(): tls.Conn {
+    match replace(s, Stream.Gone) {
+        Stream.Tls(t) { return t }
+        else { panic("http: not a TLS stream") }
     }
 }
 
-fn (s: &Stream) writeStr(data: str, w: Where): Result[Unit, io.IoError] {
+fn (s: mut &Stream) put(t: tls.Conn) { let old = replace(s, Stream.Tls(t)) }
+
+fn (s: mut &Stream) read(b: mut &[byte], w: Where): Result[int, SErr] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.read(b, w)
+        s.put(t)
+        return match r {
+            Ok(n) { Ok(n) }
+            Err(e) { Err(tlsErr(e)) }
+        }
+    }
     match s {
-        Stream.Tcp(c) { return c.writeStr(data, w) }
-        Stream.Gone { return Err(io.ioError(EBADF, "write", "")) }
+        Stream.Tcp(c) {
+            return match c.read(b, w) {
+                Ok(n) { Ok(n) }
+                Err(e) { Err(sockErr(e)) }
+            }
+        }
+        else { return Err(sockErr(io.ioError(EBADF, "read", ""))) }
+    }
+}
+
+fn (s: mut &Stream) write(data: &[byte], w: Where): Result[Unit, SErr] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.write(data, w)
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsErr(e)) }
+        }
+    }
+    match s {
+        Stream.Tcp(c) {
+            return match c.write(data, w) {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(sockErr(e)) }
+            }
+        }
+        else { return Err(sockErr(io.ioError(EBADF, "write", ""))) }
+    }
+}
+
+fn (s: mut &Stream) writeStr(data: str, w: Where): Result[Unit, SErr] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.writeStr(data, w)
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsErr(e)) }
+        }
+    }
+    match s {
+        Stream.Tcp(c) {
+            return match c.writeStr(data, w) {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(sockErr(e)) }
+            }
+        }
+        else { return Err(sockErr(io.ioError(EBADF, "write", ""))) }
     }
 }
 
 // Whether a connection that waited in the pool is still as it was: nothing
-// arrived (not even the end of the stream).
-fn (s: &Stream) quiet(): bool {
+// arrived (not even the end of the stream, or TLS's close_notify).
+fn (s: mut &Stream) quiet(): bool {
+    var b = array(1, byte(0))
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.readNow(mut &b)             // a TLS 1.3 session ticket is used up here, and counts as quiet
+        s.put(t)
+        return match r {
+            Ok(n) { n == tls.WANT_INPUT }
+            Err(_) { false }
+        }
+    }
     match s {
         Stream.Tcp(c) {
-            var b = array(1, byte(0))
             match c.readNow(mut &b) {
                 Ok(n) { return false }
                 Err(e) { return e.errno == 11 }
             }
         }
-        Stream.Gone { return false }
+        else { return false }
     }
 }
 
@@ -626,17 +752,28 @@ fn (c: &Conn) isGone(): bool {
     }
 }
 
-fn dialConn(u: &url.Url, us: str, w: Where): Result[Conn, Error] {
-    if u.scheme == "https" { return Err(err(Kind.Tls, "https is not supported yet (plain http only)", us)) }
+// A new connection to u's server; for https, with its TLS handshake done
+// (the server's certificate verified for u.host).
+fn dialConn(sh: &task.Shared[PoolState], u: &url.Url, us: str, w: Where): Result[Conn, Error] {
+    var ctx: Option[tls.Context] = None             // first: bad TLS options fail before connecting
+    if u.scheme == "https" { ctx = Some(try tlsContext(sh, us)) }
     let nc = match net.dial(u.hostPort(), w) {
         Ok(x) { x }
-        Err(e) { return Err(ioErr(e, true, us)) }
+        Err(e) { return Err(ioErr(sockErr(e), true, us)) }
     }
     match nc.setNoDelay(true) {
         Ok(_) {}
-        Err(e) { return Err(ioErr(e, true, us)) }
+        Err(e) { return Err(ioErr(sockErr(e), true, us)) }
     }
-    return Ok(Conn{s: Stream.Tcp(nc), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0, check: false})
+    let tc = match move(ctx) {
+        Some(x) { x }
+        None { return Ok(Conn{s: Stream.Tcp(nc), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0, check: false}) }
+    }
+    let t = match tc.connect(nc, u.host, w) {
+        Ok(x) { x }
+        Err(e) { return Err(ioErr(tlsErr(e), true, us)) }
+    }
+    return Ok(Conn{s: Stream.Tls(t), buf: array(BUF, byte(0)), r: 0, w: 0, idleSince: 0, idleUntil: 0, check: false})
 }
 
 // Makes room after buf[w] for more input: moves the unread bytes to the
@@ -658,7 +795,7 @@ fn (c: mut &Conn) room() {
 }
 
 // Reads more input into the buffer: the count, 0 at the end of the stream.
-fn (c: mut &Conn) fill(w: Where): Result[int, io.IoError] {
+fn (c: mut &Conn) fill(w: Where): Result[int, SErr] {
     c.room()
     if c.w == len(c.buf) { return Ok(-1) }
     let n = try c.s.read(mut &c.buf[c.w..len(c.buf)], w)
@@ -668,7 +805,7 @@ fn (c: mut &Conn) fill(w: Where): Result[int, io.IoError] {
 
 // Up to len(dst) bytes of input: buffered ones first, else read from the
 // stream straight into dst. 0 at the end of the stream.
-fn (c: mut &Conn) take(dst: mut &[byte], w: Where): Result[int, io.IoError] {
+fn (c: mut &Conn) take(dst: mut &[byte], w: Where): Result[int, SErr] {
     if c.r < c.w {
         let n = min(len(dst), c.w - c.r)
         for i in 0..n { dst[i] = c.buf[c.r + i] }
@@ -1254,7 +1391,7 @@ fn keepAliveMs(v: str): int {
 // A new connection for a place held in the pool; on an error the place is
 // given back.
 fn dialHeld(c: &Client, key: str, u: &url.Url, us: str, w: Where): Result[Conn, Error] {
-    match dialConn(u, us, w) {
+    match dialConn(&c.sh, u, us, w) {
         Ok(x) { return Ok(x) }
         Err(e) {
             release(&c.sh, key, None)
