@@ -3,6 +3,44 @@
 // through both must give the same column names and values, cell by cell.
 // The differences are printed (the queries' own values only); on a failed
 // connect, only the code.
+//
+// Canonical form: each value's sqldialect.Value.toStr(). Exact types
+// (decimal, numeric, money, smallmoney) are Value.Dec on both sides. The
+// ODBC driver gives dates, times, uniqueidentifiers and xml as text, and
+// sqlserver's value() gives the same text by construction (tds.cellText):
+// date "yyyy-mm-dd"; time(n), datetime2(n) and datetimeoffset(n) with n
+// fraction digits; datetimeoffset " +hh:mm" after a space; datetime always
+// ".fff"; smalldatetime ":00" without a fraction; uniqueidentifier in upper
+// case. So the comparison needs no conversion; and the typed values
+// (decimal(), date(), timeOfDay(), localDateTime(), offsetDateTime()) are
+// checked against the server's own CONVERT (the referee): style 126 for
+// date-times, 23 for dates, the default style for times, numbers and
+// uniqueidentifiers, style 2 for money.
+//
+// Then: parameters of every Value variant (SELECT ? and SELECT @p1, and
+// into typed columns), every result set and row count of batches, and
+// errors (a syntax error, constraint violations, conversion errors,
+// RAISERROR at severities 0 to 18 and several states, an error in the
+// middle of a batch, several errors in one batch), compared with ODBC's
+// first error (its message without the driver's "[...]" prefixes, and
+// without the session's suffix of temporary tables' names) and with the
+// server's ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(), ERROR_LINE()
+// and ERROR_MESSAGE() in a CATCH block around EXEC(...).
+//
+// Disagreements found, and who is right:
+//   - a subnormal float parameter (4.9e-324): the ODBC driver refuses it
+//     (22018); TDS carried the bits and the server returned them, though
+//     float's documented range has no subnormals and the server's own
+//     CAST(4.9E-324 AS float) is 0. The driver is right: floatParam now
+//     refuses them too (E_INPUT).
+//   - a NULL parameter into varbinary: both fail alike (257), ODBC too
+//     despite SQLDescribeParam; CONVERT(varbinary(max), @p1) works.
+//   - RAISERROR at severity 10 arrives as class 0 in the INFO token: the
+//     wire says so for both (SSMS shows "Level 0" too).
+//   - several errors in one batch: tds keeps all three, mssql's Err is the
+//     first (the driver's other records are not reachable through it).
+//   - through sp_executesql the server sends no RETURNSTATUS for an EXEC
+//     inside (sqlserver_live_basic: EXEC @r = p with an output).
 // needs: ssl
 // needs: odbc
 // expect: constants: 5 cells, 0 differ
@@ -19,14 +57,64 @@
 // expect: options: 6 cells, 0 differ
 // expect: rows: 9000 cells, 0 differ
 // expect: system: 7917 cells, 0 differ
+// expect: decimal: 13 cells, 0 differ
+// expect: decimal referee: 13 values, 0 differ
+// expect: money: 8 cells, 0 differ
+// expect: money referee: 8 values, 0 differ
+// expect: date: 5 cells, 0 differ
+// expect: date referee: 5 values, 0 differ
+// expect: time(0..7): 10 cells, 0 differ
+// expect: time referee: 10 values, 0 differ
+// expect: datetime2(0..7): 10 cells, 0 differ
+// expect: datetime2 referee: 10 values, 0 differ
+// expect: datetimeoffset(0..7): 12 cells, 0 differ
+// expect: datetimeoffset referee: 12 values, 0 differ
+// expect: datetime: 6 cells, 0 differ
+// expect: datetime referee: 6 values, 0 differ
+// expect: datetime every tick: 600 cells, 0 differ
+// expect: datetime every tick referee: 600 values, 0 differ
+// expect: smalldatetime: 5 cells, 0 differ
+// expect: smalldatetime referee: 5 values, 0 differ
+// expect: uniqueidentifier: 4 cells, 0 differ
+// expect: uniqueidentifier referee: 3 values, 0 differ
+// expect: xml: 5 cells, 0 differ
+// expect: xml referee: 5 values, 0 differ
+// expect: new types null: 11 cells, 0 differ
+// expect: params select: 26 cells, 0 differ
+// expect: subnormal float: odbc error 22018, tds error 1000, the server's CAST 0
+// expect: params into columns: 28 cells, 0 differ
+// expect: null into varbinary: odbc error 257, tds error 257; with CONVERT in the SQL: tds ok
+// expect: results batch: odbc and tds agree true: count 3 set(i:1,2,3) count 2 set(c:3) count 3 set(x:)
+// expect: results params: odbc and tds agree true: count 1 set(v:5) count 1
+// expect: results procedure: odbc and tds agree true: set(a:7) set(b:8)
+// expect: error syntax: code 156, message same true, referee true
+// expect: error unknown procedure: code 2812, message same true, referee true
+// expect: error unique key: code 2601, message same true, referee true
+// expect: error not null: code 515, message same true, referee true
+// expect: error conversion int: code 245, message same true, referee true
+// expect: error conversion date: code 241, message same true, referee true
+// expect: error overflow: code 8115, message same true, referee true
+// expect: error raiserror 11/1: code 50000, message same true, referee true
+// expect: error raiserror 16/127: code 50000, message same true, referee true
+// expect: error raiserror 18/255: code 50000, message same true, referee true
+// expect: error raiserror 16/0: code 50000, message same true, referee true
+// expect: error in a parameter: code 245, message same true, referee true
+// expect: info raiserror 0/1: odbc info true, tds info true, same text true, class 0 state 1
+// expect: info raiserror 10/42: odbc info true, tds info true, same text true, class 0 state 42
+// expect: mid-batch: odbc 8134, tds 8134, rows after the error: odbc 2, tds 2
+// expect: several errors: tds 3 (50000/16/1 50000/16/2 245/16/1), odbc's first 50000
 // expect: open: mssql 0, sqlserver 0
 
 import "sqlserver"
 import "mssql"
 import "sqldialect"
+import "time"
 import "io"
 import "os"
 import "strings"
+
+type Value = sqldialect.Value
+type DbError = sqldialect.DbError
 
 fn dsn(): Option[str] {
     match os.env("MSSQL_TEST_DSN") {
@@ -45,8 +133,8 @@ type Table = record {
     cells: [][]str      // each value's toStr(), or "error <code>"
 }
 
-fn viaOdbc(c: &mssql.Conn, sql: str): Result[Table, sqldialect.DbError] {
-    var st = try c.query(sql, &[])
+fn viaOdbc(c: &mssql.Conn, sql: str, args: &[Value]): Result[Table, DbError] {
+    var st = try c.query(sql, args)
     var t = Table{names: [], cells: []}
     for i in 0..st.columnCount() { append(mut &t.names, try st.columnName(i)) }
     while try st.step() {
@@ -62,8 +150,8 @@ fn viaOdbc(c: &mssql.Conn, sql: str): Result[Table, sqldialect.DbError] {
     return Ok(t)
 }
 
-fn viaTds(c: mut &sqlserver.Conn, sql: str): Result[Table, sqldialect.DbError] {
-    let rows = try c.query(sql, &[])
+fn viaTds(c: mut &sqlserver.Conn, sql: str, args: &[Value]): Result[Table, DbError] {
+    let rows = try c.query(sql, args)
     var t = Table{names: [], cells: []}
     for i in 0..rows.columnCount() { append(mut &t.names, try rows.columnName(i)) }
     for r in 0..rows.rowCount() {
@@ -79,12 +167,13 @@ fn viaTds(c: mut &sqlserver.Conn, sql: str): Result[Table, sqldialect.DbError] {
     return Ok(t)
 }
 
-fn compare(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str) {
-    let a = viaOdbc(o, sql)
-    let b = viaTds(n, sql)
+// The same query through both, with `?` for ODBC and @p1, @p2, ... for TDS.
+fn compareWith(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, odbcSql: str, tdsSql: str, args: &[Value]) {
+    let a = viaOdbc(o, odbcSql, args)
+    let b = viaTds(n, tdsSql, args)
     if a.isErr() || b.isErr() {
-        println(label + ": odbc " + (if a.isErr() { a.unwrapErr().code.toStr() } else { "ok" }) + ", tds " +
-                (if b.isErr() { b.unwrapErr().code.toStr() } else { "ok" }))
+        println(label + ": odbc " + (if a.isErr() { a.unwrapErr().toStr() } else { "ok" }) + ", tds " +
+                (if b.isErr() { b.unwrapErr().toStr() } else { "ok" }))
         return
     }
     let x = a.unwrap()
@@ -110,6 +199,86 @@ fn compare(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str) {
     println(label + ": " + cells.toStr() + " cells, " + diffs.toStr() + " differ")
 }
 
+fn compare(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str) { compareWith(label, o, n, sql, sql, &[]) }
+
+// The typed value of a cell, as its type's toStr(), and the server's text
+// for it parsed into the same type: "" when it does not parse.
+fn typed(r: &sqlserver.Rows, row: int, col: int): str {
+    let t = r.columnTypeName(col).unwrap()
+    match t {
+        "date" { return r.date(row, col).map(fn(d: time.Date): str { return d.toStr() }).unwrapOr("error") }
+        "time" { return r.timeOfDay(row, col).map(fn(x: time.TimeOfDay): str { return x.toStr() }).unwrapOr("error") }
+        "datetime2", "datetime", "smalldatetime" { return r.localDateTime(row, col).map(fn(x: time.LocalDateTime): str { return x.toStr() }).unwrapOr("error") }
+        "datetimeoffset" { return r.offsetDateTime(row, col).map(fn(x: time.OffsetDateTime): str { return x.toStr() }).unwrapOr("error") }
+        "decimal", "numeric", "money", "smallmoney" { return r.decimal(row, col).map(fn(x: Decimal): str { return x.toStr() }).unwrapOr("error") }
+        else { return r.text(row, col).unwrapOr("error") }
+    }
+}
+
+fn parsedAs(t: str, s: str): str {
+    match t {
+        "date" { return time.parseDate(s).map(fn(d: time.Date): str { return d.toStr() }).unwrapOr("") }
+        "time" { return time.parseTimeOfDay(s).map(fn(x: time.TimeOfDay): str { return x.toStr() }).unwrapOr("") }
+        "datetime2", "datetime", "smalldatetime" { return time.parseLocalDateTime(s).map(fn(x: time.LocalDateTime): str { return x.toStr() }).unwrapOr("") }
+        "datetimeoffset" { return time.parseOffsetDateTime(s).map(fn(x: time.OffsetDateTime): str { return x.toStr() }).unwrapOr("") }
+        else { return s }
+    }
+}
+
+// The referee: the query's columns come in pairs, a value and the server's
+// CONVERT of it to text; the value's typed form must equal the text parsed.
+fn referee(label: str, n: mut &sqlserver.Conn, sql: str) {
+    match n.query(sql, &[]) {
+        Ok(r) {
+            var vals = 0
+            var diffs = 0
+            for row in 0..r.rowCount() {
+                var k = 0
+                while k + 1 < r.columnCount() {
+                    vals += 1
+                    let t = r.columnTypeName(k).unwrap()
+                    let ours = typed(&r, row, k)
+                    let server = r.text(row, k + 1).unwrapOr("NULL")
+                    if ours != parsedAs(t, server) {
+                        diffs += 1
+                        if diffs <= 5 { println("  " + label + " row " + row.toStr() + " " + r.columnName(k).unwrap() + ": ours " + ours + ", server " + server) }
+                    }
+                    k += 2
+                }
+            }
+            println(label + ": " + vals.toStr() + " values, " + diffs.toStr() + " differ")
+        }
+        Err(e) { println(label + ": " + e.toStr()) }
+    }
+}
+
+// SELECT list items: each expression as c<i>, and with style >= 0 its
+// CONVERT(nvarchar(max), x, style) after it (the referee's pairs).
+fn pairs(exprs: &[str], style: int): str {
+    var out: []str = []
+    for i in 0..len(exprs) {
+        append(mut &out, exprs[i] + " AS c" + i.toStr())
+        if style >= 0 {
+            append(mut &out, "CONVERT(nvarchar(max), " + exprs[i] + ", " + style.toStr() + ") AS s" + i.toStr())
+        } else {
+            append(mut &out, "CONVERT(nvarchar(max), " + exprs[i] + ") AS s" + i.toStr())
+        }
+    }
+    return "SELECT " + strings.join(&out, ", ")
+}
+
+fn plain(exprs: &[str]): str {
+    var out: []str = []
+    for i in 0..len(exprs) { append(mut &out, exprs[i] + " AS c" + i.toStr()) }
+    return "SELECT " + strings.join(&out, ", ")
+}
+
+// A type's matrix: compared through both, then refereed.
+fn matrix(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, exprs: &[str], style: int, refLabel: str) {
+    compare(label, o, n, plain(exprs))
+    referee(refLabel, n, pairs(exprs, style))
+}
+
 // The bytes lo to hi, except those listed, as a hex literal.
 fn hexRange(lo: int, hi: int, skip: &[int]): str {
     var b = newStrBuf()
@@ -122,6 +291,202 @@ fn hexRange(lo: int, hi: int, skip: &[int]): str {
         }
     }
     return b.toStr()
+}
+
+// ---------------------------------------------------------------- results
+
+type Walk = record {
+    items: []str
+    err: Option[DbError]
+}
+
+fn setText(names: &[]str, cells: &[][]str): str {
+    var rows: []str = []
+    for r in cells { append(mut &rows, strings.join(r, "/")) }
+    return "set(" + strings.join(names, "/") + ":" + strings.join(&rows, ",") + ")"
+}
+
+// Every result of a batch through ODBC: "set(...)" for one with columns,
+// "count n" for a row count.
+fn odbcWalk(c: &mssql.Conn, sql: str, args: &[Value]): Walk {
+    var w = Walk{items: [], err: None}
+    let q = c.query(sql, args)
+    if q.isErr() {
+        w.err = Some(q.unwrapErr())
+        return w
+    }
+    var st = q.unwrap()
+    while true {
+        if st.columnCount() > 0 {
+            var names: []str = []
+            for i in 0..st.columnCount() { append(mut &names, st.columnName(i).unwrap()) }
+            var cells: [][]str = []
+            while st.step().unwrapOr(false) {
+                var row: []str = []
+                for i in 0..st.columnCount() { append(mut &row, st.value(i).map(fn(v: Value): str { return v.toStr() }).unwrapOr("error")) }
+                append(mut &cells, row)
+            }
+            append(mut &w.items, setText(&names, &cells))
+        } else if st.affected() >= 0 {
+            append(mut &w.items, "count " + st.affected().toStr())
+        }
+        match st.nextResult() {
+            Ok(more) { if !more { break } }
+            Err(e) {
+                w.err = Some(e)
+                break
+            }
+        }
+    }
+    return w
+}
+
+// The same through queryAll: each row count in order, a result set's in its
+// place as "set(...)".
+fn tdsWalk(c: mut &sqlserver.Conn, sql: str, args: &[Value]): Walk {
+    var w = Walk{items: [], err: None}
+    match c.queryAll(sql, args) {
+        Ok(res) {
+            // a result set's place is its row count's; one without (SET NOCOUNT ON) goes before the next
+            // set's count, or at the end
+            var next = 0
+            for x in res.counts {
+                if x.resultSet >= 0 {
+                    while next <= x.resultSet {
+                        append(mut &w.items, tdsSet(&res.sets[next]))
+                        next += 1
+                    }
+                } else {
+                    append(mut &w.items, "count " + x.rows.toStr())
+                }
+            }
+            while next < len(res.sets) {
+                append(mut &w.items, tdsSet(&res.sets[next]))
+                next += 1
+            }
+        }
+        Err(e) { w.err = Some(e) }
+    }
+    return w
+}
+
+fn tdsSet(r: &sqlserver.Rows): str {
+    var names: []str = []
+    for i in 0..r.columnCount() { append(mut &names, r.columnName(i).unwrap()) }
+    var cells: [][]str = []
+    for row in 0..r.rowCount() {
+        var cs: []str = []
+        for i in 0..r.columnCount() { append(mut &cs, r.value(row, i).map(fn(v: Value): str { return v.toStr() }).unwrapOr("error")) }
+        append(mut &cells, cs)
+    }
+    return setText(&names, &cells)
+}
+
+fn results(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, odbcSql: str, tdsSql: str, args: &[Value]) {
+    let a = odbcWalk(o, odbcSql, args)
+    let b = tdsWalk(n, tdsSql, args)
+    let x = strings.join(&a.items, " ")
+    let y = strings.join(&b.items, " ")
+    let same = x == y && a.err.isNone() && b.err.isNone()
+    println(label + ": odbc and tds agree " + same.toStr() + ": " + y)
+    if !same {
+        println("  odbc: " + x + (if a.err.isSome() { " error " + a.err.unwrap().toStr() } else { "" }))
+        println("  tds:  " + y + (if b.err.isSome() { " error " + b.err.unwrap().toStr() } else { "" }))
+    }
+}
+
+// ---------------------------------------------------------------- errors
+
+// ODBC's message without the driver's prefixes: "[Microsoft][ODBC Driver 18
+// for SQL Server][SQL Server]Invalid ..." is "Invalid ...".
+fn bare(m: str): str {
+    var s = m
+    while startsWith(s, "[") {
+        let k = indexOf(s, "]", 0)
+        if k < 0 { break }
+        s = s[k + 1..]
+    }
+    return s
+}
+
+// A message without the session's suffix of temporary tables' names: "#e"
+// is "#e_____..._00000000113B" in tempdb, a hex number that differs per
+// session; the run of underscores and the number are dropped.
+fn noSuffix(s: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i < len(s) {
+        if i + 3 <= len(s) && s[i..i + 3] == "___" {
+            while i < len(s) && (s[i] == '_' || (s[i] >= '0' && s[i] <= '9') || (s[i] >= 'A' && s[i] <= 'F')) { i += 1 }
+        } else {
+            b.add(s[i..i + 1])
+            i += 1
+        }
+    }
+    return b.toStr()
+}
+
+fn quoted(s: str): str { return strings.replaceAll(s, "'", "''") }
+
+// The server's view of sql's first error, from a CATCH block around it.
+fn caught(n: mut &sqlserver.Conn, sql: str): str {
+    match n.queryAll("BEGIN TRY EXEC(N'" + quoted(sql) + "') END TRY BEGIN CATCH SELECT ERROR_NUMBER() AS caught, ERROR_SEVERITY(), " +
+                     "ERROR_STATE(), ERROR_LINE(), ERROR_MESSAGE() END CATCH", &[]) {
+        Ok(res) {
+            // the CATCH block's result set is the last; the statement's own may come before it
+            if len(res.sets) == 0 { return "nothing caught" }
+            let r = &res.sets[len(res.sets) - 1]
+            if r.columnCount() != 5 || r.columnName(0).unwrap() != "caught" || r.rowCount() == 0 { return "nothing caught" }
+            return r.int(0, 0).unwrap().toStr() + "/" + r.int(0, 1).unwrap().toStr() + "/" + r.int(0, 2).unwrap().toStr() + "/" +
+                   r.int(0, 3).unwrap().toStr() + " " + r.text(0, 4).unwrap()
+        }
+        Err(e) { return "referee failed: " + e.toStr() }
+    }
+}
+
+fn mine(m: &sqlserver.Message): str {
+    return m.number.toStr() + "/" + m.class.toStr() + "/" + m.state.toStr() + "/" + m.line.toStr() + " " + m.text
+}
+
+// sql's first error through both, and the referee's view of refSql (sql
+// with any parameter written in).
+fn failure(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, odbcSql: str, tdsSql: str, args: &[Value], refSql: str) {
+    let a = odbcWalk(o, odbcSql, args)
+    let b = n.run(tdsSql, args)
+    if a.err.isNone() || b.isOk() {
+        println("error " + label + ": odbc " + (if a.err.isSome() { "error" } else { "ok" }) + ", tds " + (if b.isOk() { "ok" } else { "error" }))
+        return
+    }
+    let x = a.err.unwrap()
+    let y = b.unwrapErr()
+    let errs = n.errors()
+    let first = mine(&errs[0])
+    let ref = caught(n, refSql)
+    let same = noSuffix(bare(x.msg)) == noSuffix(y.msg)
+    if x.code != y.code || !same || ref != first {
+        println("  " + label + ": odbc " + x.code.toStr() + " " + bare(x.msg) + " | tds " + first + " | referee " + ref)
+    }
+    println("error " + label + ": code " + (if x.code == y.code { y.code.toStr() } else { "odbc " + x.code.toStr() + " tds " + y.code.toStr() }) +
+            ", message same " + same.toStr() + ", referee " + (ref == first).toStr())
+}
+
+fn info(label: str, o: &mssql.Conn, n: mut &sqlserver.Conn, sql: str, class: int, state: int) {
+    let st = o.query(sql, &[])
+    let od = if st.isOk() { st.unwrap().diagnostics() } else { [] }
+    let r = n.exec(sql)
+    let td = n.diagnostics()
+    let both = len(od) > 0 && len(td) > 0
+    let same = both && bare(od[0].msg) == td[0].text
+    let cs = if len(td) > 0 { "class " + td[0].class.toStr() + " state " + td[0].state.toStr() } else { "none" }
+    println("info " + label + ": odbc info " + (len(od) > 0).toStr() + ", tds info " + (len(td) > 0 && r.isOk()).toStr() +
+            ", same text " + same.toStr() + ", " + cs)
+    if cs != "class " + class.toStr() + " state " + state.toStr() { println("  " + label + ": raised with class " + class.toStr() + " state " + state.toStr()) }
+}
+
+fn count(o: &mssql.Conn, sql: str): int {
+    var st = o.query(sql, &[]).unwrap()
+    let ok = st.step().unwrap()
+    return st.int(0).unwrap()
 }
 
 fn main() {
@@ -141,6 +506,8 @@ fn main() {
         exit(1)
     }
     var n = rn.unwrap()
+
+    // ---- T1's types
     compare("constants", &o, mut &n, "SELECT 1 AS one, N'café' AS t, CAST(NULL AS int) AS n, CAST(1 AS bit) AS b, 2.5E0 AS f")
     compare("int limits", &o, mut &n, "SELECT CAST(255 AS tinyint) AS a, CAST(0 AS tinyint) AS b, CAST(-32768 AS smallint) AS c, " +
             "CAST(32767 AS smallint) AS d, CAST(-2147483648 AS int) AS e, CAST(2147483647 AS int) AS f, " +
@@ -178,7 +545,162 @@ fn main() {
             "CASE WHEN ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) % 3 = 0 THEN NULL ELSE N'r' END AS t " +
             "FROM sys.all_objects a CROSS JOIN sys.all_objects b")
     compare("system", &o, mut &n, "SELECT name, object_id, is_ms_shipped FROM sys.all_objects WHERE object_id < 0 ORDER BY object_id")
+
+    // ---- T2's types
+    matrix("decimal", &o, mut &n, &["CAST(0 AS decimal(38,0))", "CAST('99999999999999999999999999999999999999' AS decimal(38,0))",
+           "CAST('-99999999999999999999999999999999999999' AS decimal(38,0))",
+           "CAST('0.99999999999999999999999999999999999999' AS decimal(38,38))",
+           "CAST('-0.00000000000000000000000000000000000001' AS decimal(38,38))",
+           "CAST('-1234567890123456789.0123456789012345678' AS decimal(38,19))", "CAST(-0.5 AS decimal(5,4))",
+           "CAST(1 AS decimal(1,0))", "CAST(12.345 AS numeric(10,3))", "CAST(-0.001 AS decimal(9,3))",
+           "CAST('-12345678901234567.89' AS decimal(19,2))", "CAST('1234567890123456789012345.123' AS decimal(28,3))",
+           "CAST(-0.0 AS decimal(3,1))"], -1, "decimal referee")
+    matrix("money", &o, mut &n, &["CAST(922337203685477.5807 AS money)", "CAST(-922337203685477.5808 AS money)",
+           "CAST(214748.3647 AS smallmoney)", "CAST(-214748.3648 AS smallmoney)", "CAST(0 AS money)", "CAST(-0.0001 AS money)",
+           "CAST(12.34 AS money)", "CAST(1.5 AS smallmoney)"], 2, "money referee")
+    matrix("date", &o, mut &n, &["CAST('0001-01-01' AS date)", "CAST('9999-12-31' AS date)", "CAST('2026-11-05' AS date)",
+           "CAST('1900-01-01' AS date)", "CAST('2000-02-29' AS date)"], 23, "date referee")
+    var times: []str = []
+    var dt2s: []str = []
+    var dtos: []str = []
+    for k in 0..8 {
+        append(mut &times, "CAST('13:45:07.1234567' AS time(" + k.toStr() + "))")
+        append(mut &dt2s, "CAST('2026-11-05 13:45:07.1234567' AS datetime2(" + k.toStr() + "))")
+        append(mut &dtos, "CAST('2026-11-05 13:45:07.1234567 +01:30' AS datetimeoffset(" + k.toStr() + "))")
+    }
+    append(mut &times, "CAST('00:00:00' AS time(7))")
+    append(mut &times, "CAST('23:59:59.9999999' AS time(7))")
+    append(mut &dt2s, "CAST('0001-01-01 00:00:00' AS datetime2(7))")
+    append(mut &dt2s, "CAST('9999-12-31 23:59:59.9999999' AS datetime2(7))")
+    append(mut &dtos, "CAST('0001-01-01 00:00:00 -14:00' AS datetimeoffset(7))")
+    append(mut &dtos, "CAST('9999-12-31 23:59:59.9999999 +14:00' AS datetimeoffset(7))")
+    append(mut &dtos, "CAST('2026-11-05 00:10:00 -00:30' AS datetimeoffset(0))")
+    append(mut &dtos, "CAST('2026-03-29 01:30:00.5 +00:00' AS datetimeoffset(1))")
+    matrix("time(0..7)", &o, mut &n, &times, -1, "time referee")
+    matrix("datetime2(0..7)", &o, mut &n, &dt2s, 126, "datetime2 referee")
+    matrix("datetimeoffset(0..7)", &o, mut &n, &dtos, 126, "datetimeoffset referee")
+    matrix("datetime", &o, mut &n, &["CAST('1753-01-01' AS datetime)", "CAST('9999-12-31 23:59:59.997' AS datetime)",
+           "CAST('2026-11-05 13:45:07.003' AS datetime)", "CAST('2026-11-05 13:45:07.007' AS datetime)",
+           "CAST('2026-11-05 13:45:07.010' AS datetime)", "CAST('1900-01-01' AS datetime)"], 126, "datetime referee")
+    // every tick of a second, and the last 300 of a day: 1/300 s rounded to milliseconds
+    let ticks = "FROM (SELECT TOP 300 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS k FROM sys.all_objects) t"
+    let tickExprs = "CAST(0x0000B4F9 + CAST(CAST(k AS int) AS binary(4)) AS datetime) AS a, " +
+                    "CAST(0x0000B4F9 + CAST(CAST(25919700 + k AS int) AS binary(4)) AS datetime) AS b "
+    compare("datetime every tick", &o, mut &n, "SELECT " + tickExprs + ticks + " ORDER BY k")
+    referee("datetime every tick referee", mut &n, "SELECT a, CONVERT(nvarchar(40), a, 126), b, CONVERT(nvarchar(40), b, 126) FROM (SELECT " +
+            tickExprs + ticks + ") u ORDER BY a")
+    matrix("smalldatetime", &o, mut &n, &["CAST('1900-01-01' AS smalldatetime)", "CAST('2079-06-06 23:59' AS smalldatetime)",
+           "CAST('2026-11-05 13:45:29.998' AS smalldatetime)", "CAST('2026-11-05 13:45:29.999' AS smalldatetime)",
+           "CAST('2026-11-05 23:59:59' AS smalldatetime)"], 126, "smalldatetime referee")
+    let guids = ["CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS uniqueidentifier)",
+                 "CAST('00000000-0000-0000-0000-000000000000' AS uniqueidentifier)",
+                 "CAST('ffffffff-ffff-ffff-ffff-fffffffffffe' AS uniqueidentifier)"]
+    compare("uniqueidentifier", &o, mut &n, plain(&guids) + ", CAST(NULL AS uniqueidentifier) AS cn")
+    referee("uniqueidentifier referee", mut &n, pairs(&guids, -1))
+    matrix("xml", &o, mut &n, &["CAST(N'<a>é</a>' AS xml)", "CAST(N'<?xml version=\"1.0\"?><r x=\"1\"/>' AS xml)", "CAST(N'' AS xml)",
+           "CAST(N'<t>😀 日本 &amp; &lt;</t>' AS xml)", "CAST(REPLICATE(CAST(N'<i>x</i>' AS nvarchar(max)), 10000) AS xml)"], -1, "xml referee")
+    compare("new types null", &o, mut &n, "SELECT CAST(NULL AS decimal(38,10)) a, CAST(NULL AS money) b, CAST(NULL AS smallmoney) c, " +
+            "CAST(NULL AS date) d, CAST(NULL AS time(3)) e, CAST(NULL AS datetime2(7)) f, CAST(NULL AS datetimeoffset(0)) g, " +
+            "CAST(NULL AS datetime) h, CAST(NULL AS smalldatetime) i, CAST(NULL AS uniqueidentifier) j, CAST(NULL AS xml) k")
+
+    // ---- parameters: every Value variant
+    let d38 = sqldialect.parseDecimal("-9999999999999999999999999999.9999999999").unwrap()
+    let longText = repeat("é", 5000)
+    let longBytes = strings.padLeft("", 9000, 'b')
+    let args: []Value = [Value.Int(0), Value.Int(-9223372036854775807 - 1), Value.Int(9223372036854775807), Value.Float(0.1),
+                         Value.Float(-1.7976931348623157e308), Value.Float(2.2250738585072014e-308), Value.Bool(true), Value.Bool(false),
+                         Value.Text(""), Value.Text("café 😀 日本"), Value.Text(longText), Value.Bytes(""), Value.Bytes("\x00\xff"),
+                         Value.Bytes(longBytes), Value.Dec(12.50), Value.Dec(-0.001), Value.Dec(d38), Value.Dec(0.0), Value.Dec(1e3),
+                         Value.Null, Value.Text("2026-11-05"), Value.Text("x'y"), Value.Int(-1), Value.Float(0.0),
+                         Value.Dec(sqldialect.parseDecimal("0.00000000000000000000000000000000000001").unwrap()), Value.Text("a\x00b")]
+    var qs: []str = []
+    var ps: []str = []
+    for i in 0..len(args) {
+        append(mut &qs, "? AS v" + i.toStr())
+        append(mut &ps, "@p" + (i + 1).toStr() + " AS v" + i.toStr())
+    }
+    compareWith("params select", &o, mut &n, "SELECT " + strings.join(&qs, ", "), "SELECT " + strings.join(&ps, ", "), &args)
+    let os5 = o.query("SELECT ? AS v", &[Value.Float(4.9e-324)])
+    let ns5 = n.query("SELECT @p1 AS v", &[Value.Float(4.9e-324)])
+    let ref5 = n.query("SELECT CAST(4.9E-324 AS float)", &[]).unwrap().float(0, 0).unwrap()
+    println("subnormal float: odbc " + (if os5.isOk() { "ok" } else { "error " + os5.unwrapErr().state }) + ", tds " +
+            (if ns5.isOk() { "ok" } else { "error " + ns5.unwrapErr().code.toStr() }) + ", the server's CAST " + ref5.toStr())
+    let cols = "i bigint, f float, b bit, t nvarchar(max), y varbinary(max), d decimal(38,10), dt date, t2 datetime2(7), " +
+               "dto datetimeoffset(7), g uniqueidentifier, x xml, m money, s nvarchar(10)"
+    o.exec("CREATE TABLE #pt(k int, " + cols + ")").unwrap()
+    n.exec("CREATE TABLE #pt(k int, " + cols + ")").unwrap()
+    let row: []Value = [Value.Int(-5), Value.Float(2.5), Value.Bool(true), Value.Text(longText), Value.Bytes(longBytes), Value.Dec(d38),
+                        Value.Text("2026-11-05"), Value.Text("2026-11-05 13:45:07.1234567"), Value.Text("2026-11-05 13:45:07.1234567 +01:30"),
+                        Value.Text("6F9619FF-8B86-D011-B42D-00C04FC964FF"), Value.Text("<a>é</a>"), Value.Dec(12.34), Value.Text("naïve")]
+    let nulls: []Value = [Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null,
+                          Value.Null, Value.Null, Value.Null]
+    let ins1 = c13(&["?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?"])
+    o.run("INSERT INTO #pt VALUES (1, " + ins1 + ")", &row).unwrap()
+    n.run("INSERT INTO #pt VALUES (1, " + numbered(13) + ")", &row).unwrap()
+    o.run("INSERT INTO #pt(k, i, f, b, t, d, dt, t2, dto, g, x, m, s) VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &nulls).unwrap()
+    n.run("INSERT INTO #pt(k, i, f, b, t, d, dt, t2, dto, g, x, m, s) VALUES (2, " + numbered(12) + ")", &nulls).unwrap()
+    compare("params into columns", &o, mut &n, "SELECT * FROM #pt ORDER BY k")
+    let ob = o.run("INSERT INTO #pt(k, y) VALUES (3, ?)", &[Value.Null])
+    let nb = n.run("INSERT INTO #pt(k, y) VALUES (3, @p1)", &[Value.Null])
+    let nc = n.run("INSERT INTO #pt(k, y) VALUES (3, CONVERT(varbinary(max), @p1))", &[Value.Null])
+    println("null into varbinary: odbc " + (if ob.isOk() { "ok" } else { "error " + ob.unwrapErr().code.toStr() }) + ", tds " +
+            (if nb.isOk() { "ok" } else { "error " + nb.unwrapErr().code.toStr() }) + "; with CONVERT in the SQL: tds " +
+            (if nc.isOk() { "ok" } else { "error " + nc.unwrapErr().code.toStr() }))
+
+    // ---- every result set and row count
+    let batch = "CREATE TABLE #m(i int); INSERT INTO #m VALUES (1), (2), (3); SELECT i FROM #m ORDER BY i; " +
+                "UPDATE #m SET i = i + 1 WHERE i > 1; SELECT COUNT(*) AS c FROM #m; DELETE FROM #m; SELECT 1 AS x WHERE 1 = 0; DROP TABLE #m"
+    results("results batch", &o, mut &n, batch, batch, &[])
+    o.exec("CREATE TABLE #r(v int)").unwrap()
+    n.exec("CREATE TABLE #r(v int)").unwrap()
+    results("results params", &o, mut &n, "INSERT INTO #r VALUES (?); SELECT v FROM #r; DELETE FROM #r",
+            "INSERT INTO #r VALUES (@p1); SELECT v FROM #r; DELETE FROM #r", &[Value.Int(5)])
+    let proc = "CREATE PROCEDURE #q AS BEGIN SET NOCOUNT ON; SELECT 7 AS a; SELECT 8 AS b END"
+    o.exec(proc).unwrap()
+    n.exec(proc).unwrap()
+    results("results procedure", &o, mut &n, "SET NOCOUNT ON; EXEC #q; SET NOCOUNT OFF", "SET NOCOUNT ON; EXEC #q; SET NOCOUNT OFF", &[])
+
+    // ---- errors
+    // a unique index, not a PRIMARY KEY: constraint names are global in tempdb, and the generated ones differ
+    for c in ["CREATE TABLE #e(id int NOT NULL, v int NOT NULL)", "CREATE UNIQUE CLUSTERED INDEX ux_e ON #e(id)", "INSERT INTO #e VALUES (1, 1)"] {
+        o.exec(c).unwrap()
+        n.exec(c).unwrap()
+    }
+    let cases = [["syntax", "SELECT FROM WHERE"], ["unknown procedure", "SELEC 1"], ["unique key", "INSERT INTO #e VALUES (1, 2)"], ["not null", "INSERT INTO #e VALUES (2, NULL)"],
+                 ["conversion int", "SELECT CAST('x' AS int)"], ["conversion date", "SELECT CAST('2026-13-01' AS date)"],
+                 ["overflow", "SELECT CAST(1000 AS decimal(3,0))"], ["raiserror 11/1", "RAISERROR('eleven %d', 11, 1, 11)"],
+                 ["raiserror 16/127", "SELECT 1;\nRAISERROR(N'sixteen é', 16, 127)"], ["raiserror 18/255", "RAISERROR('eighteen', 18, 255)"],
+                 ["raiserror 16/0", "RAISERROR('state zero', 16, 0)"]]
+    for c in cases { failure(c[0], &o, mut &n, c[1], c[1], &[], c[1]) }
+    failure("in a parameter", &o, mut &n, "SELECT CAST(? AS int)", "SELECT CAST(@p1 AS int)", &[Value.Text("x")], "SELECT CAST(N'x' AS int)")
+    info("raiserror 0/1", &o, mut &n, "RAISERROR('zero', 0, 1)", 0, 1)
+    // the server sends severity 10 as class 0 in the INFO token (SSMS shows "Level 0" too)
+    info("raiserror 10/42", &o, mut &n, "RAISERROR('ten %s', 10, 42, 'x')", 0, 42)
+    let mid = "INSERT INTO #e VALUES (10, 1); SELECT 1/0; INSERT INTO #e VALUES (11, 1)"
+    let om = odbcWalk(&o, mid, &[])
+    let nm = n.exec(mid)
+    println("mid-batch: odbc " + om.err.map(fn(e: DbError): str { return e.code.toStr() }).unwrapOr("ok") + ", tds " +
+            (if nm.isErr() { nm.unwrapErr().code.toStr() } else { "ok" }) + ", rows after the error: odbc " +
+            count(&o, "SELECT COUNT(*) FROM #e WHERE id >= 10").toStr() + ", tds " +
+            n.query("SELECT COUNT(*) FROM #e WHERE id >= 10", &[]).unwrap().int(0, 0).unwrap().toStr())
+    let several = "RAISERROR('one', 16, 1); RAISERROR('two', 16, 2); SELECT CAST('x' AS int)"
+    let os = odbcWalk(&o, several, &[])
+    let ns = n.exec(several)
+    var ne: []str = []
+    for m in n.errors() { append(mut &ne, m.number.toStr() + "/" + m.class.toStr() + "/" + m.state.toStr()) }
+    println("several errors: tds " + len(ne).toStr() + " (" + strings.join(&ne, " ") + "), odbc's first " +
+            os.err.map(fn(e: DbError): str { return e.code.toStr() }).unwrapOr("none"))
+
     o.close().unwrap()
     n.close()
     println("open: mssql " + mssql.openHandles().toStr() + ", sqlserver " + sqlserver.openHandles().toStr())
 }
+
+// "@p1, @p2, ..., @pn"
+fn numbered(n: int): str {
+    var out: []str = []
+    for i in 0..n { append(mut &out, "@p" + (i + 1).toStr()) }
+    return strings.join(&out, ", ")
+}
+
+fn c13(xs: &[str]): str { return strings.join(xs, ", ") }

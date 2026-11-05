@@ -616,9 +616,15 @@ pub fn bitsOfFloat(f: float): int {
 }
 
 // A float parameter (FLTN of 8 bytes, the exact bits). E_NONFINITE for NaN
-// and the infinities, which SQL Server's float has not.
+// and the infinities, and E_INPUT for subnormal numbers (below
+// 2.2250738585072014e-308 in magnitude, not zero), which SQL Server's float
+// has not: its own CAST makes them 0, the ODBC driver refuses them, and the
+// server would keep the bits if they were sent.
 pub fn floatParam(f: float): Result[Param, Error] {
     if !f.isFinite() { return Err(sqldialect.dbError(sqldialect.E_NONFINITE, "SQL Server float has no NaN or Infinity")) }
+    if f != 0.0 && f < 2.2250738585072014e-308 && f > -2.2250738585072014e-308 {
+        return Err(sqldialect.inputError("SQL Server float has no subnormal numbers: " + f.toStr()))
+    }
     let bits = bitsOfFloat(f)
     var d: []byte = []
     put8(mut &d, 8)

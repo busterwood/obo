@@ -42,7 +42,7 @@
 // expect: collation bytes: 09 04 10 00 34 | back code page 1252 (LCID 0x0409, sort order 52)
 // expect: int: bigint: 26 08 | 08 fe ff ff ff ff ff ff ff
 // expect: bit: bit: 68 01 | 01 01
-// expect: float: float: 6d 08 | 08 9a 99 99 99 99 99 b9 3f | nan: error 1004: SQL Server float has no NaN or Infinity
+// expect: float: float: 6d 08 | 08 9a 99 99 99 99 99 b9 3f | nan: error 1004: SQL Server float has no NaN or Infinity | subnormal: error 1000: SQL Server float has no subnormal numbers: -5e-324 | smallest normal true
 // expect: text: nvarchar(4000): e7 40 1f 09 04 10 00 34 | 02 00 e9 00
 // expect: text 4001: nvarchar(max) e7 ff ff 09 04 10 00 34 | 42 1f 00 00 00 00 00 00 42 1f 00 00 ... 00 00 00 00 (8018 bytes)
 // expect: text 4000: nvarchar(4000) | bad: error 1000: text value: invalid UTF-8 at byte 1
@@ -329,7 +329,7 @@ fn main() {
     println("collation bytes: " + hexs(tds.collationBytes(&coll)) + " | back " + tds.parseCollation(tds.collationBytes(&coll)).unwrap().describe())
     println("int: " + paramHex(&tds.intParam(-2)))
     println("bit: " + paramHex(&tds.bitParam(true)))
-    println("float: " + paramHex(&tds.floatParam(0.1).unwrap()) + " | nan: " + errText(tds.floatParam(math.nan())))
+    println("float: " + paramHex(&tds.floatParam(0.1).unwrap()) + " | nan: " + errText(tds.floatParam(math.nan())) + " | subnormal: " + errText(tds.floatParam(-4.9e-324)) + " | smallest normal " + tds.floatParam(2.2250738585072014e-308).isOk().toStr())
     println("text: " + paramHex(&tds.textParam("é", &coll).unwrap()))
     let longText = tds.textParam(strings.padLeft("", 4001, 'x'), &coll).unwrap()
     println("text 4001: " + longText.declared + " " + hexs(longText.typeInfo) + " | " + hexs(longText.data[0..12]) + " ... " +
