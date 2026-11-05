@@ -232,37 +232,40 @@ check at the end, not one per step.
 with strings (some with escapes and non-ASCII text), integers, decimals,
 floats, booleans, nulls, nested objects and arrays. It produces two tables.
 
-The machine was shared with other agents (WSL2, x86-64), so the times are
-best of 3 and vary by 10–20% between runs.
+The machine was shared with other agents (WSL2, Ryzen 7 8745HS), so the
+times are best of 3 and vary by 10–40% between runs. An earlier run had
+native parsing at 1,249 ms. These are the figures from the quieter run, at
+the end of the branch.
 
 ### Library, in process
 
 The text is already in memory. Times are in ms.
 
-| step | obx native | obx C | Python 3 `json` |
+| step | obx native | obx C | Python 3.12 `json` |
 |---|---:|---:|---:|
-| parse | 1249 | 725 | 862 |
-| compact | 830 | 345 | 1028 |
-| pretty | 957 | 423 | 2951 |
-| query: sum `qty` through `items()`/`field()` | 331 | 110 | 48 |
-| visit: the same through `eachItem` | 226 | 91 | 48 |
+| parse | 756 | 586 | 849 |
+| compact | 505 | 274 | 794 |
+| pretty | 551 | 412 | 3010 |
+| query: sum `qty` through `items()`/`field()` | 212 | 103 | 47 |
+| visit: the same through `eachItem` | 223 | 87 | 47 |
 
 - **Correctness check.** The library's compact output, with `jqNumbers`, is
   byte-for-byte identical to `jq -c .`'s.
-- **Parsing.** The C build parses faster than Python's C accelerator. It
-  writes 3× faster compactly and 7× faster indented: Python's indented
-  writer is pure Python.
-- **Native backend.** It is 1.7–2.4× slower than the C build on this
-  library. That is unusual, since the native backend is ahead on the small
-  benchmarks. The library's inner loops (byte scanning, `StrBuf` appends,
-  enum matching with counted boxes) are where gcc's register allocation
-  and inlining pay off. This is a candidate for the native performance
-  list, not something to fix in the library.
-- **Queries.** These are the weak spot. Each `field()` scans for the key
-  and returns a counted copy, and `items()` allocates. Python's dict
-  lookup and borrowed references are cheaper. The `eachItem` form helps a
-  little. Borrowing accessors (the review point in section 1) would help
-  most.
+- **Parsing.** The C build parses 1.4× faster than Python's C accelerator,
+  writes compactly 2.9× faster, and writes indented 7× faster (Python's
+  indented writer is pure Python). The native build parses 1.1× faster than
+  Python.
+- **Native backend.** It is 1.3–2× slower than the C build on this
+  library, where it is level with or ahead of C on the small benchmarks.
+  The library's inner loops (byte scanning, `StrBuf` appends, matches on
+  enums holding counted boxes) are where gcc's register allocation and
+  inlining pay off. This belongs on the native performance list, not in
+  the library.
+- **Queries** are the weak spot, 2–4× behind Python. Each `field()` scans
+  for its key and returns a counted copy, and `items()` allocates. Python's
+  dict lookup and borrowed references are cheaper. The `eachItem` form
+  saves little. Borrowing accessors (the review point in section 1) would
+  help most.
 
 ### jq: whole processes
 
@@ -271,13 +274,13 @@ be identical.
 
 | filter | jq 1.7.1 | obx jq native | obx jq C |
 |---|---:|---:|---:|
-| `.` | 2.59 | 1.83 | 1.89 |
-| `-c .` | 2.18 | 1.75 | 1.74 |
-| `length` | 1.49 | 1.21 | 1.15 |
-| `[.[].items[].qty] \| add` | 1.84 | 1.58 | 1.46 |
-| `map(select(.active and .score > 0) \| {id, city: .address.city})` | 1.93 | 1.48 | 1.49 |
-| `group_by(.address.city) \| map(…)` | 2.15 | 2.36 | 2.19 |
+| `.` | 2.48 | 1.86 | 1.93 |
+| `-c .` | 2.20 | 1.71 | 1.67 |
+| `length` | 1.42 | 1.15 | 1.09 |
+| `[.[].items[].qty] \| add` | 1.77 | 1.30 | 1.23 |
+| `map(select(.active and .score > 0) \| {id, city: .address.city})` | 1.69 | 1.36 | 1.44 |
+| `group_by(.address.city) \| map(…)` | 1.97 | 1.92 | 1.82 |
 
-jq spends most of its time parsing with decNumber literals. The port is
-15–30% faster on every filter except `group_by`, where jq's sort, written
-in C, is a little ahead of the port's sort.
+On this file jq spends most of its time parsing, building decNumber
+literals. The port is 15–30% faster on every filter except `group_by`,
+where the two are level.

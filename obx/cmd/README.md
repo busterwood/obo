@@ -88,9 +88,11 @@ runtime report on the large-input cases (four for the coreutils, four for `grep`
 | `tail` | 71,016 | 92,768 |
 | `grep` | 544,672 | 476,488 |
 | `zoxide` | 589,536 | 352,496 |
+| `jq` | 1,114,456 (libc, libm) | 875,280 |
 
 (obo's static binaries were 90 to 119 KB. `grep` is large because it carries
-the regex library.)
+the regex library. `jq` carries the regex and JSON libraries and jq's
+builtins, and links libm for its math builtins.)
 
 ### grep
 
@@ -219,6 +221,117 @@ Install the reference into a scratch directory, not `~/.cargo/bin`:
 `CARGO_INSTALL_ROOT=/tmp/zoxide-ref cargo install zoxide --locked --version
 0.9.9` (0.10 needs a newer rustc). Our binary runs with `OBX_CHECK=1`.
 Sizes in bytes: `zoxide` is 589,536 native (static) and 352,496 through C.
+
+## jq
+
+`jq.obx` is a port of jq 1.7.1, the command-line JSON processor, built on
+[../lib/json.obx](../lib/json.obx) and [../lib/regex.obx](../lib/regex.obx).
+It is split into five files:
+
+| File | Contents |
+|---|---|
+| `jq.obx` | the command line |
+| `jq_parse.obx` | the lexer, the parser (parser.y's grammar and precedence) and name resolution |
+| `jq_eval.obx` | the evaluator |
+| `jq_lib.obx` | value operations, formats, dates, math, regexes and jq's JSON error messages |
+| `jq_builtins.obx` | jq's `builtin.jq`, with jq's MIT notice |
+
+    compiler/out/obxc cmd/jq.obx --native -o jq
+    compiler/out/obxc cmd/jq.obx -o jq
+
+### Supported
+
+- **Options:** `-n -r -j -a -c -s -e -S -R -C -M -f`, `--tab`,
+  `--indent n`, `--arg`, `--argjson`, `--slurpfile`, `--rawfile`, `--args`,
+  `--jsonargs`, `--unbuffered`, `--exit-status`, `-h`, `-V` and
+  `--build-configuration`. They parse as jq's `main.c` does, including
+  combined short options. The help text, messages and exit codes (0, 1, 2,
+  3, 4, 5, and `halt_error`'s) are jq's.
+- **Control and binding:**
+  - paths and assignments: `=`, `|=`, `+=` and the other arithmetic
+    updates, `//=`, `del`, `paths`, `getpath`, `setpath`, `delpaths`;
+  - `reduce`, `foreach`, `label`/`break`, `try`/`catch` and `?`;
+  - destructuring, with `?//` alternatives;
+  - `def` with closure and `$` parameters, and recursion;
+  - string interpolation with formats;
+  - `$__loc__`, `$ENV`, `$ARGS`, `input`, `inputs` and `input_filename`.
+- **Builtins:** all 220 names that `builtins` lists, with jq's error
+  texts. They include:
+  - the formats `@text @json @html @uri @csv @tsv @sh @base64 @base64d`;
+  - dates (`strptime`, `strftime`, `mktime`, `gmtime`, `todate` and the
+    rest);
+  - the math library;
+  - `tostream`, `fromstream` and `truncate_stream`;
+  - `test`, `match`, `capture`, `scan`, `splits` and `sub`/`gsub`, with
+    named captures and every flag (`g i x n s p l`).
+- **Numbers** keep their literal, as in jq 1.7: `100000000000000000001`
+  and `1.000` print as written, in decNumber's canonical form.
+- **Laziness:** generators are lazy, so `first(range(1; infinite))`,
+  `limit(3; repeat(1))` and `label $out | ...` stop as soon as they have
+  their outputs. The header of `jq_eval.obx` explains how.
+- **Input errors:** invalid JSON input gives jq's messages, positions and
+  exit status.
+
+### Not supported or different
+
+- **Not supported:** modules (`import`, `include`, `modulemeta`, `-L`),
+  `--stream`, `--stream-errors`, `--seq` and `--raw-output0`. A program
+  that uses `import` or `include` gets jq's "module not found" error; the
+  options say they are not supported and exit with status 2.
+- **Colours:** `-C` is accepted but writes no colours.
+- **Regular expressions** are RE2's syntax (lib/regex), not Oniguruma's:
+  - no lookaround and no backreferences;
+  - `\b` and `\w` are ASCII.
+
+  Such patterns fail with a "Regex failure" error, where jq would match.
+  Error messages for the common pattern errors use Oniguruma's wording.
+- **Time zones:** `localtime`, `strflocaltime` and `%Z` read only the name
+  at the start of `$TZ`, not the tz database, so local time is UTC.
+- **Constant folding:** jq folds constant object keys, so `{(1+1): 3}` is a
+  compile error in jq and a runtime error here.
+- **Input:** standard input and files are read whole before parsing starts,
+  rather than streamed.
+
+### Tests
+
+[../tests/jq.py](../tests/jq.py) is a differential test against the real
+jq 1.7.1, outside the gates, modelled on `zoxide.py`. Every case runs both
+programs with the same arguments, standard input and files (in a fresh
+directory, with `TZ=UTC` and `LC_ALL=C`). It wants the same exit status,
+standard output and standard error, with two normalisations: the
+program's own path, and the text after "Regex failure: ". There are two
+kinds of case:
+
+- 583 programs run as `jq -nc PROGRAM`;
+- 286 command-line cases, which cover the options, inputs, files, errors
+  and exit codes.
+
+`--jqtest` also fetches jq's own `tests/jq.test` and runs it through the
+command line, comparing outputs as values (`--jqtest-file` takes a local
+copy instead).
+
+    python3 tests/jq.py --ref /path/to/jq -j 8                 # native build
+    python3 tests/jq.py --c --ref /path/to/jq -j 8             # C build
+    python3 tests/jq.py --ref /path/to/jq -j 8 --jqtest        # and jq.test
+
+Build the reference from the release tarball into a scratch directory
+(`./configure --with-oniguruma=builtin --prefix=/tmp/jq-ref && make
+install`). Our binary runs with `OBX_CHECK=1`, so a leak fails a case.
+
+Results on both builds:
+
+- 869 of 869 cases pass.
+- jq.test: 430 of 430 pass. The 17 tests that use modules are counted
+  apart; 1 of them passes.
+- jq's other test files (run the same way):
+
+| File | Passed | Notes |
+|---|---:|---|
+| `man.test` | 222 of 224 | the reference gets the same 222 |
+| `onig.test` | 38 of 40 | a lookahead and a Unicode `\b` |
+| `manonig.test` | 17 of 17 | |
+| `optional.test` | 3 of 3 | |
+| `base64.test` | 7 of 7 | |
 
 ## httpd and httpload
 
