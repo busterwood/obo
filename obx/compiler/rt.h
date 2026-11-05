@@ -521,12 +521,47 @@ static int64_t rt_cmark(void) { return rt_nctmp; }
 static char rt_cempty;
 static void* rt_cdata(void* p) { return p ? p : &rt_cempty; }
 static void rt_cfree(int64_t m) { while (rt_nctmp > m) free(rt_ctmp[--rt_nctmp]); }
-/* The decimal digits of v, written backwards before end; returns the first. 64-bit division as
-   soon as v fits (a 128-bit one is a libgcc call). */
+/* v / 10^19 into *v; returns the remainder. Two 64-bit divisions (the first by a constant, so a
+   multiply) instead of a libgcc 128-bit one: hi % 10^19 < 10^19 keeps divq from overflowing. */
+static uint64_t rt_div1e19(u128* v) {
+    const uint64_t d = 10000000000000000000ULL;
+    uint64_t hi = (uint64_t)(*v >> 64), lo = (uint64_t)*v, q, r;
+    __asm__("divq %4" : "=a"(q), "=d"(r) : "a"(lo), "d"(hi % d), "rm"(d));
+    *v = ((u128)(hi / d) << 64) | q;
+    return r;
+}
+/* "00" to "99", for two digits per division */
+static const char rt_dig2[201] =
+    "0001020304050607080910111213141516171819"
+    "2021222324252627282930313233343536373839"
+    "4041424344454647484950515253545556575859"
+    "6061626364656667686970717273747576777879"
+    "8081828384858687888990919293949596979899";
+/* The decimal digits of v, written backwards before end; returns the first. Above 2^64, 19 digits
+   at a time from the remainder of a division by 10^19; then 64-bit loops, two digits per division
+   by 100 (a constant divisor: a multiply). */
 static char* rt_digits(char* end, u128 v) {
-    for (; v > UINT64_MAX; v /= 10) *--end = (char)('0' + (int)(v % 10));
+    while (v > UINT64_MAX) {
+        uint64_t r = rt_div1e19(&v);
+        for (int i = 0; i < 9; i++, r /= 100) {
+            const char* p = rt_dig2 + 2 * (r % 100);
+            *--end = p[1];
+            *--end = p[0];
+        }
+        *--end = (char)('0' + (int)r);
+    }
     uint64_t w = (uint64_t)v;
-    do *--end = (char)('0' + (int)(w % 10)); while (w /= 10);
+    for (; w >= 100; w /= 100) {
+        const char* p = rt_dig2 + 2 * (w % 100);
+        *--end = p[1];
+        *--end = p[0];
+    }
+    if (w >= 10) {
+        *--end = rt_dig2[2 * w + 1];
+        *--end = rt_dig2[2 * w];
+    } else {
+        *--end = (char)('0' + (int)w);
+    }
     return end;
 }
 static obx_str rt_u128_to_str(u128 v) {
