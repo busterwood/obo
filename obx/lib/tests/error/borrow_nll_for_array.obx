@@ -1,0 +1,11 @@
+// A for loop over an array of views keeps the array, and so its root, frozen for the loop.
+// error: 's' is borrowed by 'parts' and cannot be assigned
+import "strings"
+fn main() {
+    var s = intToStr(12) + ",ab,cd"
+    let parts = strings.split(&s, ",")
+    for p in parts {
+        s = "x"
+        println(p)
+    }
+}

@@ -4,7 +4,7 @@ type D = record { v: int }
 fn main() {
     var o: Option[D] = Some(D{v: 1})
     match o {
-        Some(d) { o = None }
+        Some(d) { o = None; println(intToStr(d.v)) }
         None {}
     }
 }

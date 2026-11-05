@@ -51,7 +51,7 @@ needs more concepts; obx accepts fewer and needs fewer.
 | Borrows | `&T`, `mut &T`, second class | `&T`, `&mut T`, first class | obx stores borrows only in second-class values |
 | Lifetimes | none | explicit, inferred, elided | |
 | Borrow check scope | one function, seven rules | whole program through signatures | |
-| Borrow region | lexical (to end of block) | non-lexical (to last use) | obx rejects more |
+| Borrow region | to last use, by name and statement | non-lexical (to last use, by control flow) | obx rejects a little more |
 | Integers | `int`(64), `i32 u32 u64 byte i128 u128` | `i8..i128`, `u8..u128`, `isize`, `usize` | |
 | Overflow | traps (exit 10); `+% -% *%` wrap | panics in debug, wraps in release | obx always checks |
 | Floats | `float` (64-bit) only | `f32`, `f64` | |
@@ -470,8 +470,11 @@ function. The rules (spec section 10):
 7. **Variables.** A `var` holding borrows keeps the roots of the first value
    stored in it; every later store must borrow from them.
 
-Rule 4 is lexical: a borrow freezes its root until the end of its block, not
-until its last use. Use an inner block to end it sooner.
+Rule 4 ends at the last use: a borrow freezes its root while its name occurs
+later in its block, or anywhere in a loop around the point that it is
+declared outside of, or while something live borrows it. (It was lexical, to
+the end of the block, until the borrow-limits work; see
+borrow-types.md 12.3.)
 
 Examples, all compiled:
 
@@ -495,17 +498,17 @@ type Holder = record { name: &str }
 
 var xs: []int = [1]
 let first = &xs[0]
-println(first)
 append(mut &xs, 2)
+println(first)
    -> 'xs' is borrowed by 'first' and cannot be mutably borrowed while that
-      borrow is in scope        (even though `first` is not used again)
+      borrow is in scope        (`first` is used again after the append)
 
 for x in xs { if x == 2 { append(mut &xs, 9) } }
    -> 'xs' is borrowed by the for loop and cannot be mutably borrowed ...
 ```
 
-Putting `first` and its use in an inner block `{ ... }` makes the third
-example compile (checked).
+Moving `println(first)` above the `append` makes the third example compile
+(checked).
 
 ### 6.2 Rust: lifetimes and the borrow checker
 
@@ -540,8 +543,10 @@ Only in Rust (not expressible in obx today):
 - Borrowing from a global or `'static` data into a long-lived structure.
 - Disjoint mutable borrows of fields via pattern matching, and of slice
   halves through `split_at_mut`. obx refuses two `mut` slices of one array.
-- Borrowing across a loop with non-lexical release (`let r = &xs[0]; use(r);
-  xs.push(1)`).
+- Liveness by control flow: obx counts a later use by name, so a use in a
+  branch that cannot run after the conflict (`if c { xs.push(1); return }
+  use(r)`) still freezes the root, as does a reassigned holder until its last
+  assignment.
 - Reference-holding closures that escape (`impl Fn + 'a`).
 - Walking a linked structure by borrow: obx notes that `cur = &cur.next`
   is not possible since a borrow is never rebound, so such a walk recurses
@@ -592,7 +597,7 @@ impl<'a> Iterator for Lexer<'a> { type Item = Token<'a>; fn next(&mut self) -> O
 
 The obx version names no lifetime; the price is the limits listed in 6.3
 (no heap containers of views, no lending iterators, no mixed sources) and
-lexical freezes. Measured gain: a word-statistics program over 100 MB using
+liveness by name rather than by control flow. Measured gain: a word-statistics program over 100 MB using
 `strings.lines` and view-returning `fields` instead of counted pieces runs
 -50% instructions (C backend) and -30% (native).
 
@@ -1220,7 +1225,8 @@ and grep, so no broader claim is made here.
 
 - First-class borrows and lifetimes: structs and iterators that hold
   references in heap structures or beyond their creator, lending iterators,
-  non-lexical borrow regions, and signatures that relate several lifetimes.
+  borrow regions by control flow, and signatures that relate several
+  lifetimes.
 - Traits with explicit `impl`, associated types and consts, blanket impls,
   const generics, `impl Trait`, trait objects (`dyn`), operator traits, and
   `derive`.

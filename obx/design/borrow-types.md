@@ -344,7 +344,7 @@ possible.
 - Choosing per call between results: `fn pick(a: &str, b: &str): &str` still
   needs exactly one borrowed parameter (rule 5 for plain borrows).
 - Rebinding a `var` to a different root; ending a freeze before the end of its
-  block (rule 4 is lexical).
+  block (rule 4 is lexical). (Freezes end at the last use since section 12.3.)
 - Self-reference: a value cannot hold a view of its own field.
 
 ## 8. Alternatives
@@ -589,10 +589,12 @@ What the rules made awkward:
 
 - A text replaced by a piece of itself (`match strings.cut(&out, sep) {
   Some(x) { out = x.before + ... } }`) is rejected: `x` freezes `out` for the
-  arm. Two places in the test support now slice by index instead.
+  arm. Two places in the test support now slice by index instead. (Lifted in
+  section 12.3.)
 - Pieces kept in a loop body freeze the text for the rest of the block, so a
   parser that splits a header and then advances its cursor (`s = s[i + 4..]`)
-  needs the pieces in an inner block (lib/tests/support/srvtest.obx).
+  needs the pieces in an inner block (lib/tests/support/srvtest.obx). (Lifted
+  in section 12.3.)
 - Splitting a temporary (`strings.split(&io.read(p).unwrap(), "\n")` in a
   `for` header) needs the text bound to a `let` first. (Lifted in section 12.2.)
 - `join` takes `&[str]`, so joining views goes through `owned` (or a loop).
@@ -681,3 +683,89 @@ Tests: lib/tests/run/borrow_for_temp.obx; lib/tests/error/borrow_for_temp_*
 borrow_for_join_temp, borrow_match_join_temp, borrow_call_join_temp. Callers:
 http_server_log.obx and time_clock.obx now split their temporaries in the
 header.
+
+### 12.3 Freezes end at the last use (non-lexical rule 4)
+
+Rule 4 froze a borrow's roots until the end of its block. The rule now is:
+a freeze made for a named local variable `x` (a `let` borrow, a variable or
+binding holding borrows, a holder given its roots by a store) is in force at a
+point only while `x` is *live* there. Everything else stays lexical: the
+freezes of closures, of a `for` loop over an array (on the array), of a for
+loop's hidden iterator, and of the hidden locals of section 12.2.
+
+**Live.** `x` is live at a point when
+
+1. the name `x` occurs later in its block: in a statement after the current
+   one, in any block from the current one out to the one `x` is declared in;
+2. the point is inside a loop that `x` is declared outside of, and the name
+   occurs anywhere in that loop (the next iteration may use it), the header
+   and condition included;
+3. the name occurs in the statement being checked (it may run after the
+   point), except that the right side of a plain assignment `p = e` no longer
+   counts once `e` has been evaluated, before the old value is dropped
+   (`out = c.before + "x"`, with `c` a view of `out`; `store` builds the new
+   value in a temporary before dropping the old one);
+4. a statement that contains the point, other than an `if` or `match`
+   statement whose branch the point is in, a plain block or a loop of rule 2,
+   mentions it anywhere (an `if` or `match` expression inside a call: the
+   rest of the call may run after the branch);
+5. `x` is itself frozen by a freeze that is in force (a `let q = &x`, a
+   closure capturing `x`, a `for` loop over `x`): what borrows `x` may still
+   read through it.
+
+"Occurs" is by name: an `N_NAME` node with that text, found by scanning the
+nodes the parser made for those statements (it records each statement's node
+range). Nothing reads a variable except through its name: a borrow-class type
+has no drop method (D8), a closure that captures `x` is covered by rule 5, and
+a call in progress holds its own arguments (rule 3, unchanged).
+
+**Why it is sound.** A freeze protects the borrows `x` holds. If no later
+statement names `x`, nothing in the rest of `x`'s scope reads those borrows
+(no name, no drop, nothing through a borrow of `x` that is still in force),
+and a loop's next iteration is covered by rule 2. A program point is checked
+against every statement that may run after it: the rest of each enclosing
+block and, for an enclosing loop, the whole loop. The other branches of an
+`if` or `match` statement do not run after the point; a `return`, `break` or
+`continue` only removes paths, so counting the text after it is conservative.
+Assigning `x` itself counts as a use, so a borrow-holding `var` reassigned
+later keeps its roots frozen until then (an assignment never ends a borrow
+early). A name that a later, unrelated variable reuses (in a sibling block)
+also counts: conservative.
+
+**Cost.** Liveness is computed only when a freeze would otherwise reject a
+program, so a program that compiles under the lexical rule pays nothing.
+
+**What stays rejected.**
+
+- Using `x` after the conflicting operation, in the same iteration or the
+  next (`let v = view(&s); s = "y"; use(v)`, or `v` declared before a loop
+  that assigns `s` and uses `v`).
+- A conflict inside a statement that also names `x` later in the same
+  statement, other than the right side of a plain assignment
+  (`f(mut &s, v)`; `s += v`).
+- An `if` or `match` expression that assigns the root in one branch, where
+  the rest of the statement names `x`.
+- Freezes held by closures, for-loop arrays and iterators, and hidden
+  locals: they last until their scope ends.
+- Holders of a value with borrows that are assigned later (`var out: []&str`
+  holds its roots until its last use, assignments included).
+
+**As built.** The parser records each statement's node range (`Ast.slo`,
+`Ast.shi`; an `else if` gets its own). The checker keeps the blocks being
+checked and the statement in each (`Ctx.blks`), notes where each variable was
+declared (`Var.blk`, `Var.bi`), and gives each freeze the variable it is made
+for (`Freeze.bv`, from `nllVar`: a local with a plain name). `frozen` asks
+`inForce`, and `isLive` applies the rules above. A plain assignment to a
+variable now checks its freeze after the right side is evaluated
+(`Ctx.rhsAt`), as the assignment to a field or element already did. A match
+on a place now gives each binding its own freeze (before, only the first
+binding of an arm made one, which was enough while freezes were lexical).
+
+Tests: lib/tests/run/borrow_nll.obx, tests/run/s10_frozen_ends_at_last_use.obx
+(was the error test s10_frozen_lexical_after_last_use); lib/tests/error/
+borrow_nll_* (assign_root, loop_reassign, loop_branch, move_root, chain,
+closure, ifx_branch, holder, for_array, compound, same_call, else_if,
+rhs_later, mut_read). Four conformance and compiler error tests that left
+the borrow unused after the conflict now use it after. Callers: srvtest's
+inner block is gone, and srvtest and httptest cut the text again instead of
+slicing it by index.

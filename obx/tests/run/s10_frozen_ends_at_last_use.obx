@@ -1,0 +1,12 @@
+// A freeze ends at the borrow's last use (SPEC 10 rule 4): after println(r.id), zed may be
+// assigned again (it was an error while rule 4 was lexical).
+// expect: 1
+// expect: 2
+type D = record { id: int }
+fn main() {
+    var zed = D{id: 1}
+    let r = &zed
+    println(intToStr(r.id))
+    zed = D{id: 2}
+    println(intToStr(zed.id))
+}

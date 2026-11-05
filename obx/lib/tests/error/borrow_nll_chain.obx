@@ -1,0 +1,10 @@
+// A borrow of a borrow keeps the first one live.
+// error: 'xs' is borrowed by 'v' and cannot be assigned
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var xs = [intToStr(1) + "aaaaaaaaaaaaaaaaaaaaaa"]
+    let v = head(&xs[0])
+    let q = &v
+    xs = []
+    println(q)
+}

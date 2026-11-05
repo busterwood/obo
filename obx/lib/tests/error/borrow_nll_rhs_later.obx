@@ -1,0 +1,9 @@
+// The right side of an assignment is done, but the borrow is used again after it.
+// error: 'k' is borrowed by 'v' and cannot be assigned
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var k = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    let v = head(&k)
+    k = v + k
+    println(v)
+}

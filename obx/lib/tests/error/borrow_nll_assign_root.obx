@@ -1,0 +1,9 @@
+// A borrow used after an assignment to its root.
+// error: 's' is borrowed by 'parts' and cannot be assigned
+import "strings"
+fn main() {
+    var s = intToStr(12) + ",ab,cd"
+    let parts = strings.split(&s, ",")
+    s = "x"
+    println(parts[1])
+}

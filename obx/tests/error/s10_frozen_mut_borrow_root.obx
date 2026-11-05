@@ -4,4 +4,5 @@ fn main() {
     var zed = D{id: 1}
     let r = &zed
     let m = mut &zed
+    println(r.id)
 }

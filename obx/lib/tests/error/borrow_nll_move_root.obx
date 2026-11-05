@@ -1,0 +1,10 @@
+// A view that outlives a move of its root.
+// error: 'xs' is borrowed by 'v' and cannot be moved
+fn head(s: &str): &str { return s[0..2] }
+fn main() {
+    var xs = [intToStr(1) + "aaaaaaaaaaaaaaaaaaaaaa"]
+    let v = head(&xs[0])
+    let ys = move(xs)
+    println(v)
+    println(ys[0])
+}

@@ -1,0 +1,9 @@
+// A holder of views assigned after its root: assigning it counts as a use.
+// error: 's' is borrowed by 'out' and cannot be assigned
+fn main() {
+    var s = intToStr(12) + "abcdefghijklmnopqrstuvwxyz"
+    var out: []&str = []
+    append(mut &out, s[0..3])
+    s = "x"
+    out = []
+}

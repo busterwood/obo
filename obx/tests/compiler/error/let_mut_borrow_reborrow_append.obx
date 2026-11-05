@@ -5,4 +5,5 @@ fn main() {
     let a = mut &xs
     let b = &a[0]
     append(a, 3)
+    println(intToStr(b))
 }

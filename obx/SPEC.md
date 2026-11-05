@@ -856,12 +856,21 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    other; any two indexes into the same array overlap. The same holding covers
    an operator's left operand and an index expression's array.
 4. **Frozen roots.** While a `let` borrow, or a variable, parameter, `for`
-   or `match` binding of a type that holds borrows, is in scope, its roots are
+   or `match` binding of a type that holds borrows, is live, its roots are
    frozen: they may not be assigned, moved, or mutably borrowed, and nothing
    under them may be assigned. A `let r = mut &p`, or a value holding a
    `mut &`, freezes its roots against any other use as well, except through
    it. A `for x in xs` loop freezes `xs` the same way for the loop body, and
    an iterating `for` freezes the iterator's roots.
+   A local variable is live from its declaration to its last use: while its
+   name occurs later in its block (in a statement after the current one, or
+   in the rest of the current statement; the right side of a plain
+   assignment `p = e` no longer counts once `e` is evaluated), anywhere in a
+   loop around the current point that it is declared outside of, or while
+   something live borrows it (a `let q = &x`, a closure capturing it, a `for`
+   loop over it). The other branches of an `if` or `match` statement do not
+   count. Parameters, closures, `for` loops and their iterators freeze until
+   the end of their scope.
 5. **Results.** A function whose result holds borrows has as its *sources*
    the parameters (and receiver) that are or hold borrows. A result that is a
    plain borrow has at most one, and a `mut &` result exactly one, a `mut &`
@@ -886,10 +895,13 @@ borrows, or a type parameter declared `borrow` (section 6.1).
    `var` as a root. A `var` of a plain borrow type is an error.
 
 A `match` on a place of an owned type whose arm binds a field as a borrow
-freezes the place's root (rule 4) for the body of that arm.
+freezes the place's root (rule 4) while the binding is live.
 
-Rule 4 is lexical: a borrow freezes its root until the end of its block, not
-until its last use. Use an inner block to end it sooner.
+Rule 4 is not lexical: a borrow freezes its root until its last use, not
+until the end of its block (`let parts = strings.split(&s, ","); use(parts);
+s = next()` is allowed). Liveness is by name and statement, so it is
+conservative: a later use in a branch that cannot run, or of another variable
+of the same name, still counts.
 
 ## 11. Built-in functions
 

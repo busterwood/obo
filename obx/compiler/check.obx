@@ -171,6 +171,8 @@ type Var = value record {
     loops: int      // the loops around its declaration
     jn: int         // a join root: its members (Checker.joins), or -1
     tv: bool        // the stand-in of a temporary in a join (Checker.tmpVars)
+    blk: int        // the block being checked where it was declared (its index in Ctx.blks), or -1
+    bi: int         // that block's statement then
 }
 
 type Tmp = value record {
@@ -206,6 +208,14 @@ type Freeze = value record {
     root: int
     m: bool
     by: str
+    bv: int         // the variable it is made for: in force while that is live (-1: until its scope ends)
+}
+
+// A block being checked: its statements, and the one being checked.
+type Blk = value record {
+    b: int
+    stmts: int
+    i: int
 }
 
 type Pend = value record {
@@ -258,12 +268,14 @@ type Ctx = record {
     capVars: []int
     wconds: []int   // the number of loops around each while condition being checked
     rsrc: []int     // a result holding borrows: the roots it may have (parameters, or what they hold)
+    blks: []Blk     // the blocks being checked, outermost first
+    rhsAt: int      // a plain assignment whose right side has been evaluated, or -1
 }
 
 fn newCtx(f: int, label: str, ret: int, env: []int, mod: int, closure: bool): Ctx {
     return Ctx{fd: f, label: label, ret: ret, env: env, mod: mod, closure: closure, bvar: -1, lines: [], ind: 1,
         scopes: [], frames: [], loops: [], pending: [], pmarks: [], dead: false, nomove: [], n: 0, tailOn: false,
-        tail: [], capNames: [], capVars: [], wconds: [], rsrc: []}
+        tail: [], capNames: [], capVars: [], wconds: [], rsrc: [], blks: [], rhsAt: -1}
 }
 
 // What static() finds.
@@ -731,7 +743,7 @@ fn (c: mut &Checker) bindBC(x: int, t: int, cr: int, line: int, tmpOk: bool) {
     } else if cr != R_FREE {
         c.vars[x].croot = cr
     }
-    if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), name) }
+    if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), name, c.nllVar(x)) }
 }
 
 // A statement's own temporaries (a for loop's header, a match statement's scrutinee) live until the
@@ -869,7 +881,7 @@ fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
     c.vars[x].croot = r
     let d = c.vars[x].depth
     if d >= 0 && d < len(c.cx.scopes) {
-        append(mut &c.cx.scopes[d].freezes, Freeze{root: r, m: c.pg.holdsMut(c.vars[x].t), by: name})
+        append(mut &c.cx.scopes[d].freezes, Freeze{root: r, m: c.pg.holdsMut(c.vars[x].t), by: name, bv: c.nllVar(x)})
     }
 }
 
@@ -1142,7 +1154,7 @@ fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int
     let cx = c.nm(cn)
     append(mut &c.vars, Var{name: name, c: cx, t: t, mutable: mutable, kind: kind, line: line, moved: false,
         broot: -1, cap: -1, capmut: false, pjoin: 0, croot: -1, depth: len(c.cx.scopes) - 1, loops: len(c.cx.loops),
-        jn: -1, tv: false})
+        jn: -1, tv: false, blk: len(c.cx.blks) - 1, bi: if len(c.cx.blks) > 0 { c.cx.blks[len(c.cx.blks) - 1].i } else { -1 }})
     return len(c.vars) - 1
 }
 
@@ -1158,9 +1170,107 @@ fn (c: mut &Checker) declare(v: int) {
 
 fn (c: mut &Checker) pushScope() { append(mut &c.cx.scopes, Scope{vars: [], freezes: []}) }
 
-fn (c: mut &Checker) freeze(root: int, m: bool, by: str) {
+fn (c: mut &Checker) freeze(root: int, m: bool, by: str, bv: int) {
     let s = len(c.cx.scopes) - 1
-    append(mut &c.cx.scopes[s].freezes, Freeze{root: root, m: m, by: by})
+    append(mut &c.cx.scopes[s].freezes, Freeze{root: root, m: m, by: by, bv: bv})
+}
+
+// Variable x, if its freezes may end at its last use (design/borrow-types.md 12.3): a local the
+// program names (not a hidden one), else -1.
+fn (c: &Checker) nllVar(x: int): int {
+    if c.vars[x].kind != VK_LOCAL || c.vars[x].tv { return -1 }
+    let n = c.vars[x].name
+    if len(n) == 0 { return -1 }
+    for i in 0..len(n) {
+        let b = strByte(n, i)
+        if !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_') { return -1 }
+    }
+    return x
+}
+
+// Whether the freeze f is in force now: lexical, or made for a variable that is live.
+fn (c: &Checker) inForce(f: &Freeze, depth: int): bool {
+    return f.bv < 0 || c.isLive(f.bv, depth)
+}
+
+// Whether variable x is live here (design/borrow-types.md 12.3): it may be used after this point.
+fn (c: &Checker) isLive(x: int, depth: int): bool {
+    if depth > 32 { return true }
+    // rule 5: something in force borrows x
+    for s in 0..len(c.cx.scopes) {
+        for f in c.cx.scopes[s].freezes {
+            if f.bv != x && c.hits(f.root, x) && c.inForce(&f, depth + 1) { return true }
+        }
+    }
+    let name = c.vars[x].name
+    let top = len(c.cx.blks) - 1
+    if c.vars[x].blk > top { return true }      // not declared in a block of this function
+    let bottom = if c.vars[x].blk < 0 { 0 } else { c.vars[x].blk }
+    var k = top
+    while k >= bottom {
+        let fr = c.cx.blks[k]
+        let n = c.count(fr.stmts)
+        // rule 1: a later statement of this block
+        if fr.i + 1 < n {
+            if c.usesIn(c.item(fr.stmts, fr.i + 1), c.item(fr.stmts, n - 1), name) { return true }
+        }
+        let cur = c.item(fr.stmts, fr.i)
+        if k == top {
+            // rule 3: the statement being checked
+            if cur == c.cx.rhsAt {
+                if c.lhsUses(c.nd(cur).a, name) { return true }
+            } else if c.usesIn(cur, cur, name) {
+                return true
+            }
+        } else if !(k == c.vars[x].blk && fr.i == c.vars[x].bi) && !c.directBranch(cur, c.cx.blks[k + 1].b) {
+            // rules 2 and 4: a loop around the point, or a statement the rest of which may run later
+            if c.usesIn(cur, cur, name) { return true }
+        }
+        k -= 1
+    }
+    return false
+}
+
+// Whether a freeze of root r covers variable x.
+fn (c: &Checker) hits(r: int, x: int): bool {
+    if r == x { return true }
+    return r >= 0 && c.vars[r].jn >= 0 && hasInt(&c.joins[c.vars[r].jn], x)
+}
+
+// Whether name is used in the statements from a to b (a block's, in order): any N_NAME node made
+// while parsing them. Unknown spans count as a use.
+fn (c: &Checker) usesIn(a: int, b: int, name: str): bool {
+    let ast = &c.pg.mods[c.cx.mod].ast
+    if a >= len(ast.slo) || b >= len(ast.slo) { return true }
+    let lo = ast.slo[a]
+    let hi = ast.shi[b]
+    if lo < 0 || hi < 0 { return true }
+    for i in lo..hi + 1 {
+        if ast.nodes[i].kind == sx.N_NAME && ast.nodes[i].s == name { return true }
+    }
+    return false
+}
+
+// Whether an assignment target names name (a target other than a name or field chain: yes).
+fn (c: &Checker) lhsUses(e: int, name: str): bool {
+    let n = c.nd(e)
+    if n.kind == sx.N_NAME { return n.s == name }
+    if n.kind == sx.N_FIELDX { return c.lhsUses(n.a, name) }
+    return true
+}
+
+// Whether block b is a branch of statement s that runs instead of the rest of s (an if's or a
+// match's), or s itself: nothing else in s runs after it.
+fn (c: &Checker) directBranch(s: int, b: int): bool {
+    if s == b { return true }
+    let n = c.nd(s)
+    if n.kind == sx.N_IF { return n.b == b || n.c == b }
+    if n.kind == sx.N_MATCH {
+        for i in 0..c.count(n.b) {
+            if c.nd(c.item(n.b, i)).d == b { return true }
+        }
+    }
+    return false
 }
 
 // A snapshot: the states of the variables in scope, as (var, moved) pairs.
@@ -1218,8 +1328,11 @@ fn (c: mut &Checker) block(b: int, scope: bool, top: bool) {
     var unreachable = false
     let stmts = c.nd(b).a
     let n = c.count(stmts)
+    append(mut &c.cx.blks, Blk{b: b, stmts: stmts, i: 0})
+    let bk = len(c.cx.blks) - 1
     for i in 0..n {
         let s = c.item(stmts, i)
+        c.cx.blks[bk].i = i
         if c.cx.dead {
             if stop {
                 c.err(c.line(s), "unreachable statement: the statement before it always returns, breaks, " +
@@ -1238,6 +1351,7 @@ fn (c: mut &Checker) block(b: int, scope: bool, top: bool) {
             c.dropFrame(&fr)
         }
     }
+    pop(mut &c.cx.blks)
     c.cx.dead = c.cx.dead || unreachable
     if scope {
         let sc = pop(mut &c.cx.scopes)
@@ -1260,7 +1374,7 @@ fn (c: mut &Checker) frozen(root: int, kind: int, line: int) {
     for s in 0..len(c.cx.scopes) {
         for f in c.cx.scopes[s].freezes {
             let hit = f.root == root || (f.root >= 0 && c.vars[f.root].jn >= 0 && hasInt(&c.joins[c.vars[f.root].jn], root))
-            if hit && (kind != FR_READ || f.m) {
+            if hit && (kind != FR_READ || f.m) && c.inForce(&f, 0) {
                 let verb = match kind { FR_ASSIGN { "assigned" } FR_MOVE { "moved" } FR_MUT { "mutably borrowed" } else { "used" } }
                 c.err(line, "'" + c.vars[root].name + "' is borrowed by " + f.by + " and cannot be " + verb +
                     " while that borrow is in scope")
@@ -1661,7 +1775,7 @@ fn (c: mut &Checker) sLet(s: int) {
         if v.caps >= 0 {
             for i in 0..len(c.capl[v.caps]) {
                 let cp = c.capl[v.caps][i]
-                c.freeze(cp.v, cp.m, "closure '" + name + "'")
+                c.freeze(cp.v, cp.m, "closure '" + name + "'", -1)
             }
         }
         return
@@ -1685,7 +1799,7 @@ fn (c: mut &Checker) sLet(s: int) {
             c.emit(c.x.decl(c.ct("obx_slice"), cn, v.c))
         }
         c.declare(vx)
-        if root != R_FREE { c.freeze(root, c.pg.tm(v.t), "'" + name + "'") }
+        if root != R_FREE { c.freeze(root, c.pg.tm(v.t), "'" + name + "'", c.nllVar(vx)) }
         return
     }
     if exp >= 0 { v = c.coerce(v, exp, n.line, what) }
@@ -1851,10 +1965,14 @@ fn (c: mut &Checker) sAssign(s: int) {
                 }
                 c.err(n.line, "cannot assign to '" + vn + "': it is declared with let, not var")
             }
-            c.frozen(vx, FR_ASSIGN, n.line)
+            if op != "" { c.frozen(vx, FR_ASSIGN, n.line) }
             if op == "" {
                 let vt = c.vars[vx].t
                 let v = c.coerce(c.expr(n.b, vt), vt, n.line, "the value assigned to '" + vn + "'")
+                // the old value is dropped after the new one is made: what the right side used is done
+                c.cx.rhsAt = s
+                c.frozen(vx, FR_ASSIGN, n.line)
+                c.cx.rhsAt = -1
                 if c.pg.isBorrowClass(vt) { c.storeRoot(vx, c.crOf(v), vt, n.line) }
                 let cc = c.consume(v, n.line)
                 var p = val(c.vars[vx].c, vt, CAT_PLACE)
@@ -1875,7 +1993,9 @@ fn (c: mut &Checker) sAssign(s: int) {
         if c.effects(tg, false) { v = c.snapVal(v) }
         if c.placeActs(tg) || (c.acts(tg) && c.pod(v.t)) { v = c.seq(v) }
         if v.cat == CAT_PLACE && !c.isCopy(v.t) { c.hold(v, HM_MOVE, c.newCid(), n.line) }
+        c.cx.rhsAt = s
         let p = c.place(tg)
+        c.cx.rhsAt = -1
         c.cutPending(mark)
         v = c.coerce(v, p.t, n.line, "the assigned value")
         if c.pg.isBorrowClass(p.t) { c.storeRoot(p.root, c.crOf(v), p.t, n.line) }
@@ -2257,7 +2377,7 @@ fn (c: mut &Checker) sFor(s: int) {
     let ecr = if c.isCopy(et) && c.pg.isBorrowClass(et) { c.stmtRoot(c.innerCr(v.root, v.cr, et), mut &h, hd, n.line) } else { -1 }
     let eroot = if !c.isCopy(et) && isTmpRoot(v.root) { c.stmtRoot(v.root, mut &h, hd, n.line) } else { v.root }
     c.loopStart(c.snapshot(), false)
-    if v.root >= 0 { c.freeze(v.root, false, "the for loop") }
+    if v.root >= 0 { c.freeze(v.root, false, "the for loop", -1) }
     if c.isCopy(et) {
         let ct = c.T(et)
         c.emit(c.x.decl(ct, xn, c.dup(elem, et)))
@@ -2533,10 +2653,7 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
                         let x = c.newVar(bn, cn, rt, false, VK_LOCAL, an.line)
                         c.vars[x].broot = if root >= 0 { root } else { -1 }
                         c.declare(x)
-                        let sc = len(c.cx.scopes) - 1
-                        if root >= 0 && len(c.cx.scopes[sc].freezes) == 0 {
-                            c.freeze(root, false, "the match binding '" + bn + "'")
-                        }
+                        if root >= 0 { c.freeze(root, false, "the match binding '" + bn + "'", c.nllVar(x)) }
                     }
                 }
             }
