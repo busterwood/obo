@@ -1,0 +1,12 @@
+// A value joined from a variable and a temporary, passed to a call, holds the variable while the
+// later arguments run (SPEC 10 rule 3).
+// error: 'w' cannot be moved here: it overlaps a borrow held by the call
+type W = record { s: str }
+fn pair(x: &W, y: &str): []&str { return [&x.s, y] }
+fn mk(): str { return intToStr(42) + "tttttttttttttttttttttttttttt" }
+fn take(w: W): int { return len(w.s) }
+fn use(v: []&str, n: int) { println(v[0]) }
+fn main() {
+    let w = W{s: intToStr(7) + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    use(pair(&w, &mk()), take(move(w)))
+}

@@ -1,0 +1,13 @@
+// error: 'a' is borrowed by 'ps' and cannot be assigned
+fn both(x: &str, y: &str): Option[[]&str] { return Some([x, y]) }
+fn mk(): str { return intToStr(42) + "tttttttttttttttttttttttttttt" }
+fn main() {
+    var a = intToStr(7) + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    match both(&a, &mk()) {
+        Some(ps) {
+            a = intToStr(9) + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            println(ps[0])
+        }
+        None {}
+    }
+}

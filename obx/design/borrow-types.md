@@ -594,7 +594,7 @@ What the rules made awkward:
   parser that splits a header and then advances its cursor (`s = s[i + 4..]`)
   needs the pieces in an inner block (lib/tests/support/srvtest.obx).
 - Splitting a temporary (`strings.split(&io.read(p).unwrap(), "\n")` in a
-  `for` header) needs the text bound to a `let` first.
+  `for` header) needs the text bound to a `let` first. (Lifted in section 12.2.)
 - `join` takes `&[str]`, so joining views goes through `owned` (or a loop).
   A `join` over `&[]&str` would need a second function or a generic one.
 - A view does not get a count, but converting it to `str` (an argument of a
@@ -646,3 +646,38 @@ borrow_matchx_* (mut_two_roots, arm_binding, arm_binding_plain). Two
 conformance error tests (x1_ifx_borrow, x1_ifx_slice) and red-team round 4's
 i20 rejected what is now allowed; they now test the mut-two-roots and
 temporary cases.
+
+### 12.2 Temporaries in a `for` header and a `match` scrutinee
+
+A statement's temporaries live until the statement ends, and a `for` loop or
+a `match` statement is one statement: `for p in strings.split(&mk(), ",")`
+keeps `mk()`'s text alive through the whole loop. The checker already let the
+loop variable hold views of it (loop and arm bindings may hold a temporary
+root), but a `let` in the body copying them carried the bare temporary root,
+so `let keep = tk` was rejected ("cannot hold borrows of a temporary").
+
+Rule as built: where a `for` loop (over an array or an iterator) or a `match`
+statement binds a value holding borrows of its own temporaries, the
+temporary root is replaced by a hidden local made for that statement
+(`stmtRoot`; messages call it "the temporary in the header of the for loop
+at line N" or "the temporary matched at line N"). It is declared after every
+variable around the statement and lives as long as the temporary does, so a
+body `let` may hold its views, while anything declared before the statement
+(an outer `var keep: []&str`) cannot: the usual "does not live as long as"
+check rejects it, and returning one is rejected as before. A `match`
+expression's arms are not covered: its value outlives the arms, so they still
+cannot give views of the scrutinee.
+
+A hole closed on the way: `joinRoots` let a temporary win a join, so a value
+built from a variable and a temporary (`both(&a, &mk())`) lost the variable's
+root. A loop over it could then assign `a` while an item still viewed it, and
+a match arm likewise (heap-use-after-free under ASan); a call could move `a`
+while an earlier argument held it. A temporary now joins through a stand-in
+variable (`tmpVar`, flagged `tv`), so the join keeps every root and still
+counts as a temporary (`hasTmp`) wherever a bare temporary root was refused.
+
+Tests: lib/tests/run/borrow_for_temp.obx; lib/tests/error/borrow_for_temp_*
+(escape, derived, return), borrow_match_temp_escape, borrow_matchx_temp,
+borrow_for_join_temp, borrow_match_join_temp, borrow_call_join_temp. Callers:
+http_server_log.obx and time_clock.obx now split their temporaries in the
+header.

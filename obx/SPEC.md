@@ -623,6 +623,13 @@ values already built for the statement are dropped before the return.
 
 A value produced inside a statement and not stored lives until the end of
 that statement and is then dropped: `println(makeBox(3).v)` is allowed.
+For a `for` loop the statement is the whole loop, and for a `match`
+statement the whole match: the temporaries of the header or scrutinee live
+until the loop or match ends, so the body may keep views of them in its own
+variables (`for p in strings.split(&io.read(f).unwrap(), "\n") { let kv =
+strings.cut(p, "=") ... }`), but nowhere that outlives the statement
+(section 10, rule 2). A `match` expression's arms cannot give views of its
+scrutinee temporary, since its value outlives the arms.
 
 ### 7.8 Conditional and match expressions
 
@@ -825,6 +832,9 @@ borrows, or a type parameter declared `borrow` (section 6.1).
 2. **Roots.** Every borrow expression `&p` or `mut &p` has a root: the local
    variable or parameter that the place `p` starts from. Borrowing a global or
    a temporary that does not outlive the statement into a `let` is an error.
+   What a `for` loop or a `match` statement binds from its own temporaries is
+   rooted at the loop or match (section 7.7). A value built from both a
+   temporary and variables keeps the variables as roots.
    A value that holds borrows has the roots of the borrows it holds: a value
    built from parts (a literal, an `append`, the branches of an `if` or
    `match` expression) has the roots of all of them; a borrow read from a

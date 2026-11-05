@@ -170,6 +170,7 @@ type Var = value record {
     depth: int      // the scope it was declared in (its index in Ctx.scopes), -1 for a pseudo root
     loops: int      // the loops around its declaration
     jn: int         // a join root: its members (Checker.joins), or -1
+    tv: bool        // the stand-in of a temporary in a join (Checker.tmpVars)
 }
 
 type Tmp = value record {
@@ -348,13 +349,14 @@ pub type Checker = record {
     mxs: []MatchX
     joins: [][]int             // the members of each join root
     joinVars: []int            // the join roots made so far
+    tmpVars: []int             // per temporary: its stand-in in joins (a Var), or -1
     noRebase: int              // > 0 while an assignment target is evaluated: a borrow field is the place
 }
 
 pub fn newChecker(pg: sema.Program): Checker {
     var c = Checker{pg: pg, x: tm.newArena(), tmpls: [], ginits: [], cinits: [], vars: [], tmps: [], capl: [], statics: newMap(),
         podMemo: [], copyMemo: [], cids: 0, holes: [], lifted: [], cx: newCtx(-1, "", sema.T_VOID, [], 0, false),
-        outers: [], calleeTps: [], initOrder: [], mxs: [], joins: [], joinVars: [], noRebase: 0}
+        outers: [], calleeTps: [], initOrder: [], mxs: [], joins: [], joinVars: [], tmpVars: [], noRebase: 0}
     for f in 0..len(c.pg.fns) { append(mut &c.tmpls, Tmpl{done: false, lines: [], holes: [], lifted: []}) }
     for g in 0..len(c.pg.globals) { append(mut &c.ginits, noInit()) }
     for k in 0..len(c.pg.consts) { append(mut &c.cinits, noInit()) }
@@ -525,7 +527,7 @@ fn (c: &Checker) rootDesc(r: int): str {
     if r == R_FREE { return "nothing" }
     if r <= -2 { return "a temporary" }
     if r < 0 { return "something unknown" }
-    if c.vars[r].jn >= 0 { return c.vars[r].name }
+    if c.vars[r].jn >= 0 || c.vars[r].tv { return c.vars[r].name }
     if c.vars[r].kind == VK_PSEUDO && startsWith(c.vars[r].name, "*") {
         return "what '" + c.vars[r].name[1..len(c.vars[r].name)] + "' borrows"
     }
@@ -546,6 +548,32 @@ fn (c: &Checker) varDesc(x: int): str {
 // of that variable (Var.croot); a value that is not a place carries it in Val.cr.
 
 fn isTmpRoot(r: int): bool { return r <= -2 && r != R_FREE }
+
+// Whether root r is or includes a temporary (a temporary, or a join with one).
+fn (c: &Checker) hasTmp(r: int): bool {
+    if isTmpRoot(r) { return true }
+    if r < 0 { return false }
+    if c.vars[r].tv { return true }
+    if c.vars[r].jn >= 0 {
+        for m in c.joins[c.vars[r].jn] {
+            if isTmpRoot(m) || (m >= 0 && c.vars[m].tv) { return true }
+        }
+    }
+    return false
+}
+
+// The stand-in of temporary root r in a join: a variable that no one names or drops, so the join
+// keeps its other roots (a temporary no longer wins a join) and still counts as a temporary.
+fn (c: mut &Checker) tmpVar(r: int): int {
+    let id = -2 - r
+    while len(c.tmpVars) <= id { append(mut &c.tmpVars, -1) }
+    if c.tmpVars[id] < 0 {
+        let v = c.newVar("a temporary", "", sema.T_VOID, false, VK_LOCAL, 0)
+        c.vars[v].tv = true
+        c.tmpVars[id] = v
+    }
+    return c.tmpVars[id]
+}
 
 fn (c: &Checker) isBorrowTy(t: int): bool { return t >= 0 && c.pg.isBorrow(t) }
 
@@ -634,10 +662,9 @@ fn (c: mut &Checker) joinRoots(a: int, b: int): int {
     if a == R_FREE { return b }
     if b == R_FREE || a == b { return a }
     if a == -1 || b == -1 { return -1 }
-    if isTmpRoot(a) { return a }
-    if isTmpRoot(b) { return b }
-    var ms = c.members(a)
-    for x in c.members(b) {
+    if isTmpRoot(a) && isTmpRoot(b) { return a }
+    var ms = c.members(if isTmpRoot(a) { c.tmpVar(a) } else { a })
+    for x in c.members(if isTmpRoot(b) { c.tmpVar(b) } else { b }) {
         if !hasInt(&ms, x) { append(mut &ms, x) }
     }
     for v in c.joinVars {
@@ -695,7 +722,7 @@ fn (c: mut &Checker) bindBC(x: int, t: int, cr: int, line: int, tmpOk: bool) {
         c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be bound to " +
             name)
     }
-    if isTmpRoot(cr) && !tmpOk {
+    if c.hasTmp(cr) && !tmpOk {
         c.err(line, name + " cannot hold borrows of a temporary: the temporary does not outlive the statement " +
             "(bind it to a variable first)")
     }
@@ -705,6 +732,21 @@ fn (c: mut &Checker) bindBC(x: int, t: int, cr: int, line: int, tmpOk: bool) {
         c.vars[x].croot = cr
     }
     if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), name) }
+}
+
+// A statement's own temporaries (a for loop's header, a match statement's scrutinee) live until the
+// statement ends. In what the loop or an arm binds, a temporary root r is replaced by h, a hidden
+// local of the statement's block made on first need (declared after every variable around it), so
+// views of the temporary may be kept in the body but nowhere that outlives the statement.
+fn (c: mut &Checker) stmtRoot(r: int, h: mut &int, desc: str, line: int): int {
+    if !c.hasTmp(r) { return r }
+    if h < 0 { h = c.newVar(desc, "", sema.T_VOID, false, VK_LOCAL, line) }
+    if isTmpRoot(r) || c.vars[r].tv { return h }
+    var acc = R_FREE
+    for m in c.members(r) {
+        acc = c.joinRoots(acc, if isTmpRoot(m) || (m >= 0 && c.vars[m].tv) { h } else { m })
+    }
+    return acc
 }
 
 // A parameter that is or holds borrows of a borrow-class value gets a pseudo root for what those
@@ -719,7 +761,7 @@ fn (c: mut &Checker) paramContents(v: int) {
 // A result holding borrows (or a borrow) returned with root r: it must be one of cx.rsrc.
 fn (c: mut &Checker) checkResult(r: int, shown: int, line: int, isB: bool) {
     if r == R_FREE { return }
-    var ok = r != -1 && !isTmpRoot(r)
+    var ok = r != -1 && !c.hasTmp(r)
     if ok {
         for m in c.members(r) {
             if !hasInt(&c.cx.rsrc, m) { ok = false }
@@ -791,7 +833,7 @@ fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
         c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be stored in " +
             name)
     }
-    if isTmpRoot(r) {
+    if c.hasTmp(r) {
         c.err(line, name + " cannot hold a borrow of a temporary: the temporary does not outlive the statement " +
             "(bind it to a variable first)")
     }
@@ -1100,7 +1142,7 @@ fn (c: mut &Checker) newVar(name: str, cn: str, t: int, mutable: bool, kind: int
     let cx = c.nm(cn)
     append(mut &c.vars, Var{name: name, c: cx, t: t, mutable: mutable, kind: kind, line: line, moved: false,
         broot: -1, cap: -1, capmut: false, pjoin: 0, croot: -1, depth: len(c.cx.scopes) - 1, loops: len(c.cx.loops),
-        jn: -1})
+        jn: -1, tv: false})
     return len(c.vars) - 1
 }
 
@@ -1630,7 +1672,7 @@ fn (c: mut &Checker) sLet(s: int) {
             c.err(n.line, "a borrow cannot be stored in var '" + name + "': borrows are second class (use let)")
         }
         let root = v.root
-        if root < 0 && root != R_FREE {
+        if (root < 0 && root != R_FREE) || c.hasTmp(root) {
             c.err(n.line, "cannot borrow a temporary into let '" + name + "': the temporary does not outlive " +
                 "the statement")
         }
@@ -2209,6 +2251,11 @@ fn (c: mut &Checker) sFor(s: int) {
     c.cx.ind += 1
     let elem = c.x.idx(c.x.pcast(c.x.ptr(c.T(et)), c.x.dot(apn, "data")), ixn)
     let xn = c.fresh("v_" + name + "_")
+    // the header's temporaries live until the loop ends: what x holds of them is rooted at h
+    var h = -1
+    let hd = "the temporary in the header of the for loop at line " + intToStr(n.line)
+    let ecr = if c.isCopy(et) && c.pg.isBorrowClass(et) { c.stmtRoot(c.innerCr(v.root, v.cr, et), mut &h, hd, n.line) } else { -1 }
+    let eroot = if !c.isCopy(et) && isTmpRoot(v.root) { c.stmtRoot(v.root, mut &h, hd, n.line) } else { v.root }
     c.loopStart(c.snapshot(), false)
     if v.root >= 0 { c.freeze(v.root, false, "the for loop") }
     if c.isCopy(et) {
@@ -2216,12 +2263,12 @@ fn (c: mut &Checker) sFor(s: int) {
         c.emit(c.x.decl(ct, xn, c.dup(elem, et)))
         let x = c.newVar(name, xn, et, false, VK_LOCAL, n.line)
         c.declare(x)
-        if c.pg.isBorrowClass(et) { c.bindBC(x, et, c.innerCr(v.root, v.cr, et), n.line, true) }
+        if c.pg.isBorrowClass(et) { c.bindBC(x, et, ecr, n.line, true) }
     } else {
         let rt = c.pg.mkRef(et, false)
         c.emit(c.x.decl(c.T(rt), xn, c.addrOf(et, elem)))
         let x = c.newVar(name, xn, rt, false, VK_LOCAL, n.line)
-        c.vars[x].broot = v.root
+        c.vars[x].broot = eroot
         c.declare(x)
     }
     c.loopEnd(n.c, n.line)
@@ -2242,7 +2289,10 @@ fn (c: mut &Checker) forIter(s: int, v0: Val) {
         c.err(line, "for ... in needs an array, a slice, a range a..b or an iterator (a value with a method " +
             "next(): Option[...]), not " + c.tstr(v0.t))
     }
-    let cr = if c.pg.isBorrowClass(v0.t) { c.crOf(v0) } else { -1 }
+    var h = -1
+    let cr = if c.pg.isBorrowClass(v0.t) {
+        c.stmtRoot(c.crOf(v0), mut &h, "the temporary in the header of the for loop at line " + intToStr(line), line)
+    } else { -1 }
     let cc = c.consume(v0, line)
     c.emit(c.x.sblock())
     c.cx.ind += 1
@@ -2378,7 +2428,13 @@ fn (c: mut &Checker) sMatch(s: int, mx: bool) {
         root = p.root
         pcr = p.cr
     } else {
-        if c.pg.isBorrowClass(v.t) { scr = c.crOf(v) }
+        if c.pg.isBorrowClass(v.t) {
+            scr = c.crOf(v)
+            // a match statement's scrutinee lives until the statement ends (not a match expression's:
+            // its value outlives the arms)
+            var h = -1
+            if !mx { scr = c.stmtRoot(scr, mut &h, "the temporary matched at line " + intToStr(n.line), n.line) }
+        }
         if c.pg.types[d].drop >= 0 {
             c.err(n.line, "cannot destructure a " + c.pg.types[d].name + ": it has a drop method (match on a place instead)")
         }
@@ -3663,9 +3719,9 @@ fn (c: mut &Checker) branchRoot(v: Val, d: int, line: int, what: str): int {
     } else {
         r = c.crOf(v)
     }
-    if isTmpRoot(r) || (isB && r == -1) {
-        c.err(line, what + " cannot give a borrow of a temporary: the temporary is dropped when the " +
-            (if what == "a match arm" { "arm" } else { "branch" }) + " ends (bind it to a variable first)")
+    if c.hasTmp(r) || (isB && r == -1) {
+        c.err(line, what + " cannot give a borrow of a temporary: the temporary does not outlive the " +
+            (if what == "a match arm" { "match" } else { "if" }) + " expression's statement (bind it to a variable first)")
     }
     for m in c.members(r) {
         if m >= 0 && c.vars[m].kind == VK_LOCAL && c.vars[m].depth >= d {

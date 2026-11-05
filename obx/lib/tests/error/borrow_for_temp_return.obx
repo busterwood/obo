@@ -1,0 +1,8 @@
+// error: cannot return a borrow of 'p'
+import "strings"
+fn mk(): str { return "a,b," + intToStr(12) }
+fn first(): &str {
+    for p in strings.split(&mk(), ",") { return p }
+    return "none"
+}
+fn main() { println(first()) }

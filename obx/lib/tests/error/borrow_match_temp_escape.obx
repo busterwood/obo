@@ -1,0 +1,13 @@
+// A match statement's scrutinee lives until the match ends: its views cannot be kept past it.
+// error: cannot also hold borrows of the temporary matched at line 8
+import "strings"
+fn mk(): str { return "a,b," + intToStr(12) }
+fn main() {
+    let s = "q"
+    var out: []&str = [&s]
+    match strings.cut(&mk(), ",") {
+        Some(c) { append(mut &out, c.before) }
+        None {}
+    }
+    println(out[1])
+}

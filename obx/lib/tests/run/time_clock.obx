@@ -25,8 +25,7 @@ fn readNums(path: str): []int {
     var out: []int = []
     match io.read(path) {
         Ok(s) {
-            let t = trim(s)
-            for w in strings.split(&t, " ") {
+            for w in strings.split(&trim(s), " ") {
                 match strings.parseInt(w) {
                     Ok(v) { append(mut &out, v) }
                     Err(_) { append(mut &out, -1) }
