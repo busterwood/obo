@@ -1493,6 +1493,12 @@ fn sigmoid(x: float): float {
     return 1.0 / (1.0 + (-x).exp())
 }
 
+// line without a final '\r'.
+fn noCR(line: &str): &str {
+    if len(line) > 0 && line[len(line) - 1] == '\r' { return line[..len(line) - 1] }
+    return line
+}
+
 fn cmdImport(a: &Args) {
     let path = a.pos[0]
     var buffer = ""
@@ -1508,9 +1514,8 @@ fn cmdImport(a: &Args) {
         die1("current database is not empty, specify --merge to continue anyway")
     }
     let from = a.get("from").unwrap()
-    for line in strings.splitOn(buffer, "\n") {
-        var l = line
-        if len(l) > 0 && l[len(l) - 1] == '\r' { l = l[..len(l) - 1] }
+    for line in strings.lines(&buffer) {
+        let l = noCR(&line)
         if l == "" { continue }
         if from == "autojump" {
             let c = strings.cut(l, "\t")
