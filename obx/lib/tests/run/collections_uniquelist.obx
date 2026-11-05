@@ -1,0 +1,198 @@
+// UniqueList, a port of busterwood/Goodies' UniqueList: adds and duplicates, indexing, replace with
+// and without a duplicate, remove and removeAt (the order and the indexes after them), growth past
+// several thresholds, churn that leaves DELETED slots, the set operations, and a random check of
+// 10000 operations against a plain array (the order) and a Set (the membership).
+// expect: add true false size 3 items 3 1 2
+// expect: indexOf 1=1 4=-1 at0=3 at2=2 has1=true
+// expect: replace true false true items 10 1 2 has3=false idx10=0
+// expect: remove true items 1 2 4 idx 0 1 2 -1 size 3
+// expect: removed last true items 1 2 3 4, then 4 again at 3
+// expect: removeAt 6 items 5 7 8 idx7=1 idx8=2 idx6=-1
+// expect: removeAt 5 items 7 8 idx 0 1
+// expect: grow 1000 ok, dup after growth false
+// expect: churn size 5 present true absent -1
+// expect: sets 1 2 3 4 5 | 3 | 1 2 | 1 2 4 5 | subset false true superset true overlaps true eq true
+// expect: copy 3 1 | cleared true 1
+// expect: random ok after 10000 ops
+import "collections"
+
+fn ints(xs: &[int]): str {
+    var s = ""
+    for x in xs {
+        if len(s) > 0 { s += " " }
+        s += x.toStr()
+    }
+    return s
+}
+
+fn show(u: &collections.UniqueList[int]): str { return ints(&u.items()) }
+
+fn main() {
+    var u: collections.UniqueList[int] = collections.newUniqueList()
+    let a = u.add(3)
+    let dup = u.add(3)
+    u.add(1)
+    u.add(2)
+    println("add " + a.toStr() + " " + dup.toStr() + " size " + u.size().toStr() + " items " + show(&u))
+
+    let one = 1
+    let four = 4
+    println("indexOf 1=" + u.indexOf(&one).unwrapOr(-1).toStr() + " 4=" + u.indexOf(&four).unwrapOr(-1).toStr()
+        + " at0=" + u.at(0).toStr() + " at2=" + u.at(2).toStr() + " has1=" + u.has(&one).toStr())
+
+    // replace: a duplicate elsewhere is refused and changes nothing; the same index is fine
+    let three = 3
+    let ten = 10
+    let two = 2
+    let r1 = u.replace(0, ten)
+    let r2 = u.replace(1, two)
+    let r3 = u.replace(2, two)
+    println("replace " + r1.toStr() + " " + r2.toStr() + " " + r3.toStr() + " items " + show(&u)
+        + " has3=" + u.has(&three).toStr() + " idx10=" + u.indexOf(&ten).unwrapOr(-1).toStr())
+
+    // remove: the later elements move down, and the indexes follow
+    var r: collections.UniqueList[int] = collections.uniqueListOf(&[1, 2, 3, 4])
+    let gone = r.remove(&three)
+    println("remove " + gone.toStr() + " items " + show(&r) + " idx " + r.indexOf(&one).unwrapOr(-1).toStr()
+        + " " + r.indexOf(&two).unwrapOr(-1).toStr() + " " + r.indexOf(&four).unwrapOr(-1).toStr()
+        + " " + r.indexOf(&three).unwrapOr(-1).toStr() + " size " + r.size().toStr())
+
+    var rl: collections.UniqueList[int] = collections.uniqueListOf(&[1, 2, 3, 4])
+    let last = rl.remove(&four)
+    let again = rl.add(4)
+    println("removed last " + last.toStr() + " items " + show(&rl) + ", then 4 again at "
+        + rl.indexOf(&four).unwrapOr(-1).toStr())
+
+    var q: collections.UniqueList[int] = collections.uniqueListOf(&[5, 6, 7, 8])
+    let seven = 7
+    let eight = 8
+    let six = 6
+    let mid = q.removeAt(1)
+    println("removeAt " + mid.toStr() + " items " + show(&q) + " idx7=" + q.indexOf(&seven).unwrapOr(-1).toStr()
+        + " idx8=" + q.indexOf(&eight).unwrapOr(-1).toStr() + " idx6=" + q.indexOf(&six).unwrapOr(-1).toStr())
+    let head = q.removeAt(0)
+    println("removeAt " + head.toStr() + " items " + show(&q) + " idx "
+        + q.indexOf(&seven).unwrapOr(-1).toStr() + " " + q.indexOf(&eight).unwrapOr(-1).toStr())
+
+    // growth: 1000 elements cross the thresholds 3, 7, 17, 43, 107, 215, 431, 863 (C#'s capacities)
+    var g: collections.UniqueList[int] = collections.newUniqueList()
+    var bad = 0
+    for i in 0..1000 {
+        if !g.add(i * 7) { bad += 1 }
+        if g.size() != i + 1 { bad += 1 }
+    }
+    for i in 0..1000 {
+        if g.at(i) != i * 7 { bad += 1 }
+        let k = i * 7
+        if g.indexOf(&k).unwrapOr(-1) != i { bad += 1 }
+    }
+    let dupAfter = g.add(7 * 999)
+    if dupAfter { bad += 1 }
+    println("grow " + g.size().toStr() + " ok" + (if bad == 0 { "" } else { " BAD " + bad.toStr() }) + ", dup after growth " + dupAfter.toStr())
+
+    // churn: each fresh key is added and removed again, which leaves DELETED slots behind
+    var churn: collections.UniqueList[int] = collections.newUniqueList()
+    for i in 0..5 { churn.add(i) }
+    for round in 0..2000 {
+        let k = 1000 + round
+        churn.add(k)
+        churn.remove(&k)
+    }
+    var present = true
+    for i in 0..5 {
+        let k = i
+        if !churn.has(&k) { present = false }
+    }
+    let absent = 99999
+    println("churn size " + churn.size().toStr() + " present " + present.toStr() + " absent "
+        + churn.indexOf(&absent).unwrapOr(-1).toStr())
+
+    // set operations: a = 1 2 3, b = 3 4 5
+    let a1 = collections.uniqueListOf(&[1, 2, 3, 2, 1])
+    let b1 = collections.uniqueListOf(&[3, 4, 5])
+    let inter = a1.intersect(&b1)
+    let sub = a1.isSubset(&b1)
+    let sup = a1.union(&b1).isSuperset(&a1)
+    let ovl = a1.overlaps(&b1)
+    let eqv = a1.eq(&collections.uniqueListOf(&[3, 2, 1]))
+    println("sets " + show(&a1.union(&b1)) + " | " + show(&inter) + " | " + show(&a1.minus(&b1)) + " | "
+        + show(&a1.symmetricMinus(&b1)) + " | subset " + sub.toStr() + " " + a1.isSubset(&a1).toStr()
+        + " superset " + sup.toStr() + " overlaps " + ovl.toStr() + " eq " + eqv.toStr())
+
+    // copy is independent; clear empties it and it can be used again
+    var c = a1.copy()
+    c.add(9)
+    c.clear()
+    let cleared = c.isEmpty()
+    c.add(1)
+    println("copy " + a1.size().toStr() + " " + c.size().toStr() + " | cleared " + cleared.toStr() + " " + c.size().toStr())
+
+    // random: a plain array holds the order, a Set the membership
+    var seed = 12345
+    var model: []int = []
+    var members = collections.newSet[int]()
+    var lst: collections.UniqueList[int] = collections.newUniqueList()
+    var mismatch = 0
+    for step in 0..10000 {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        let x = seed / 10 % 300
+        let op = seed % 10
+        let pos = if len(model) > 0 { seed / 3000 % len(model) } else { 0 }
+        if op < 4 {
+            let added = lst.add(x)
+            let was = members.has(&x)
+            if !was { append(mut &model, x); members.add(x) }
+            if added == was { mismatch += 1 }
+        } else if op < 6 {
+            let removed = lst.remove(&x)
+            let was = members.has(&x)
+            if was {
+                let j = collections.find(&model, &x)
+                collections.removeAt(mut &model, j)
+                members.remove(&x)
+            }
+            if removed != was { mismatch += 1 }
+        } else if op == 6 {
+            if len(model) > 0 {
+                let got = lst.removeAt(pos)
+                if got != model[pos] { mismatch += 1 }
+                members.remove(&model[pos])
+                collections.removeAt(mut &model, pos)
+            }
+        } else if op == 7 {
+            if len(model) > 0 {
+                let j = collections.find(&model, &x)
+                let ok = lst.replace(pos, x)
+                if j >= 0 && j != pos {
+                    if ok { mismatch += 1 }
+                } else {
+                    if !ok { mismatch += 1 }
+                    if !members.has(&x) {
+                        members.remove(&model[pos])
+                        members.add(x)
+                        model[pos] = x
+                    } else if j == pos {
+                        model[pos] = x
+                    }
+                }
+            }
+        } else if op == 8 {
+            lst.addOrUpdate(x)
+            if !members.has(&x) { append(mut &model, x); members.add(x) }
+        } else if seed / 10 % 500 == 0 {
+            lst.clear()
+            model = []
+            members.clear()
+        } else {
+            if lst.has(&x) != members.has(&x) { mismatch += 1 }
+            if lst.indexOf(&x).unwrapOr(-1) != collections.find(&model, &x) { mismatch += 1 }
+        }
+        if lst.size() != len(model) { mismatch += 1 }
+        if step % 97 == 0 {
+            for i in 0..len(model) {
+                if lst.at(i) != model[i] { mismatch += 1 }
+            }
+        }
+    }
+    if mismatch == 0 { println("random ok after 10000 ops") } else { println("random mismatch " + mismatch.toStr()) }
+}

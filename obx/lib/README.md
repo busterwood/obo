@@ -24,7 +24,7 @@ for leaks.
 | `std.obx` | 1,715 | Option, Result, Unit, Where; Eq/Ord/Hash/Show for the primitives (keyed hashing, SipHash-1-3); print/println/eprint/eprintln; min/max; float text and math methods; StrBuf and basic string helpers; Decimal; sort; Map |
 | `money.obx` | 200 | Currency, USD/EUR/GBP/JPY/CHF, Money[C] |
 | `math.obx` | 130 | float constants, parse, fixed, toDecimal, near |
-| `collections.obx` | 390 | stable sorts, searching, rearranging, copying, Set, Heap |
+| `collections.obx` | 667 | stable sorts, searching, rearranging, copying, Set, UniqueList, Heap |
 | `strings.obx` | 705 | search, split/join, replace, trim, case, int parse/format, padding, UTF-8 |
 | `io.obx` | 347 | IoError, whole-file read/write/append, readLines, readStdin, streaming Reader, buffered Writer |
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
@@ -210,6 +210,16 @@ insertion point), `lowerBound`, `upperBound`, `find`, `findBy`, `contains`,
 `isEmpty`, `has`, `add(x): bool`, `remove(&x): bool`, `clear`, `at(i)`,
 `each(f)`, `filter(pred): Set[T]`, `items()`, `sorted()`, `union`,
 `intersect`, `minus`, `isSubset`, `eq`.
+**UniqueList[T: Eq + Hash]** is a list of unique elements in insertion order, a port of
+busterwood/Goodies' UniqueList (C#, inspired by Python 3.6's dict): an open-addressing index
+over dense arrays of hashes and values, with DELETED marks and a quarter of its slots spare.
+`newUniqueList`, `uniqueListOf(&xs)`, `size`, `isEmpty`, `has(&x)`, `indexOf(&x): Option[int]`,
+`at(i): &T` (out of range stops the program, as an array index does), `add(x): bool` (false when
+x is present), `addOrUpdate(x)`, `replace(i, x): bool` (false, and no change, when x is already
+at another index), `remove(&x): bool`, `removeAt(i): T` (both shift the later elements down, O(n)),
+`clear`, `copy()`, `each(f)`, `items()`, `filter(pred)`, `union`, `intersect`, `minus`,
+`symmetricMinus`, `isSubset`, `isSuperset`, `overlaps`, `eq` (set equality, order ignored).
+Slots come from the hash mixed with a per-process seed, as Map's do.
 **Heap[T: Ord]** (min-heap): `newHeap`, `push`, `pop(): Option[T]`, `peek`,
 `size`, `isEmpty`.
 

@@ -1,0 +1,10 @@
+// at(i) out of range stops the program like an array index: exit 3, after the output before it.
+// expect: before
+// exit: 3
+import "collections"
+
+fn main() {
+    var u = collections.uniqueListOf(&[1, 2])
+    println("before")
+    println(u.at(5).toStr())
+}
