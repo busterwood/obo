@@ -618,6 +618,7 @@ module []; 0
 "abc" | [test("( )*"; "gn")]
 "foo bar foo" | gsub("[^a-z]*(?<x>[a-z]*)"; "Z\(.x)")
 "qux" | [match("u*"; "g")] | map(.offset)
+get_prog_origin | type
 '''
 
 

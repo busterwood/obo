@@ -272,12 +272,13 @@ pub type Interp = record {
     pub haltMsg: Option[J]
     pub inputs: Inputs
     pub stderrBuf: io.Writer
+    pub progOrigin: str     // get_prog_origin: the directory of -f's file, else the current one
 }
 
 pub fn newInterp(prog: jq_parse.Prog, gvals: []J, inputs: Inputs): Interp {
     var pg = prog
     var ip = Interp{nodes: replace(mut &pg.nodes, []), frames: [], gvals: gvals, err: json.null(), breakId: 0, labels: 0,
-                    haltCode: 0, haltMsg: None, inputs: inputs, stderrBuf: io.stderr()}
+                    haltCode: 0, haltMsg: None, inputs: inputs, stderrBuf: io.stderr(), progOrigin: ""}
     for i in 0..len(ip.nodes) {
         if ip.nodes[i].kind == jq_parse.N_CALL && ip.nodes[i].op == jq_parse.C_NATIVE {
             ip.nodes[i].c = codeOf(ip.nodes[i].name)
@@ -1599,7 +1600,10 @@ fn callNative(ip: mut &Interp, n: int, env: int, v: &J, vp: &J, tr: bool, k: &fn
         let l = json.strings(&["~/.jq", "$ORIGIN/../lib/jq", "$ORIGIN/../lib"])
         return k(ip, &l, &nul)
     }
-    if code == K_PROG_ORIGIN { return k(ip, &nul, &nul) }
+    if code == K_PROG_ORIGIN {
+        if len(ip.progOrigin) == 0 { return k(ip, &nul, &nul) }
+        return k(ip, &json.string(ip.progOrigin), &nul)
+    }
     if code == K_JQ_ORIGIN { return k(ip, &json.string(jqOrigin()), &nul) }
     if code == K_MODULEMETA {
         if !jq_lib.isStr(v) { return fail(ip, "modulemeta input module name must be a string") }

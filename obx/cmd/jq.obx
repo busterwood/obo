@@ -16,6 +16,7 @@ import "json"
 import "io"
 import "os"
 import "ffi"
+import "strings"
 import "./jq_parse"
 import "./jq_eval"
 import "./jq_lib"
@@ -261,6 +262,22 @@ fn process(ip: mut &jq_eval.Interp, main: int, v: &json.Json, o: &Opts, wo: &jso
     return ret
 }
 
+// path made absolute and without . and .. parts (jq takes realpath, which
+// also resolves symbolic links; the current directory already has none).
+fn absolute(path: str): str {
+    let full = if len(path) > 0 && path[0] == '/' { path } else { os.cwd() + "/" + path }
+    var parts: []str = []
+    for c in split(full, '/') {
+        if c == "" || c == "." { continue }
+        if c == ".." {
+            if len(parts) > 0 { let x = pop(mut &parts) }
+            continue
+        }
+        append(mut &parts, c)
+    }
+    return "/" + strings.join(&parts, "/")
+}
+
 fn main() {
     raiseStack()
     let argv = os.argv()
@@ -459,7 +476,11 @@ fn main() {
         if io.isTerminal(0) && io.isTerminal(1) { usage(prog, 2, true) }
         program = "."
     }
+    var origin = "."
     if o.fromFile {
+        var d = len(program)
+        while d > 0 && program[d - 1] != '/' { d -= 1 }
+        origin = if d == 0 { "." } else if d == 1 { "/" } else { program[..d - 1] }
         match io.read(program) {
             Ok(t) { program = t }
             Err(e) {
@@ -501,6 +522,7 @@ fn main() {
     }
     let prg = p.finish(main)
     var ip = jq_eval.newInterp(prg, gvals, jq_eval.newInputs(files, o.rawInput))
+    ip.progOrigin = absolute(origin)
     let wo = writeOpts(&o)
     var out = io.stdout()
     var ret = R_NO_OUTPUT
