@@ -845,6 +845,14 @@ pub fn (a: DecError) eq(b: &DecError): bool { return a.code() == b.code() }
 
 const COEF_MAX: u128 = 99999999999999999999999999999999999999
 const TEN38: u128 = 100000000000000000000000000000000000000
+// Exact division by 10 without a divide: x is a multiple of 10 iff it is even
+// and y = x >> 1 is a multiple of 5, which holds iff y * INV5 (mod 2^128) is at
+// most DIV5_MAX; that product is then y / 5 = x / 10. INV5 is the inverse of 5
+// modulo 2^128 and DIV5_MAX = (2^128 - 1) / 5 (Granlund and Montgomery 1994,
+// section 9). The strip loops test both at once, with no branch on the parity:
+// x << 127 is 2^127 (above DIV5_MAX) for odd x and 0 for even x.
+const INV5: u128 = 0xcccccccccccccccccccccccccccccccd
+const DIV5_MAX: u128 = 0x33333333333333333333333333333333
 const EXP_MIN = -32768
 const EXP_MAX = 32767
 const SCALE_MAX = 32768
@@ -913,8 +921,10 @@ fn makeDec(neg: bool, c: U256, exp: int, dscale: int): Result[Decimal, DecError]
         e += 1
     }
     var x = v.lo
-    while x % 10 == 0 {
-        x = x / 10
+    while true {   // strip trailing zeros (x != 0), see INV5
+        let q = (x >> 1) *% INV5
+        if (q | (x << 127)) > DIV5_MAX { break }
+        x = q
         e += 1
     }
     if x > COEF_MAX { return Err(DecError.Inexact) }
@@ -1408,8 +1418,10 @@ pub fn (Decimal) parse(s: str): Result[Decimal, DecError] {
     if ds > DSCALE_MAX { return Err(DecError.Display) }
     if coef == 0 { return Ok(zeroDec(ds)) }
     var stripped = 0
-    while coef % 10 == 0 {
-        coef = coef / 10
+    while true {   // strip trailing zeros (coef != 0), as in makeDec
+        let q = (coef >> 1) *% INV5
+        if (q | (coef << 127)) > DIV5_MAX { break }
+        coef = q
         stripped += 1
     }
     let e = exp - frac + stripped + extraZeros
