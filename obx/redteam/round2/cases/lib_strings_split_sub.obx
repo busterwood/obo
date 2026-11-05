@@ -2,6 +2,6 @@
 import "strings"
 fn main() {
     let s = "xx,a,b,cyy" + ""
-    let parts = strings.splitOn(s[2..8], ",")
+    let parts = strings.split(s[2..8], ",")
     println(len(parts).toStr() + " " + parts[2][0..1])
 }

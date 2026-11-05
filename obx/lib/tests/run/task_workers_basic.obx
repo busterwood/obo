@@ -23,7 +23,8 @@ fn main() {
     var pids: []int = []
     var ok = true
     for e in ends {
-        let parts = strings.splitOn(io.read("w" + intToStr(e.index) + ".txt").unwrap(), " ")
+        let text = io.read("w" + intToStr(e.index) + ".txt").unwrap()
+        let parts = strings.split(&text, " ")
         let pid = strings.parseInt(parts[1]).unwrap()
         println("worker " + parts[0] + " (index " + intToStr(e.index) + "): exit " + intToStr(e.code) +
                 ", restarts " + intToStr(e.restarts))

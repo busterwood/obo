@@ -92,7 +92,8 @@ fn main() {
     let rePeer = regex.mustCompile("peer=127\\.0\\.0\\.1:[0-9]+")
     let reUs = regex.mustCompile(" us=[0-9]+")
     let reId = regex.mustCompile("id=[0-9a-f]{32}")
-    for line in strings.splitOn(io.read(path).unwrap(), "\n") {
+    let text = io.read(path).unwrap()
+    for line in strings.lines(&text) {
         if len(line) == 0 { continue }
         var l = reTime.replaceAllLiteral(line, "time=T")
         l = rePid.replaceAllLiteral(l, "pid=P")

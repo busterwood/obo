@@ -61,21 +61,24 @@ pub fn repliesHead(g: &Got, heads: &[bool]): []Reply {
     while len(s) > 0 {
         let i = indexOf(s, "\r\n\r\n", 0)
         if i < 0 || !startsWith(s, "HTTP/1.1 ") { break }
-        let lines = strings.splitOn(s[0..i], "\r\n")
-        let code = strings.parseInt(lines[0][9..12]).unwrapOr(0)
+        var code = 0
         var head = newStrBuf()
         var length = -1
         var chunked = false
-        for k in 1..len(lines) {
-            match strings.cut(lines[k], ":") {
-                Some(kv) {
-                    let name = strings.toLower(kv.before)
-                    let v = strings.trimLeft(kv.after)
-                    head.add(name + ": " + v + "\n")
-                    if name == "content-length" { length = strings.parseInt(v).unwrapOr(-1) }
-                    if name == "transfer-encoding" && v == "chunked" { chunked = true }
+        {
+            let lines = strings.split(s[0..i], "\r\n")     // views of s: in a block, so s can move on below
+            code = strings.parseInt(lines[0][9..12]).unwrapOr(0)
+            for k in 1..len(lines) {
+                match strings.cut(&lines[k], ":") {
+                    Some(kv) {
+                        let name = strings.toLower(kv.before)
+                        let v = strings.trimLeft(kv.after)
+                        head.add(name + ": " + v + "\n")
+                        if name == "content-length" { length = strings.parseInt(v).unwrapOr(-1) }
+                        if name == "transfer-encoding" && v == "chunked" { chunked = true }
+                    }
+                    None { head.add(lines[k] + "\n") }
                 }
-                None { head.add(lines[k] + "\n") }
             }
         }
         s = s[i + 4..]
@@ -88,10 +91,8 @@ pub fn repliesHead(g: &Got, heads: &[bool]): []Reply {
                 let e = indexOf(s, "\r\n", 0)
                 if e < 0 { break }
                 var line = s[0..e]
-                match strings.cut(line, ";") {
-                    Some(c) { line = c.before }
-                    None {}
-                }
+                let semi = indexOf(line, ";", 0)
+                if semi >= 0 { line = line[0..semi] }
                 let n = strings.parseIntBase(line, 16).unwrapOr(0)
                 s = s[e + 2..]
                 if n == 0 {
@@ -138,8 +139,8 @@ pub fn codes(g: &Got): str {
 
 // The value of a header in a reply's head ("" when absent).
 pub fn header(r: &Reply, name: str): str {
-    for line in strings.splitOn(r.head, "\n") {
-        match strings.cut(line, ": ") {
+    for line in strings.split(&r.head, "\n") {
+        match strings.cut(&line, ": ") {
             Some(kv) { if kv.before == name { return kv.after } }
             None {}
         }
