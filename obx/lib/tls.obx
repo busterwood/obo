@@ -265,9 +265,21 @@ fn versionCode(v: Version): int {
 
 // What a Context does. defaults() gives the usual values; change fields of
 // the result: `var o = tls.defaults(); o.caFile = "ca.pem"`.
+//
+// caFile and caDir replace the system's trust store; they do not add to
+// it. With neither set, a client trusts the system's store
+// (SSL_CTX_set_default_verify_paths, which also honours SSL_CERT_FILE and
+// SSL_CERT_DIR). With either set, it trusts only those CAs (both, when
+// both are set), so a private CA's server verifies and a public site
+// does not. To trust a private CA and the public ones, give a file that
+// holds both:
+//     cat /etc/ssl/certs/ca-certificates.crt corp-ca.pem > bundle.pem
+// The bundle is a copy: it misses the system's later updates, so remake
+// it with them. insecureSkipVerify ignores both; a server uses
+// clientCaFile instead.
 pub type Options = value record {
-    pub caFile: str                // PEM file of the CAs to trust, instead of the system's store
-    pub caDir: str                 // a directory of CAs (hashed names, `openssl rehash`), instead of the system's
+    pub caFile: str                // PEM file of the CAs to trust: replaces the system's store (above)
+    pub caDir: str                 // a directory of CAs (hashed names, `openssl rehash`): replaces it too
     pub insecureSkipVerify: bool   // client: accept any certificate and name (pins still apply)
     pub pins: str                  // SHA-256 fingerprints of accepted peer certificates, hex (colons
                                    // allowed), separated by commas: the peer's must be one of them

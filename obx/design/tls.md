@@ -109,7 +109,7 @@ written.
 
 ```obx
 pub type Options = value record {
-    pub caFile: str; pub caDir: str          // trust these instead of the system's store
+    pub caFile: str; pub caDir: str          // trust these instead of the system's store (section 5)
     pub insecureSkipVerify: bool             // client: accept any certificate and name
     pub pins: str                            // SHA-256 fingerprints, hex, comma-separated
     pub certFile: str; pub keyFile: str      // own certificate (server; client optional)
@@ -157,6 +157,22 @@ In http, TLS's own kinds become `Kind.Tls` with "verify: ..." or
    - A client must give a name unless verification is off: `engine("")`
      is a `Config` error, so "forgot the host name" cannot mean "skip the
      name check".
+   - **caFile and caDir replace the system's store; they do not add to
+     it.** With neither set, the store is the system's
+     (`SSL_CTX_set_default_verify_paths`, which honours `SSL_CERT_FILE`
+     and `SSL_CERT_DIR`). With either set, only the CAs given are trusted
+     (both, when both are set): a private CA's server verifies, a public
+     site fails with X509 code 20. This is Go's `RootCAs` rule and
+     curl's `--cacert`. It keeps "trust exactly this CA" (a test PKI, a
+     database's own CA) simple and safe: no public CA can stand in for
+     the private one.
+   - To trust a private CA and the public ones, give a file holding both:
+     `cat /etc/ssl/certs/ca-certificates.crt corp-ca.pem > bundle.pem`.
+     The copy misses the system's later updates. An option that adds to
+     the system's store (`extraCaFile`) would avoid the copy; it is not
+     built.
+   - `insecureSkipVerify` ignores caFile and caDir. A server verifies
+     client certificates against `clientCaFile` only.
 2. **TLS 1.2 minimum, 1.3 maximum.** The `Version` type has no value for
    older versions, so they cannot be chosen. A TLS 1.1-only server fails
    the handshake.

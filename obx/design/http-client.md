@@ -391,7 +391,9 @@ ticket, is quiet; close_notify or data is not.
 
 **Options.** `Options.tls: tls.Options`, `tls.defaults()` with ALPN
 `http/1.1`: verification against the system's store, the URL's host
-checked (names and IP literals), SNI. `o.tls.caFile`, `caDir`, `pins`,
+checked (names and IP literals), SNI. `o.tls.caFile` and `caDir` replace
+the system's store rather than add to it (design/tls.md, section 5).
+`o.tls.caFile`, `caDir`, `pins`,
 `certFile`/`keyFile` (client certificates) and `insecureSkipVerify` are
 there. A client makes one `tls.Context` at its first https request,
 before connecting, so bad options are a `Tls` error with no connection

@@ -577,7 +577,7 @@ try c.close()                                       // close_notify
 ```
 
 - `Options` (`defaults()`): `caFile`, `caDir` (trust these instead of the
-  system's store), `insecureSkipVerify` (false), `pins` (SHA-256
+  system's store; see below), `insecureSkipVerify` (false), `pins` (SHA-256
   fingerprints, hex, comma-separated: the peer's certificate must be one),
   `certFile`, `keyFile` (a server's certificate, or a client's),
   `clientCaFile` (a server asks for and verifies client certificates),
@@ -592,6 +592,16 @@ try c.close()                                       // close_notify
   address, `[::1]` brackets dropped), SNI for a name. A name is required
   unless verification is off. Renegotiation is refused. Pins apply with
   or without verification.
+- `caFile` and `caDir` **replace** the system's trust store; they do not
+  add to it. With neither, a client trusts the system's store (which
+  honours `SSL_CERT_FILE` and `SSL_CERT_DIR`). With either, it trusts only
+  the CAs given (both, when both are set): a private CA's server verifies,
+  a public site fails with `Verify` code 20 (untrusted issuer). To trust
+  a private CA and the public ones, give one file that holds both:
+  `cat /etc/ssl/certs/ca-certificates.crt corp-ca.pem > bundle.pem`. The
+  bundle is a copy of the system's store and misses its later updates, so
+  remake it when they come. `insecureSkipVerify` ignores both; a server
+  verifies client certificates against `clientCaFile`.
 - `Conn` (a socket): `read(buf)` (0 at close_notify, or the socket's end
   at a record boundary; the end inside a record is `Protocol`),
   `readNow(buf)` (never parks: `WANT_INPUT` when nothing is there),
@@ -682,7 +692,8 @@ let r = try c.send(&rq)
   `tls` (`tls.Options` for https): `tls.defaults()` with `alpn`
   "http/1.1", so the server's certificate is verified against the system's
   store and its name against the URL's host. `o.tls.caFile = "ca.pem"`
-  trusts another CA; `o.tls.insecureSkipVerify = true` turns verification
+  trusts that CA instead of the system's store (not as well as it: see
+  tls above); `o.tls.insecureSkipVerify = true` turns verification
   off; pins and a client certificate are `tls` options too.
 - `Client` (`newClient(o)`) is a copy handle over a `task.Shared` pool:
   copies share it. `send(&rq)`, `get(u)`, `head(u)`,

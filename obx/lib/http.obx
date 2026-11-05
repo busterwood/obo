@@ -14,8 +14,8 @@
 //     rq.body = json
 //     let r = try c.send(&rq)
 //
-//     var o = http.defaults()                     // https: verification is on; another CA,
-//     o.tls.caFile = "corp-ca.pem"                // or (for tests only) none at all
+//     var o = http.defaults()                     // https: verification is on; another CA
+//     o.tls.caFile = "corp-ca.pem"                // (replaces the system's CAs), or (tests only) none
 //     o.tls.insecureSkipVerify = true
 //
 //     var buf = array(65536, byte(0))             // streaming a large body
