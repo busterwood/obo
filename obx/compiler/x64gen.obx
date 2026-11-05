@@ -3824,10 +3824,6 @@ fn (g: mut &Gen) genAssign(e: int) {
     let t = n.ty
     if g.regOf(lhs) >= 0 {
         if unused && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.regOf(lhs)) { return }
-        if g.assignInPlace(e, g.regOf(lhs)) {
-            if !unused { g.a.movRR(8, RAX, g.regOf(lhs)) }
-            return
-        }
         g.gen(n.b)
         if !g.normAs(g.u.nodes[n.b].ty, t) { g.normR(g.tk(t), RAX) }
         g.a.movRR(8, g.regOf(lhs), RAX)
@@ -3904,54 +3900,6 @@ fn (g: mut &Gen) genAssign(e: int) {
 }
 
 fn (g: mut &Gen) callRt(name: str) { g.a.callSym(g.symRt(name)) }
-
-// x = x op y, x = y op x (op commutative) or x = rotl(x, k), or x = rotl(x, k) op y, for a
-// 64-bit integer local x in register r, op + - & | ^ (wrapping) and y another register local or
-// a 32-bit constant: the code straight on r (rol r, 13; xor r, rsi) instead of through rax and
-// back (std's SipHash rounds). Whether it did.
-fn (g: mut &Gen) assignInPlace(e: int, r: int): bool {
-    let n = g.u.nodes[e]
-    let k = g.tk(n.ty)
-    if k != ir.TY_U64 && k != ir.TY_I64 { return false }
-    let b = n.b
-    let bn = g.u.nodes[b]
-    if bn.ty != n.ty { return false }
-    if g.rotOf(b, r) > 0 {
-        g.a.shiftI(x64.ROL, 8, r, g.rotOf(b, r))
-        return true
-    }
-    if bn.k != ir.E_BIN { return false }
-    let op = bn.v
-    let alu = if op == ir.OP_ADD { x64.ADD } else if op == ir.OP_SUB { x64.SUB } else if op == ir.OP_AND { x64.AND }
-        else if op == ir.OP_OR { x64.OR } else if op == ir.OP_XOR { x64.XOR } else { -1 }
-    if alu < 0 { return false }
-    var x = bn.a
-    var y = bn.b
-    if g.regOf(x) != r && g.rotOf(x, r) == 0 {
-        if op == ir.OP_SUB || (g.regOf(y) != r && g.rotOf(y, r) == 0) { return false }
-        x = bn.b
-        y = bn.a
-    }
-    if g.u.nodes[x].ty != n.ty || g.u.nodes[y].ty != n.ty { return false }
-    let yr = g.regOf(y)
-    let yc = g.intConst(y, n.ty)
-    if !(yr >= 0 && yr != r) && !(yc.c == 0 && x64.fits32(yc.v)) { return false }
-    if g.rotOf(x, r) > 0 { g.a.shiftI(x64.ROL, 8, r, g.rotOf(x, r)) }
-    if yr >= 0 {
-        g.a.alu(alu, 8, r, yr)
-    } else {
-        g.a.aluI(alu, 8, r, yc.v)
-    }
-    return true
-}
-
-// k when e is rotl(x, k) (rotl) of the local in register r, else 0.
-fn (g: &Gen) rotOf(e: int, r: int): int {
-    if g.u.nk(e) != ir.E_BIN { return 0 }
-    let k = g.rotl(e)
-    if k == 0 || g.regOf(g.u.nodes[g.u.nodes[e].a].a) != r { return 0 }
-    return k
-}
 
 // The value of e as stored into an integer place of type t when e is an integer constant (perhaps
 // converted between integer types) that a store's 32-bit immediate holds: c 0 and v the value;
