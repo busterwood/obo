@@ -1899,6 +1899,8 @@ pub fn canonicalLiteral(t: str): str {
     var b = newStrBuf()
     if neg { b.addByte('-') }
     let ae = e + len(c) - 1
+    // beyond decNumber's exponent range jq prints the double
+    if c != "0" && (ae > 999999999 || ae < -999999999) { return "" }
     if e <= 0 && ae >= -6 {
         if e == 0 {
             b.add(c)
