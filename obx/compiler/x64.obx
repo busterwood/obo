@@ -579,6 +579,9 @@ pub fn (a: mut &Asm) bind(l: int) {
     a.nsEnd = -1
 }
 
+// Binds label l again, at p.
+pub fn (a: mut &Asm) moveLabel(l: int, p: int) { a.labels[l] = p }
+
 pub fn (a: &Asm) labelCount(): int { return len(a.labels) }
 
 // Where label l is bound, or -1.

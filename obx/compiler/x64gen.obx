@@ -185,6 +185,9 @@ type Gen = record {
     posW: []int                 // per position: the weight of a use there (useWeight)
     spill: []int                // the locals in QUIET_REGS saved around sites
     spillSlot: []int            // per local: its slot there
+    nGuards: int                // the leading guards of the function being generated
+    guardLabels: []int          // their labels bound where the prologue goes
+    shrink: bool                // generating the guards before the prologue: a return is a bare ret
 }
 
 // A statement whose code a local in one of QUIET_REGS may run with in its slot: stored before
@@ -223,7 +226,7 @@ fn newGen(u: ir.Ir): Gen {
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
         inlPos: -1, held: [], nLocalRegs: 0, bareRet: false, rm: newMap(), noCopy: -1, sites: [],
-        siteIdx: [], siteStamp: [], noSites: 0, rotBody: 0, ifDepth: 0, loopDepth: 0, posW: [], spill: [], spillSlot: []}
+        siteIdx: [], siteStamp: [], noSites: 0, rotBody: 0, ifDepth: 0, loopDepth: 0, posW: [], spill: [], spillSlot: [], nGuards: 0, guardLabels: [], shrink: false}
     g.a.peep = true
     g.siteIdx = array(2 * len(g.u.nodes), -1)
     g.siteStamp = array(2 * len(g.u.nodes), 0)
@@ -598,6 +601,7 @@ fn (g: mut &Gen) genFunc(f: int) {
         }
         if free { append(mut &g.tmpRegs, q) }
     }
+    let marker = g.genGuards(f)
     var ni = 0
     var nx = 0
     g.retPtr = 0
@@ -644,7 +648,13 @@ fn (g: mut &Gen) genFunc(f: int) {
             }
         }
     }
-    g.stmt(g.u.funcs[f].body)
+    if g.nGuards > 0 {
+        let mark = g.frame
+        g.stmtsFrom(g.u.nodes[g.u.funcs[f].body].a, g.nGuards)
+        if g.u.nodes[g.u.funcs[f].body].v != 1 { g.frame = mark }
+    } else {
+        g.stmt(g.u.funcs[f].body)
+    }
     g.epilogue()
     // the slots of the registers saved for temporaries (hold), below the rest of the frame: only
     // the prologue and the restores at epiL name them
@@ -700,7 +710,165 @@ fn (g: mut &Gen) genFunc(f: int) {
         p.fixLabels()
     }
     for i in pushed..len(g.saved) { p.store(8, rbp(g.saved[i]), LOCAL_REGS[i]) }
-    g.placeCode(start, &p.code, firstLabel)
+    g.placeCode(marker, &p.code, firstLabel)
+    // the guards' jumps past their returns go to the prologue, which now starts where those labels
+    // were bound
+    for i in 0..len(g.guardLabels) { g.a.moveLabel(g.guardLabels[i], marker) }
+}
+
+// Shrink-wrapping, the early exits only. The leading statements of a function's body that are
+// guards, `if c { return v }` with c a comparison of parameters and small constants (or a
+// parameter's truth) and v nothing, a constant or a parameter, are generated before the prologue,
+// reading the parameters in the registers they arrive in, with a bare ret. They write rax and the
+// flags only, use no frame and make no call, so the registers and the stack are the caller's.
+// The prologue goes where the last guard ends (its else label is bound there: guardLabels), and
+// the rest of the function is as before. The code returns the position of the prologue.
+fn (g: mut &Gen) genGuards(f: int): int {
+    g.nGuards = 0
+    g.guardLabels = []
+    let pos = g.a.pos()
+    let body = g.u.funcs[f].body
+    if len(g.spill) > 0 || g.u.nk(body) != ir.S_BLOCK || g.isAggr(g.retTy) || g.isF(g.retTy) || g.is128(g.retTy) {
+        return pos
+    }
+    let list = g.u.nodes[body].a
+    var n = 0
+    var k = g.guardLen(list, 0, f)
+    while k > 0 {
+        n += k
+        k = g.guardLen(list, n, f)
+    }
+    if n == 0 { return pos }
+    // the registers the parameters arrive in
+    var ar: []int = []
+    var ni = 0
+    var nx = 0
+    for j in 0..len(g.u.funcs[f].params) {
+        let t = g.u.locals[g.u.funcs[f].params[j]].ty
+        let cls = g.classify(t)
+        let nInt = countCl(&cls, CL_INT)
+        let nSse = countCl(&cls, CL_SSE)
+        if cls[0] == CL_MEM || ni + nInt > 6 || nx + nSse > 8 {
+            append(mut &ar, -1)
+        } else {
+            append(mut &ar, if nInt == 1 && nSse == 0 && !g.isAggr(t) { INT_REGS[ni] } else { -1 })
+            ni += nInt
+            nx += nSse
+        }
+    }
+    var old: []int = []
+    for j in 0..len(g.u.funcs[f].params) { append(mut &old, g.reg[g.u.funcs[f].params[j]]) }
+    for j in 0..len(g.u.funcs[f].params) { if ar[j] >= 0 { g.reg[g.u.funcs[f].params[j]] = ar[j] } }
+    let first = g.a.labelCount()
+    g.shrink = true
+    g.stmtsTo(list, 0, n)
+    g.shrink = false
+    for j in 0..len(g.u.funcs[f].params) { g.reg[g.u.funcs[f].params[j]] = old[j] }
+    let end = g.a.pos()
+    for l in first..g.a.labelCount() {
+        if g.a.labelPos(l) == end { append(mut &g.guardLabels, l) }
+    }
+    g.nGuards = n
+    return end
+}
+
+// The number of statements of the list from index i that are a guard (genGuards): `if c { return v }`,
+// or `bool b = c; if (b) { return v }` (fusedIf), c a comparison of parameters and small constants
+// or the truth of a parameter, v nothing, a constant or a parameter (in the block as `T r = v;
+// return r;` fusedReturn generates as one); else 0.
+fn (g: &Gen) guardLen(list: int, i: int, f: int): int {
+    if i >= g.u.listLen(list) { return 0 }
+    var s = g.u.listAt(list, i)
+    var cond = -1
+    var cnt = 1
+    if g.u.nk(s) == ir.S_DECL {
+        let dn = g.u.nodes[s]
+        if dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.tk(g.u.locals[dn.a].ty) != ir.TY_BOOL { return 0 }
+        if i + 1 >= g.u.listLen(list) { return 0 }
+        let sn = g.u.nodes[g.u.listAt(list, i + 1)]
+        if sn.k != ir.S_IF { return 0 }
+        var c = sn.a
+        if g.u.nk(c) == ir.E_LNOT { c = g.u.nodes[c].a }
+        if g.u.nk(c) != ir.E_LOCAL || g.u.nodes[c].a != dn.a { return 0 }
+        cond = dn.b
+        cnt = 2
+        s = g.u.listAt(list, i + 1)
+    }
+    let n = g.u.nodes[s]
+    if n.k != ir.S_IF || n.c >= 0 { return 0 }
+    if cond < 0 { cond = n.a }
+    // the value returned
+    let r = g.lone(n.b)
+    var rs = r
+    var v = -1
+    if g.u.nk(r) == ir.S_BLOCK && g.u.listLen(g.u.nodes[r].a) == 2 {
+        let d = g.u.listAt(g.u.nodes[r].a, 0)
+        let dn = g.u.nodes[d]
+        rs = g.u.listAt(g.u.nodes[r].a, 1)
+        if dn.k != ir.S_DECL || dn.b < 0 || dn.c >= 0 || g.uses[dn.a] != 2 || g.u.nk(rs) != ir.S_RETURN { return 0 }
+        let x = g.u.nodes[rs].a
+        if x < 0 || g.u.nk(x) != ir.E_LOCAL || g.u.nodes[x].a != dn.a || g.u.nodes[x].ty != g.u.nodes[dn.b].ty { return 0 }
+        v = dn.b
+    } else if g.u.nk(r) == ir.S_RETURN {
+        v = g.u.nodes[r].a
+    } else {
+        return 0
+    }
+    if v < 0 {
+        if g.tk(g.retTy) != ir.TY_VOID { return 0 }
+    } else if !((g.u.nk(v) == ir.E_INT && g.guardTy(g.u.nodes[v].ty, false)) || g.guardLeaf(v, f)) {
+        return 0
+    }
+    if g.guardCond(cond, f) { return cnt }
+    return 0
+}
+
+// A condition the guards take (see guardLen).
+fn (g: &Gen) guardCond(e: int, f: int): bool {
+    var c = e
+    while g.u.nk(c) == ir.E_LNOT || (g.u.nk(c) == ir.E_CAST && g.tk(g.u.nodes[c].ty) == ir.TY_BOOL &&
+        !g.is128(g.u.nodes[g.u.nodes[c].a].ty) && !g.isF(g.u.nodes[g.u.nodes[c].a].ty)) {
+        c = g.u.nodes[c].a
+    }
+    if g.guardLeaf(c, f) { return true }
+    let cn = g.u.nodes[c]
+    if cn.k != ir.E_BIN || !isCmp(cn.v) || !g.guardTy(cn.c, true) { return false }
+    if g.guardLeaf(cn.a, f) { return g.guardLeaf(cn.b, f) || g.guardConst(cn.b) }
+    return g.guardConst(cn.a) && g.guardLeaf(cn.b, f)
+}
+
+// A constant a compare takes as an immediate.
+fn (g: &Gen) guardConst(e: int): bool {
+    return g.u.nk(e) == ir.E_INT && x64.fits32(g.u.nodes[e].v) && g.guardTy(g.u.nodes[e].ty, true)
+}
+
+// An integer or pointer type: of 8 bytes when it is a register operand (not a constant to return).
+fn (g: &Gen) guardTy(t: int, wide: bool): bool {
+    return g.u.isScalar(t) && !g.isF(t) && !g.is128(t) && !g.isAggr(t) && (!wide || g.size(t) == 8)
+}
+
+// A parameter of 8 bytes that arrives in a register (perhaps under a conversion that changes
+// nothing).
+fn (g: &Gen) guardLeaf(e: int, f: int): bool {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_CAST { return g.noopCast(e) && g.size(n.ty) == 8 && g.guardLeaf(n.a, f) }
+    if n.k != ir.E_LOCAL || !g.guardTy(n.ty, true) { return false }
+    var ni = 0
+    var nx = 0
+    for j in 0..len(g.u.funcs[f].params) {
+        let t = g.u.locals[g.u.funcs[f].params[j]].ty
+        let cls = g.classify(t)
+        let nInt = countCl(&cls, CL_INT)
+        let nSse = countCl(&cls, CL_SSE)
+        if cls[0] == CL_MEM || ni + nInt > 6 || nx + nSse > 8 {
+            if g.u.funcs[f].params[j] == n.a { return false }
+            continue
+        }
+        if g.u.funcs[f].params[j] == n.a { return nInt == 1 && nSse == 0 && !g.isAggr(t) && g.size(t) == 8 }
+        ni += nInt
+        nx += nSse
+    }
+    return false
 }
 
 // Inserts the prologue pro at start and, in the same pass, nops before the body of each rotated
@@ -1924,6 +2092,10 @@ fn (g: &Gen) regOf(e: int): int {
 // function's one copy of the restores.
 fn (g: mut &Gen) epilogue() {
     if !g.a.reachable() { return }
+    if g.shrink {
+        g.a.ret()
+        return
+    }
     if len(g.inlEnd) > 0 {
         g.a.jmp(g.inlEnd[len(g.inlEnd) - 1])
         return
@@ -2194,12 +2366,15 @@ fn (g: mut &Gen) stmt1(s: int) {
 
 // The statements of the list l from index j0, as a block generates them (the frame of each
 // statement's temporaries released after it, a declaration's slot kept).
-fn (g: mut &Gen) stmtsFrom(l: int, j0: int) {
+fn (g: mut &Gen) stmtsFrom(l: int, j0: int) { g.stmtsTo(l, j0, g.u.listLen(l)) }
+
+// ... up to index j1.
+fn (g: mut &Gen) stmtsTo(l: int, j0: int, j1: int) {
     var j = j0
-    while j < g.u.listLen(l) {
+    while j < j1 {
         let x = g.u.listAt(l, j)
         let before = g.frame
-        if j + 1 < g.u.listLen(l) && !g.spillsHere(x) && !g.spillsHere(g.u.listAt(l, j + 1)) &&
+        if j + 1 < j1 && !g.spillsHere(x) && !g.spillsHere(g.u.listAt(l, j + 1)) &&
             (g.fusedIf(x, g.u.listAt(l, j + 1)) || g.fusedReturn(x, g.u.listAt(l, j + 1))) {
             j += 2
             continue

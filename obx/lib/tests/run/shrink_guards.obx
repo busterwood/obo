@@ -1,0 +1,140 @@
+// Guards before the prologue (x64gen genGuards): a function that begins with `if c { return v }` on its
+// parameters returns without saving the registers it would use later. The guards return ints, bools and
+// nothing; the rest of the function takes the parameters from the registers they came in, keeps values
+// in callee-saved registers across calls, recurses, traps, and parks in a task. The callers hold live
+// values across the calls; all of them must come back unchanged.
+// expect: 55 6765
+// expect: 0 -1 1
+// expect: 7 3 10
+// expect: true false false true
+// expect: 21 21 21 21 21 21
+// expect: 8 8 2
+// expect: 2 7 -1
+// expect: true false
+// expect: 68 13 3
+// expect: ok 10
+import "task"
+
+fn bs(b: bool): str { return if b { "true" } else { "false" } }
+
+type Counter = record { n: int; calls: int }
+
+fn fib(n: int): int {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn sign(x: int): int {
+    if x == 0 { return 0 }
+    if x < 0 { return -1 }
+    return 1
+}
+
+// the guard reads the third and fourth parameters (rdx, rcx), the body all of them
+fn pick(a: int, b: int, c: int, d: int): int {
+    if c == 0 { return a }
+    if d > 100 { return b }
+    var t = 0
+    for i in 0..c { t += a * i + b - d }
+    return t
+}
+
+fn between(x: int, lo: int, hi: int): bool {
+    if x < lo { return false }
+    if x > hi { return false }
+    return true
+}
+
+fn isEven(n: u64): bool {
+    if n == 0 { return true }
+    return isOdd(n - 1)
+}
+
+fn isOdd(n: u64): bool {
+    if n == 0 { return false }
+    return isEven(n - 1)
+}
+
+// six parameters: the sixth arrives in r9
+fn six(a: int, b: int, c: int, d: int, e: int, f: int): int {
+    if f == 0 { return e }
+    if a == b { return d }
+    return a + b + c + d + e + f
+}
+
+fn bump(c: mut &Counter, n: int) {
+    if n == 0 { return }
+    c.n += n
+    c.calls += 1
+}
+
+fn nth(a: &[]int, i: int): int {
+    if i < 0 { return -1 }
+    return a[i]
+}
+
+// a guard on a parameter that the body then changes and passes on
+fn spin(n: int, k: int): int {
+    if n <= 0 { return k }
+    var m = n
+    var s = k
+    while m > 0 {
+        s += sign(m - 3) + fib(m % 7)
+        m -= 1
+    }
+    return s
+}
+
+fn nap(n: int): int {
+    if n <= 0 { return 0 }
+    let before = n * 3
+    match task.sleep(n) {
+        Ok(_) { }
+        Err(_) { }
+    }
+    return before - n * 2 + n
+}
+
+fn live(seed: int): int {
+    // values live in callee-saved registers across every call
+    var a = seed
+    var b = seed * 2
+    var c = seed * 3
+    var d = seed * 4
+    var e = seed * 5
+    for i in 0..6 {
+        a += sign(i - 3)
+        b += pick(i, 2, i % 2, 1)
+        c += fib(i)
+        d += if between(i, 2, 4) { 1 } else { 0 }
+        e += six(i, i, 1, 2, 3, i % 2)
+    }
+    return a + b + c + d + e - seed * 15
+}
+
+fn main() {
+    println(intToStr(fib(10)) + " " + intToStr(fib(20)))
+    println(intToStr(sign(0)) + " " + intToStr(sign(-9)) + " " + intToStr(sign(9)))
+    println(intToStr(pick(7, 1, 0, 0)) + " " + intToStr(pick(1, 3, 1, 0)) + " " + intToStr(pick(1, 3, 4, 101) + 7))
+    println(bs(between(3, 1, 5)) + " " + bs(between(0, 1, 5)) + " " + bs(isEven(7)) + " " + bs(isOdd(7)))
+    let r = six(1, 1, 5, 21, 9, 3)
+    println(intToStr(r) + " " + intToStr(six(1, 2, 3, 4, 5, 6)) + " " + intToStr(six(0, 0, 0, 21, 0, 4)) + " " +
+        intToStr(six(9, 1, 1, 1, 21, 0)) + " " + intToStr(six(2, 2, 2, 21, 2, 2)) + " " + intToStr(six(1, 2, 3, 4, 5, 6)))
+    var c = Counter{n: 0, calls: 0}
+    bump(mut &c, 0)
+    bump(mut &c, 4)
+    bump(mut &c, 0)
+    bump(mut &c, 4)
+    println(intToStr(c.n) + " " + intToStr(c.n) + " " + intToStr(c.calls))
+    let arr = [3, 5, 7]
+    println(intToStr(nth(&arr, 1) - 3) + " " + intToStr(nth(&arr, 2)) + " " + intToStr(nth(&arr, -4)))
+    println(bs(isEven(10)) + " " + bs(isOdd(10)))
+    println(intToStr(live(2) + 30) + " " + intToStr(spin(5, 1)) + " " + intToStr(spin(0, 3)))
+    let t = task.scoped(fn(s: mut &task.Scope): int {
+        let a = s.start(nap, 2)
+        let b = s.start(nap, 0)
+        let k = s.start(nap, 3)
+        return a.wait().unwrap() + b.wait().unwrap() + k.wait().unwrap()
+    })
+    println("ok " + intToStr(t))
+}
