@@ -517,6 +517,25 @@ fn (c: &Checker) rootName(r: int, dflt: str): str {
     return if r >= 0 { c.vars[r].name } else if r == R_FREE { "nothing" } else if r <= -2 { "a temporary" } else { dflt }
 }
 
+// A root as messages show it: 'x', what 'p' borrows (a parameter's pseudo root), 'a' and 'b' (a
+// join), a temporary, nothing.
+fn (c: &Checker) rootDesc(r: int): str {
+    if r == R_FREE { return "nothing" }
+    if r <= -2 { return "a temporary" }
+    if r < 0 { return "something unknown" }
+    if c.vars[r].jn >= 0 { return c.vars[r].name }
+    if c.vars[r].kind == VK_PSEUDO && startsWith(c.vars[r].name, "*") {
+        return "what '" + c.vars[r].name[1..len(c.vars[r].name)] + "' borrows"
+    }
+    return c.varDesc(r)
+}
+
+// A variable as messages show it: 'x', or a hidden one's description (the iterator of a for loop).
+fn (c: &Checker) varDesc(x: int): str {
+    let n = c.vars[x].name
+    return if startsWith(n, "the ") { n } else { "'" + n + "'" }
+}
+
 // ---------------------------------------------------------------- borrow-class roots
 //
 // A borrow-class value (design/borrow-types.md) holds borrows; its root is what they point into,
@@ -631,7 +650,7 @@ fn (c: mut &Checker) joinRoots(a: int, b: int): int {
     var name = newStrBuf()
     for i in 0..len(ms) {
         if i > 0 { name.add(if i == len(ms) - 1 { " and " } else { ", " }) }
-        name.add(c.vars[ms[i]].name)
+        name.add(c.rootDesc(ms[i]))
     }
     append(mut &c.joins, ms)
     let j = c.newVar(name.toStr(), "", sema.T_VOID, false, VK_PSEUDO, 0)
@@ -669,20 +688,21 @@ fn (c: mut &Checker) innerCr(root: int, cr: int, t: int): int {
 // type) or holds (any other) what cr is, and freezes it while in scope (SPEC 10 rule 4).
 fn (c: mut &Checker) bindBC(x: int, t: int, cr: int, line: int, tmpOk: bool) {
     if !c.pg.isBorrowClass(t) { return }
-    let name = c.vars[x].name
+    let name = c.varDesc(x)
     if cr == -1 {
-        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be bound to '" +
-            name + "'")
+        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be bound to " +
+            name)
     }
     if isTmpRoot(cr) && !tmpOk {
-        c.err(line, "'" + name + "' cannot hold borrows of a temporary: the temporary does not outlive the statement")
+        c.err(line, name + " cannot hold borrows of a temporary: the temporary does not outlive the statement " +
+            "(bind it to a variable first)")
     }
     if c.isBorrowTy(t) {
         c.vars[x].broot = if cr == R_FREE { -1 } else { cr }
     } else if cr != R_FREE {
         c.vars[x].croot = cr
     }
-    if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), "'" + name + "'") }
+    if cr >= 0 { c.freeze(cr, c.pg.holdsMut(t), name) }
 }
 
 // A parameter that is or holds borrows of a borrow-class value gets a pseudo root for what those
@@ -720,13 +740,17 @@ fn (c: mut &Checker) checkResult(r: int, shown: int, line: int, isB: bool) {
         }
         k += 1
     }
-    let name = c.rootName(if shown != -1 { shown } else { r }, "a temporary")
+    let rs = if shown != -1 { shown } else { r }
+    let name = c.rootDesc(rs)
     if isB && !anyInh {
-        c.err(line, "cannot return a borrow of " + sx.pyRepr(name) + ": a borrow result must be rooted at the " +
+        c.err(line, "cannot return a borrow of " + name + ": a borrow result must be rooted at the " +
             "borrowed parameter '" + c.pg.fns[f].bparam + "', not a local or temporary")
     }
+    // a parameter that holds borrows lends what it holds, not itself (no lending iterators, D5)
+    let own = if rs >= 0 && c.vars[rs].kind == VK_PARAM && c.inherits(c.vars[rs].t) {
+        " (" + name + " holds borrows, so a result borrows what it holds, not " + name + " itself)" } else { "" }
     c.err(line, "cannot return " + (if isB { "a borrow" } else { "a value holding borrows" }) + " of " +
-        sx.pyRepr(name) + ": the result of " + c.cx.label + " may only borrow from " + desc.toStr())
+        name + ": the result of " + c.cx.label + " may only borrow from " + desc.toStr() + own)
 }
 
 // Whether root r outlives variable x (it is declared before x, in x's scope or around it).
@@ -755,13 +779,14 @@ fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
     if isTmpRoot(x0) { return }      // a temporary holder: dropped with the statement
     let x = c.holder(x0)
     if x < 0 { return }
-    let name = c.vars[x].name
+    let name = c.varDesc(x)
     if r == -1 {
-        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be stored in '" +
-            name + "'")
+        c.err(line, "cannot tell what the borrows in this " + c.tstr(t) + " point into, so it cannot be stored in " +
+            name)
     }
     if isTmpRoot(r) {
-        c.err(line, "'" + name + "' cannot hold a borrow of a temporary: the temporary does not outlive the statement")
+        c.err(line, name + " cannot hold a borrow of a temporary: the temporary does not outlive the statement " +
+            "(bind it to a variable first)")
     }
     let cur = c.vars[x].croot
     if cur == r { return }
@@ -772,21 +797,22 @@ fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
             if !hasInt(&have, m) { inside = false }
         }
         if inside { return }
-        c.err(line, "'" + name + "' holds borrows of '" + c.rootName(cur, "?") + "', so it cannot also hold borrows of '" +
-            c.rootName(r, "?") + "' (a value holding borrows has one root)")
+        c.err(line, name + " holds borrows of " + c.rootDesc(cur) + ", so it cannot also hold borrows of " +
+            c.rootDesc(r) + " (a value holding borrows keeps the roots it was first given)")
     }
     if c.vars[x].kind == VK_PARAM || c.vars[x].kind == VK_PSEUDO {
-        c.err(line, "'" + name + "' cannot hold borrows of '" + c.rootName(r, "?") + "'")
+        c.err(line, name + " cannot hold borrows of " + c.rootDesc(r) + ": it is a parameter, and what it borrows " +
+            "is fixed by the caller")
     }
     if r == x || !c.outlives(r, x) {
-        c.err(line, "'" + name + "' cannot hold borrows of '" + c.rootName(r, "?") + "': '" + c.rootName(r, "?") +
-            "' does not live as long as '" + name + "'")
+        c.err(line, name + " cannot hold borrows of " + c.rootDesc(r) + ": " + c.rootDesc(r) +
+            " does not live as long as " + name)
     }
     if len(c.cx.loops) > c.vars[x].loops {
         for m in c.members(r) {
             if m >= 0 && c.vars[m].mutable {
-                c.err(line, "'" + name + "' first holds borrows of the var '" + c.vars[m].name + "' inside a loop: give '" +
-                    name + "' its root before the loop (initialise it from a value that borrows '" + c.vars[m].name + "')")
+                c.err(line, name + " first holds borrows of the var '" + c.vars[m].name + "' inside a loop: give " +
+                    name + " its root before the loop (initialise it from a value that borrows '" + c.vars[m].name + "')")
             }
         }
     }
@@ -794,7 +820,7 @@ fn (c: mut &Checker) storeRoot(x0: int, r: int, t: int, line: int) {
     c.vars[x].croot = r
     let d = c.vars[x].depth
     if d >= 0 && d < len(c.cx.scopes) {
-        append(mut &c.cx.scopes[d].freezes, Freeze{root: r, m: c.pg.holdsMut(c.vars[x].t), by: "'" + name + "'"})
+        append(mut &c.cx.scopes[d].freezes, Freeze{root: r, m: c.pg.holdsMut(c.vars[x].t), by: name})
     }
 }
 
@@ -2208,7 +2234,7 @@ fn (c: mut &Checker) forIter(s: int, v0: Val) {
     c.pushScope()
     let itn = c.fresh("it")
     c.emit(c.x.decl(c.T(v0.t), itn, cc))
-    let itv = c.newVar("the iterator", itn, v0.t, true, VK_LOCAL, line)
+    let itv = c.newVar("the iterator of the for loop at line " + intToStr(line), itn, v0.t, true, VK_LOCAL, line)
     let sc = len(c.cx.scopes) - 1
     append(mut &c.cx.scopes[sc].vars, itv)
     c.vars[itv].depth = sc

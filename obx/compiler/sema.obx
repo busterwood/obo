@@ -1308,9 +1308,13 @@ pub fn (pg: mut &Program) resolveType(a: int, m: int, env: &[]int, pos: int, whe
 pub fn (pg: mut &Program) checkBorrowTarg(t: int, p: int, m: int, line: int) {
     let pn = pg.tparams[p].name
     let k = pg.tk(t)
-    if k == TK_CLO || ((k == TK_REF || k == TK_SLICE) && !pg.tparams[p].borrow) {
+    if k == TK_CLO {
         pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
             pn + "): borrows are second class")
+    }
+    if (k == TK_REF || k == TK_SLICE) && !pg.tparams[p].borrow {
+        pg.err(m, line, "a borrow type (" + pg.tstr(t) + ") cannot be a type argument (type parameter " +
+            pn + "): borrows are second class, and only a parameter declared " + pn + ": borrow takes one")
     }
     if !pg.tparams[p].borrow && pg.isBorrowClass(t) {
         pg.err(m, line, pg.tstr(t) + " holds borrows, so it cannot be a type argument for type parameter " + pn +

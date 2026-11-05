@@ -1,0 +1,19 @@
+// borrow-class types (design/borrow-types.md): what a parameter holding borrows borrows is a root of its
+// own, named "what 'sp' borrows" in messages.
+// error: 'out' holds borrows of what 'sp' borrows, so it cannot also hold borrows of 'local'
+type Span = value record {
+    text: &str
+    at: int
+}
+fn texts(sp: &Span): []&str {
+    var out: []&str = []
+    append(mut &out, sp.text)
+    let local = "x" + sp.text
+    append(mut &out, &local)
+    return out
+}
+fn main() {
+    let s = "abc"
+    let sp = Span{text: &s, at: 0}
+    println(len(texts(&sp)))
+}
