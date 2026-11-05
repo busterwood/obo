@@ -1,0 +1,103 @@
+// The JSON benchmark (design/json.md), obx's driver: the best time of REPS
+// runs of each step on the file, read once beforehand. py_bench.py does the
+// same work with Python's json.
+//
+// usage: json_bench FILE [REPS]      prints: STEP SIZE MS
+//        json_bench FILE --compact   writes the file compact to stdout, with
+//                                    jq's numbers (to compare with jq -c .)
+//
+// parse: the text to a Json (SIZE: the number of top-level elements);
+// compact, pretty: the Json to text, without and with two-space indents
+// (SIZE: the bytes written); query: the sum of every "qty" (SIZE) through
+// items() and field(), which hand out shared copies; visit: the same through
+// eachItem, which lends the elements.
+
+import "json"
+import "io"
+import "os"
+import "time"
+
+fn ms(ns: int): str {
+    return (ns / 1000000).toStr() + "." + ((ns / 10000) % 100 + 100).toStr()[1..]
+}
+
+fn report(step: str, size: int, best: int) {
+    println(step + " " + size.toStr() + " " + ms(best))
+}
+
+fn sumQty(v: &json.Json): int {
+    var n = 0
+    for rec in v.items() {
+        for it in rec.field("items").items() {
+            n += it.field("qty").asInt().unwrapOr(0)
+        }
+    }
+    return n
+}
+
+fn visitQty(v: &json.Json): int {
+    var n = 0
+    let all = v.eachItem(fn(i: int, rec: &json.Json): bool {
+        let its = rec.field("items")
+        let inner = its.eachItem(fn(k: int, it: &json.Json): bool {
+            n += it.field("qty").asInt().unwrapOr(0)
+            return true
+        })
+        return true
+    })
+    return n
+}
+
+fn main() {
+    let args = os.arguments()
+    let text = io.read(args[0]).unwrap()
+    if len(args) > 1 && args[1] == "--compact" {
+        let v = json.parse(text).unwrap()
+        var out = io.stdout()
+        var o = json.compact()
+        o.jqNumbers = true
+        json.writeTo(mut &out, &v, &o)
+        out.write("\n")
+        let r = out.flush()
+        return
+    }
+    let reps = if len(args) > 1 { parseInt(args[1]).unwrap() } else { 3 }
+    var v = json.null()
+    var best = 0
+    for r in 0..reps {
+        let t0 = time.monotonicNs()
+        v = json.parse(text).unwrap()
+        let t = time.monotonicNs() - t0
+        if r == 0 || t < best { best = t }
+    }
+    report("parse", v.size(), best)
+    for k in 0..2 {
+        let o = if k == 0 { json.compact() } else { json.pretty() }
+        var size = 0
+        best = 0
+        for r in 0..reps {
+            let t0 = time.monotonicNs()
+            size = len(json.write(&v, &o))
+            let t = time.monotonicNs() - t0
+            if r == 0 || t < best { best = t }
+        }
+        report(if k == 0 { "compact" } else { "pretty" }, size, best)
+    }
+    var total = 0
+    best = 0
+    for r in 0..reps {
+        let t0 = time.monotonicNs()
+        total = sumQty(&v)
+        let t = time.monotonicNs() - t0
+        if r == 0 || t < best { best = t }
+    }
+    report("query", total, best)
+    best = 0
+    for r in 0..reps {
+        let t0 = time.monotonicNs()
+        total = visitQty(&v)
+        let t = time.monotonicNs() - t0
+        if r == 0 || t < best { best = t }
+    }
+    report("visit", total, best)
+}
