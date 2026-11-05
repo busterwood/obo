@@ -29,9 +29,35 @@ pub fn print(p: ir.Ir, prefix: str): str {
     return g.out.toStr()
 }
 
-// The libm functions of one float that are single instructions.
-fn builtinMath(name: str): bool {
-    return name == "sqrt" || name == "floor" || name == "ceil" || name == "trunc" || name == "rint" || name == "fabs"
+// The libm functions that are the runtime's own (obx_<name>: rt.h's single instructions, and
+// obxmath.inc, the ported ones: the same text as the native runtime's, so that both backends
+// give the same bits).
+const MATH_PRIM: []str = ["sqrt", "fabs", "floor", "ceil", "trunc", "rint", "round", "copysign", "fma"]
+const MATH_PORT: []str = ["exp", "exp2", "log", "log2", "log10", "log1p", "expm1", "cbrt", "sin", "cos", "tan", "asin", "acos",
+    "atan", "sinh", "cosh", "tanh", "pow", "atan2", "hypot", "fmod"]
+
+fn inPrim(s: str): bool {
+    for x in MATH_PRIM {
+        if x == s { return true }
+    }
+    return false
+}
+
+fn inPort(s: str): bool {
+    for x in MATH_PORT {
+        if x == s { return true }
+    }
+    return false
+}
+
+fn builtinMath(name: str): bool { return inPrim(name) || inPort(name) }
+
+// Whether the program calls a ported libm function: then rt.RTMATH goes with the C runtime.
+pub fn usesMath(p: &ir.Ir): bool {
+    for f in p.funcs {
+        if f.isExtern && inPort(f.asmName) { return true }
+    }
+    return false
 }
 
 fn (g: mut &Gen) line(s: str) {
@@ -452,10 +478,9 @@ fn (g: &Gen) put(x: int, need: int, b: mut &StrBuf) {
         let c = &g.u.nodes[n.a]
         if c.k == ir.E_DECAY && g.u.nk(c.a) == ir.E_FUNC {
             let cf = &g.u.funcs[g.u.nodes[c.a].a]
-            if cf.isExtern && g.u.listLen(n.b) == 1 && builtinMath(cf.asmName) {
-                // gcc does not know an extern by its C name (it has a different label): the
-                // builtin inlines to sqrtsd or roundsd (-fno-math-errno, -msse4.1; see main.obx)
-                b.add(if cf.asmName == "sqrt" || cf.asmName == "fabs" { "__builtin_" + cf.asmName } else { "rt_" + cf.asmName })
+            if cf.isExtern && builtinMath(cf.asmName) {
+                // the runtime's own (gcc would not know an extern by its C name: it has another label)
+                b.add("obx_" + cf.asmName)
             } else {
                 b.add(cf.name)
             }

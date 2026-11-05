@@ -27,6 +27,10 @@ def main():
            "", "pub const RT: []str = ["]
     out += [f"    {lit(x)}," for x in lines]
     out += ["]", ""]
+    # the ported libm (obxmath.inc): added to the C only when a program calls it
+    out += ["// obxmath.inc, the libm of the programs that call it (gen_obxmath.py).", "pub const RTMATH: []str = ["]
+    out += [f"    {lit(x)}," for x in open(os.path.join(HERE, 'obxmath.inc')).read().split('\n')]
+    out += ["]", ""]
     text = '\n'.join(out)
     old = open(OUT).read() if os.path.exists(OUT) else None
     if text != old and '--check' in sys.argv[1:]:

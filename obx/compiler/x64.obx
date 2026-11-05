@@ -543,6 +543,15 @@ pub fn (a: mut &Asm) roundsd(dst: int, src: int, imm: int) {
     a.b(imm)
 }
 
+// vfmadd213sd xd, xs2, xs3: xd = xs2 * xd + xs3 (VEX.LIG.66.0F38.W1 A9; FMA3; registers 0 to 7).
+pub fn (a: mut &Asm) vfmadd213sd(dst: int, s2: int, s3: int) {
+    a.b(0xC4)
+    a.b(0xE2)
+    a.b(0x80 | ((15 - s2) << 3) | 1)
+    a.b(0xA9)
+    a.b(0xC0 | ((dst & 7) << 3) | (s3 & 7))
+}
+
 // ucomisd, xorpd (66 0F op).
 pub fn (a: mut &Asm) sse66(op: int, dst: int, src: int) { a.rr(0x66, false, 0x0F00 + op, dst, src, false, false) }
 

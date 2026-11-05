@@ -82,9 +82,17 @@ fn compileIr(lib: str, roots: &[]str, path: str, libs: mut &[]str): ir.Ir {
     return e.program(s.i, libs)
 }
 
+// The C runtime, and the ported libm (rt.RTMATH) when the program calls it.
+fn rtText(p: &ir.Ir): str {
+    let t = strings.join(&rt.RT, "\n")
+    if cgen.usesMath(p) { return t + "\n" + strings.join(&rt.RTMATH, "\n") }
+    return t
+}
+
 // The C program of the file at path: the IR printed after the C runtime.
 fn compileC(lib: str, roots: &[]str, path: str, libs: mut &[]str): str {
-    return cgen.print(compileIr(lib, roots, path, libs), strings.join(&rt.RT, "\n"))
+    let p = compileIr(lib, roots, path, libs)
+    return cgen.print(p, rtText(&p))
 }
 
 const LIBDIRS: []str = ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib",
@@ -141,9 +149,8 @@ fn run(words: &[]str, errFile: str): int {
 fn gccCmd(exe: str, cfile: str, libs: &[]str): []str {
     // -falign-functions=64: a small recursive function's speed depends on where it falls in
     // the fetch blocks (bench fib: 15%), so a change in the runtime's size must not move it.
-    var cmd: []str = ["gcc", "-O2", "-falign-functions=64", "-fno-math-errno", "-w", "-std=gnu11", "-o", exe, cfile]
+    var cmd: []str = ["gcc", "-O2", "-falign-functions=64", "-w", "-std=gnu11", "-o", exe, cfile]
     for f in libFlags(libs) { append(mut &cmd, f) }
-    append(mut &cmd, "-lm")
     return cmd
 }
 
@@ -178,7 +185,7 @@ fn build(lib: str, roots: &[]str, src: str, out: str, isRun: bool, emitc: bool, 
     var libs: []str = []
     let p = compileIr(lib, roots, src, mut &libs)
     if isNative { return buildNative(p, &libs, src, out, isRun, rest) }
-    let csrc = cgen.print(p, strings.join(&rt.RT, "\n"))
+    let csrc = cgen.print(p, rtText(&p))
     if emitc {
         writeFd(1, csrc)
         return 0
