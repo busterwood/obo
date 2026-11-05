@@ -1,0 +1,522 @@
+// sqlserver: Microsoft SQL Server over its own protocol, TDS 7.4 (the `tds`
+// module), written in obx: no driver, no helper threads. Every call that
+// waits for the server parks only its task, as net's calls do.
+//
+//     var conn = try sqlserver.connect("Server=db.example.com;Database=app;UID=app;PWD=...")
+//     try conn.exec("CREATE TABLE #t(id bigint, name nvarchar(50))")
+//     let n = try conn.run("INSERT INTO #t VALUES (1, N'café'), (2, N'naïve')", &[])
+//     let rows = try conn.query("SELECT id, name FROM #t ORDER BY id", &[])
+//     for r in 0..rows.rowCount() {
+//         println((try rows.int(r, 0)).toStr() + " " + try rows.text(r, 1))
+//     }
+//
+// Stage T1 (design/tds.md): SQL authentication, encryption by TLS (inside
+// PRELOGIN, as MS-TDS says), SQL batches without parameters, and the types
+// tinyint, smallint, int, bigint, bit, real, float, nchar, nvarchar, char
+// and varchar in a UTF-8 collation (another code page is an error naming
+// it, when that cell is read), binary and varbinary. Other types decode to
+// an E_TYPE error for their cells. Parameters (RPC), multiple result sets,
+// the other types and pools come in T2 and T3.
+//
+// Connection strings (design/tds.md, section 4) take the ADO.NET keywords
+// and the ODBC ones that mssql is given, so one string serves both modules:
+//
+//   Server, Data Source, Address, Addr, Network Address   host, host,port, tcp:host,port ([::1],1433)
+//   Database, Initial Catalog
+//   UID, User Id, User                                     SQL authentication only
+//   PWD, Password
+//   Encrypt            yes, true, mandatory (the default): TLS for everything, or no connection;
+//                      no, false, optional: TLS for the login, more if the server requires it;
+//                      strict (TDS 8.0): not supported yet
+//   TrustServerCertificate    yes: the certificate is not verified (tls's insecureSkipVerify)
+//   HostNameInCertificate     the name to verify instead of the host
+//   Connect Timeout, Connection Timeout, Timeout, LoginTimeout   seconds for the whole connect
+//                      (15; 0 none)
+//   Application Name, APP
+//   Packet Size        512 to 32767 (4096)
+//   Driver             ignored (for ODBC)
+//
+// Keys are case-insensitive; a value may be in braces ({a;b}, `}}` for `}`)
+// or quotes. An unknown keyword is E_INPUT naming the keyword. Errors never
+// contain the password, or any value of the string.
+//
+// Errors are sqldialect.DbError. A server error has its error number as the
+// code (208 "Invalid object name 'nope'.", 18456 "Login failed for user
+// ..."), state "" and the server's message; the adapter's own are the E_*
+// codes: E_IO (the socket or TLS: the server cannot be reached, its
+// certificate is refused, it closed the connection), E_PROTOCOL, E_TIMEOUT
+// and E_CANCELLED (the task's deadline or cancellation), E_INPUT, E_TYPE,
+// E_NULL, E_LIMIT. A failure on the wire leaves the connection broken (no
+// ATTENTION yet, stage T3): its later calls are E_IO, and idle() is false.
+
+import "tds"
+import "sqldialect"
+import "strings"
+import "task"
+
+pub type Value = sqldialect.Value
+pub type Error = sqldialect.DbError
+pub type Message = tds.Message
+
+var OPEN: int = 0
+
+// The number of Conn values not yet closed or dropped.
+pub fn openHandles(): int { return OPEN }
+
+// ---------------------------------------------------------------- connection strings
+
+// A parsed connection string: what tds.open needs, and the connect timeout.
+pub type Settings = value record {
+    pub config: tds.Config
+    pub connectTimeoutMs: int     // 0: none
+}
+
+fn bad(msg: str): Error { return sqldialect.inputError("connection string: " + msg) }
+
+// One keyword=value entry, and where the next one starts.
+type Entry = value record { key: str; value: str; next: int }
+
+// Settings from a connection string (above). E_INPUT for a malformed
+// string, an unknown keyword, a value that is not valid for its keyword,
+// or no Server or no user.
+pub fn parseConnString(s: str): Result[Settings, Error] {
+    var cfg = tds.Config{host: "", port: 1433, user: "", password: "", database: "", appName: "obx",
+                         encrypt: tds.Encrypt.Mandatory, trustServerCertificate: false, hostNameInCertificate: "",
+                         packetSize: tds.DEFAULT_PACKET}
+    var timeout = 15000
+    var server = ""
+    var haveServer = false
+    var haveUser = false
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == ';' || isSpace(c) {
+            i += 1
+            continue
+        }
+        let kv = try entry(s, i)
+        i = kv.next
+        let k = kv.key
+        let v = kv.value
+        match k {
+            "server", "data source", "address", "addr", "network address" {
+                server = v
+                haveServer = true
+            }
+            "database", "initial catalog" { cfg.database = v }
+            "uid", "user id", "user" {
+                cfg.user = v
+                haveUser = true
+            }
+            "pwd", "password" { cfg.password = v }
+            "encrypt" {
+                match strings.toLower(trim(v)) {
+                    "yes", "true", "mandatory" { cfg.encrypt = tds.Encrypt.Mandatory }
+                    "no", "false", "optional" { cfg.encrypt = tds.Encrypt.Optional }
+                    "strict" { cfg.encrypt = tds.Encrypt.Strict }
+                    else { return Err(bad("Encrypt must be yes, no, mandatory, optional or strict")) }
+                }
+            }
+            "trustservercertificate", "trust server certificate" {
+                cfg.trustServerCertificate = try yesNo(v, "TrustServerCertificate")
+            }
+            "hostnameincertificate", "host name in certificate" { cfg.hostNameInCertificate = trim(v) }
+            "connect timeout", "connection timeout", "timeout", "logintimeout" {
+                let n = try number(v, "Connect Timeout")
+                if n > 2147483 { return Err(bad("Connect Timeout is too large")) }
+                timeout = n * 1000
+            }
+            "application name", "app" { cfg.appName = v }
+            "packet size" {
+                let n = try number(v, "Packet Size")
+                if n < tds.MIN_PACKET || n > tds.MAX_PACKET { return Err(bad("Packet Size must be 512 to 32767")) }
+                cfg.packetSize = n
+            }
+            "trusted_connection", "integrated security" {
+                if try yesNo(v, kv.key) { return Err(bad("integrated (Windows) authentication is not supported")) }
+            }
+            "driver" {}
+            else { return Err(bad("unknown keyword '" + k + "'")) }
+        }
+    }
+    if !haveServer || len(trim(server)) == 0 { return Err(bad("no Server")) }
+    if !haveUser { return Err(bad("no UID (User Id): only SQL authentication is supported")) }
+    try serverOf(trim(server), mut &cfg)
+    return Ok(Settings{config: cfg, connectTimeoutMs: timeout})
+}
+
+// The keyword (lower case, inner spaces single) and value at s[i..].
+fn entry(s: str, at: int): Result[Entry, Error] {
+    var i = at
+    var key = newStrBuf()
+    var space = false
+    while i < len(s) && s[i] != '=' {
+        let c = s[i]
+        if c == ';' || c == '{' || c == '}' { return Err(bad("a keyword without '='")) }
+        if isSpace(c) {
+            space = key.size() > 0
+        } else {
+            if space { key.addByte(' ') }
+            space = false
+            key.addByte(if c >= 'A' && c <= 'Z' { c + 32 } else { c })
+        }
+        i += 1
+    }
+    if i >= len(s) { return Err(bad("a keyword without '='")) }
+    let k = key.toStr()
+    if len(k) == 0 { return Err(bad("an empty keyword")) }
+    i += 1
+    while i < len(s) && (s[i] == ' ' || s[i] == '\t') { i += 1 }
+    var v = newStrBuf()
+    if i < len(s) && (s[i] == '{' || s[i] == '"' || s[i] == '\'') {
+        let close = if s[i] == '{' { '}' } else { s[i] }
+        i += 1
+        var ended = false
+        while i < len(s) {
+            if s[i] == close {
+                if i + 1 < len(s) && s[i + 1] == close {
+                    v.addByte(close)
+                    i += 2
+                    continue
+                }
+                ended = true
+                i += 1
+                break
+            }
+            v.addByte(s[i])
+            i += 1
+        }
+        if !ended { return Err(bad("the value of " + k + " is not closed")) }
+        while i < len(s) && isSpace(s[i]) { i += 1 }
+        if i < len(s) && s[i] != ';' { return Err(bad("text after the value of " + k)) }
+        return Ok(Entry{key: k, value: v.toStr(), next: i})
+    }
+    let start = i
+    while i < len(s) && s[i] != ';' { i += 1 }
+    return Ok(Entry{key: k, value: trim(s[start..i]), next: i})
+}
+
+fn yesNo(v: str, what: str): Result[bool, Error] {
+    match strings.toLower(trim(v)) {
+        "yes", "true", "1", "sspi" { return Ok(true) }
+        "no", "false", "0" { return Ok(false) }
+        else { return Err(bad(what + " must be yes or no")) }
+    }
+}
+
+fn number(v: str, what: str): Result[int, Error] {
+    match strings.parseInt(trim(v)) {
+        Ok(n) {
+            if n < 0 { return Err(bad(what + " must be a number of 0 or more")) }
+            return Ok(n)
+        }
+        Err(_) { return Err(bad(what + " must be a number")) }
+    }
+}
+
+// Server's value: [tcp:]host[\instance][,port].
+fn serverOf(v: str, cfg: mut &tds.Config): Result[Unit, Error] {
+    var s = v
+    let low = strings.toLower(s)
+    if startsWith(low, "tcp:") {
+        s = s[4..]
+    } else if startsWith(low, "np:") || startsWith(low, "lpc:") || startsWith(low, "admin:") {
+        return Err(bad("only TCP servers are supported"))
+    }
+    var port = -1
+    let comma = strings.lastIndexOf(s, ",")
+    if comma >= 0 {
+        port = try number(s[comma + 1..], "the server's port")
+        if port < 1 || port > 65535 { return Err(bad("the server's port must be 1 to 65535")) }
+        s = trim(s[..comma])
+    }
+    let slash = strings.indexOfByte(s, '\\', 0)
+    if slash >= 0 {
+        if port < 0 { return Err(bad("a named instance needs SQL Server Browser, which is not supported: give the port (host,port)")) }
+        s = s[..slash]
+    }
+    if len(s) > 1 && s[0] == '[' && s[len(s) - 1] == ']' { s = s[1..len(s) - 1] }
+    let ls = strings.toLower(s)
+    if ls == "." || ls == "(local)" { s = "localhost" }
+    if startsWith(ls, "(localdb)") { return Err(bad("LocalDB is not supported")) }
+    if len(s) == 0 { return Err(bad("no host in Server")) }
+    cfg.host = s
+    if port > 0 { cfg.port = port }
+    return Ok(Unit{})
+}
+
+// The connection string with the values of PWD and Password replaced by
+// "***", for messages and logs.
+pub fn masked(s: str): str {
+    var out = newStrBuf()
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == ';' || isSpace(c) {
+            out.addByte(c)
+            i += 1
+            continue
+        }
+        match entry(s, i) {
+            Ok(kv) {
+                let eq = strings.indexOfByte(s, '=', i)
+                out.add(s[i..eq + 1])
+                if kv.key == "pwd" || kv.key == "password" { out.add("***") } else { out.add(s[eq + 1..kv.next]) }
+                i = kv.next
+            }
+            Err(_) {
+                out.add("***")                 // the rest cannot be parsed: hide it
+                i = len(s)
+            }
+        }
+    }
+    return out.toStr()
+}
+
+// ---------------------------------------------------------------- connections
+
+// A connection: owns its socket, closed when dropped (closing never parks).
+// One task uses it at a time; every call that waits parks only that task.
+pub type Conn = record { s: tds.Session }
+
+fn (c: mut &Conn) drop() { OPEN -= 1 }
+
+// Connects and logs in, within the string's Connect Timeout (E_TIMEOUT when
+// it passes) and the task's own deadline.
+pub fn connect(connStr: str, w: Where): Result[Conn, Error] {
+    let st = try parseConnString(connStr)
+    return connectWith(&st, w)
+}
+
+// connect with settings already parsed.
+pub fn connectWith(st: &Settings, w: Where): Result[Conn, Error] {
+    let cfg = st.config
+    let r = if st.connectTimeoutMs > 0 {
+        task.within(st.connectTimeoutMs, fn(): Result[tds.Session, Error] { return tds.open(&cfg, w) })
+    } else {
+        tds.open(&cfg, w)
+    }
+    match move(r) {
+        Ok(s) {
+            OPEN += 1
+            return Ok(Conn{s: s})
+        }
+        Err(e) {
+            if e.code == sqldialect.E_TIMEOUT { return Err(sqldialect.dbError(e.code, "connect: the deadline or Connect Timeout passed")) }
+            return Err(e)
+        }
+    }
+}
+
+// Closes the connection (dropping it does the same).
+pub fn (c: Conn) close() {}
+
+// "16.0.4135" (LOGINACK's version).
+pub fn (c: &Conn) serverVersion(): str { return c.s.serverVersion }
+
+// The current database (ENVCHANGE).
+pub fn (c: &Conn) database(): str { return c.s.database }
+
+// "full", "login only" or "off".
+pub fn (c: &Conn) encryption(): str { return c.s.encryption.toStr() }
+
+// The TDS version the server speaks: 0x74000004 for 7.4.
+pub fn (c: &Conn) tdsVersion(): int { return c.s.tdsVersion }
+
+pub fn (c: &Conn) packetSize(): int { return c.s.packetSize() }
+
+// The database's default collation (ENVCHANGE at login and after USE).
+pub fn (c: &Conn) collation(): tds.Collation { return c.s.collation }
+
+// Whether a transaction is open.
+pub fn (c: &Conn) inTransaction(): bool { return c.s.inTransaction() }
+
+// Whether the connection can take the next request: not broken, outside a
+// transaction (what a pool keeps).
+pub fn (c: &Conn) idle(): bool { return !c.s.broken && !c.s.inTransaction() }
+
+// The INFO messages of the last call (connect's "Changed database context
+// to ...", PRINT, RAISERROR with severity 10 or less).
+pub fn (c: &Conn) diagnostics(): []Message {
+    var out: []Message = []
+    for m in c.s.infos { append(mut &out, m) }
+    return out
+}
+
+// The largest reply a call may read, in bytes (tds.MAX_REPLY, 256 MiB): a
+// larger one is E_LIMIT and breaks the connection.
+pub fn (c: mut &Conn) setMaxReply(n: int) { c.s.maxReply = max(n, 4096) }
+
+fn (c: mut &Conn) batch(sql: str, w: Where): Result[tds.Reply, Error] {
+    let r = try c.s.batch(sql, w)
+    if len(r.errors) > 0 { return Err(tds.serverError(&r.errors[0])) }
+    return Ok(r)
+}
+
+// Runs a batch of any number of statements, without parameters. Its first
+// error is the result (the statements before it have run).
+pub fn (c: mut &Conn) exec(sql: str, w: Where): Result[Unit, Error] {
+    let r = try c.batch(sql, w)
+    return Ok(Unit{})
+}
+
+fn noParams(args: &[Value]): Result[Unit, Error] {
+    if len(args) > 0 {
+        return Err(sqldialect.inputError("parameters are not supported yet (" + len(args).toStr() + " given)"))
+    }
+    return Ok(Unit{})
+}
+
+// Runs sql and returns its first result set with columns, every row read
+// (Rows do not hold the connection). args must be empty in stage T1.
+pub fn (c: mut &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
+    try noParams(args)
+    var r = try c.batch(sql, w)
+    let sets = len(r.results)
+    if sets == 0 { return Ok(Rows{cols: [], rows: [], affected: r.affected, sets: 0}) }
+    let first = replace(mut &r.results[0], tds.ResultSet{columns: [], rows: [], count: -1})
+    let tds.ResultSet{columns: cols, rows: rows, count: _} = move(first)
+    return Ok(Rows{cols: cols, rows: rows, affected: r.affected, sets: sets})
+}
+
+// Runs sql (args empty in stage T1): the rows changed by its last statement
+// that has no result set, -1 when none says.
+pub fn (c: mut &Conn) run(sql: str, args: &[Value], w: Where): Result[int, Error] {
+    try noParams(args)
+    let r = try c.batch(sql, w)
+    return Ok(r.affected)
+}
+
+// ---------------------------------------------------------------- rows
+
+// A result in client memory.
+pub type Rows = record {
+    cols: []tds.Column
+    rows: [][]tds.Cell
+    affected: int
+    sets: int
+}
+
+pub fn (r: &Rows) rowCount(): int { return len(r.rows) }
+
+pub fn (r: &Rows) columnCount(): int { return len(r.cols) }
+
+// Rows changed by the batch's last statement without a result set, or -1.
+pub fn (r: &Rows) affected(): int { return r.affected }
+
+// The number of result sets with columns the batch gave (only the first is
+// kept in stage T1).
+pub fn (r: &Rows) resultSets(): int { return r.sets }
+
+fn (r: &Rows) col(col: int): Result[int, Error] {
+    if col < 0 || col >= len(r.cols) {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + len(r.cols).toStr() + " columns)"))
+    }
+    return Ok(col)
+}
+
+pub fn (r: &Rows) columnName(col: int): Result[str, Error] { return Ok(r.cols[try r.col(col)].name) }
+
+// The column's TDS type code (tds.T_INTN, tds.T_NVARCHAR, ...).
+pub fn (r: &Rows) columnType(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].tdsType) }
+
+// The column's SQL Server type name: "int", "nvarchar", "float", ...
+pub fn (r: &Rows) columnTypeName(col: int): Result[str, Error] { return Ok(r.cols[try r.col(col)].typeName()) }
+
+// The column's length in bytes (-1 for (max)).
+pub fn (r: &Rows) columnSize(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].size) }
+
+pub fn (r: &Rows) column(col: int): Result[tds.Column, Error] { return Ok(r.cols[try r.col(col)]) }
+
+fn (r: &Rows) cell(row: int, col: int): Result[tds.Cell, Error] {
+    let k = try r.col(col)
+    if row < 0 || row >= len(r.rows) {
+        return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + len(r.rows).toStr() + " rows)"))
+    }
+    return Ok(r.rows[row][k])
+}
+
+fn typeError(col: int, want: str): Error {
+    return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + " is not " + want)
+}
+
+fn nullError(col: int): Error { return sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL") }
+
+fn failed(col: int, why: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + ": " + why) }
+
+pub fn (r: &Rows) isNull(row: int, col: int): Result[bool, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Null { return Ok(true) }
+        else { return Ok(false) }
+    }
+}
+
+// A tinyint, smallint, int, bigint or bit value.
+pub fn (r: &Rows) int(row: int, col: int): Result[int, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Int(n) { return Ok(n) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "an integer")) }
+    }
+}
+
+// A bit (or an integer that is 0 or 1).
+pub fn (r: &Rows) bool(row: int, col: int): Result[bool, Error] {
+    let n = try r.int(row, col)
+    if n != 0 && n != 1 { return Err(typeError(col, "a 0 or 1 boolean")) }
+    return Ok(n == 1)
+}
+
+// A real or float (exact), or an integer that a float holds exactly.
+pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Float(f) { return Ok(f) }
+        tds.Cell.Int(n) {
+            if n > 9007199254740992 || n < -9007199254740992 { return Err(typeError(col, "a float")) }
+            return Ok(float(n))
+        }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a float")) }
+    }
+}
+
+// The value as text: a text value as it is (NUL characters kept), an
+// integer's or float's digits. E_TYPE for a binary value.
+pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Text(t) { return Ok(t) }
+        tds.Cell.Int(n) { return Ok(n.toStr()) }
+        tds.Cell.Float(f) { return Ok(f.toStr()) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        tds.Cell.Bytes(_) { return Err(typeError(col, "text")) }
+    }
+}
+
+// The exact bytes of a binary value, or the UTF-8 bytes of a text value.
+pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
+    match try r.cell(row, col) {
+        tds.Cell.Bytes(b) { return Ok(b) }
+        tds.Cell.Text(t) { return Ok(t) }
+        tds.Cell.Null { return Err(nullError(col)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "binary or text")) }
+    }
+}
+
+// The value by its column's type: Null, Bool (bit), Int, Float, Text or
+// Bytes; E_TYPE for a type not supported yet.
+pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
+    let c = try r.cell(row, col)
+    let t = r.cols[col].tdsType
+    match c {
+        tds.Cell.Null { return Ok(Value.Null) }
+        tds.Cell.Int(n) { return Ok(if t == tds.T_BIT || t == tds.T_BITN { Value.Bool(n == 1) } else { Value.Int(n) }) }
+        tds.Cell.Float(f) { return Ok(Value.Float(f)) }
+        tds.Cell.Text(s) { return Ok(Value.Text(s)) }
+        tds.Cell.Bytes(b) { return Ok(Value.Bytes(b)) }
+        tds.Cell.Failed(why) { return Err(failed(col, why)) }
+    }
+}
