@@ -718,6 +718,10 @@ uint8_t rt_str_byte(obx_str s, int64_t i, const char* w) {
     if (i < 0 || i >= s.len) rt_trap(3, "string index out of range", w);
     return (uint8_t)RT_SP(s)[i];
 }
+uint64_t rt_str_word(obx_str s, int64_t i, const char* w) {
+    if (i < 0 || i > (int64_t)s.len - 8) rt_trap(3, "string index out of range", w);
+    uint64_t v; __builtin_memcpy(&v, RT_SP(s) + i, 8); return v;
+}
 obx_str rt_str_sub(obx_str s, int64_t a, int64_t b, const char* w) {
     if (a < 0 || b < a || b > s.len) rt_trap(3, "string slice out of range", w);
     return (obx_str){rt_str_dup(s).b, s.off + (uint32_t)a, (uint32_t)(b - a)};

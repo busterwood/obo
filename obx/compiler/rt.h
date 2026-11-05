@@ -637,6 +637,11 @@ static obx_slice rt_sub(obx_slice s, int64_t lo, int64_t hi, size_t size, const 
     if (lo < 0 || hi < lo || hi > s.len) rt_trap(3, "slice range out of bounds", w);
     return (obx_slice){(char*)s.data + (size_t)lo * size, hi - lo};
 }
+/* strWord(s, i): the 8 bytes of s at i as a little-endian u64 (checked once: 0 <= i, i + 8 <= len) */
+static inline uint64_t rt_str_word(obx_str s, int64_t i, const char* w) {
+    if (i < 0 || i > (int64_t)s.len - 8) rt_trap(3, "string index out of range", w);
+    uint64_t v; memcpy(&v, RT_SP(s) + i, 8); return v;
+}
 /* appendStr(mut &bytes, s): the bytes of s at the end of a, in one copy (the capacity at
    least doubles when it grows, as rt_arr_push's does) */
 static void rt_str_append(obx_arr* a, obx_str s) {

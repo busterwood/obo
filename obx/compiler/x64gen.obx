@@ -1744,7 +1744,7 @@ fn (g: &Gen) quietRt(e: int): bool {
     if g.cvInline(e) { return true }
     let dv = divOp(name)
     if dv.k >= 0 { return nargs == (if dv.op == ir.OP_SUB { 2 } else { 3 }) && g.isWhere(g.u.listAt(n.b, nargs - 1)) }
-    if name == "rt_idx" || name == "rt_sidx" || name == "rt_str_byte" { return nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) }
+    if name == "rt_idx" || name == "rt_sidx" || name == "rt_str_byte" || name == "rt_str_word" { return nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) }
     return name == "rt_str_dup" && nargs == 1
 }
 
@@ -3182,7 +3182,7 @@ fn (g: &Gen) pure(x: int): bool {
         let c = n.a
         if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return false }
         let name = g.u.funcs[g.u.nodes[g.u.nodes[c].a].a].name
-        if name != "rt_idx" && name != "rt_sidx" && name != "rt_str_byte" && arOp(name).k < 0 && divOp(name).k < 0 { return false }
+        if name != "rt_idx" && name != "rt_sidx" && name != "rt_str_byte" && name != "rt_str_word" && arOp(name).k < 0 && divOp(name).k < 0 { return false }
         for j in 0..g.u.listLen(n.b) {
             if !g.pure(g.u.listAt(n.b, j)) { return false }
         }
@@ -5241,8 +5241,9 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.a.jcc(x64.CC_AE, g.stub(3, idxMsg(name), g.u.listAt(n.b, 2)))
         return true
     }
-    if name == "rt_str_byte" && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
+    if (name == "rt_str_byte" || name == "rt_str_word") && nargs == 3 && g.isWhere(g.u.listAt(n.b, 2)) {
         let dst = replace(mut &g.byteDest, RAX)
+        let wd = name == "rt_str_word"
         let sx = g.u.listAt(n.b, 0)
         let ix = g.u.listAt(n.b, 1)
         let m = g.staticMem(sx)
@@ -5261,9 +5262,14 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.a.loadZX(4, RDX, at(m, 12))               // len
             g.a.alu(x64.CMP, 8, ri, RDX)
             g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            if wd {                                         // and i + 7 < len
+                g.a.lea(RAX, x64.mem(ri, 7))
+                g.a.alu(x64.CMP, 8, RAX, RDX)
+                g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            }
             g.a.loadZX(4, RAX, at(m, 8))                // off
             g.a.aluRM(x64.ADD, 8, RAX, m)               // + the block
-            g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8)) // data[off + i]
+            if wd { g.a.load(8, dst, x64.memx(RAX, ri, 1, 8)) } else { g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8)) }
             return true
         }
         let br = if g.u.nk(sx) == ir.E_DEREF { g.regOf(g.u.nodes[sx].a) } else { -1 }
@@ -5282,9 +5288,14 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
             g.a.loadZX(4, RDX, x64.mem(br, 12))             // len
             g.a.alu(x64.CMP, 8, ri, RDX)
             g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            if wd {                                         // and i + 7 < len
+                g.a.lea(RAX, x64.mem(ri, 7))
+                g.a.alu(x64.CMP, 8, RAX, RDX)
+                g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            }
             g.a.loadZX(4, RAX, x64.mem(br, 8))              // off
             g.a.aluRM(x64.ADD, 8, RAX, x64.mem(br, 0))      // + the block
-            g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8))     // data[off + i]
+            if wd { g.a.load(8, dst, x64.memx(RAX, ri, 1, 8)) } else { g.a.loadZX(1, dst, x64.memx(RAX, ri, 1, 8)) }
             return true
         }
         g.gen(sx)                                       // the address of the str
@@ -5300,10 +5311,16 @@ fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
         g.a.loadZX(4, RDX, x64.mem(RAX, 12))            // len
         g.a.alu(x64.CMP, 8, RCX, RDX)
         g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+        if wd {                                         // and i + 7 < len
+            g.a.aluI(x64.ADD, 8, RCX, 7)
+            g.a.alu(x64.CMP, 8, RCX, RDX)
+            g.a.jcc(x64.CC_AE, g.stub(3, "string index out of range", g.u.listAt(n.b, 2)))
+            g.a.aluI(x64.SUB, 8, RCX, 7)
+        }
         g.a.loadZX(4, RDX, x64.mem(RAX, 8))             // off
         g.a.load(8, RAX, x64.mem(RAX, 0))               // the block
         g.a.alu(x64.ADD, 8, RAX, RDX)
-        g.a.loadZX(1, dst, x64.memx(RAX, RCX, 1, 8))    // data[off + i]
+        if wd { g.a.load(8, dst, x64.memx(RAX, RCX, 1, 8)) } else { g.a.loadZX(1, dst, x64.memx(RAX, RCX, 1, 8)) }
         return true
     }
     if name == "rt_str_dup" && nargs == 1 {

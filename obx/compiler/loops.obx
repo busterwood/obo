@@ -416,7 +416,7 @@ fn rtClass(name: str): int {
     if name == "rt_idx" || name == "rt_sidx" { return RC_IDX }
     if name == "rt_arr_push" { return RC_PUSH }
     if name == "rt_str_byte" || name == "rt_str_find_byte" || name == "rt_str_find_any" || name == "rt_str_find" ||
-        name == "rt_str_find_pair" {
+        name == "rt_str_find_pair" || name == "rt_str_word" {
         return RC_PURE
     }
     if len(name) < 8 { return RC_NONE }
