@@ -7,7 +7,8 @@ compiler/out/obxc.
 These were the reference compiler's own tests (compiler choices and runtime
 limits rather than the spec), kept when ref was retired (archive/obx-ref/).
 unit/ holds run tests that need C flags (`// cflags: -DRT_STR_MAX=64` lowers a
-runtime limit so that a test does not need gigabytes); they are built here
+runtime limit so that a test does not need gigabytes; `// cflags: -msse4.1` builds
+for a newer CPU); one whose `// needs:` library is missing passes. They are built here
 through tools/cbuild.py (obxc --emit-c-json, extra flags, cached gcc)."""
 import importlib.util, os, subprocess, sys, tempfile
 
@@ -20,6 +21,8 @@ spec.loader.exec_module(runner)
 
 
 def unit(path):
+    if runner.missing_lib(path):
+        return None
     d = runner.parse_directives(path)
     flags = [w for l in open(path) if l.startswith('// cflags:') for w in l.split(':', 1)[1].split()]
     with tempfile.TemporaryDirectory(prefix='obxunit_') as tmp:

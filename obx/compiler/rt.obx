@@ -3,6 +3,18 @@
 
 pub const RT: []str = [
     "/* The obx runtime, included at the top of every generated C file. */",
+    "/* No MMX registers, for the whole file (so before the includes: a function the headers define",
+    "   must not need a feature the code that inlines it lacks). With -msse4.1 (or -march=x86-64-v2),",
+    "   gcc 13 at -O2 can build a 128-bit value (a Decimal's coefficient, a u128) in an SSE register",
+    "   by `movq mem, %mm0; movq2dq %mm0, %xmm; pinsrq`: an MMX instruction with no EMMS after it.",
+    "   That leaves every x87 register in use, so the next x87 push, in C code the program calls,",
+    "   overflows the stack and gives NaN: SQLite (which uses long double to parse \"1.50\") then",
+    "   stored NULL for 1.50 in a NUMERIC column (tests/compiler/unit/x87_clean_sqlite.obx). The C is",
+    "   valid; the instruction choice breaks the ABI's rule that the x87 unit is free at calls.",
+    "   Without MMX gcc uses movq/movhps-style SSE moves; nothing in obx uses MMX. */",
+    "#if defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__)",
+    "#pragma GCC target(\"no-mmx\")",
+    "#endif",
     "#include <stdint.h>",
     "#include <stdbool.h>",
     "#include <stdio.h>",

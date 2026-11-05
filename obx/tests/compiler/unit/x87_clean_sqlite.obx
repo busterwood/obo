@@ -1,0 +1,38 @@
+// Built with -msse4.1, gcc 13 -O2 once read decimals here with an MMX instruction and no EMMS
+// (rt.h now compiles with no MMX). That left the x87 registers full, so SQLite's long double
+// parse of '1.50' gave NaN and the NUMERIC column stored NULL: "null" on the last line.
+// needs: sqlite3
+// cflags: -msse4.1
+// expect: read: 12.50 0.000 -0.001 99999999999999999999999999999999999999 0.00000015
+// expect: real
+import "sqlite"
+
+type V = sqlite.Value
+type Error = sqlite.Error
+
+fn run(): Result[Unit, Error] {
+    var db = try sqlite.open(":memory:")
+    try db.exec("CREATE TABLE m(id INTEGER PRIMARY KEY, amount TEXT, n NUMERIC)")
+    let values = [12.50, 0.000, -0.001, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7]
+    for v in values {
+        try db.run("INSERT INTO m(amount) VALUES (?)", &[V.Dec(v)])
+    }
+    var line = "read:"
+    var st = try db.query("SELECT amount FROM m ORDER BY id", &[])
+    while try st.step() {
+        line = line + " " + (try st.decimal(0)).toStr()
+    }
+    println(line)
+    try db.run("INSERT INTO m(n) VALUES (?)", &[V.Text("1.50")])
+    var t = try db.query("SELECT typeof(n) FROM m WHERE amount IS NULL", &[])
+    try t.step()
+    println(try t.text(0))
+    return Ok(Unit{})
+}
+
+fn main() {
+    match run() {
+        Ok(_) {}
+        Err(e) { println("FAIL " + e.toStr()) }
+    }
+}
