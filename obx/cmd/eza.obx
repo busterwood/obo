@@ -1,6 +1,6 @@
 // eza: lists a directory, a port of obo's eza (archive/obo/cmd/eza.obx), the subset
 // of eza 0.23.3 that obo implements, byte for byte: the lines, grid, tree
-// and restricted long views, -a/-A, -d, -D/-f, the sort fields that need no
+// and long views (sizes, users, local dates, -h, colours), -a/-A, -d, -D/-f, the sort fields that need no
 // more than lstat, -r, directory grouping, quoting and --no-quotes, -F,
 // colour with the default theme and the LS_COLORS/EZA_COLORS subset, and
 // eza's errors and exit codes (0 ok, 1 write error, 2 bad path, 3 usage).
@@ -18,6 +18,7 @@ import "os"
 import "strings"
 import "collections"
 import "time"
+import "tz"
 
 type Kind = fs.Kind
 
@@ -302,6 +303,10 @@ type Opts = value record {
     noPerms: bool
     noSize: bool
     noTime: bool
+    binary: bool          // -b: sizes with binary prefixes
+    bytes: bool           // -B: sizes in bytes
+    header: bool          // -h: a header row
+    isoTime: bool         // --time-style=long-iso (else the default style)
 }
 
 fn isWhen(v: str): bool { return v == "always" || v == "auto" || v == "never" || v == "automatic" }
@@ -353,12 +358,12 @@ fn deduce(opts: &[Opt]): Result[Opts, Fail] {
     var o = Opts{all: 0, almostAll: false, dirsAsFiles: false, reverse: false, sort: Sort.Name,
         groupFirst: false, groupLast: false, onlyDirs: false, onlyFiles: false, classify: false,
         long: false, tree: false, grid: false, across: false, width: None, level: None, quote: true,
-        colour: false, numeric: false, noUser: false, noPerms: false, noSize: false, noTime: false}
+        colour: false, numeric: false, noUser: false, noPerms: false, noSize: false, noTime: false,
+        binary: false, bytes: false, header: false, isoTime: false}
     var view = ""          // the last of -l/-1/-T/-G
     var gridOrTree = ""    // the last of -G/-T
     var longSeen = false
     var treeSeen = false
-    var bytes = false
     var sort = ""
     var classify = ""
     var colour = ""
@@ -378,7 +383,9 @@ fn deduce(opts: &[Opt]): Result[Opts, Fail] {
             "classify" { classify = x.value }
             "only-dirs" { o.onlyDirs = true }
             "only-files" { o.onlyFiles = true }
-            "bytes" { bytes = true }
+            "bytes" { o.bytes = true }
+            "binary" { o.binary = true }
+            "header" { o.header = true }
             "numeric" { o.numeric = true }
             "no-user" { o.noUser = true }
             "no-permissions" { o.noPerms = true }
@@ -471,16 +478,10 @@ fn deduce(opts: &[Opt]): Result[Opts, Fail] {
         None {}
     }
     let style = match timeStyle { Some(t) { t } None { "" } }
-    if o.long {
-        if timeStyle.isSome() && style != "long-iso" {
-            return Err(usage("--time-style=" + style + " is not supported with -l in this build"))
-        }
-        if timeStyle.isNone() || !bytes || !(o.numeric || o.noUser) {
-            return Err(usage("-l in this build requires --bytes, --time-style=long-iso and -n or --no-user"))
-        }
-    } else if timeStyle.isSome() && style != "long-iso" && style != "default" {
+    if timeStyle.isSome() && style != "long-iso" && style != "default" {
         return Err(usage("--time-style=" + style + " is not supported in this build"))
     }
+    o.isoTime = style == "long-iso"
     return Ok(o)
 }
 
@@ -1076,6 +1077,10 @@ type Eza = record {
     w: io.Writer
     open: bool     // a run of styled pieces has begun
     prev: Style    // the style of the run's last piece
+    zone: tz.Zone  // dates are shown in this zone ($TZ, else /etc/localtime)
+    year: int      // the current year in that zone: dates in it show no year
+    me: int        // the real uid: its user name is bold yellow
+    users: []PwEntry
 }
 
 // Writes text in style s, as part of the current run. With colour on, the
@@ -1213,35 +1218,280 @@ fn marker(k: Kind, mode: int): str {
 // The widths of the long columns over the rows shown.
 type Cols = value record { size: int; user: int; date: int }
 
-fn (c: mut &Cols) note(e: &Entry, o: &Opts) {
-    if !o.noSize { c.size = max(c.size, len(sizeText(e))) }
-    if o.numeric && !o.noUser { c.user = max(c.user, len(uid(e).toStr())) }
-    if !o.noTime { c.date = max(c.date, if timeKey(e) >= 0 { 16 } else { 1 }) }
+fn (c: mut &Cols) note(e: &Entry, z: &Eza) {
+    if !z.o.noSize { c.size = max(c.size, len(sizeCell(e, z.o.binary, z.o.bytes).text)) }
+    if !z.o.noUser { c.user = max(c.user, len(userText(e, z))) }
+    if !z.o.noTime { c.date = max(c.date, len(dateText(e, z))) }
 }
 
-fn sizeText(e: &Entry): str {
-    return match e.st { Some(s) { if s.kind() == Kind.File { s.size.toStr() } else { "-" } } None { "-" } }
+// A size as eza shows it: its text and the colour tier of its prefix (0 bytes,
+// 1 kilo, 2 mega, 3 giga, 4 huge; 5 is the dash of a directory or other non-file).
+type SizeCell = value record { text: str; tier: int }
+
+const DEC_UNITS: []str = ["", "k", "M", "G", "T", "P", "E"]
+const BIN_UNITS: []str = ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"]
+
+fn sizeCell(e: &Entry, binary: bool, bytes: bool): SizeCell {
+    match e.st {
+        Some(s) {
+            if s.kind() != Kind.File { return SizeCell{text: "-", tier: 5} }
+            return sizeOf(s.size, binary, bytes)
+        }
+        None { return SizeCell{text: "-", tier: 5} }
+    }
+}
+
+// n bytes: plain under -B, else in the largest prefix that n reaches, with a
+// decimal (1000) or binary (1024) base. The rounding is the one of the
+// reference's model: one decimal below 10 (exact binary value, ties to even),
+// else the whole part, rounded up from one half.
+fn sizeOf(n: int, binary: bool, bytes: bool): SizeCell {
+    let base = if binary { 1024 } else { 1000 }
+    if bytes || n < base { return SizeCell{text: n.toStr(), tier: 0} }
+    var k = 1
+    while k < 6 && n >= powInt(base, k + 1) { k += 1 }
+    let v = float(n) / float(powInt(base, k))
+    var digits = ""
+    if v < 10.0f {
+        digits = fixed1(v)
+    } else {
+        let fl = v.floor()
+        digits = (int(fl) + (if v - fl >= 0.5f { 1 } else { 0 })).toStr()
+    }
+    let unit = if binary { BIN_UNITS[k] } else { DEC_UNITS[k] }
+    return SizeCell{text: digits + unit, tier: if k > 4 { 4 } else { k }}
+}
+
+fn powInt(b: int, k: int): int {
+    var r = 1
+    for i in 0..k { r *= b }
+    return r
+}
+
+// v (1 <= v < 10) with one decimal, rounded as C's "%.1f" rounds its exact binary
+// value: x / 2^s exactly, so the tenths are the exact rounding, ties to even.
+fn fixed1(v: float): str {
+    var x = v
+    var s = 0
+    while x != x.floor() {
+        x = x * 2.0f
+        s += 1
+    }
+    let den = powInt(2, s)
+    let num = int(x) * 10
+    var q = num / den
+    let r = num % den
+    if 2 * r > den || (2 * r == den && q % 2 == 1) { q += 1 }
+    return (q / 10).toStr() + "." + (q % 10).toStr()
+}
+
+// A user name from /etc/passwd.
+type PwEntry = value record { uid: int; name: str }
+
+// The entries of /etc/passwd (none when it cannot be read).
+fn passwdEntries(): []PwEntry {
+    var out: []PwEntry = []
+    match io.read("/etc/passwd") {
+        Ok(text) {
+            for line in strings.lines(&text) {
+                match strings.cut(line, ":") {
+                    Some(a) {
+                        match strings.cut(a.after, ":") {
+                            Some(b) {
+                                match strings.cut(b.after, ":") {
+                                    Some(c) {
+                                        match strings.parseInt(c.before.toStr()) {
+                                            Ok(id) { append(mut &out, PwEntry{uid: id, name: a.before.toStr()}) }
+                                            Err(_) {}
+                                        }
+                                    }
+                                    None {}
+                                }
+                            }
+                            None {}
+                        }
+                    }
+                    None {}
+                }
+            }
+        }
+        Err(_) {}
+    }
+    return out
+}
+
+// The real uid of this process, from /proc/self/status (0 when unknown).
+fn currentUid(): int {
+    match io.read("/proc/self/status") {
+        Ok(text) {
+            for line in strings.lines(&text) {
+                match strings.cut(line, ":") {
+                    Some(c) {
+                        if c.before == "Uid" {
+                            var it = strings.fieldsIter(c.after)
+                            match it.next() {
+                                Some(f) {
+                                    match strings.parseInt(f.toStr()) {
+                                        Ok(v) { return v }
+                                        Err(_) {}
+                                    }
+                                }
+                                None {}
+                            }
+                        }
+                    }
+                    None {}
+                }
+            }
+        }
+        Err(_) {}
+    }
+    return 0
 }
 
 fn uid(e: &Entry): int { return match e.st { Some(s) { s.uid } None { 0 } } }
 
+// The owner's name, or the uid when /etc/passwd has no entry for it (or with -n).
+fn userText(e: &Entry, z: &Eza): str {
+    let id = uid(e)
+    if !z.o.numeric {
+        for p in z.users {
+            if p.uid == id { return p.name }
+        }
+    }
+    return id.toStr()
+}
+
+const MONTHS: []str = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// The modified time as eza shows it: "-" when it is before 1970 (or unknown).
+fn dateText(e: &Entry, z: &Eza): str {
+    match e.st {
+        Some(s) {
+            if s.mtime < 0 { return "-" }
+            return zonedText(s.mtime, z)
+        }
+        None { return "-" }
+    }
+}
+
+// A time in the zone of z: "%e %b %H:%M" in the current year, else "%e %b  %Y"
+// (the year in five columns); with --time-style=long-iso "2020-09-13 12:26".
+fn zonedText(sec: int, z: &Eza): str {
+    let l = z.zone.localTime(sec)
+    let hm = strings.zeroPad(l.time.hour(), 2) + ":" + strings.zeroPad(l.time.minute(), 2)
+    if z.o.isoTime { return l.date.toStr() + " " + hm }
+    let day = l.date.day.toStr()
+    let head = spaces(2 - len(day)) + day + " " + MONTHS[l.date.month - 1] + " "
+    if l.date.year == z.year { return head + hm }
+    let y = l.date.year.toStr()
+    return head + spaces(5 - len(y)) + y
+}
+
 // The cells before the name: permissions, size, uid, date, each followed by
 // a space.
 fn (z: mut &Eza) cells(e: &Entry, c: &Cols) {
-    if !z.o.noPerms { z.plain(modeString(e.mode()) + " ") }
-    if !z.o.noSize {
-        let s = sizeText(e)
-        z.plain(spaces(c.size - len(s)) + s + " ")
+    if !z.o.noPerms {
+        z.perms(e, if z.o.header { 11 } else { 10 })
+        z.plain(" ")
     }
-    if z.o.numeric && !z.o.noUser {
-        let u = uid(e).toStr()
-        z.plain(u + spaces(c.user - len(u)) + " ")
+    if !z.o.noSize {
+        let s = sizeCell(e, z.o.binary, z.o.bytes)
+        z.plain(spaces(c.size - len(s.text)))
+        z.put(sizeStyle(s.tier), s.text)
+        z.plain(" ")
+    }
+    if !z.o.noUser {
+        let u = userText(e, z)
+        z.put(if uid(e) == z.me { fg(33, true, false) } else { PLAIN }, u)
+        z.plain(spaces(c.user - len(u)) + " ")
     }
     if !z.o.noTime {
-        let d = match e.st { Some(s) { if s.mtime >= 0 { longIso(s.mtime) } else { "-" } } None { "-" } }
-        z.plain(d + spaces(c.date - len(d)) + " ")
+        let d = dateText(e, z)
+        z.put(fg(34, false, false), d)
+        z.plain(spaces(c.date - len(d)) + " ")
     }
 }
+
+// A style by foreground code (30-37, 90), bold and underline.
+fn fg(code: int, bold: bool, underline: bool): Style {
+    let attrs = (if bold { 1 } else { 0 }) + (if underline { 8 } else { 0 })
+    return Style{attrs: attrs, fg: BASIC + code, bg: 0}
+}
+
+// The colour of a size tier: green bytes, bold green kilo, yellow mega, red
+// giga, purple huge (eza's default gradient); a dash is punctuation.
+fn sizeStyle(tier: int): Style {
+    return match tier {
+        0 { fg(32, false, false) }
+        1 { fg(32, true, false) }
+        2 { fg(33, false, false) }
+        3 { fg(31, false, false) }
+        4 { fg(35, false, false) }
+        else { fg(90, true, false) }
+    }
+}
+
+// The permission characters, each in eza's default style (the file type, rwx
+// per user, group and other, set bits purple, dashes punctuation). width pads
+// the field: 10, or 11 under -h.
+fn (z: mut &Eza) perms(e: &Entry, width: int) {
+    let text = modeString(e.mode())
+    let isFile = e.kind == Kind.File
+    for i in 0..10 {
+        let ch = text[i..i + 1].toStr()
+        z.put(permStyle(i, ch, isFile), ch)
+    }
+    z.plain(spaces(width - 10))
+}
+
+fn permStyle(pos: int, ch: str, isFile: bool): Style {
+    if pos == 0 {
+        return match ch {
+            "d" { fg(34, true, false) }
+            "l" { fg(36, false, false) }
+            "|" { fg(33, false, false) }
+            "b", "c" { fg(33, true, false) }
+            "s" { fg(31, true, false) }
+            else { PLAIN }
+        }
+    }
+    if ch == "-" { return fg(90, true, false) }
+    if ch == "s" || ch == "S" || ch == "t" || ch == "T" { return fg(35, false, false) }
+    let who = (pos - 1) / 3      // 0 user, 1 group, 2 other
+    return match (pos - 1) % 3 {
+        0 { fg(33, who == 0, false) }
+        1 { fg(31, who == 0, false) }
+        else {
+            if who == 0 && isFile { fg(32, true, true) } else { fg(32, who == 0, false) }
+        }
+    }
+}
+
+// The header row of the long view (-h): underlined labels, padded as the cells.
+fn (z: mut &Eza) header(c: &Cols) {
+    if !z.o.noPerms {
+        z.label("Permissions")
+        z.plain(" ")
+    }
+    if !z.o.noSize {
+        z.plain(spaces(c.size - 4))
+        z.label("Size")
+        z.plain(" ")
+    }
+    if !z.o.noUser {
+        z.label("User")
+        z.plain(spaces(c.user - 4) + " ")
+    }
+    if !z.o.noTime {
+        z.label("Date Modified")
+        z.plain(spaces(c.date - 13) + " ")
+    }
+    z.label("Name")
+    z.endLine()
+}
+
+fn (z: mut &Eza) label(text: str) { z.put(Style{attrs: 8, fg: 0, bg: 0}, text) }
 
 // The width of the cells (for an error row of a long tree).
 fn cellsWidth(o: &Opts, c: &Cols): int {
@@ -1271,12 +1521,6 @@ fn rwx(m: int, special: bool, s: str): str {
     return p[..2] + if m & 1 != 0 { s } else { strings.toUpper(s) }
 }
 
-// "2026-11-02 10:20" (UTC).
-fn longIso(sec: int): str {
-    let s = sec % 86400
-    return time.dateOf(sec).toStr() + " " + strings.zeroPad(s / 3600, 2) + ":" + strings.zeroPad(s / 60 % 60, 2)
-}
-
 const SPACES = "                                                                "
 
 fn spaces(n: int): str {
@@ -1301,7 +1545,13 @@ fn (z: mut &Eza) show(es: &[]Entry, ids: &[int], at: &Where) {
         return
     }
     var c = Cols{size: 0, user: 0, date: 0}
-    for e in es { c.note(&e, &z.o) }
+    for e in es { c.note(&e, z) }
+    if z.o.long && z.o.header && len(ids) > 0 {
+        c.size = max(c.size, 4)
+        c.user = max(c.user, 4)
+        c.date = max(c.date, 13)
+        z.header(&c)
+    }
     for i in ids { z.line(&es[i], at, &c, "") }
 }
 
@@ -1411,10 +1661,10 @@ fn (z: &Eza) load(path: str, depth: int): Result[[]Node, int] {
     return Ok(nodes)
 }
 
-fn (c: mut &Cols) noteAll(nodes: &[]Node, o: &Opts) {
+fn (c: mut &Cols) noteAll(nodes: &[]Node, z: &Eza) {
     for n in nodes {
-        c.note(&n.e, o)
-        c.noteAll(&n.kids, o)
+        c.note(&n.e, z)
+        c.noteAll(&n.kids, z)
     }
 }
 
@@ -1432,8 +1682,14 @@ fn (z: mut &Eza) tree(operand: str, st: fs.Stat) {
     }
     var c = Cols{size: 0, user: 0, date: 0}
     if z.o.long {
-        c.note(&root[0], &z.o)
-        c.noteAll(&kids, &z.o)
+        c.note(&root[0], z)
+        c.noteAll(&kids, z)
+    }
+    if z.o.long && z.o.header {
+        c.size = max(c.size, 4)
+        c.user = max(c.user, 4)
+        c.date = max(c.date, 13)
+        z.header(&c)
     }
     z.line(&root[0], &at, &c, "")
     z.branches(&kids, err, operand, "", &c)
@@ -1460,7 +1716,6 @@ fn (z: mut &Eza) branches(nodes: &[]Node, err: int, dir: str, indent: str, c: &C
 const HELP: []str = [
     "Usage:",
     "  eza [options] [--] [PATH]",
-    "  eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]",
     "",
     "obo eza is a partial behavioural reimplementation of eza 0.23.3,",
     "not a drop-in replacement. It lists one PATH (default \".\") and",
@@ -1472,7 +1727,7 @@ const HELP: []str = [
     "",
     "DISPLAY OPTIONS",
     "  -1, --oneline              display one entry per line",
-    "  -l, --long                 restricted long view (see LONG VIEW)",
+    "  -l, --long                 long view (see LONG VIEW)",
     "  -G, --grid                 display entries as a grid",
     "  -x, --across               fill grid rows left to right",
     "  -T, --tree                 recurse into directories as a tree",
@@ -1499,21 +1754,20 @@ const HELP: []str = [
     "  --group-directories-last   list directories after other entries",
     "",
     "LONG VIEW OPTIONS",
-    "  The working long form in this build is:",
-    "    eza -l --bytes --time-style=long-iso -n PATH",
-    "    eza -l --bytes --time-style=long-iso --no-user PATH",
-    "  It prints permissions, a raw decimal byte size, user or numeric uid,",
-    "  a long-iso date, and the name. Plain \"eza -l\" is not supported.",
-    "  Human-readable sizes are NOT implemented: eza's default 1.0k/1.0M",
-    "  format and -b/--binary are unsupported. -h/--header is also",
-    "  unsupported. Those options are rejected, not silently accepted.",
-    "  -B, --bytes                show raw byte sizes (required with -l)",
+    "  -l prints permissions, size, user, date and name as eza 0.23.3 does,",
+    "  with its default colours. Sizes are decimal (1.0k, 1.2M) by default,",
+    "  binary with -b, and plain bytes with -B. Dates are in the local zone",
+    "  (the zone of TZ, else the system's): \"%e %b %H:%M\" in the current year, else",
+    "  \"%e %b  %Y\"; --time-style=long-iso gives \"2020-09-13 12:26\".",
+    "  -h, --header               a header row with the column labels",
+    "  -b, --binary               sizes with binary prefixes (1.0Ki, 1.2Mi)",
+    "  -B, --bytes                sizes in bytes, without prefixes",
     "  -n, --numeric              show numeric user ids",
     "  --no-user                  omit the user column",
     "  --no-permissions           omit the permissions column",
     "  --no-filesize              omit the size column",
     "  --no-time                  omit the date column",
-    "  --time-style STYLE         long-iso with -l; default/long-iso otherwise",
+    "  --time-style STYLE         default or long-iso (iso and others are rejected)",
     "",
     "EXAMPLES",
     "  eza                        list the current directory",
@@ -1556,8 +1810,11 @@ fn run(): Result[Unit, Fail] {
         Ok(st) { st }
         Err(e) { return Err(Fail{code: 2, msg: "\"" + debugText(operand, true) + "\": " + osError(e.errno)}) }
     }
+    let zone = tz.local()
     var z = Eza{o: o, pal: if o.colour { palette() } else { Palette{styles: [], patterns: [], types: false,
-        exts: newMap(), names: newMap()} }, w: io.stdout(), open: false, prev: PLAIN}
+        exts: newMap(), names: newMap()} }, w: io.stdout(), open: false, prev: PLAIN,
+        zone: zone, year: zone.localTime(time.unixSeconds()).date.year, me: currentUid(),
+        users: if o.long && !o.numeric && !o.noUser { passwdEntries() } else { [] }}
     let toDir = st.isDir() || (st.isLink() && match fs.stat(operand) { Ok(t) { t.isDir() } Err(_) { false } })
     if o.tree {
         z.tree(operand, st)
