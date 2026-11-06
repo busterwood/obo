@@ -584,6 +584,21 @@ fn (lx: mut &Lexer) number(i: int): int {
         while k < n && isDig(strByte(src, k)) { k += 1 }
     }
     lx.tooLong(i, k)
+    // SPEC 2: an f (float) or m (Decimal) ends a number; 1f and 1m are fractional literals too
+    var suf = 0
+    var end = k
+    if k < n && strByte(src, k) == 'f' { suf = 1 }
+    if k < n && strByte(src, k) == 'm' { suf = 2 }
+    if suf > 0 {
+        end = k + 1
+        if end < n && isWord(strByte(src, end)) {
+            var w = end
+            while w < n && isWord(strByte(src, w)) { w += 1 }
+            lx.fail(line, "bad literal " + src[i..w] + ": the suffix f (float) or m (Decimal) must end a number")
+        }
+        lx.push(T_FRAC, -1, noUnderscores(src[i..k]), suf, line)
+        return end
+    }
     if k > j {
         if k < n && isWord(strByte(src, k)) { lx.fail(line, "bad fractional literal " + src[i..k + 1]) }
         lx.push(T_FRAC, -1, noUnderscores(src[i..k]), 0, line)
@@ -669,7 +684,7 @@ pub const N_LCHAR = 34       // arm literal: a value; no line
 pub const N_LSTR = 35        // arm literal: s bytes; no line
 pub const N_INT = 36         // s digits; MINUS (the value is negative), NEG (ref's neg: a negated literal)
 pub const N_CHAR = 37        // a value
-pub const N_FRAC = 38        // s text
+pub const N_FRAC = 38        // s text; a suffix: 0 none, 1 f (float), 2 m (Decimal)
 pub const N_STR = 39         // s bytes
 pub const N_BOOL = 40        // TRUE
 pub const N_NAME = 41        // s name
@@ -1767,7 +1782,7 @@ fn (p: mut &Parser) primary(): int {
     let k = p.toks[t].k
     if k == T_INT { return p.node(N_INT, w, p.toks[t].s, -1, -1, -1) }
     if k == T_CHAR { return p.node(N_CHAR, w, "", p.toks[t].v, -1, -1) }
-    if k == T_FRAC { return p.node(N_FRAC, w, p.toks[t].s, -1, -1, -1) }
+    if k == T_FRAC { return p.node(N_FRAC, w, p.toks[t].s, p.toks[t].v, -1, -1) }
     if k == T_STR { return p.node(N_STR, w, p.toks[t].s, -1, -1, -1) }
     if k == T_ID { return p.node(N_NAME, w, p.toks[t].s, -1, -1, -1) }
     let op = p.toks[t].op

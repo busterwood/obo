@@ -1,0 +1,5 @@
+// SPEC 2: a letter after the suffix of an integer literal is a lexing error.
+// error: bad literal 1mm: the suffix f (float) or m (Decimal) must end a number
+fn main() {
+    let x = 1mm
+}

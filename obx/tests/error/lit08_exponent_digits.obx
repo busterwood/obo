@@ -1,0 +1,5 @@
+// SPEC 2: an exponent needs digits, with or without a suffix.
+// error: an exponent needs digits
+fn main() {
+    let x = 1ef
+}

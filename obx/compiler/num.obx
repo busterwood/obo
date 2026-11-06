@@ -432,6 +432,16 @@ pub fn floatOfText(s: str): float {
     return f
 }
 
+// Whether the mantissa of the number text (before any exponent) has a digit other than 0.
+pub fn hasNonzeroDigit(s: str): bool {
+    for i in 0..len(s) {
+        let c = strByte(s, i)
+        if c == 'e' || c == 'E' { return false }
+        if c >= '1' && c <= '9' { return true }
+    }
+    return false
+}
+
 // Python's repr of a float: the shortest text that reads back as the same
 // value (std's float toStr finds those digits), written as Python does: fixed
 // notation with ".0" for an integral value from 1e-4 up to 1e16, otherwise

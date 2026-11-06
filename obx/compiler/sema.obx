@@ -1836,8 +1836,14 @@ pub fn (pg: mut &Program) fold(e: int, m: int, t0: int): CVal {
         }
         sx.N_CHAR { return cInt(T_BYTE, num.bigOf(n.a)) }
         sx.N_FRAC {
+            if n.a == 1 {    // an f literal is a float whatever the context
+                let x = num.floatOfText(n.s)
+                if x != x || x - x != x - x { pg.err(m, w, "float literal " + n.s + " is out of range (overflow)") }
+                if x == 0.0 && num.hasNonzeroDigit(n.s) { pg.err(m, w, "float literal " + n.s + " is out of range (underflows to zero)") }
+                return cFloat(T_FLOAT, x)
+            }
             let v = cText(-1, CK_FRAC, n.s)
-            return if t == T_FLOAT { pg.cto(v, t, m, w) } else { v }
+            return if t == T_FLOAT && n.a == 0 { pg.cto(v, t, m, w) } else { v }
         }
         sx.N_STR { return cText(T_STR, CK_STR, n.s) }
         sx.N_BOOL { return cBool(n.flags & sx.TRUE != 0) }
