@@ -1,0 +1,257 @@
+// oracle's call: OUT and IN OUT binds, REF CURSORs and implicit results
+// against a live Oracle Database ($ORACLE_TEST_DSN or ~/.obo-oracle-dsn;
+// exits 77, skipped, without one). The procedures, the function, the
+// package and the table it needs are made here and dropped at the end. The
+// cursor leak check reads V$MYSTAT (obx/tools/oracle_container.sh grants).
+// needs: ssl
+// expect: types: 308.625 | 12.50 | 12345678901234567890123456789012345678 | 1.5 | 0.1 | 'héllo wörld' | 'ünï' | 'ab   ' | deadbeef | 2026-11-06T01:00:00 | 2026-11-06T12:34:56.123456789 | 2026-11-06T12:00:00+05:30 | true
+// expect: column types: NUMBER BINARY_DOUBLE VARCHAR2 NVARCHAR2 CHAR RAW DATE TIMESTAMP TIMESTAMP WITH TIME ZONE BOOLEAN
+// expect: nulls: 13 of 13
+// expect: unassigned: null true | null in: 'was null'
+// expect: in out: 42 'hi!' | null in out: null true | nvarchar2: 'äö' | timestamp: 2026-11-07T08:00:00
+// expect: function: 42 | call: 8 'x!'
+// expect: too long: 6502 true
+// expect: in out too long: E_INPUT true
+// expect: cursor: 5000 rows sum 12502500 | columns N TXT
+// expect: several: 3 sets: 3 rows 'a', 0 rows, 2 rows 2 columns | outputs 1 column 7
+// expect: strong: 3 rows ID NAME | first 1 'one'
+// expect: never opened: E_INPUT true | REF CURSOR :c was not opened by the PL/SQL
+// expect: fails on fetch: 1476 | usable 1
+// expect: implicit: 2 sets: 1 rows, 3 rows 'x'
+// expect: query via call: 1 set 2 rows
+// expect: returning: id 1 v 'hello' | affected 1
+// expect: returning many: 3 rows ids 2 3 4 | affected 3
+// expect: inputs: no placeholder true | unknown type true | too many args true | no value true
+// expect: transaction rolled back: rows 4
+// expect: cursor leak: none
+// expect: open handles: 0
+
+import "oracle"
+import "sqldialect"
+import "time"
+import "io"
+import "os"
+import "crypto"
+
+type Value = sqldialect.Value
+type Param = oracle.Param
+type Results = oracle.Results
+
+fn dsn(): Option[str] {
+    match os.env("ORACLE_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-oracle-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn ldt(y: int, mo: int, d: int, h: int, mi: int, s: int, ns: int): time.LocalDateTime {
+    return time.localDateTime(time.Date{year: y, month: mo, day: d}, time.timeOfDay(h, mi, s, ns).unwrap())
+}
+
+fn isInput(r: Result[Results, oracle.Error]): bool {
+    match r {
+        Ok(_) { return false }
+        Err(e) { return e.code == sqldialect.E_INPUT }
+    }
+}
+
+fn code(r: Result[Results, oracle.Error]): int {
+    match r {
+        Ok(_) { return 0 }
+        Err(e) { return e.code }
+    }
+}
+
+fn openCursors(c: mut &oracle.Conn): int {
+    let r = c.query("SELECT m.value FROM v$mystat m JOIN v$statname n ON n.statistic# = m.statistic# " +
+                    "WHERE n.name = 'opened cursors current'", &[]).unwrap()
+    return r.int(0, 0).unwrap()
+}
+
+fn setup(c: mut &oracle.Conn) {
+    c.exec("CREATE TABLE obx_out_t (id NUMBER(10) PRIMARY KEY, name VARCHAR2(20))").unwrap()
+    c.run("INSERT INTO obx_out_t VALUES (1, 'one')", &[]).unwrap()
+    c.run("INSERT INTO obx_out_t VALUES (2, 'two')", &[]).unwrap()
+    c.run("INSERT INTO obx_out_t VALUES (3, 'three')", &[]).unwrap()
+    c.exec("CREATE OR REPLACE PROCEDURE obx_out_bump(x IN OUT NUMBER, s IN OUT VARCHAR2) AS " +
+           "BEGIN x := x + 1; s := s || '!'; END;").unwrap()
+    c.exec("CREATE OR REPLACE FUNCTION obx_out_twice(x NUMBER) RETURN NUMBER AS BEGIN RETURN x * 2; END;").unwrap()
+    c.exec("CREATE OR REPLACE FUNCTION obx_out_rows(n NUMBER) RETURN SYS_REFCURSOR AS c SYS_REFCURSOR; " +
+           "BEGIN OPEN c FOR SELECT level AS n, RPAD('x', 50, 'y') AS txt FROM dual CONNECT BY level <= n; RETURN c; END;").unwrap()
+    c.exec("CREATE OR REPLACE PACKAGE obx_out_pkg AS " +
+           "TYPE t_cur IS REF CURSOR RETURN obx_out_t%ROWTYPE; " +
+           "PROCEDURE strong(c OUT t_cur); " +
+           "PROCEDURE several(a OUT SYS_REFCURSOR, b OUT SYS_REFCURSOR, e OUT SYS_REFCURSOR, k OUT NUMBER); " +
+           "END;").unwrap()
+    c.exec("CREATE OR REPLACE PACKAGE BODY obx_out_pkg AS " +
+           "PROCEDURE strong(c OUT t_cur) AS BEGIN OPEN c FOR SELECT * FROM obx_out_t ORDER BY id; END; " +
+           "PROCEDURE several(a OUT SYS_REFCURSOR, b OUT SYS_REFCURSOR, e OUT SYS_REFCURSOR, k OUT NUMBER) AS BEGIN " +
+           "OPEN a FOR SELECT 'a' FROM dual CONNECT BY level <= 3; " +
+           "OPEN b FOR SELECT 1 FROM dual WHERE 1 = 0; " +
+           "OPEN e FOR SELECT id, name FROM obx_out_t WHERE id <= 2; " +
+           "k := 7; END; " +
+           "END;").unwrap()
+}
+
+fn teardown(c: mut &oracle.Conn) {
+    let a = c.exec("DROP PACKAGE obx_out_pkg")
+    let b = c.exec("DROP FUNCTION obx_out_rows")
+    let d = c.exec("DROP FUNCTION obx_out_twice")
+    let e = c.exec("DROP PROCEDURE obx_out_bump")
+    let f = c.exec("DROP TABLE obx_out_t PURGE")
+}
+
+fn types(c: mut &oracle.Conn) {
+    let outs = [oracle.out("n", "NUMBER"), oracle.out("n2", "NUMBER(10,2)"), oracle.out("big", "NUMBER"),
+                oracle.out("f", "BINARY_FLOAT"), oracle.out("d", "BINARY_DOUBLE"), oracle.out("v", "VARCHAR2(30)"),
+                oracle.out("nv", "NVARCHAR2(10)"), oracle.out("ch", "CHAR(5)"), oracle.out("r", "RAW(4)"),
+                oracle.out("dt", "DATE"), oracle.out("ts", "TIMESTAMP"), oracle.out("tz", "TIMESTAMP WITH TIME ZONE"),
+                oracle.out("b", "BOOLEAN")]
+    let r = c.call("DECLARE f BINARY_FLOAT := 1.5; BEGIN :n := :1 * 2.5; :n2 := 12.5; " +
+                   ":big := 12345678901234567890123456789012345678; :f := f; :d := 0.1d; " +
+                   ":v := 'héllo wörld'; :nv := N'ünï'; :ch := 'ab'; :r := HEXTORAW('DEADBEEF'); " +
+                   ":dt := DATE '2026-11-06' + 1/24; :ts := TIMESTAMP '2026-11-06 12:34:56.123456789'; " +
+                   ":tz := TIMESTAMP '2026-11-06 12:00:00 +05:30'; :b := TRUE; END;",
+                   &[Value.Dec(123.45m)], &outs).unwrap()
+    let o = &r.outputs
+    println("types: " + o.decimal(0, 0).unwrap().toStr() + " | " + o.decimal(0, 1).unwrap().toStr() + " | " +
+            o.decimal(0, 2).unwrap().toStr() + " | " + o.float(0, 3).unwrap().toStr() + " | " + o.float(0, 4).unwrap().toStr() +
+            " | '" + o.text(0, 5).unwrap() + "' | '" + o.text(0, 6).unwrap() + "' | '" + o.text(0, 7).unwrap() + "' | " +
+            crypto.hex(o.bytes(0, 8).unwrap()) + " | " + o.localDateTime(0, 9).unwrap().toStr() + " | " +
+            o.localDateTime(0, 10).unwrap().toStr() + " | " + o.offsetDateTime(0, 11).unwrap().toStr() + " | " +
+            o.bool(0, 12).unwrap().toStr())
+    var names = ""
+    for k in [0, 4, 5, 6, 7, 8, 9, 10, 11, 12] { names = names + " " + o.columnTypeName(k).unwrap() }
+    println("column types:" + names)
+    // every one NULL
+    let z = c.call("BEGIN :n := NULL; :n2 := NULL; :big := NULL; :f := NULL; :d := NULL; :v := NULL; :nv := NULL; " +
+                   ":ch := NULL; :r := NULL; :dt := NULL; :ts := NULL; :tz := NULL; :b := NULL; END;", &[], &outs).unwrap()
+    var nulls = 0
+    for k in 0..z.outputs.columnCount() { if z.outputs.isNull(0, k).unwrap() { nulls += 1 } }
+    println("nulls: " + nulls.toStr() + " of " + z.outputs.columnCount().toStr())
+}
+
+fn main() {
+    let d = dsn()
+    if d.isNone() {
+        println("no test DSN: skipped")
+        exit(77)
+    }
+    var c = oracle.connect(d.unwrap()).unwrap()
+    teardown(mut &c)
+    setup(mut &c)
+
+    types(mut &c)
+
+    let u = c.call("BEGIN IF :1 = 0 THEN :x := 1; END IF; END;", &[Value.Int(1)], &[oracle.out("x", "NUMBER")]).unwrap()
+    let ni = c.call("BEGIN :r := NVL(:1, 'was null'); END;", &[Value.Null], &[oracle.out("r", "VARCHAR2(20)")]).unwrap()
+    println("unassigned: null " + u.outputs.isNull(0, 0).unwrap().toStr() + " | null in: '" + ni.outputs.text(0, 0).unwrap() + "'")
+
+    let io1 = c.call("BEGIN obx_out_bump(:x, :s); END;", &[],
+                     &[oracle.inOut("x", "NUMBER", Param.Of(Value.Int(41))), oracle.inOut("s", "VARCHAR2(10)", Param.Of(Value.Text("hi")))]).unwrap()
+    let io2 = c.call("BEGIN obx_out_bump(:x, :s); END;", &[],
+                     &[oracle.inOut("x", "NUMBER", Param.Of(Value.Null)), oracle.inOut("s", "VARCHAR2(10)", Param.Of(Value.Text("a")))]).unwrap()
+    let io3 = c.call("BEGIN :s := :s || N'ö'; END;", &[], &[oracle.inOut("s", "NVARCHAR2(10)", Param.Of(Value.Text("ä")))]).unwrap()
+    let io4 = c.call("BEGIN :t := :t + INTERVAL '1' DAY; END;", &[],
+                     &[oracle.inOut("t", "TIMESTAMP", Param.DateTime(ldt(2026, 11, 6, 8, 0, 0, 0)))]).unwrap()
+    println("in out: " + io1.outputs.int(0, 0).unwrap().toStr() + " '" + io1.outputs.text(0, 1).unwrap() + "' | null in out: null " +
+            io2.outputs.isNull(0, 0).unwrap().toStr() + " | nvarchar2: '" + io3.outputs.text(0, 0).unwrap() + "' | timestamp: " +
+            io4.outputs.localDateTime(0, 0).unwrap().toStr())
+
+    let fr = c.call("BEGIN :r := obx_out_twice(:1); END;", &[Value.Int(21)], &[oracle.out("r", "NUMBER")]).unwrap()
+    let cl = c.call("CALL obx_out_bump(:x, :s)", &[],
+                    &[oracle.inOut("x", "NUMBER", Param.Of(Value.Int(7))), oracle.inOut("s", "VARCHAR2(10)", Param.Of(Value.Text("x")))]).unwrap()
+    println("function: " + fr.outputs.int(0, 0).unwrap().toStr() + " | call: " + cl.outputs.int(0, 0).unwrap().toStr() + " '" +
+            cl.outputs.text(0, 1).unwrap() + "'")
+
+    let tl = c.call("BEGIN :r := 'abcdefghijk'; END;", &[], &[oracle.out("r", "VARCHAR2(5)")])
+    println("too long: " + code(tl).toStr() + " " + c.idle().toStr())
+    println("in out too long: E_INPUT " + isInput(c.call("BEGIN :s := :s; END;", &[],
+                                                         &[oracle.inOut("s", "VARCHAR2(3)", Param.Of(Value.Text("abcdef")))])).toStr())
+
+    // REF CURSORs
+    let rc = c.call("BEGIN :c := obx_out_rows(:1); END;", &[Value.Int(5000)], &[oracle.out("c", "SYS_REFCURSOR")]).unwrap()
+    var sum = 0
+    let set = &rc.sets[0]
+    for i in 0..set.rowCount() { sum += set.int(i, 0).unwrap() }
+    println("cursor: " + set.rowCount().toStr() + " rows sum " + sum.toStr() + " | columns " + set.columnName(0).unwrap() + " " +
+            set.columnName(1).unwrap())
+    let sv = c.call("BEGIN obx_out_pkg.several(:a, :b, :e, :k); END;", &[],
+                    &[oracle.out("a", "SYS_REFCURSOR"), oracle.out("b", "REF CURSOR"), oracle.out("e", "SYS_REFCURSOR"),
+                      oracle.out("k", "NUMBER")]).unwrap()
+    println("several: " + len(sv.sets).toStr() + " sets: " + sv.sets[0].rowCount().toStr() + " rows '" + sv.sets[0].text(0, 0).unwrap() +
+            "', " + sv.sets[1].rowCount().toStr() + " rows, " + sv.sets[2].rowCount().toStr() + " rows " +
+            sv.sets[2].columnCount().toStr() + " columns | outputs " + sv.outputs.columnCount().toStr() + " column " +
+            sv.outputs.int(0, 0).unwrap().toStr())
+    let st = c.call("BEGIN obx_out_pkg.strong(:c); END;", &[], &[oracle.out("c", "SYS_REFCURSOR")]).unwrap()
+    println("strong: " + st.sets[0].rowCount().toStr() + " rows " + st.sets[0].columnName(0).unwrap() + " " +
+            st.sets[0].columnName(1).unwrap() + " | first " + st.sets[0].int(0, 0).unwrap().toStr() + " '" + st.sets[0].text(0, 1).unwrap() + "'")
+    match c.call("DECLARE x SYS_REFCURSOR; BEGIN :c := x; END;", &[], &[oracle.out("c", "SYS_REFCURSOR")]) {
+        Ok(_) { println("never opened: ok?") }
+        Err(e) { println("never opened: E_INPUT " + (e.code == sqldialect.E_INPUT).toStr() + " | " + e.msg) }
+    }
+    let ff = c.call("BEGIN OPEN :c FOR SELECT 1 / (level - 3) FROM dual CONNECT BY level <= 5; END;", &[],
+                    &[oracle.out("c", "SYS_REFCURSOR")])
+    println("fails on fetch: " + code(ff).toStr() + " | usable " + c.query("SELECT 1 FROM dual", &[]).unwrap().int(0, 0).unwrap().toStr())
+    let im = c.call("DECLARE a SYS_REFCURSOR; b SYS_REFCURSOR; BEGIN OPEN a FOR SELECT 1 FROM dual; DBMS_SQL.RETURN_RESULT(a); " +
+                    "OPEN b FOR SELECT 'x' FROM dual CONNECT BY level <= 3; DBMS_SQL.RETURN_RESULT(b); END;", &[], &[]).unwrap()
+    println("implicit: " + len(im.sets).toStr() + " sets: " + im.sets[0].rowCount().toStr() + " rows, " + im.sets[1].rowCount().toStr() +
+            " rows '" + im.sets[1].text(0, 0).unwrap() + "'")
+    let q = c.call("SELECT id FROM obx_out_t WHERE id > :1", &[Value.Int(1)], &[]).unwrap()
+    println("query via call: " + len(q.sets).toStr() + " set " + q.sets[0].rowCount().toStr() + " rows")
+
+    // DML RETURNING ... INTO
+    c.exec("CREATE TABLE obx_out_r (id NUMBER GENERATED ALWAYS AS IDENTITY, v VARCHAR2(20))").unwrap()
+    let rt = c.call("INSERT INTO obx_out_r (v) VALUES (:1) RETURNING id, v INTO :id, :v", &[Value.Text("hello")],
+                    &[oracle.out("id", "NUMBER"), oracle.out("v", "VARCHAR2(20)")]).unwrap()
+    println("returning: id " + rt.outputs.int(0, 0).unwrap().toStr() + " v '" + rt.outputs.text(0, 1).unwrap() + "' | affected " +
+            rt.affected.toStr())
+    c.run("INSERT INTO obx_out_r (v) SELECT 'r' || level FROM dual CONNECT BY level <= 3", &[]).unwrap()
+    let rm = c.call("UPDATE obx_out_r SET v = v || '!' WHERE v LIKE 'r%' RETURNING id INTO :id", &[], &[oracle.out("id", "NUMBER")]).unwrap()
+    var ids = ""
+    for i in 0..rm.outputs.rowCount() { ids = ids + " " + rm.outputs.int(i, 0).unwrap().toStr() }
+    println("returning many: " + rm.outputs.rowCount().toStr() + " rows ids" + ids + " | affected " + rm.affected.toStr())
+
+    // inputs call refuses before the server
+    let a1 = isInput(c.call("BEGIN NULL; END;", &[], &[oracle.out("x", "NUMBER")]))
+    let a2 = isInput(c.call("BEGIN :x := 1; END;", &[], &[oracle.out("x", "XMLTYPE")]))
+    let a3 = isInput(c.call("BEGIN :x := 1; END;", &[Value.Int(1)], &[oracle.out("x", "NUMBER")]))
+    let a4 = isInput(c.call("BEGIN :x := :1; END;", &[], &[oracle.out("x", "NUMBER")]))
+    println("inputs: no placeholder " + a1.toStr() + " | unknown type " + a2.toStr() + " | too many args " + a3.toStr() +
+            " | no value " + a4.toStr())
+
+    // inside a transaction: nothing is committed until the body returns Ok
+    let t = c.transaction(fn(k: mut &oracle.Conn): Result[int, oracle.Error] {
+        let r = try k.call("INSERT INTO obx_out_r (v) VALUES ('t') RETURNING id INTO :id", &[], &[oracle.out("id", "NUMBER")])
+        return Err(sqldialect.inputError("roll it back"))
+    })
+    println("transaction rolled back: rows " + c.query("SELECT COUNT(*) FROM obx_out_r", &[]).unwrap().int(0, 0).unwrap().toStr())
+    c.exec("DROP TABLE obx_out_r PURGE").unwrap()
+
+    // no cursor stays open: many calls with cursors, failures and implicit
+    // results. The count is taken after the first round: PL/SQL keeps the
+    // cursors of its own static SQL open for reuse.
+    var before = 0
+    for i in 0..21 {
+        if i == 1 { before = openCursors(mut &c) }
+        let x1 = c.call("BEGIN :c := obx_out_rows(3); END;", &[], &[oracle.out("c", "SYS_REFCURSOR")])
+        let x2 = c.call("BEGIN obx_out_pkg.several(:a, :b, :e, :k); END;", &[],
+                        &[oracle.out("a", "SYS_REFCURSOR"), oracle.out("b", "SYS_REFCURSOR"), oracle.out("e", "SYS_REFCURSOR"),
+                          oracle.out("k", "NUMBER")])
+        let x3 = c.call("BEGIN OPEN :c FOR SELECT 1 / 0 FROM dual; END;", &[], &[oracle.out("c", "SYS_REFCURSOR")])
+        let x4 = c.call("DECLARE x SYS_REFCURSOR; BEGIN :c := x; END;", &[], &[oracle.out("c", "SYS_REFCURSOR")])
+        let x5 = c.call("DECLARE a SYS_REFCURSOR; BEGIN OPEN a FOR SELECT 1 FROM dual; DBMS_SQL.RETURN_RESULT(a); END;", &[], &[])
+    }
+    let after = openCursors(mut &c)
+    println("cursor leak: " + if after <= before { "none" } else { (after - before).toStr() + " cursors" })
+
+    teardown(mut &c)
+    c.logoff()
+    c.close()
+    println("open handles: " + oracle.openHandles().toStr())
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: obx/tools/oracle_container.sh create|tls|start|stop|status|logs|rm
+# usage: obx/tools/oracle_container.sh create|grants|tls|start|stop|status|logs|rm
 #
 # The Oracle Database Free container for the live `oracle` tests (design/oracle.md):
 # rootless podman, image docker.io/gvenzl/oracle-free:slim, named obx-oracle, ports 1521
@@ -55,7 +55,20 @@ case "${1:-}" in
     printf 'User Id=system;Password=%s;Data Source=localhost:1521/FREEPDB1\n' "$sys" > "$DSN_FILE.system"
     chmod 600 "$DSN_FILE.system"
     echo "created $NAME; test DSN in $DSN_FILE"
-    wait_ready && "$0" tls
+    wait_ready && "$0" grants && "$0" tls
+    ;;
+  grants)
+    # Read access for APP to its session's statistics and open cursors, which
+    # oracle_live_out checks for cursor leaks. No password: sqlplus / as sysdba.
+    $P exec -i $NAME bash -c 'sqlplus -s / as sysdba' <<'EOF' >/dev/null || exit 1
+whenever sqlerror exit failure
+alter session set container = FREEPDB1;
+grant select on sys.v_$mystat to app;
+grant select on sys.v_$statname to app;
+grant select on sys.v_$open_cursor to app;
+exit
+EOF
+    echo "granted APP the session views"
     ;;
   tls)
     # A self-signed certificate for CN=localhost in an auto-login wallet, and a TCPS

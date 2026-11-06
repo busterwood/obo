@@ -17,9 +17,14 @@
 //   - the login: the Protocol and DataTypes messages, and the two
 //     authentication phases with the 12c (PBKDF2-SHA512) and 11g (SHA-1)
 //     verifiers (crypto.obx does the arithmetic through libcrypto).
-//   - requests: EXECUTE with binds and a prefetch, FETCH, COMMIT, ROLLBACK,
+//   - requests: EXECUTE with binds (IN, OUT and IN OUT, RETURNING ... INTO)
+//     and a prefetch, EXECUTE with FETCH alone for a returned cursor, FETCH,
+//     FLUSH_OUT_BINDS, COMMIT, ROLLBACK,
 //     LOGOFF, and closing cursors by a piggyback in front of the next one.
-//   - replies: DESCRIBE_INFO, ROW_HEADER, BIT_VECTOR, ROW_DATA, ERROR,
+//   - the bind placeholders of a statement (python-oracledb's StatementParser).
+//   - replies: DESCRIBE_INFO, ROW_HEADER, BIT_VECTOR, ROW_DATA (rows, or OUT
+//     values with REF CURSORs as a describe and a cursor id), IO_VECTOR,
+//     IMPLICIT_RESULTSET, ERROR,
 //     STATUS, WARNING, PARAMETER, SERVER_SIDE_PIGGYBACK, END_OF_RESPONSE.
 //
 // The decoder never traps on what the server sends: every length and count
@@ -135,6 +140,7 @@ pub const T_BOOLEAN = 252
 
 pub const CS_IMPLICIT = 1
 pub const CS_NCHAR = 2
+const BIND_DIR_INPUT = 32                // an IO vector's IN; 16 OUT, 48 IN OUT
 pub const CHARSET_UTF8 = 873
 pub const CHARSET_UTF16 = 2000
 
@@ -800,6 +806,7 @@ pub type Cell = value closed {
     Stamp(Stamp)      // DATE, TIMESTAMP, TIMESTAMP WITH [LOCAL] TIME ZONE
     Bool(bool)        // BOOLEAN
     Failed(str)       // a value that could not be decoded, and why
+    Cursor(int)       // a REF CURSOR OUT value: its index in Reply.cursors
 }
 
 // ---------------------------------------------------------------- replies
@@ -825,6 +832,14 @@ pub type ProtocolInfo = value record {
     pub runtimeCaps: str
 }
 
+// A cursor the server opened for the client: a REF CURSOR OUT value or an
+// implicit result. Its rows are fetched with Session.fetchRef; id 0: the
+// PL/SQL never opened it.
+pub type RefCursor = record {
+    pub columns: []Column
+    pub id: int
+}
+
 // What a reply says. kind tells PARAMETER messages apart (the
 // authentication pairs, or an execute's return parameters).
 pub type Reply = record {
@@ -841,6 +856,14 @@ pub type Reply = record {
     pub eor: bool           // the reply ends with END_OF_RESPONSE (not at ERROR or STATUS)
     pub fast: bool          // a fast authentication's reply: PROTOCOL and DATA_TYPES do not end it
     last: []Cell            // the previous row, for BIT_VECTOR's repeated columns
+    pub binds: []Column     // the execute's binds, as columns: how OUT values are decoded
+    pub outIndex: []int     // the binds that are OUT or IN OUT (from IO_VECTOR), or RETURNING binds
+    pub outMode: bool       // ROW_DATA carries OUT values, not rows
+    pub returning: bool     // DML RETURNING: each OUT value is a count and that many values
+    pub outs: [][]Cell      // the OUT values: outs[k] for bind outIndex[k]
+    pub cursors: []RefCursor    // REF CURSOR OUT values: Cell.Cursor(i) is cursors[i]
+    pub implicit: []RefCursor   // DBMS_SQL.RETURN_RESULT cursors, in order
+    pub flush: bool         // FLUSH_OUT_BINDS: the OUT values follow after a FLUSH_OUT_BINDS request
     bitvec: str             // "" when the next row has every column
     done: bool
 }
@@ -859,7 +882,8 @@ pub fn newReply(kind: int, columns: &[]Column, last: &[]Cell): Reply {
                  error: ErrorInfo{num: 0, msg: "", pos: 0, cursorId: 0, rowCount: 0, callStatus: 0}, params: [],
                  warnings: [], callStatus: 0,
                  protocol: ProtocolInfo{banner: "", charset: 0, ncharset: 0, compileCaps: "", runtimeCaps: ""},
-                 eor: false, fast: false, last: prev, bitvec: "", done: false}
+                 eor: false, fast: false, binds: [], outIndex: [], outMode: false, returning: false, outs: [], cursors: [],
+                 implicit: [], flush: false, last: prev, bitvec: "", done: false}
 }
 
 // The last row decoded (BIT_VECTOR repeats columns from it).
@@ -902,7 +926,23 @@ pub fn decodeMessage(c: mut &Cur, r: mut &Reply, fv: int): Result[Unit, Error] {
             r.done = !r.eor
         }
         MT_END_OF_RESPONSE { r.done = true }
-        MT_FLUSH_OUT_BINDS { r.done = true }
+        MT_FLUSH_OUT_BINDS {
+            r.flush = true
+            r.done = true
+        }
+        MT_IMPLICIT_RESULTSET {
+            let n = try c.ub4("implicit results")
+            if n > 10000 { return Err(proto(n.toStr() + " implicit results")) }
+            var found: []RefCursor = []
+            for i in 0..n {
+                let k = try c.u8("implicit result")
+                try c.skip(k, "implicit result")
+                let cols = try describeInfo(c, fv)
+                let id = try c.ub2("implicit result")
+                append(mut &found, RefCursor{columns: cols, id: id})
+            }
+            for i in 0..len(found) { append(mut &r.implicit, replace(mut &found[i], RefCursor{columns: [], id: 0})) }
+        }
         MT_WARNING {
             let num = try c.ub2("warning")
             let n = try c.ub2("warning")
@@ -965,6 +1005,22 @@ pub fn decodeMessage(c: mut &Cur, r: mut &Reply, fv: int): Result[Unit, Error] {
             r.bitvec = try c.take(n, "bit vector")
         }
         MT_ROW_DATA {
+            if r.outMode && !r.described {
+                // OUT values, in the order of outIndex
+                var outs: [][]Cell = []
+                var found: []RefCursor = []
+                for k in r.outIndex {
+                    if k < 0 || k >= len(r.binds) { return Err(proto("an OUT value for bind " + k.toStr())) }
+                    let col = r.binds[k]
+                    let n = if r.returning { try c.ub4("RETURNING values") } else { 1 }
+                    var vals: []Cell = []
+                    for j in 0..n { append(mut &vals, try outValue(c, &col, fv, mut &found, len(r.cursors))) }
+                    append(mut &outs, vals)
+                }
+                r.outs = outs
+                for i in 0..len(found) { append(mut &r.cursors, replace(mut &found[i], RefCursor{columns: [], id: 0})) }
+                return Ok(Unit{})
+            }
             let row = try rowData(c, r)
             r.last = []
             for x in row { append(mut &r.last, x) }
@@ -981,10 +1037,14 @@ pub fn decodeMessage(c: mut &Cur, r: mut &Reply, fv: int): Result[Unit, Error] {
             try c.skip(a, "IO vector")
             let b = try c.ub2("IO vector")
             try c.skip(b, "IO vector")
+            if binds != len(r.binds) { return Err(proto("an IO vector of " + binds.toStr() + " binds for " + len(r.binds).toStr())) }
+            var outIdx: []int = []
             for i in 0..binds {
                 let dir = try c.u8("IO vector")
-                if dir != 32 { return Err(typeErr("PL/SQL OUT and IN OUT binds are not supported yet")) }
+                if dir != BIND_DIR_INPUT { append(mut &outIdx, i) }
             }
+            r.outIndex = outIdx
+            r.outMode = true
         }
         else {
             return Err(proto("message type " + mt.toStr() + " is not supported"))
@@ -1235,6 +1295,40 @@ fn columnValue(c: mut &Cur, col: &Column): Result[Cell, Error] {
     }
 }
 
+// An OUT value of a bind (python-oracledb's _process_column_data outside a
+// fetch): the value, then its actual length, which is not 0 when the
+// server cut it to the buffer (a Failed cell, never a shortened value).
+// A REF CURSOR is its describe and cursor id, kept in found.
+fn outValue(c: mut &Cur, col: &Column, fv: int, found: mut &[]RefCursor, base: int): Result[Cell, Error] {
+    let t = col.oraType
+    var cell = Cell.Null
+    if t == T_CURSOR {
+        try c.skip(1, "REF CURSOR")
+        let cols = try describeInfo(c, fv)
+        let id = try c.ub2("REF CURSOR")
+        append(found, RefCursor{columns: cols, id: id})
+        cell = Cell.Cursor(base + len(found) - 1)
+    } else if t == T_CLOB || t == T_BLOB || t == T_BFILE || t == T_JSON || t == T_VECTOR || t == T_OBJECT {
+        return Err(typeErr(col.typeName() + " OUT binds are not supported yet"))
+    } else {
+        match try c.bytes("OUT bind " + col.name) {
+            None { }
+            Some(b) { cell = cellOf(col, b) }
+        }
+    }
+    let actual = try c.ub4("OUT bind")
+    if actual < 0 && t == T_BOOLEAN { return Ok(Cell.Null) }
+    match cell {
+        Cell.Null { }
+        else {
+            if actual != 0 {
+                return Ok(Cell.Failed("the value was cut to the bind's buffer (" + actual.toStr() + " bytes long)"))
+            }
+        }
+    }
+    return Ok(cell)
+}
+
 fn cellOf(col: &Column, b: str): Cell {
     let t = col.oraType
     if t == T_VARCHAR || t == T_CHAR || t == T_LONG {
@@ -1317,6 +1411,120 @@ pub fn statementKind(sql: str): int {
     return S_OTHER
 }
 
+// A bind placeholder of a statement: its name (upper case unless quoted;
+// "1" for :1) and whether it follows RETURNING ... INTO in DML.
+pub type Placeholder = value record { pub name: str; pub returning: bool }
+
+fn isAlpha(c: byte): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80 }
+fn isDigit(c: byte): bool { return c >= '0' && c <= '9' }
+fn isBlank(c: byte): bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == byte(12) || c == byte(11) }
+
+// The end of the string, quoted name or comment at i (the index of its
+// last byte), or i itself when there is none.
+fn skipQuoted(sql: str, i: int, prev: byte): int {
+    let n = len(sql)
+    let ch = sql[i]
+    if ch == '\'' && (prev == 'q' || prev == 'Q') && i + 1 < n {
+        // q'<sep>...<sep>'
+        let open = sql[i + 1]
+        let close = if open == '[' { ']' } else if open == '{' { '}' } else if open == '<' { '>' } else if open == '(' { ')' } else { open }
+        var j = i + 2
+        while j + 1 < n && !(sql[j] == close && sql[j + 1] == '\'') { j += 1 }
+        return min(j + 1, n - 1)
+    }
+    if ch == '\'' || ch == '"' {
+        var j = i + 1
+        while j < n && sql[j] != ch { j += 1 }
+        return min(j, n - 1)
+    }
+    if ch == '-' && i + 1 < n && sql[i + 1] == '-' {
+        var j = i
+        while j < n && sql[j] != '\n' { j += 1 }
+        return min(j, n - 1)
+    }
+    if ch == '/' && i + 1 < n && sql[i + 1] == '*' {
+        var j = i + 2
+        while j + 1 < n && !(sql[j] == '*' && sql[j + 1] == '/') { j += 1 }
+        return min(j + 1, n - 1)
+    }
+    return i
+}
+
+// The bind placeholders of sql in the order the server binds them: each
+// occurrence in SQL, each name once in PL/SQL. Strings, q'[...]' strings,
+// quoted identifiers and comments are skipped; a colon right after a string
+// is JSON syntax, not a bind. (python-oracledb's StatementParser.)
+pub fn placeholders(sql: str): []Placeholder {
+    let kind = statementKind(sql)
+    var out: []Placeholder = []
+    var returningSeen = false
+    var returning = false
+    var lastWasString = false
+    var lastWasAlpha = false
+    var alphaStart = 0
+    var prev: byte = 0
+    var i = 0
+    let n = len(sql)
+    while i < n {
+        let start = i
+        let ch = sql[i]
+        let alpha = isAlpha(ch)
+        if alpha && !lastWasAlpha {
+            alphaStart = i
+        } else if !alpha && lastWasAlpha && kind == S_DML {
+            let w = strings.toUpper(sql[alphaStart..i])
+            if !returningSeen && w == "RETURNING" {
+                returningSeen = true
+            } else if returningSeen && w == "INTO" {
+                returning = true
+            }
+        }
+        if ch == '\'' {
+            lastWasString = true
+            i = skipQuoted(sql, i, prev)
+        } else if !isBlank(ch) {
+            if ch == ':' && !lastWasString {
+                var j = i + 1
+                while j < n && isBlank(sql[j]) { j += 1 }
+                var name = ""
+                var found = true
+                if j < n && sql[j] == '"' {
+                    var k = j + 1
+                    while k < n && sql[k] != '"' { k += 1 }
+                    name = sql[j + 1..min(k, n)]
+                    i = min(k, n - 1)
+                } else if j < n && isDigit(sql[j]) {
+                    var k = j
+                    while k < n && isDigit(sql[k]) { k += 1 }
+                    name = sql[j..k]
+                    i = k - 1
+                } else if j < n && isAlpha(sql[j]) {
+                    var k = j
+                    while k < n && (isAlpha(sql[k]) || isDigit(sql[k]) || sql[k] == '_' || sql[k] == '$' || sql[k] == '#') { k += 1 }
+                    name = strings.toUpper(sql[j..k])
+                    i = k - 1
+                } else {
+                    found = false
+                }
+                if found {
+                    var dup = false
+                    if kind == S_PLSQL {
+                        for p in out { if p.name == name { dup = true } }
+                    }
+                    if !dup { append(mut &out, Placeholder{name: name, returning: returning}) }
+                }
+            } else {
+                i = skipQuoted(sql, i, prev)
+            }
+            lastWasString = false
+        }
+        lastWasAlpha = alpha && i == start
+        prev = ch
+        i += 1
+    }
+    return out
+}
+
 // ---------------------------------------------------------------- requests
 
 // A bind value, ready to send: its type, its buffer size and its bytes
@@ -1326,44 +1534,61 @@ pub type Bind = value record {
     pub csfrm: int
     pub bufferSize: int
     pub data: Option[str]
+    pub returning: bool         // after RETURNING ... INTO in DML: no value is sent, values come back
 }
 
-pub fn nullBind(): Bind { return Bind{oraType: T_VARCHAR, csfrm: CS_IMPLICIT, bufferSize: 1, data: None} }
+pub fn nullBind(): Bind { return Bind{oraType: T_VARCHAR, csfrm: CS_IMPLICIT, bufferSize: 1, data: None, returning: false} }
 
 // Text as VARCHAR2 (LONG beyond maxString bytes).
 pub fn textBind(s: str, maxString: int): Result[Bind, Error] {
     if !strings.isValidUtf8(s) { return Err(sqldialect.inputError("text with invalid UTF-8")) }
     let t = if len(s) > maxString { T_LONG } else { T_VARCHAR }
-    return Ok(Bind{oraType: t, csfrm: CS_IMPLICIT, bufferSize: max(len(s), 1), data: Some(s)})
+    return Ok(Bind{oraType: t, csfrm: CS_IMPLICIT, bufferSize: max(len(s), 1), data: Some(s), returning: false})
 }
 
 // Bytes as RAW (LONG RAW beyond maxString bytes).
 pub fn bytesBind(b: str, maxString: int): Bind {
     let t = if len(b) > maxString { T_LONG_RAW } else { T_RAW }
-    return Bind{oraType: t, csfrm: 0, bufferSize: max(len(b), 1), data: Some(b)}
+    return Bind{oraType: t, csfrm: 0, bufferSize: max(len(b), 1), data: Some(b), returning: false}
 }
 
 pub fn numberBind(n: &Num): Result[Bind, Error] {
-    return Ok(Bind{oraType: T_NUMBER, csfrm: 0, bufferSize: 22, data: Some(try encodeNumber(n))})
+    return Ok(Bind{oraType: T_NUMBER, csfrm: 0, bufferSize: 22, data: Some(try encodeNumber(n)), returning: false})
 }
 
-pub fn doubleBind(f: float): Bind { return Bind{oraType: T_BINARY_DOUBLE, csfrm: 0, bufferSize: 8, data: Some(encodeDouble(f))} }
+pub fn doubleBind(f: float): Bind { return Bind{oraType: T_BINARY_DOUBLE, csfrm: 0, bufferSize: 8, data: Some(encodeDouble(f)), returning: false} }
 
 pub fn boolBind(v: bool): Bind {
-    return Bind{oraType: T_BOOLEAN, csfrm: 0, bufferSize: 4, data: Some(if v { "\x01\x01" } else { "\x00" })}
+    return Bind{oraType: T_BOOLEAN, csfrm: 0, bufferSize: 4, data: Some(if v { "\x01\x01" } else { "\x00" }), returning: false}
 }
 
 pub fn dateBind(l: &time.LocalDateTime): Bind {
-    return Bind{oraType: T_DATE, csfrm: 0, bufferSize: 7, data: Some(encodeDate(l))}
+    return Bind{oraType: T_DATE, csfrm: 0, bufferSize: 7, data: Some(encodeDate(l)), returning: false}
 }
 
 pub fn timestampBind(l: &time.LocalDateTime): Bind {
-    return Bind{oraType: T_TIMESTAMP, csfrm: 0, bufferSize: 11, data: Some(encodeTimestamp(l))}
+    return Bind{oraType: T_TIMESTAMP, csfrm: 0, bufferSize: 11, data: Some(encodeTimestamp(l)), returning: false}
 }
 
 pub fn timestampTzBind(o: &time.OffsetDateTime): Bind {
-    return Bind{oraType: T_TIMESTAMP_TZ, csfrm: 0, bufferSize: 13, data: Some(encodeTimestampTz(o))}
+    return Bind{oraType: T_TIMESTAMP_TZ, csfrm: 0, bufferSize: 13, data: Some(encodeTimestampTz(o)), returning: false}
 }
+
+// Text as NVARCHAR2 or NCHAR (UTF-16BE, the national character set).
+pub fn ncharBind(s: str, oraType: int): Result[Bind, Error] {
+    let b = try toUtf16be(s)
+    return Ok(Bind{oraType: oraType, csfrm: CS_NCHAR, bufferSize: max(len(b), 2), data: Some(b), returning: false})
+}
+
+// An OUT bind (sent as NULL) of a type, its csfrm (CS_IMPLICIT or
+// CS_NCHAR for text, else 0) and its buffer in bytes: what the server may
+// put there (a longer value is the server's ORA-06502).
+pub fn outBind(oraType: int, csfrm: int, bufferSize: int): Bind {
+    return Bind{oraType: oraType, csfrm: csfrm, bufferSize: bufferSize, data: None, returning: false}
+}
+
+// A REF CURSOR OUT bind.
+pub fn cursorBind(): Bind { return Bind{oraType: T_CURSOR, csfrm: 0, bufferSize: 4, data: None, returning: false} }
 
 // An execute: the SQL (with cursor 0: parse it), its binds, the rows to
 // prefetch for a query, and whether to commit after it.
@@ -1374,6 +1599,12 @@ pub type Execute = record {
     pub binds: []Bind
     pub prefetch: int
     pub commit: bool
+    pub fetchOnly: bool         // a REF CURSOR's next rows: FETCH alone on cursorId (no SQL)
+}
+
+// An Execute of sql with binds; no cursor, no fetch-only.
+pub fn newExecute(sql: str, kind: int, binds: []Bind, prefetch: int, commit: bool): Execute {
+    return Execute{sql: sql, kind: kind, cursorId: 0, binds: binds, prefetch: prefetch, commit: commit, fetchOnly: false}
 }
 
 fn longBind(b: &Bind, maxString: int): bool { return b.bufferSize > maxString || b.oraType == T_LONG || b.oraType == T_LONG_RAW }
@@ -1384,6 +1615,9 @@ fn putBindValue(m: mut &[]byte, b: &Bind) {
             if b.oraType == T_BOOLEAN {
                 put8(m, 253)
                 put8(m, 1)
+            } else if b.oraType == T_CURSOR {
+                put8(m, 1)
+                put8(m, 0)
             } else {
                 put8(m, 0)
             }
@@ -1393,15 +1627,15 @@ fn putBindValue(m: mut &[]byte, b: &Bind) {
 }
 
 pub fn executeBody(m: mut &[]byte, e: &Execute, fv: int, maxString: int) {
-    let parse = e.cursorId == 0 || e.kind == S_DDL
-    let query = e.kind == S_QUERY
-    let nb = len(e.binds)
-    var options = 0x20                                  // EXECUTE
+    let parse = !e.fetchOnly && (e.cursorId == 0 || e.kind == S_DDL)
+    let query = e.kind == S_QUERY || e.fetchOnly
+    let nb = if e.fetchOnly { 0 } else { len(e.binds) }
+    var options = if e.fetchOnly { 0 } else { 0x20 }    // EXECUTE
     if parse { options = options | 0x01 }
     if query && e.prefetch > 0 { options = options | 0x40 }
-    if e.kind != S_PLSQL { options = options | 0x8000 } else if nb > 0 { options = options | 0x400 }
+    if e.kind != S_PLSQL || e.fetchOnly { options = options | 0x8000 } else if nb > 0 { options = options | 0x400 }
     if nb > 0 { options = options | 0x08 }
-    if e.commit { options = options | 0x100 }
+    if e.commit && !e.fetchOnly { options = options | 0x100 }
     putUb(m, options)
     putUb(m, e.cursorId)
     if parse {
@@ -1455,7 +1689,7 @@ pub fn executeBody(m: mut &[]byte, e: &Execute, fv: int, maxString: int) {
     for i in 0..5 { putUb(m, 0) }
     putUb(m, if query { 1 } else { 0 })
     putUb(m, 0)
-    putUb(m, 0x8000)                                    // IMPLICIT_RESULTSET, as python-oracledb sends
+    putUb(m, if e.fetchOnly { 0 } else { 0x8000 })      // IMPLICIT_RESULTSET, as python-oracledb sends
     putUb(m, 0)
     putUb(m, 0)
     putUb(m, 0)
@@ -1475,14 +1709,17 @@ pub fn executeBody(m: mut &[]byte, e: &Execute, fv: int, maxString: int) {
         putUb(m, 0)
         if fv >= FV_12_2 { putUb(m, 0) }
     }
+    var values = false
+    for b in e.binds { if !b.returning { values = true } }
+    if !values { return }
     put8(m, MT_ROW_DATA)
     let plsql = e.kind == S_PLSQL
     for b in e.binds {
-        if plsql || !longBind(&b, maxString) { putBindValue(m, &b) }
+        if !b.returning && (plsql || !longBind(&b, maxString)) { putBindValue(m, &b) }
     }
     if !plsql {
         for b in e.binds {
-            if longBind(&b, maxString) { putBindValue(m, &b) }
+            if !b.returning && longBind(&b, maxString) { putBindValue(m, &b) }
         }
     }
 }
@@ -2353,6 +2590,39 @@ pub fn (s: mut &Session) execute(e: &Execute, columns: &[]Column, w: Where): Res
     s.header(mut &m, FN_EXECUTE)
     executeBody(mut &m, e, s.fieldVersion, s.maxString)
     var r = s.reply(K_EXECUTE, columns, &[])
+    for i in 0..len(e.binds) {
+        let b = e.binds[i]
+        append(mut &r.binds, Column{name: ":" + (i + 1).toStr(), oraType: b.oraType, csfrm: b.csfrm, precision: 0, scale: -127,
+                                    bufferSize: b.bufferSize, maxSize: b.bufferSize, nullable: true})
+        if b.returning {
+            append(mut &r.outIndex, i)
+            r.returning = true
+            r.outMode = true
+        }
+    }
+    try s.call(&m, mut &r, w)
+    // Large OUT values: the server asks for them to be flushed (python-oracledb's flush_out_binds)
+    var rounds = 0
+    while r.flush && rounds < 100 {
+        r.flush = false
+        r.done = false
+        var f: []byte = []
+        put8(mut &f, MT_FLUSH_OUT_BINDS)
+        try s.call(&f, mut &r, w)
+        rounds += 1
+    }
+    return Ok(r)
+}
+
+// The next rows (up to n) of a REF CURSOR or implicit result: an EXECUTE
+// with FETCH alone on its cursor, as python-oracledb does for a cursor
+// without SQL.
+pub fn (s: mut &Session) fetchRef(cursorId: int, n: int, columns: &[]Column, last: &[]Cell, w: Where): Result[Reply, Error] {
+    let e = Execute{sql: "", kind: S_QUERY, cursorId: cursorId, binds: [], prefetch: n, commit: false, fetchOnly: true}
+    var m: []byte = []
+    s.header(mut &m, FN_EXECUTE)
+    executeBody(mut &m, &e, s.fieldVersion, s.maxString)
+    var r = s.reply(K_EXECUTE, columns, last)
     try s.call(&m, mut &r, w)
     return Ok(r)
 }
