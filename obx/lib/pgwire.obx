@@ -29,6 +29,7 @@ import "os"
 import "io"
 import "fs"
 import "strings"
+import "task"
 
 pub type Error = sqldialect.DbError
 pub const PROTOCOL = 196608
@@ -1403,4 +1404,883 @@ fn pOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
 pub fn codec(): sqlrows.Codec {
     return sqlrows.Codec{int: pInt, decimal: pDecimal, float: pFloat, text: pText, bytes: pBytes, bool: pBool, date: pDate,
                          time: pTime, dateTime: pDateTime, offsetDateTime: pOffset}
+}
+
+// ---------------------------------------------------------------- transport
+
+fn ioFail(e: io.IoError): Error {
+    if e.isCancelled() { return sqldialect.dbError(sqldialect.E_CANCELLED, "pgwire: cancelled") }
+    if e.isTimeout() { return sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: deadline passed") }
+    return ioErr(e.toStr())
+}
+
+fn tlsFail(e: tls.Error): Error {
+    if e.kind == tls.Kind.Cancelled { return sqldialect.dbError(sqldialect.E_CANCELLED, "pgwire: cancelled") }
+    if e.kind == tls.Kind.Timeout { return sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: deadline passed") }
+    if e.kind == tls.Kind.Io { return ioErr(e.cause.toStr()) }
+    return ioErr("TLS: " + e.msg)
+}
+
+type Stream = value closed {
+    Plain(net.Conn)
+    Tls(tls.Conn)
+    Gone
+}
+
+fn (s: &Stream) isTls(): bool {
+    match s {
+        Stream.Tls(_) { return true }
+        else { return false }
+    }
+}
+
+fn (s: mut &Stream) takeTls(): tls.Conn {
+    match replace(s, Stream.Gone) {
+        Stream.Tls(t) { return t }
+        else { panic("pgwire: not a TLS stream") }
+    }
+}
+
+fn (s: mut &Stream) put(t: tls.Conn) { let old = replace(s, Stream.Tls(t)) }
+
+// Reads into buf: ms < 0 parks like any call (cancellable, with the task's
+// deadline); ms >= 0 ignores both and gives up after ms (cleanup).
+fn (s: mut &Stream) read(buf: mut &[byte], ms: int, w: Where): Result[int, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = if ms < 0 { t.read(buf, w) } else { t.readFor(buf, ms, w) }
+        s.put(t)
+        return match r {
+            Ok(n) { Ok(n) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            let r = if ms < 0 { c.read(buf, w) } else { c.readFor(buf, ms, w) }
+            return match r {
+                Ok(n) { Ok(n) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+fn (s: mut &Stream) write(data: &[byte], ms: int, w: Where): Result[Unit, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = if ms < 0 { t.write(data, w) } else { t.writeFor(data, ms, w) }
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            let r = if ms < 0 { c.write(data, w) } else { c.writeFor(data, ms, w) }
+            return match r {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+// Bytes read from the socket and not yet made into a chunk: buf[pos..end].
+type Inbox = record { buf: []byte; pos: int; end: int }
+
+fn be32(d: &[byte], at: int): int {
+    return (int(d[at]) << 24) | (int(d[at + 1]) << 16) | (int(d[at + 2]) << 8) | int(d[at + 3])
+}
+
+fn be32s(d: &str, at: int): int {
+    return (int(d[at]) << 24) | (int(d[at + 1]) << 16) | (int(d[at + 2]) << 8) | int(d[at + 3])
+}
+
+// Reads from the socket into the inbox until it holds at least one whole
+// message after pos, growing the buffer by doubling when it is full (never to
+// a declared length before the bytes come). The whole messages are then
+// copied once into a chunk: its text and length.
+fn fillInbox(st: mut &Stream, ib: mut &Inbox, ms: int, w: Where): Result[str, Error] {
+    while true {
+        var p = ib.pos
+        while ib.end - p >= 5 {
+            let l = be32(&ib.buf, p + 1)
+            if l < 4 || l > MAX_MSG { return Err(proto("a message of length " + l.toStr())) }
+            if ib.end - p >= 1 + l { p += 1 + l } else { break }
+        }
+        if p > ib.pos {
+            let chunk = strFromBytes(&ib.buf[ib.pos..p])
+            ib.pos = p
+            return Ok(chunk)
+        }
+        if ib.pos == ib.end {
+            ib.pos = 0
+            ib.end = 0
+            if len(ib.buf) > SHRINK_OVER { ib.buf = array(INBOX, byte(0)) }
+        }
+        if ib.end == len(ib.buf) {
+            let k = ib.end - ib.pos
+            if ib.pos > 0 {
+                for i in 0..k { ib.buf[i] = ib.buf[ib.pos + i] }
+            } else {
+                var nb = array(2 * len(ib.buf), byte(0))
+                for i in 0..k { nb[i] = ib.buf[i] }
+                ib.buf = nb
+            }
+            ib.pos = 0
+            ib.end = k
+        }
+        let got = try st.read(mut &ib.buf[ib.end..], ms, w)
+        if got == 0 { return Err(ioErr("the server closed the connection")) }
+        ib.end += got
+    }
+    return Err(proto("unreachable"))
+}
+
+// ------------------------------------------------------------------ session
+
+const S_READY = 0
+const S_BUSY = 1
+const S_PORTAL = 2
+const S_BROKEN = 3
+
+type Notification = value record { pid: int; channel: str; payload: str }
+
+pub type Session = record {
+    st: Stream
+    ib: Inbox
+    chunk: str                  // whole messages, copied once off the inbox
+    cpos: int                   // the next message in chunk
+    seq: int                    // the chunk's number: it changes with every refill
+    out: Out
+    state: int
+    why: str                    // the first cause of S_BROKEN
+    tx: int
+    params: []Setting
+    pid: int
+    key: str
+    unixPath: str               // where a CancelRequest goes: a Unix socket path, else addr
+    addr: str
+    notices: []ServerError
+    notifies: []Notification
+    dropped: int
+    lastErr: Option[ServerError]
+    trips: int
+    pending: bool               // a portal's Execute whose reply is not read
+    portalCols: []Column
+    srvFail: bool               // the failure was a server's ErrorResponse (startup)
+    shut: bool
+}
+
+fn newSession(st: Stream, unixPath: str, addr: str): Session {
+    return Session{st: st, ib: Inbox{buf: array(INBOX, byte(0)), pos: 0, end: 0}, chunk: "", cpos: 0, seq: 0, out: newOut(),
+                   state: S_BUSY, why: "", tx: TX_IDLE, params: [], pid: 0, key: "", unixPath: unixPath, addr: addr,
+                   notices: [], notifies: [], dropped: 0, lastErr: None, trips: 0, pending: false, portalCols: [],
+                   srvFail: false, shut: false}
+}
+
+pub fn (s: &Session) broken(): bool { return s.state == S_BROKEN }
+
+// Ready for a request: after ReadyForQuery and not broken.
+pub fn (s: &Session) ready(): bool { return s.state == S_READY }
+
+pub fn (s: &Session) txStatus(): int { return s.tx }
+
+pub fn (s: &Session) parameter(name: str): Option[str] {
+    for p in s.params {
+        if p.name == name { return Some(p.value) }
+    }
+    return None
+}
+
+// libpq's number from server_version: 160015 for "16.15 (Ubuntu ...)", 90603 for "9.6.3".
+pub fn (s: &Session) serverVersion(): int {
+    match s.parameter("server_version") {
+        Some(v) {
+            var parts: []int = []
+            var i = 0
+            while i < len(v) && len(parts) < 3 {
+                var n = 0
+                var any = false
+                while i < len(v) && isDigit(v[i]) {
+                    n = n * 10 + int(v[i] - '0')
+                    any = true
+                    i += 1
+                }
+                if !any { break }
+                append(mut &parts, n)
+                if i < len(v) && v[i] == '.' { i += 1 } else { break }
+            }
+            if len(parts) == 0 { return 0 }
+            if parts[0] >= 10 { return parts[0] * 10000 + (if len(parts) > 1 { parts[1] } else { 0 }) }
+            let a = if len(parts) > 1 { parts[1] } else { 0 }
+            let b = if len(parts) > 2 { parts[2] } else { 0 }
+            return parts[0] * 10000 + a * 100 + b
+        }
+        None { return 0 }
+    }
+}
+
+pub fn (s: &Session) backendPid(): int { return s.pid }
+
+pub fn (s: &Session) lastServerError(): Option[ServerError] { return s.lastErr }
+
+// Requests that waited for a reply, the login included.
+pub fn (s: &Session) roundTrips(): int { return s.trips }
+
+pub fn (s: &Session) portalOpen(): bool { return s.state == S_PORTAL }
+
+// The last notices the server sent (at most 100), oldest first.
+pub fn (s: &Session) noticeCount(): int { return len(s.notices) }
+
+pub fn (s: &Session) notificationCount(): int { return len(s.notifies) }
+
+// Marks the session broken, keeping the first cause.
+fn (s: mut &Session) breakWith(why: str) {
+    if s.state != S_BROKEN {
+        s.state = S_BROKEN
+        s.why = why
+    }
+}
+
+fn (s: &Session) brokenError(): Error { return ioErr("the connection is broken: " + s.why) }
+
+// Passes e on, after breaking the session for a wire failure or a malformed reply.
+fn (s: mut &Session) wire(e: Error): Error {
+    if e.code == sqldialect.E_IO || e.code == sqldialect.E_PROTOCOL { s.breakWith(e.msg) }
+    return e
+}
+
+// Sends what is in out; a failed write breaks the session (part of a message may be out).
+fn (s: mut &Session) flush(ms: int, w: Where): Result[Unit, Error] {
+    let r = s.st.write(s.out.bytes(), ms, w)
+    s.out.reset()
+    match r {
+        Ok(_) { return Ok(Unit{}) }
+        Err(e) {
+            s.breakWith(e.msg)
+            return Err(e)
+        }
+    }
+}
+
+// A message in the current chunk: s.chunk[at..end] is its body.
+type Msg = value record { t: int; at: int; end: int }
+
+fn (s: mut &Session) addNotice(e: ServerError) {
+    if len(s.notices) >= MAX_NOTICES {
+        for i in 0..len(s.notices) - 1 { swap(mut &s.notices, i, i + 1) }
+        let gone = pop(mut &s.notices)
+    }
+    append(mut &s.notices, e)
+}
+
+fn (s: mut &Session) setParam(name: str, value: str) {
+    for i in 0..len(s.params) {
+        if s.params[i].name == name {
+            s.params[i] = Setting{name: name, value: value}
+            return
+        }
+    }
+    append(mut &s.params, Setting{name: name, value: value})
+}
+
+// The next message: from the chunk, else from the socket (ms as Stream.read).
+// NoticeResponse, ParameterStatus and NotificationResponse are taken here and
+// never returned. A malformed message breaks the session.
+fn (s: mut &Session) next(ms: int, w: Where): Result[Msg, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    while true {
+        if s.cpos >= len(s.chunk) {
+            match fillInbox(mut &s.st, mut &s.ib, ms, w) {
+                Ok(c) {
+                    s.chunk = c
+                    s.cpos = 0
+                    s.seq += 1
+                }
+                Err(e) { return Err(s.wire(e)) }
+            }
+        }
+        let at = s.cpos
+        let l = be32s(&s.chunk, at + 1)
+        let end = at + 1 + l
+        s.cpos = end
+        let t = int(s.chunk[at])
+        var r = Rd{s: s.chunk, pos: at + 5, end: end}
+        if t == 78 {                        // N
+            match parseServerError(s.chunk[at + 5..end]) {
+                Ok(e) { s.addNotice(e) }
+                Err(e) { return Err(s.wire(e)) }
+            }
+            continue
+        }
+        if t == 83 {                        // S
+            let name = match r.cstr("ParameterStatus") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let value = match r.cstr("ParameterStatus") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            s.setParam(name, value)
+            continue
+        }
+        if t == 65 {                        // A
+            let pid = match r.i32("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let ch = match r.cstr("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let pl = match r.cstr("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            if len(s.notifies) >= MAX_NOTIFIES {
+                for i in 0..len(s.notifies) - 1 { swap(mut &s.notifies, i, i + 1) }
+                let gone = pop(mut &s.notifies)
+                s.dropped += 1
+            }
+            append(mut &s.notifies, Notification{pid: pid, channel: ch, payload: pl})
+            continue
+        }
+        return Ok(Msg{t: t, at: at + 5, end: end})
+    }
+    return Err(proto("unreachable"))
+}
+
+fn (s: &Session) rd(m: &Msg): Rd { return Rd{s: s.chunk, pos: m.at, end: m.end} }
+
+// An ErrorResponse message: remembered as lastServerError; FATAL and PANIC
+// break the session (the server closes the connection after them).
+fn (s: mut &Session) errorOf(m: &Msg): Result[ServerError, Error] {
+    match parseServerError(s.chunk[m.at..m.end]) {
+        Ok(e) {
+            s.lastErr = Some(e)
+            if e.severity == "FATAL" || e.severity == "PANIC" { s.breakWith(e.severity + ": " + e.message) }
+            return Ok(e)
+        }
+        Err(e) { return Err(s.wire(e)) }
+    }
+}
+
+// ReadyForQuery's status byte.
+fn (s: mut &Session) readyFor(m: &Msg): Result[Unit, Error] {
+    if m.end - m.at != 1 { return Err(s.wire(proto("a ReadyForQuery of " + (m.end - m.at).toStr() + " bytes"))) }
+    let b = int(s.chunk[m.at])
+    if b != TX_IDLE && b != TX_BLOCK && b != TX_FAILED { return Err(s.wire(proto("a transaction status of " + b.toStr()))) }
+    s.tx = b
+    if s.state != S_BROKEN { s.state = S_READY }
+    return Ok(Unit{})
+}
+
+// Terminate (never parks: the bytes go if the socket takes them at once), then the socket closes.
+fn (s: mut &Session) terminate() {
+    if s.shut { return }
+    s.shut = true
+    if s.state != S_BROKEN {
+        var o = newOut()
+        putTerminate(mut &o)
+        let r = s.st.write(o.bytes(), 0)
+    }
+    let old = replace(mut &s.st, Stream.Gone)
+}
+
+pub fn (s: mut &Session) close() { s.terminate() }
+
+fn (s: mut &Session) drop() { s.terminate() }
+
+// ------------------------------------------------------------ connecting
+
+// A failed attempt at one endpoint.
+type Failed = value record {
+    e: Error
+    stop: bool        // do not try the other hosts (authentication, a refusal by the server, a cancel)
+    srv: bool         // the server answered the startup with an ErrorResponse
+    hs: bool          // the TLS handshake failed
+    viaTls: bool      // the attempt had TLS on
+}
+
+fn failed(e: Error, stop: bool): Failed { return Failed{e: e, stop: stop, srv: false, hs: false, viaTls: false} }
+
+fn hostLabel(ep: &Endpoint): str {
+    if ep.isUnix() { return "socket \"" + ep.socketPath() + "\"" }
+    let name = if len(ep.host) > 0 { ep.host } else { ep.hostaddr }
+    if len(ep.hostaddr) > 0 && len(ep.host) > 0 && ep.host != ep.hostaddr {
+        return "at \"" + ep.host + "\" (" + ep.hostaddr + "), port " + ep.port.toStr()
+    }
+    return "at \"" + name + "\", port " + ep.port.toStr()
+}
+
+fn tcpAddr(host: str, port: int): str {
+    var h = host
+    if contains(host, ":") { h = "[" + host + "]" }
+    return h + ":" + port.toStr()
+}
+
+fn connectText(ep: &Endpoint, reason: str): str {
+    return "connection to server on " + hostLabel(ep) + " failed: " + reason
+}
+
+fn connectFail(ep: &Endpoint, e: io.IoError): Failed {
+    if e.isCancelled() { return failed(sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled"), true) }
+    if e.isTimeout() { return failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed"), true) }
+    return failed(bad(connectText(ep, io.errorText(e.errno))), false)
+}
+
+// A TLS context for the configuration's sslmode (design/pgwire.md 5.2).
+fn tlsContext(cfg: &Config): Result[tls.Context, Error] {
+    var o = tls.defaults()
+    o.minVersion = cfg.sslMin
+    o.maxVersion = cfg.sslMax
+    o.sni = cfg.sslsni
+    let verify = cfg.sslmode == SslMode.VerifyCa || cfg.sslmode == SslMode.VerifyFull
+    if cfg.sslrootcert == "system" {
+        o.caFile = ""
+    } else if len(cfg.sslrootcert) > 0 && fs.isFile(cfg.sslrootcert) {
+        o.caFile = cfg.sslrootcert
+        o.verifyName = cfg.sslmode == SslMode.VerifyFull
+    } else if verify {
+        let path = if len(cfg.sslrootcert) > 0 { cfg.sslrootcert } else { os.homeDir() + "/.postgresql/root.crt" }
+        return Err(bad("root certificate file \"" + path + "\" does not exist.\nEither provide the file, use the system's trusted roots with sslrootcert=system, or change sslmode to disable server certificate verification."))
+    } else if len(cfg.sslrootcert) > 0 {
+        return Err(bad("could not read root certificate file \"" + cfg.sslrootcert + "\""))
+    } else {
+        o.insecureSkipVerify = true
+    }
+    if len(cfg.sslcert) > 0 {
+        o.certFile = cfg.sslcert
+        if len(cfg.sslkey) > 0 {
+            match fs.stat(cfg.sslkey) {
+                Ok(st) {
+                    let loose = if st.uid == 0 { (st.perm() & 0x17) != 0 } else { (st.perm() & 0x3F) != 0 }
+                    if loose {
+                        return Err(input("private key file \"" + cfg.sslkey + "\" has group or world access; file must have permissions u=rw (0600) or less if owned by the current user, or permissions u=rw,g=r (0640) or less if owned by root"))
+                    }
+                }
+                Err(_) { return Err(bad("could not load private key file \"" + cfg.sslkey + "\"")) }
+            }
+            o.keyFile = cfg.sslkey
+        }
+    }
+    return tls.client(o).mapErr(fn(e: tls.Error): Error { return bad("SSL error: " + e.msg) })
+}
+
+// Connects the socket; the plain Stream, with where a CancelRequest would go.
+type Dialed = record { st: Stream; unixPath: str; addr: str }
+
+fn dial(ep: &Endpoint, cfg: &Config, w: Where): Result[Dialed, Failed] {
+    if ep.isUnix() {
+        let path = ep.socketPath()
+        match net.connectUnix(path, w) {
+            Ok(c) { return Ok(Dialed{st: Stream.Plain(c), unixPath: path, addr: ""}) }
+            Err(e) { return Err(connectFail(ep, e)) }
+        }
+    }
+    let addr = if len(ep.hostaddr) > 0 { tcpAddr(ep.hostaddr, ep.port) } else { tcpAddr(ep.host, ep.port) }
+    let r = if len(ep.hostaddr) > 0 { net.connect(addr, w) } else { net.dial(addr, w) }
+    match move(r) {
+        Ok(c) {
+            let nd = c.setNoDelay(true)
+            if cfg.keepAlive.on {
+                let ka = c.setKeepAlive(true, cfg.keepAlive.idleS, cfg.keepAlive.intervalS, cfg.keepAlive.count)
+            }
+            let peer = c.peerAddr()
+            return Ok(Dialed{st: Stream.Plain(c), unixPath: "", addr: if len(peer) > 0 { peer } else { addr }})
+        }
+        Err(e) { return Err(connectFail(ep, e)) }
+    }
+}
+
+// SSLRequest on a fresh plain socket: 'S' then TLS, 'N' (carry on in the clear
+// when tlsMode is 1), anything else an error. The one answer byte is read
+// alone, and nothing may follow it before the handshake (CVE-2021-23222).
+fn negotiateTls(d: mut &Dialed, ep: &Endpoint, cfg: &Config, tlsMode: int, w: Where): Result[bool, Failed] {
+    var o = newOut()
+    putSslRequest(mut &o)
+    var b = array(1, byte(0))
+    match d.st {
+        Stream.Plain(c) {
+            match c.write(o.bytes(), w) {
+                Ok(_) {}
+                Err(e) { return Err(connectFail(ep, e)) }
+            }
+            let n = match c.read(mut &b, w) {
+                Ok(n) { n }
+                Err(e) { return Err(connectFail(ep, e)) }
+            }
+            if n == 0 { return Err(failed(bad(connectText(ep, "server closed the connection during SSL negotiation")), false)) }
+            let ans = int(b[0])
+            if ans == 78 {                  // N
+                if tlsMode == 2 { return Err(failed(bad(connectText(ep, "server does not support SSL, but SSL was required")), false)) }
+                return Ok(false)
+            }
+            if ans == 69 {                  // E: a server older than 7.0 (or one that refuses the request)
+                var f = failed(bad(connectText(ep, "server rejected the SSL request with an error")), false)
+                f.hs = true
+                return Err(f)
+            }
+            if ans != 83 {
+                return Err(failed(proto("received invalid response to SSL negotiation: " + (if ans >= 32 && ans < 127 { strFromBytes(&b) } else { ans.toStr() })), true))
+            }
+            var extra = array(1, byte(0))
+            match c.readNow(mut &extra) {
+                Ok(k) {
+                    if k > 0 { return Err(failed(proto("received unencrypted data after SSL response"), true)) }
+                }
+                Err(_) {}
+            }
+        }
+        else { return Err(failed(ioErr("the connection is closed"), false)) }
+    }
+    return Ok(true)
+}
+
+// The name a certificate is checked against, and SNI sent for.
+fn tlsName(ep: &Endpoint): str { return if len(ep.host) > 0 { ep.host } else { ep.hostaddr } }
+
+// One connection attempt at an endpoint: tlsMode 0 plain, 1 TLS if the server
+// has it, 2 TLS required. Unix sockets are always plain.
+fn openOnce(cfg: &Config, ep: &Endpoint, tlsMode: int, w: Where): Result[Session, Failed] {
+    var d = try dial(ep, cfg, w)
+    var viaTls = false
+    if !ep.isUnix() && tlsMode > 0 {
+        let ctx = match tlsContext(cfg) {
+            Ok(c) { c }
+            Err(e) { return Err(failed(e, true)) }
+        }
+        let useTls = try negotiateTls(mut &d, ep, cfg, tlsMode, w)
+        if useTls {
+            let sock = match replace(mut &d.st, Stream.Gone) {
+                Stream.Plain(c) { c }
+                else { return Err(failed(ioErr("the connection is closed"), false)) }
+            }
+            match ctx.connect(sock, tlsName(ep), w) {
+                Ok(t) { d.st = Stream.Tls(t) }
+                Err(e) {
+                    var f = failed(tlsFail(e), false)
+                    if f.e.code == sqldialect.E_IO || f.e.code == sqldialect.E_PROTOCOL {
+                        f = failed(bad(connectText(ep, "SSL error: " + e.msg)), false)
+                    } else if f.e.code == sqldialect.E_CANCELLED {
+                        f = failed(sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled"), true)
+                    } else if f.e.code == sqldialect.E_TIMEOUT {
+                        f = failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed"), true)
+                    }
+                    f.hs = true
+                    f.viaTls = true
+                    return Err(f)
+                }
+            }
+            viaTls = true
+        }
+    }
+    var s = newSession(replace(mut &d.st, Stream.Gone), d.unixPath, d.addr)
+    match s.startup(cfg, ep, viaTls, w) {
+        Ok(_) { return Ok(s) }
+        Err(e) {
+            var f = failed(e, true)
+            f.srv = s.srvFail
+            f.viaTls = viaTls
+            if e.code == sqldialect.E_CANCELLED {
+                f.e = sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled")
+            } else if e.code == sqldialect.E_TIMEOUT {
+                f.e = sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed")
+            } else if e.code == sqldialect.E_IO {
+                f.stop = false
+                f.e = sqldialect.dbError(CONNECTION_BAD, connectText(ep, e.msg))
+            } else if e.code == CONNECTION_BAD {
+                f.e = Error{code: CONNECTION_BAD, state: e.state, msg: connectText(ep, e.msg)}
+            }
+            return Err(f)
+        }
+    }
+}
+
+// The attempt at one endpoint under the configuration's sslmode (5.2).
+fn openEndpoint(cfg: &Config, ep: &Endpoint, w: Where): Result[Session, Failed] {
+    if ep.isUnix() || cfg.sslmode == SslMode.Disable { return openOnce(cfg, ep, 0, w) }
+    if cfg.sslmode == SslMode.Allow {
+        match openOnce(cfg, ep, 0, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.srv { return openOnce(cfg, ep, 2, w) }
+                return Err(f)
+            }
+        }
+    }
+    if cfg.sslmode == SslMode.Prefer {
+        match openOnce(cfg, ep, 1, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.hs || (f.srv && f.viaTls) { return openOnce(cfg, ep, 0, w) }
+                return Err(f)
+            }
+        }
+    }
+    return openOnce(cfg, ep, 2, w)
+}
+
+// One endpoint with connect_timeout bounding it.
+fn attempt(cfg: &Config, ep: &Endpoint, w: Where): Result[Session, Failed] {
+    if cfg.connectTimeoutMs <= 0 { return openEndpoint(cfg, ep, w) }
+    let t0 = time.monotonicNs()
+    let r = task.within(cfg.connectTimeoutMs, fn(): Result[Session, Failed] { return openEndpoint(cfg, ep, w) })
+    match move(r) {
+        Ok(s) { return Ok(s) }
+        Err(f) {
+            if f.e.code == sqldialect.E_TIMEOUT && (time.monotonicNs() - t0) / 1000000 >= cfg.connectTimeoutMs {
+                return Err(failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed"), false))
+            }
+            return Err(f)
+        }
+    }
+}
+
+// Connects to the first endpoint that answers and logs in (design/pgwire.md
+// section 5). Every step parks only the task; its cancellation and deadline
+// end the connect. A refusal by the server or a failed login ends it without
+// trying the other hosts, as libpq does.
+pub fn connect(cfg: &Config, w: Where): Result[Session, Error] {
+    var texts: []str = []
+    var last = bad("no endpoints")
+    for ep in cfg.endpoints {
+        match attempt(cfg, &ep, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.stop { return Err(f.e) }
+                last = f.e
+                append(mut &texts, f.e.msg)
+            }
+        }
+    }
+    if len(cfg.endpoints) <= 1 { return Err(last) }
+    return Err(bad(strings.join(&texts, "\n")))
+}
+
+// ------------------------------------------------------------ authentication
+
+// Whether require_auth lets the server ask for `method` (password, md5,
+// scram-sha-256, none, gss, sspi): a list names the allowed methods, a list of
+// !names the forbidden ones.
+fn authAllowed(ra: str, method: str): bool {
+    if len(ra) == 0 { return true }
+    var negated = false
+    var listed = false
+    for m in split(ra, ',') {
+        if startsWith(m, "!") {
+            negated = true
+            if m[1..] == method { return false }
+        } else if m == method {
+            listed = true
+        }
+    }
+    return negated || listed
+}
+
+fn authDenied(ra: str, what: str): Error {
+    return bad("authentication method requirement \"" + ra + "\" failed: server requested " + what)
+}
+
+type ScramSt = record {
+    nonce: str
+    bare: str
+    gs2: str
+    plus: bool
+    expect: str       // the server signature the exchange must end with
+}
+
+// Both values of one exchange from one PBKDF2 run.
+type ScramKeys = record { proof: str; sig: str }
+
+fn scramBoth(password: str, salt: str, iterations: int, authMessage: str): Result[ScramKeys, Error] {
+    let sp = try salted(password, salt, iterations)
+    let clientKey = try hmac(sp, "Client Key")
+    let stored = try crypto.sha256(clientKey).mapErr(cryptoFail)
+    let proof = xor(clientKey, try hmac(stored, authMessage))
+    let serverKey = try hmac(sp, "Server Key")
+    return Ok(ScramKeys{proof: proof, sig: try hmac(serverKey, authMessage)})
+}
+
+fn allDigits(s: str): bool {
+    if len(s) == 0 || len(s) > 10 { return false }
+    for i in 0..len(s) {
+        if !isDigit(s[i]) { return false }
+    }
+    return true
+}
+
+// Compares two strings in time that depends on their length only.
+fn sameBytes(a: str, b: str): bool {
+    if len(a) != len(b) { return false }
+    var d = 0
+    for i in 0..len(a) { d = d | int(a[i] ^ b[i]) }
+    return d == 0
+}
+
+fn malformed(what: str): Error { return bad("malformed SCRAM message (" + what + ")") }
+
+// SASLContinue: the client-final-message for the server-first-message sf.
+fn (s: mut &Session) scramFinal(sc: mut &ScramSt, sf: str, password: str): Result[str, Error] {
+    let parts = split(sf, ',')
+    if len(parts) < 3 || !startsWith(parts[0], "r=") { return Err(malformed("invalid server-first-message")) }
+    if !startsWith(parts[1], "s=") || !startsWith(parts[2], "i=") { return Err(malformed("invalid server-first-message")) }
+    if len(parts) > 3 { return Err(malformed("garbage at end of server-first-message")) }
+    let combined = parts[0][2..]
+    if !startsWith(combined, sc.nonce) || len(combined) <= len(sc.nonce) {
+        return Err(malformed("invalid nonce"))
+    }
+    let salt = match crypto.unbase64(parts[1][2..]) {
+        Some(x) { x }
+        None { return Err(malformed("invalid salt encoding")) }
+    }
+    if len(salt) == 0 { return Err(malformed("empty salt")) }
+    if !allDigits(parts[2][2..]) { return Err(malformed("invalid iteration count")) }
+    let iters = parseInt(parts[2][2..]).unwrapOr(0)
+    if iters < 1 || iters > 2147483647 { return Err(malformed("invalid iteration count")) }
+    var binding = sc.gs2
+    if sc.plus {
+        let ep = match s.st.endPoint() {
+            Ok(x) { x }
+            Err(e) { return Err(bad(e.msg)) }
+        }
+        binding = binding + ep
+    }
+    let noProof = "c=" + crypto.base64(binding) + ",r=" + combined
+    let am = sc.bare + "," + sf + "," + noProof
+    let keys = try scramBoth(password, salt, iters, am)
+    sc.expect = keys.sig
+    return Ok(noProof + ",p=" + crypto.base64(keys.proof))
+}
+
+fn (s: &Stream) endPoint(): Result[str, tls.Error] {
+    match s {
+        Stream.Tls(t) { return t.endPoint() }
+        else { return Err(tls.Error{kind: tls.Kind.Config, msg: "not a TLS connection", code: 0, peer: "", cause: io.ioError(0, "", "")}) }
+    }
+}
+
+// Sends the StartupMessage and runs the login to the first ReadyForQuery.
+// Server errors are code CONNECTION_BAD with the SQLSTATE; a wire failure E_IO.
+fn (s: mut &Session) startup(cfg: &Config, ep: &Endpoint, viaTls: bool, w: Where): Result[Unit, Error] {
+    putStartup(mut &s.out, cfg.user, cfg.dbname, &cfg.startup)
+    try s.flush(-1, w)
+    s.trips += 1
+    let ra = cfg.requireAuth
+    var exchanged = false
+    var authDone = false
+    var plusDone = false
+    var pw: Option[str] = cfg.password
+    var sc = ScramSt{nonce: "", bare: "", gs2: "", plus: false, expect: ""}
+    var stage = 0                       // 0 none, 1 SASL started, 2 server-first answered
+    while true {
+        let m = try s.next(-1, w)
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+            s.srvFail = true
+            return Err(Error{code: CONNECTION_BAD, state: e.code, msg: e.severity + ":  " + e.message})
+        }
+        if m.t == 90 {
+            if !authDone { return Err(proto("ReadyForQuery before the authentication finished")) }
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+        if m.t == 75 {                  // BackendKeyData
+            var r = s.rd(&m)
+            s.pid = try r.i32("BackendKeyData")
+            let n = m.end - r.pos
+            if n < 4 || n > 256 { return Err(proto("a BackendKeyData key of " + n.toStr() + " bytes")) }
+            s.key = try r.take(n, "BackendKeyData")
+            continue
+        }
+        if m.t == 118 {                 // NegotiateProtocolVersion
+            var r = s.rd(&m)
+            let minor = try r.i32("NegotiateProtocolVersion")
+            let count = try r.i32("NegotiateProtocolVersion")
+            if minor != 0 || count != 0 || count < 0 {
+                return Err(bad("the server does not support the protocol options requested"))
+            }
+            continue
+        }
+        if m.t != 82 { return Err(proto("unexpected message of type " + m.t.toStr() + " during login")) }
+        var r = s.rd(&m)
+        let code = try r.i32("authentication request")
+        if code == 0 {
+            if !exchanged && !authAllowed(ra, "none") { return Err(bad("authentication method requirement \"" + ra + "\" failed: server did not complete authentication")) }
+            if cfg.channelBinding == ChannelBinding.Require && !plusDone {
+                return Err(bad("channel binding required, but server authenticated client without channel binding"))
+            }
+            authDone = true
+            continue
+        }
+        if code == 3 || code == 5 {
+            let what = if code == 3 { "a cleartext password" } else { "a hashed password" }
+            if !authAllowed(ra, if code == 3 { "password" } else { "md5" }) { return Err(authDenied(ra, what)) }
+            if cfg.channelBinding == ChannelBinding.Require {
+                return Err(bad("channel binding is required, but server requested password authentication"))
+            }
+            if pw.isNone() { pw = passwordFor(cfg, ep) }
+            let password = match pw {
+                Some(p) { p }
+                None { return Err(bad("fe_sendauth: no password supplied")) }
+            }
+            if code == 3 {
+                putPassword(mut &s.out, password)
+            } else {
+                let salt = try r.take(4, "AuthenticationMD5Password")
+                putPassword(mut &s.out, try md5Password(cfg.user, password, salt))
+            }
+            exchanged = true
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 10 {
+            if !authAllowed(ra, "scram-sha-256") { return Err(authDenied(ra, "SCRAM-SHA-256 authentication")) }
+            var hasPlus = false
+            var hasPlain = false
+            while true {
+                let name = try r.cstr("SASL mechanisms")
+                if len(name) == 0 { break }
+                if name == "SCRAM-SHA-256-PLUS" { hasPlus = true }
+                if name == "SCRAM-SHA-256" { hasPlain = true }
+            }
+            let usePlus = viaTls && hasPlus && cfg.channelBinding != ChannelBinding.Disable
+            if cfg.channelBinding == ChannelBinding.Require && !usePlus {
+                return Err(bad("channel binding is required, but server did not offer an authentication method that supports channel binding"))
+            }
+            if !usePlus && !hasPlain { return Err(bad("none of the server's SASL authentication mechanisms are supported")) }
+            if pw.isNone() { pw = passwordFor(cfg, ep) }
+            if pw.isNone() { return Err(bad("fe_sendauth: no password supplied")) }
+            let nonce = crypto.base64(try crypto.randomBytes(18).mapErr(cryptoFail))
+            sc.nonce = nonce
+            sc.bare = "n=,r=" + nonce
+            sc.plus = usePlus
+            sc.gs2 = if usePlus { "p=tls-server-end-point,," } else if viaTls && cfg.channelBinding != ChannelBinding.Disable { "y,," } else { "n,," }
+            putSaslInitial(mut &s.out, if usePlus { "SCRAM-SHA-256-PLUS" } else { "SCRAM-SHA-256" }, sc.gs2 + sc.bare)
+            exchanged = true
+            stage = 1
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 11 {
+            if stage != 1 { return Err(proto("unexpected SASLContinue")) }
+            let sf = s.chunk[r.pos..m.end]
+            let fin = try s.scramFinal(mut &sc, sf, pw.unwrapOr(""))
+            putSaslResponse(mut &s.out, fin)
+            stage = 2
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 12 {
+            if stage != 2 { return Err(proto("unexpected SASLFinal")) }
+            let sf = s.chunk[r.pos..m.end]
+            if startsWith(sf, "e=") { return Err(bad("error received from server in SCRAM exchange: " + sf[2..])) }
+            if !startsWith(sf, "v=") { return Err(malformed("invalid server-final-message")) }
+            let sig = match crypto.unbase64(sf[2..]) {
+                Some(x) { x }
+                None { return Err(malformed("invalid server signature")) }
+            }
+            if !sameBytes(sig, sc.expect) { return Err(bad("SCRAM authentication failed: the server signature does not match")) }
+            plusDone = sc.plus
+            stage = 3
+            continue
+        }
+        if code == 2 || code == 7 || code == 8 || code == 9 { return Err(bad("GSSAPI authentication is not supported")) }
+        return Err(bad("unsupported authentication request " + code.toStr()))
+    }
+    return Err(proto("unreachable"))
 }
