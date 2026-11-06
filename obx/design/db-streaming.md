@@ -118,8 +118,8 @@ unconstrained numeric (`sum(int8)`) follows the same rule.
 
 | | SQL Server (`sqlserver` over `tds`) | PostgreSQL (`postgres` over libpq) | Oracle (`oracle` over `tns`) |
 |---|---|---|---|
-| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | libpq single-row mode (`PQsetSingleRowMode`): one PGresult per row, its values copied into one row string; text format | FETCH round trips; ROW_DATA kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too) |
-| per fill | as many packets as the buffer needs | as many rows as the buffer holds, parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB at the widest row (`Conn.rowsFor`; `Fetch Size` when set); rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
+| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | libpq single-row mode (`PQsetSingleRowMode`): one PGresult per row, its values copied into one row string; text format | FETCH round trips; ROW_DATA scanned in place (`tns.scanRaw`) and kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too); a row cut off at a packet's end is scanned again with the next packet joined on |
+| per fill | as many packets as the buffer needs | as many rows as the buffer holds, parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB: at the widest row for the first FETCH (`Conn.rowsFor`), then at the size the last rows took, at most 4 MB at the widest row (`tns.rowsSeen`); `Fetch Size` when set; rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
 | state while open | in the `Session` (`RowReader`) | in the stream (the pending PGresult) and libpq | in the stream (the last fetch) and the `Session` (`streamCursor`; `pending`: a FETCH sent ahead whose reply is not read) |
 | early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | `PQcancel`, then the results read to the end (at most 5 s, as for a cancelled query) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
 | stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call cancels first (libpq says a command is active); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
@@ -164,15 +164,17 @@ times as indicative; the memory numbers do not depend on it.
 | SQL Server | native | 139 ms, 11.7 MB | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB |
 | PostgreSQL | C | 114 ms, 8.0 MB | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB |
 | PostgreSQL | native | 85 ms, 8.4 MB | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB |
-| Oracle | C | 120 ms, 11.0 MB | 873 ms, 11.0 MB | 1,923 ms, 377.9 MB |
-| Oracle | native | 110 ms, 11.2 MB | 810 ms, 11.2 MB | 1,328 ms, 410.0 MB |
+| Oracle | C | 71 ms, 13.5 MB | 420 ms, 13.9 MB | 621 ms, 110.7 MB |
+| Oracle | native | 72 ms, 13.2 MB | 445 ms, 13.3 MB | 576 ms, 111.2 MB |
 
 - Peak RSS stays flat while streaming: the same at 100,000 and 1,000,000
-  rows (8 to 12 MB, the program and the buffer). Buffered grows with the
-  result: 109 MB (libpq's PGresult) to 365 to 410 MB (Cells per value).
+  rows (8 to 14 MB, the program, the buffer and for Oracle a fetch of
+  about 10,000 rows). Buffered grows with the result: 109 MB (libpq's
+  PGresult), 111 MB (Oracle: each value's bytes), 365 MB (SQL Server: a
+  cell per value).
 - Streaming is faster everywhere: 2.4x to 2.7x for SQL Server, 1.0x to
   1.8x for PostgreSQL (libpq's per-row PGresult costs about as much as
-  the whole buffered result's parse via C), 1.6x to 2.2x for Oracle (the Oracle rows: measured again on 2026-11-06 at 14:32, load 0.5, with round trips sized by bytes and fetching ahead; with 1,024-row fetches and no fetching ahead they were 1,460 and 1,346 ms streamed, 2,114 and 2,323 ms buffered).
+  the whole buffered result's parse via C), 1.3x to 1.5x for Oracle (the Oracle rows: measured again on 2026-11-06 at 15:09, load 0.6 to 1.2, after branch `oracle-speed`, below; at 14:32 with round trips sized by the widest row they were 873 and 810 ms streamed, 1,923 and 1,328 ms buffered, 377.9 and 410.0 MB; with 1,024-row fetches and no fetching ahead 1,460 and 1,346 ms streamed, 2,114 and 2,323 ms buffered).
 - The checksums are equal in every row (rows, ids, name lengths, amounts).
 
 ### Oracle over a slow network
@@ -251,7 +253,70 @@ bytes with and without it, the same run conditions at 14:30):
 - The widest row is a bound: the bench's rows are about 30 bytes on the
   wire against 119 at most, so a 256 KB FETCH carries about 68 KB. A
   target measured from the rows actually received (after the first
-  FETCH) would cut the round trips by about 4 here; left for later.
+  FETCH) would cut the round trips by about 4 here (done on branch
+  `oracle-speed`: 456 round trips to 101; below).
+
+### Oracle's client against the others (branch `oracle-speed`)
+
+Oracle was the slowest client. To tell the client's own work from the
+server and the network, each run was measured with `perf stat` on the
+client (cycles and instructions in user mode, user and system time) and
+the servers' and podman's processes from /proc. 2026-11-06 15:06, load
+0.9 to 1.5, CPU 10 (11 idle), least of 5 interleaved runs, 1,000,000 rows,
+`base` the merge 5da2099c and `after` this branch:
+
+| client | backend | mode | wall ms | client CPU ms (user + sys) | cycles a row | instructions a row | round trips | peak RSS MB |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| SQL Server | C | stream | 457 | 378 | 1,765 | 4,085 | | 11.2 |
+| SQL Server | C | buffered | 1,137 | 909 | 3,140 | 7,522 | | 364.5 |
+| SQL Server | native | stream | 356 | 290 | 1,290 | 4,785 | | 11.6 |
+| SQL Server | native | buffered | 992 | 797 | 2,515 | 7,551 | | 365.2 |
+| PostgreSQL | C | stream | 621 | 559 | 2,561 | 8,447 | | 7.9 |
+| PostgreSQL | C | buffered | 824 | 510 | 1,943 | 5,114 | | 109.0 |
+| PostgreSQL | native | stream | 540 | 470 | 2,172 | 8,743 | | 8.3 |
+| PostgreSQL | native | buffered | 766 | 501 | 1,456 | 5,948 | | 109.3 |
+| Oracle, base | C | stream | 870 | 744 | 3,239 | 7,191 | 456 | 11.0 |
+| Oracle, after | C | stream | 430 | 332 | 1,460 | 3,396 | 101 | 13.8 |
+| Oracle, base | C | buffered | 1,905 | 1,597 | 6,179 | 13,356 | 456 | 377.9 |
+| Oracle, after | C | buffered | 615 | 353 | 1,268 | 2,792 | 100 | 110.7 |
+| Oracle, base | native | stream | 810 | 635 | 2,817 | 8,475 | 456 | 11.2 |
+| Oracle, after | native | stream | 450 | 299 | 1,169 | 4,485 | 101 | 13.2 |
+| Oracle, base | native | buffered | 1,332 | 1,064 | 3,894 | 12,479 | 456 | 410.0 |
+| Oracle, after | native | buffered | 578 | 312 | 1,010 | 4,090 | 100 | 111.2 |
+
+(The SQL Server and PostgreSQL rows: the same with this branch's build, to
+within 2 %.) Wall includes the login: about 30 ms for Oracle, 60 for SQL
+Server (TLS), 2 for PostgreSQL (a Unix socket).
+
+- **Where the gap was.** Streamed, native, Oracle's wall was 417 ms over
+  SQL Server's and its client CPU 345 to 400 ms over: the client. Not the
+  wire: Oracle sends 25.8 bytes a row against SQL Server's 43.2 (TLS;
+  counted through a proxy), PostgreSQL about 50. Not the server: Oracle's
+  used 390 to 450 ms of CPU for the rows, SQL Server's 340 to 370,
+  PostgreSQL's 720 to 860. Podman's user-mode networking (slirp4netns and
+  rootlessport) used about 200 ms of CPU on other cores.
+- **The profile** (native stream, before): reading the rows' values 60 %
+  (`Cur.need` 17.5 %, `take` 9.5, `columnRaw` 7.9, `bytes` 6.7, `u8` 6.4,
+  `rawValues` 6.2, the column record's copy 3.1, building `"column " +
+  name` for every value 5), the decoding into the record 25 % (NUMBER
+  `numberFixed` 5.3, the shared RowView and Decimal code), packets 2.5 %.
+  SQL Server's `scanRow` is 4 % of its stream. Buffered, the cells:
+  `decodeNumber`'s digit strings, a cell array a row, the last row copied
+  for repeats, `Decimal.parse` when read (via C 18 % in copying cells).
+- **After** (design/oracle.md, "As built: decoding speed"): rows scanned in
+  place, buffered rows kept raw, packets sliced, FETCHes sized by the rows'
+  own size. The client now takes fewer cycles a row than SQL Server's
+  streamed (its CPU time about level: more system time) and well under
+  both others' buffered; Oracle's wall is the server's work and 100 round
+  trips (the stream has one FETCH ahead; the buffered query none).
+- Over a 0.92 ms round trip (`delayproxy.py`, one-way 0.12 ms), query
+  time without the login, before and after: C stream 1,154 to 462 ms, C
+  buffered 2,206 to 657, native stream 1,103 to 508, native buffered 1,713
+  to 600; checksums equal.
+- **Left:** the stream allocates its batch's arrays and data string afresh
+  each FETCH; the native runtime keeps one freed large block, so the page
+  faults doubled with the larger fetches (9,900 to 21,600; system time 31
+  to 70 ms native, 24 to 41 via C).
 
 ## 8. API as built
 

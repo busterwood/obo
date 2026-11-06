@@ -429,6 +429,74 @@ the stream 1.4 to 1.5 times. Fetching ahead alone saves 13 % direct, 14 to 20 %
 at 1 ms and 6 to 7 % at 5 ms, where the round trip outlasts the
 decoding it hides.
 
+## As built: decoding speed (2026-11-06)
+
+Branch `oracle-speed`. The client was slower than SQL Server's and
+PostgreSQL's on the 1,000,000-row bench (obx/bench/dbstream). Measured per
+process (perf stat on the client; the server's and podman's processes from
+/proc): the gap was the client's own CPU. Oracle sends fewer bytes a row
+(25.8 against SQL Server's 43.2 over TLS), its server spends about as much
+CPU as SQL Server's (390 to 450 ms against 340 to 370 for the 1,000,000
+rows), and the client's CPU was 670 ms streamed where SQL Server's was 270
+(native). Per row, native: 2,820 cycles and 8,475 instructions streamed
+(SQL Server 1,301 and 4,786), 3,894 and 12,479 buffered (2,524, 7,551).
+
+- **Rows scanned in place.** A row kept raw went value by value through
+  `Cur`: a `Result` for every byte read, `"column " + name` built for
+  every value (the error text, used or not), the column record copied,
+  then the value appended: 60 % of the stream's cycles. `scanRaw` reads a
+  ROW_DATA's plain values (a length byte below 254, then the bytes)
+  straight from the packet and appends them, as tds's `scanRow` does;
+  chunked values, ROWID, LOBs and LONG still go through `columnRaw`. A
+  row cut off at the packet's end is taken back and scanned again with
+  the next packet joined on, as before. `Session.receive` scans a run of
+  raw rows without going back to `decodeMessage` for each.
+- **Packets** were copied a byte at a time from a 16 KB inbox into a new
+  array, then into a str. They are now sliced from a 64 KB inbox (`fillTo`
+  moves the bytes not taken to the front only when a packet would not fit).
+- **NUMBER in an int:** `numberFixed` works in an int up to 18 digits
+  (i128 beyond).
+- **Buffered rows raw.** `query` made a `Cell` for every value as it
+  arrived: a row array, a heap string of digits for every NUMBER, the last
+  row copied for BIT_VECTOR repeats, and `Decimal.parse` of a built string
+  when read: 378 to 410 MB for the bench. `Rows` now keeps a query's rows
+  as the stream does (each value's bytes in one string, its start and
+  length), all FETCHes decoded into one `Reply` (`Session.fetchInto`, so
+  repeats find the row before across fetches). `int`, `decimal`, `text`
+  and `isNull` read the bytes (`tns.fixedInt`, `fixedDecimal`); every
+  other accessor, and every case those do not take, goes through
+  `tns.rawCell`, which makes the cell `columnValue` made, so values and
+  errors are unchanged. `call`'s OUT values stay cells; its query and REF
+  CURSOR results are raw. A text read from `Rows` shares the result's
+  bytes (before: its packet's), so a text kept keeps them alive.
+- **FETCH by the rows' own size** (provisional, for the user): once rows
+  have arrived, a FETCH asks for the rows of `FETCH_TARGET` (256 KB) at the
+  size the last rows took (`tns.rowsSeen`: their values' bytes, a length
+  byte each and one a row), at least the widest-row count of
+  `tns.rowsFor` and at most what `FETCH_LIMIT` (4 MB) holds at the widest
+  row, so short values in wide columns cannot make a FETCH of many wide
+  rows (three VARCHAR2(4000) of one byte each: 348 rows, not 23,000). The
+  stream's first FETCH (before any row) and the execute's prefetch are as
+  before; `Fetch Size` still overrides. The bench: 2,202 rows a round trip
+  to about 9,900, 456 round trips to 101.
+
+After (native): 1,169 cycles and 4,485 instructions a row streamed, 1,010
+and 4,090 buffered; via C 1,460 and 3,396 streamed, 1,268 and 2,792
+buffered. Peak RSS buffered 410 MB to 111 MB; streamed 11 MB to 13 MB
+(fetches of about 10,000 rows). Wall time is now mostly the server and the
+round trips: the stream 810 to 450 ms (native), the buffered query 1,332 to
+578 ms, with the client's CPU at 300 ms and 310 ms of them. The numbers
+and the profile are in design/db-streaming.md section 7.
+
+Left: the stream allocates a batch's arrays and its data string afresh for
+every FETCH, and the native runtime keeps only one freed large block, so
+page faults doubled (9,900 to 21,600; system time 31 to 70 ms native):
+reusing a batch's buffers needs a way to empty an array and keep its
+capacity, or the runtime could keep a few large blocks. Wall time also
+depends on podman's user-mode networking (slirp4netns and rootlessport
+spent about 200 ms of CPU per 1,000,000 rows; a round trip of 0.38 ms)
+and on Oracle sending rows only for a FETCH: at most one FETCH is ahead.
+
 Next stages: O4 LOBs (LONG defines, then locators; LOB OUT binds),
 PL/SQL collections and records as binds, array DML (executemany), REF
 CURSOR IN binds, nested cursors (CURSOR(...) columns), intervals, JSON and

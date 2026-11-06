@@ -1090,10 +1090,11 @@ pub fn (c: mut &Conn) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: 
 
 // ---------------------------------------------------------------- rows
 
-// A result in client memory.
-// A query's rows are kept as their values' bytes, as the server sent them
-// (value v = row * columns + column is data[starts[v]..] for lens[v] bytes,
-// -1 for NULL), and decoded when read; call's OUT values are cells.
+// A result in client memory. A query's rows are kept as their values'
+// bytes, as the server sent them (value v = row * columns + column is
+// data[starts[v]..] for lens[v] bytes, -1 for NULL), and decoded when
+// read; call's OUT values are cells. A text read from them shares data's
+// bytes (no copy), so it keeps the result's bytes alive while it lives.
 pub type Rows = record {
     cols: []tns.Column
     cells: [][]tns.Cell         // outs: call's OUT values, a row of cells each
