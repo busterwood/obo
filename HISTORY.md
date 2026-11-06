@@ -937,6 +937,37 @@ and 800-odd literals in the library, tests, benchmarks and commands were
 rewritten from that report, so no program's output changed) and the rule that
 an unsuffixed one is an error. SPEC 2 and 7.3 have the rules.
 
+### Doubles in xmm registers (2026-11-06)
+
+The user did not like native code being slower than C. On
+`obx/bench/math/calls.obx`, native took 2 to 5 times as long as C (exp 39 ms
+against 10). The page's explanation, that gcc inlines the kernels, was a
+guess. The measured cause was that every double lived in its stack slot. The
+loop `s = s + x.exp(); x = x + 0.0000001f` copied `s` through two temporaries
+before the call and `x` through one after it, so each iteration waited on
+three store-to-load forwards on the sum's chain. That came to 36 cycles a
+call on the Zen 4, against 8 for gcc's loop. Written by hand around a call
+of a two-instruction function, the loop took 30 cycles an iteration with the
+values in stack slots and 5 with them in registers. The legacy-SSE/VEX mix
+measured nothing.
+
+The fix is general (design/native.md section 4, "doubles in `xmm`
+registers"):
+
+- double locals live in `xmm8`-`xmm14` over ranges with no call but the libm's;
+- the libm (`native/math.c`) is compiled apart with `-ffixed-xmm8..15`;
+- its entry points are aliases, not wrappers that jump;
+- double constants are rodata operands;
+- operands that need no code are used in place, and double arguments are
+  loaded at the call;
+- the simplifier's rule (3) now also takes `t = s; s = t + E`.
+
+Native, ms, before and after: exp 39 to 11, ln 41 to 15, sin 35 to 9, pow 79
+to 45, atan 35 to 18, tan 33 to 19. The C builds are byte-identical. perfsuite
+(inputs frozen at `af99f93`: main's compiler rejects the unsuffixed literals
+of `7d519d1`): compile suite +0.22% instructions, -1.5% cycles; run suite
+-0.22% instructions (trees -3.3%, from rule (3)), cycles within noise.
+
 ## The performance record, 2026-11-03 to 2026-11-06
 
 PERFORMANCE.md as it stood at `05cdac6`, before it became a report of the

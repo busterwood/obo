@@ -39,10 +39,19 @@ const LOCAL_REGS: []int = [3, 12, 13, 14, 15]     // rbx r12-r15 (callee-saved):
 // Caller-saved registers that the code generator uses only for calls and for the operations
 // that make a statement loud (scan): locals whose live range has no loud statement.
 const QUIET_REGS: []int = [6, 7, 8, 9]            // rsi rdi r8 r9
+// The xmm registers of doubles (locals whose live range has no position fpLoud: the SysV ABI has
+// no callee-saved xmm registers, but native/math.c leaves these alone). The generated code uses
+// xmm0-xmm7 for values and arguments and xmm15 for copies.
+const FP_REGS: []int = [8, 9, 10, 11, 12, 13, 14]
 
 // The largest frame that needs no stack probe: below a page, so that no access of the frame
 // (nor the return address of a call from it) can skip the guard page.
 const PROBE_FREE = 2048
+
+// movapd xmm, xmm (66 0F 28): a move of a double that does not merge with the old register
+const MOVAPD = 0x28
+// movsd xmm, [m] (F2 0F 10)
+const MOVSD = 0x10
 
 // Functions start at multiples of this (the code segment's base is one): where a function falls
 // in the fetch blocks changes the speed of a small recursive one by 10-15% (bench fib: 1,690M
@@ -64,6 +73,7 @@ const SK_GLOBAL = 1      // idx: a global
 const SK_STR = 2         // idx: a string literal in rodata
 const SK_RT = 3          // idx: a runtime symbol (rtx.SYM_NAMES)
 const SK_DYN = 4         // idx: an imported function (its GOT entry)
+const SK_FLT = 5         // idx: a double constant in rodata (its bits: Gen.flts)
 
 type Sym = value record {
     kind: int
@@ -102,6 +112,8 @@ type Gen = record {
     globalSym: []int
     strSym: Map[str, int]
     strs: []str
+    flts: []int                 // the double constants in rodata (SK_FLT), their bits
+    fltSym: Map[int, int]       // ... their symbols by bits
     funcPos: []int
     pend: []bool                // per function: named by the code so far, not generated yet
     pendLo: int                 // no function below it is pending
@@ -112,6 +124,7 @@ type Gen = record {
     relocSeen: int              // the code relocations scanned for globals so far
     slots: []int
     reg: []int                  // per local: its register, or -1 (in its slot)
+    freg: []int                 // per local: the xmm register of a double (FP_REGS), or -1
     uses: []int                 // per local: the times the function being generated names it
     weight: []int               // ... weighted by loop depth, halved in branches (useWeight)
     rawW: []int                 // ... weighted by loop depth only (whether a new save pays)
@@ -135,6 +148,8 @@ type Gen = record {
     pos: int                    // the scan's position: its count of statements
     scanExpr: int               // > 0: the scan is in the body of a call generated in place (one position)
     loud: []bool                // per position: its code may change rsi, rdi, r8 or r9 (calls, ...)
+    fpLoud: []bool              // ... may change xmm8-xmm14 (calls but of native/math.c, ...)
+    fpKeep: Map[str, bool]      // the runtime functions that leave xmm8-xmm15 alone (rtx.FP_KEEP)
     regions: []int              // the loops: first and last position of each
     openLoops: []int            // the regions the scan is in
     inlStack: []int             // the functions generated in place being generated
@@ -225,9 +240,9 @@ type Stub = value record {
 
 fn newGen(u: ir.Ir): Gen {
     var g = Gen{u: u, a: x64.newAsm(), syms: [], rtSym: newMap(), rtLive: [], rtAt: [], rtCodeEnd: 0, rtDataEnd: 0, rtBssEnd: 0, codeBase: 0, funcSym: [], globalSym: [], strSym: newMap(),
-        strs: [], funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
+        strs: [], flts: [], fltSym: newMap(), funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], funcAlign: padFromEnv("OBX_FALIGN", FUNC_ALIGN), padBefore: padFromEnv("OBX_PADB", 0), loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
-        stubOf: newMap(), codeEnd: 0, reg: [], uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
+        stubOf: newMap(), codeEnd: 0, reg: [], freg: [], fpLoud: [], fpKeep: newMap(), uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
@@ -237,6 +252,7 @@ fn newGen(u: ir.Ir): Gen {
     g.siteIdx = array(2 * len(g.u.nodes), -1)
     g.siteStamp = array(2 * len(g.u.nodes), 0)
     for i in 0..len(rtx.SYM_NAMES) { g.rtSym.put(rtx.SYM_NAMES[i], i) }
+    for n in rtx.FP_KEEP { g.fpKeep.put(n, true) }
     for i in 0..len(g.u.funcs) {
         append(mut &g.funcSym, -1)
         append(mut &g.funcPos, -1)
@@ -251,6 +267,7 @@ fn newGen(u: ir.Ir): Gen {
     for i in 0..len(g.u.locals) {
         append(mut &g.slots, 0)
         append(mut &g.reg, -1)
+        append(mut &g.freg, -1)
         append(mut &g.uses, 0)
         append(mut &g.weight, 0)
         append(mut &g.rawW, 0)
@@ -505,6 +522,16 @@ fn (g: mut &Gen) symStr(s: str): int {
     return len(g.syms) - 1
 }
 
+// The symbol of the double constant with the given bits in rodata.
+fn (g: mut &Gen) symFlt(bits: int): int {
+    let have = g.fltSym.getOr(&bits, -1)
+    if have >= 0 { return have }
+    append(mut &g.flts, bits)
+    append(mut &g.syms, Sym{kind: SK_FLT, idx: len(g.flts) - 1})
+    g.fltSym.put(bits, len(g.syms) - 1)
+    return len(g.syms) - 1
+}
+
 // ---------------------------------------------------------------- types
 
 fn (g: &Gen) tk(t: int): int { return g.u.tys[t].k }
@@ -635,7 +662,11 @@ fn (g: mut &Gen) genFunc(f: int) {
             stackOff = ir.alignUp(stackOff, if g.u.alignOf(t) > 8 { g.u.alignOf(t) } else { 8 })
             g.slots[l] = stackOff
             if g.reg[l] >= 0 { g.loadInt(t, g.reg[l], rbp(stackOff)) }
+            if g.freg[l] >= 0 { g.a.movsdLoad(g.freg[l], rbp(stackOff)) }
             stackOff += ir.alignUp(g.size(t), 8)
+        } else if g.freg[l] >= 0 {
+            g.a.sse66(MOVAPD, g.freg[l], nx)
+            nx += 1
         } else if g.reg[l] >= 0 {
             g.a.movRR(8, g.reg[l], INT_REGS[ni])
             g.normR(g.tk(t), g.reg[l])
@@ -942,6 +973,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     g.saved = []
     g.pos = 0
     g.loud = [true]                     // position 0: the entry, where the arguments arrive
+    g.fpLoud = [false]                  // ... in xmm0-xmm7 (the prologue moves doubles from there)
     g.sites = []
     g.noSites = 0
     g.rotBody = 0
@@ -965,7 +997,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     var cands: []int = []
     for l in g.touched {
         let t = g.u.locals[l].ty
-        if !g.bad[l] && g.weight[l] >= 1 && g.u.isScalar(t) && !g.isF(t) && !g.is128(t) { append(mut &cands, l) }
+        if !g.bad[l] && g.weight[l] >= 1 && g.u.isScalar(t) && !g.is128(t) { append(mut &cands, l) }
     }
     // the live ranges: declared in a loop without an initializer, then named in and out of loops
     for l in cands {
@@ -1012,9 +1044,10 @@ fn (g: mut &Gen) allocRegs(f: int) {
     }
     // the locals given each register so far, by register number (regFree looks at one register's)
     var given: [][]int = []
-    for i in 0..16 { append(mut &given, []) }
+    for i in 0..32 { append(mut &given, []) }       // xmm registers at 16 + their number
     var nSaved = 0
     for l in order {
+        if g.isF(g.u.locals[l].ty) { continue }
         var r = -1
         let quiet = g.quietLive(l, &loudBefore) || g.quietTail(l)
         if quiet {
@@ -1037,6 +1070,18 @@ fn (g: mut &Gen) allocRegs(f: int) {
             append(mut &given[r], l)
         } else if !g.inner[l] && g.weight[l] >= 64 && len(g.sites) > 0 {
             g.spillReg(mut &given, l, &innerSite, &loudBefore)
+        }
+    }
+    // doubles: one of FP_REGS where no position of the range may change it (nothing to save)
+    var fpBefore: []int = [0]
+    for i in 0..len(g.fpLoud) { append(mut &fpBefore, fpBefore[i] + (if g.fpLoud[i] { 1 } else { 0 })) }
+    for l in order {
+        if !g.isF(g.u.locals[l].ty) || !g.quietLive(l, &fpBefore) { continue }
+        for x in FP_REGS {
+            if g.freg[l] < 0 && g.regFree(&given, 16 + x, l) {
+                g.freg[l] = x
+                append(mut &given[16 + x], l)
+            }
         }
     }
 }
@@ -1214,7 +1259,8 @@ fn (g: &Gen) callSpans(l: int): []int {
     return g.spans(l)
 }
 
-// Whether no position local l is live at is loud.
+// Whether no position local l is live at is loud (loudBefore: the counts of loud positions before
+// each; for fpLoud, of those).
 fn (g: &Gen) quietLive(l: int, loudBefore: &[]int): bool {
     let sp = g.callSpans(l)
     for i in 0..len(sp) / 2 {
@@ -1232,6 +1278,7 @@ fn (g: mut &Gen) resetScan() {
     let old = replace(mut &g.touched, [])
     for l in old {
         g.reg[l] = -1
+        g.freg[l] = -1
         g.weight[l] = 0
         g.rawW[l] = 0
         g.bad[l] = false
@@ -1270,8 +1317,8 @@ fn (g: mut &Gen) countUses() {
 //     this, and whose address (or a member's) is never taken: t is s. Nothing can read s after
 //     t's declaration, so the one variable holds t's values.
 // (3) `T t = s;` of scalars whose addresses are never taken, where the statements of the block
-//     that name t (the next 8 at most) assign neither t nor s: t is s. Both hold the same value
-//     wherever t is named.
+//     that name t (the next 8 at most) assign neither t nor s, but the last of them may be
+//     `s = E`: t is s. Both hold the same value wherever t is named (E is read before s changes).
 //
 // The C code is unchanged; only the native code generator sees the result.
 
@@ -1418,12 +1465,25 @@ fn (g: mut &Gen) merge(l: int, j: int) {
     var m = j + 1
     while need > 0 && m < cnt && m <= j + 8 {
         let y = g.u.listAt(l, m)
-        if g.walk(y, 1, s, -1) > 0 || g.walk(y, 1, t, -1) > 0 { return }
-        need -= g.walk(y, 0, t, -1)
+        if g.walk(y, 1, t, -1) > 0 { return }
+        let named = g.walk(y, 0, t, -1)
+        // the last statement that names t may be `s = E` where E assigns no s: E reads t before s
+        // changes
+        if g.walk(y, 1, s, -1) > 0 && (named != need || !g.assignsOnly(y, s)) { return }
+        need -= named
         m += 1
     }
     if need != 0 { return }
     g.rename(l, j, t, s, m)
+}
+
+// Whether statement y is `s = E` with E assigning no s (nor taking its address).
+fn (g: mut &Gen) assignsOnly(y: int, s: int): bool {
+    if g.u.nk(y) != ir.S_EXPR { return false }
+    let a = g.u.nodes[y].a
+    if g.u.nk(a) != ir.E_ASSIGN { return false }
+    let lhs = g.u.nodes[a].a
+    return g.u.nk(lhs) == ir.E_LOCAL && g.u.nodes[lhs].a == s && g.walk(g.u.nodes[a].b, 1, s, -1) == 0
 }
 
 // (4) `T t = E; s = t;` with t named nowhere else and s a local of type T: `s = E;` (E is
@@ -1656,6 +1716,7 @@ fn (g: mut &Gen) step() {
     if g.counting || g.scanExpr > 0 { return }
     g.pos += 1
     append(mut &g.loud, false)
+    append(mut &g.fpLoud, false)
     append(mut &g.tailEnd, -1)
     append(mut &g.posW, g.useWeight(g.loopDepth))
 }
@@ -1762,6 +1823,18 @@ fn (g: &Gen) quietRt(e: int): bool {
     return name == "rt_str_dup" && nargs == 1
 }
 
+// Whether the call e (not generated in place) leaves xmm8-xmm15 alone: a call of a function of
+// native/math.c (a static program's: a dynamically linked one imports libm's). The libm calls that
+// inlineMath generates use xmm0-xmm2.
+fn (g: &Gen) fpKeepCall(e: int): bool {
+    let c = g.u.nodes[e].a
+    if g.u.nk(c) != ir.E_DECAY || g.u.nk(g.u.nodes[c].a) != ir.E_FUNC { return false }
+    let f = g.u.nodes[g.u.nodes[c].a].a
+    if g.u.funcs[f].body >= 0 || g.dyn { return false }
+    let name = g.u.funcs[f].asmName
+    return g.fpKeep.getOr(&name, false)
+}
+
 // Whether the call e is an rt_cvs_N or rt_cvu_N that inlineCv generates inline (of a value of
 // 64 bits or less widened to 128 bits).
 fn (g: &Gen) cvInline(e: int): bool {
@@ -1809,7 +1882,10 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
             g.posOf[x] = -1
         }
     }
-    if !g.counting && x != g.noCopy && g.loudNode(x) { g.loud[g.pos] = true }
+    if !g.counting && x != g.noCopy && g.loudNode(x) {
+        g.loud[g.pos] = true
+        g.fpLoud[g.pos] = true
+    }
     // a member of an aggregate, or its address: its place only, nothing copied
     if (k == ir.E_MEMBER || k == ir.E_ADDR || k == ir.E_DECAY) && g.placeKind(n.a) { g.noCopy = n.a }
     let kc = ir.KIDS[k]
@@ -1871,6 +1947,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
             g.unalias(&ch)
         } else if !g.counting && !g.quietRt(x) {
             g.loud[g.pos] = true
+            if !g.fpKeepCall(x) { g.fpLoud[g.pos] = true }
         }
     } else if k < ir.S_DECL {
         // the other expressions (ir numbers them below the statements): their operands in order,
@@ -1957,7 +2034,10 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
         }
         if !g.counting {
             let t = g.u.locals[l].ty
-            if g.isAggr(t) && g.size(t) > 128 { g.loud[g.pos] = true }
+            if g.isAggr(t) && g.size(t) > 128 {
+                g.loud[g.pos] = true
+                g.fpLoud[g.pos] = true
+            }
             if n.b < 0 && n.c < 0 && len(g.openLoops) > 0 {
                 // its value may go around the loop it is declared in
                 let r = g.openLoops[len(g.openLoops) - 1]
@@ -2012,7 +2092,7 @@ fn (g: mut &Gen) remat(f: int): bool {
     var inits: []int = []
     for j in 0..len(g.touched) {
         let l = g.touched[j]
-        if g.reg[l] >= 0 || g.inner[l] || hasInt(&bases, l) { continue }
+        if g.reg[l] >= 0 || g.freg[l] >= 0 || g.inner[l] || hasInt(&bases, l) { continue }
         let d = g.u.hoisted.getOr(&l, -1)
         if d < 0 || g.u.nk(d) != ir.S_DECL || g.u.nodes[d].a != l || g.u.nodes[d].b < 0 || g.u.nodes[d].c >= 0 {
             continue
@@ -2102,6 +2182,42 @@ fn (g: &Gen) sameMem(a: int, b: int): bool {
     let ma = g.staticMem(a)
     let mb = g.staticMem(b)
     return ma.base != -9 && ma.base == mb.base && ma.index == mb.index && ma.disp == mb.disp
+}
+
+// The xmm register of e if it is a double local in one, else -1.
+fn (g: &Gen) fregOf(e: int): int {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_LOCAL { return g.freg[n.a] }
+    return -1
+}
+
+// Whether the code of the expression x may assign local l: an assignment to it, or its address
+// (a function generated in place may write it through that: aliases).
+fn (g: &Gen) assignsLocal(x: int, l: int): bool {
+    if x < 0 { return false }
+    let n = g.u.nodes[x]
+    let k = n.k
+    if k == ir.E_ASSIGN && g.u.nk(n.a) == ir.E_LOCAL && g.u.nodes[n.a].a == l { return true }
+    if (k == ir.E_ADDR || k == ir.E_DECAY) && g.u.nk(n.a) == ir.E_LOCAL && g.u.nodes[n.a].a == l { return true }
+    if k >= ir.S_DECL { return true }
+    let kc = ir.KIDS[k]
+    if k == ir.E_CALL {
+        if g.assignsLocal(n.a, l) { return true }
+        for j in 0..g.u.listLen(n.b) {
+            if g.assignsLocal(g.u.listAt(n.b, j), l) { return true }
+        }
+        return false
+    }
+    if kc == ir.K_NONE { return false }
+    if kc == ir.K_A { return g.assignsLocal(n.a, l) }
+    if kc == ir.K_AB { return g.assignsLocal(n.a, l) || g.assignsLocal(n.b, l) }
+    if kc == ir.K_ABC { return g.assignsLocal(n.a, l) || g.assignsLocal(n.b, l) || g.assignsLocal(n.c, l) }
+    if n.b >= 0 {
+        for j in 0..g.u.listLen(n.b) {
+            if g.assignsLocal(g.u.listAt(n.b, j), l) { return true }
+        }
+    }
+    return false
 }
 
 // The register of e if it is a local in one, else -1.
@@ -2242,6 +2358,14 @@ fn (g: mut &Gen) stmt1(s: int) {
     } else if k == ir.S_DECL {
         let l = n.a
         let t = g.u.locals[l].ty
+        if g.freg[l] >= 0 {
+            g.declMark = g.frame
+            if n.b >= 0 {
+                g.gen(n.b)
+                g.a.sse66(MOVAPD, g.freg[l], 0)
+            }
+            return
+        }
         if g.reg[l] >= 0 {
             g.declMark = g.frame
             if n.b >= 0 && g.simple(n.b) && g.u.nodes[n.b].ty == t {
@@ -2880,7 +3004,7 @@ fn (g: mut &Gen) copyMem(dst: x64.Mem, src: x64.Mem, n: int) {
         return
     }
     var o = 0
-    // 16 bytes at a time through xmm15 (the backend never allocates it; doubles live in xmm0..xmm7)
+    // 16 bytes at a time through xmm15 (never allocated: values and arguments are in xmm0-xmm7, locals in FP_REGS)
     while n >= 32 && n - o >= 16 {
         g.a.movdquLoad(15, at(src, o))
         g.a.movdquStore(at(dst, o), 15)
@@ -3010,7 +3134,7 @@ fn (g: mut &Gen) storeT(t: int, m: x64.Mem) {
 fn (g: &Gen) staticMem(e: int): x64.Mem {
     let n = g.u.nodes[e]
     if n.k == ir.E_LOCAL {
-        if g.reg[n.a] >= 0 { return x64.mem(-9, 0) }
+        if g.reg[n.a] >= 0 || g.freg[n.a] >= 0 { return x64.mem(-9, 0) }
         return rbp(g.slots[n.a])
     }
     if n.k == ir.E_MEMBER {
@@ -3123,7 +3247,7 @@ fn (g: mut &Gen) genAddr(e: int) {
     let n = g.u.nodes[e]
     let k = n.k
     if k == ir.E_LOCAL {
-        if g.reg[n.a] >= 0 { g.fail(e, "the address of a local in a register") }
+        if g.reg[n.a] >= 0 || g.freg[n.a] >= 0 { g.fail(e, "the address of a local in a register") }
         g.a.lea(RAX, rbp(g.slots[n.a]))
     } else if k == ir.E_GLOBAL {
         g.a.movRSym(RAX, g.globalSym[n.a], 0)
@@ -3611,12 +3735,60 @@ fn (g: mut &Gen) pair128(a: int, b: int) {
 
 // a into xmm0, b into xmm1.
 fn (g: mut &Gen) pairF(a: int, b: int) {
+    if g.fregOf(a) >= 0 && !g.fSrc(b) && !g.assignsLocal(b, g.u.nodes[a].a) {
+        // a after b: b leaves it as it is
+        g.gen(b)
+        g.a.sse66(MOVAPD, 1, 0)
+        g.a.sse66(MOVAPD, 0, g.fregOf(a))
+        return
+    }
     g.gen(a)
+    if g.genF1(b) { return }
     let s = g.temp(8, 8)
     g.a.movsdStore(rbp(s), 0)
     g.gen(b)
-    g.a.sse66(0x28, 1, 0)       // movapd: movsd xmm, xmm would wait for the old xmm1
+    g.a.sse66(MOVAPD, 1, 0)     // movapd: movsd xmm, xmm would wait for the old xmm1
     g.a.movsdLoad(0, rbp(s))
+}
+
+// The double b into xmm1 when that needs no code but a load (fSrc), leaving xmm0 as it is; else
+// false, nothing generated.
+fn (g: mut &Gen) genF1(b: int): bool {
+    if !g.fSrc(b) { return false }
+    g.sseSrc(MOVSD, 1, b)
+    return true
+}
+
+// Whether the double b is an operand that needs no code: a constant (in rodata), a local in a
+// register, or a local or a member of one in the frame.
+fn (g: &Gen) fSrc(b: int): bool {
+    let n = g.u.nodes[b]
+    if !g.isF(n.ty) { return false }
+    if n.k == ir.E_FLT || g.fregOf(b) >= 0 { return true }
+    return (n.k == ir.E_LOCAL || n.k == ir.E_MEMBER) && g.staticMem(b).base == RBP
+}
+
+// op xd, b for an fSrc operand b: addsd, subsd, mulsd, divsd, or MOVSD (a load: movapd from a
+// register, xorpd for +0.0).
+fn (g: mut &Gen) sseSrc(op: int, dst: int, b: int) {
+    let n = g.u.nodes[b]
+    if n.k == ir.E_FLT {
+        let bits = floatBits(g.u.flts[n.v])
+        if bits == 0 && op == MOVSD {
+            g.a.sse66(x64.XORPD, dst, dst)
+            return
+        }
+        g.a.sseM(op, dst, x64.ripMem(0))
+        g.a.relocRip(g.symFlt(bits))
+    } else if g.fregOf(b) >= 0 {
+        if op == MOVSD {
+            g.a.sse66(MOVAPD, dst, g.fregOf(b))
+        } else {
+            g.a.sse(op, dst, g.fregOf(b))
+        }
+    } else {
+        g.a.sseM(op, dst, g.staticMem(b))
+    }
 }
 
 fn (g: mut &Gen) gen(e: int) {
@@ -3626,12 +3798,15 @@ fn (g: mut &Gen) gen(e: int) {
     if k == ir.E_INT {
         g.a.movRI(RAX, n.v)
     } else if k == ir.E_FLT {
-        g.a.movRI(RAX, floatBits(g.u.flts[n.v]))
-        g.a.movqXR(0, RAX)
+        g.sseSrc(MOVSD, 0, e)
     } else if k == ir.E_LOCAL || k == ir.E_MEMBER || k == ir.E_DEREF || k == ir.E_GLOBAL || k == ir.E_STR ||
         k == ir.E_FUNC {
         if g.isAggr(t) || k == ir.E_FUNC {
             g.genAddr(e)
+            return
+        }
+        if g.fregOf(e) >= 0 {
+            g.a.sse66(MOVAPD, 0, g.fregOf(e))
             return
         }
         if g.regOf(e) >= 0 {
@@ -3753,6 +3928,7 @@ fn (g: mut &Gen) gen(e: int) {
 fn (g: mut &Gen) place(e: int): x64.Mem {
     let n = g.u.nodes[e]
     let k = n.k
+    if k == ir.E_LOCAL && g.freg[n.a] >= 0 { g.fail(e, "the place of a double in a register") }
     if k == ir.E_LOCAL && g.reg[n.a] < 0 { return rbp(g.slots[n.a]) }
     if k == ir.E_MEMBER {
         let m = g.staticMem(e)
@@ -3879,6 +4055,26 @@ fn (g: mut &Gen) genAssign(e: int) {
     let n = g.u.nodes[e]
     let lhs = n.a
     let t = n.ty
+    if g.fregOf(lhs) >= 0 {
+        let r = g.fregOf(lhs)
+        let v = g.u.nodes[n.b]
+        if v.k == ir.E_BIN && v.v >= ir.OP_ADD && v.v <= ir.OP_DIV && g.isF(v.c) && g.fregOf(v.a) == r &&
+            !g.assignsLocal(v.b, g.u.nodes[lhs].a) {
+            // l = l op b: the operation into l's register
+            let ops: []int = [x64.ADDSD, x64.SUBSD, x64.MULSD, x64.DIVSD]
+            if g.fSrc(v.b) {
+                g.sseSrc(ops[v.v], r, v.b)
+            } else {
+                g.gen(v.b)
+                g.a.sse(ops[v.v], r, 0)
+            }
+            if !unused { g.a.sse66(MOVAPD, 0, r) }
+            return
+        }
+        g.gen(n.b)
+        g.a.sse66(MOVAPD, r, 0)
+        return
+    }
     if g.regOf(lhs) >= 0 {
         if unused && g.u.nodes[n.b].ty == t && g.loadInto(n.b, g.regOf(lhs)) { return }
         g.gen(n.b)
@@ -4097,9 +4293,15 @@ fn (g: mut &Gen) genBin(e: int) {
     let c = n.c
     let ck = g.tk(c)
     if ck == ir.TY_F64 {
-        g.pairF(n.a, n.b)
         let ops: []int = [x64.ADDSD, x64.SUBSD, x64.MULSD, x64.DIVSD]
         if op > ir.OP_DIV { g.fail(e, "operator on double") }
+        if g.fSrc(n.b) {
+            // the right operand where it is (read after the left one, as before)
+            g.gen(n.a)
+            g.sseSrc(ops[op], 0, n.b)
+            return
+        }
+        g.pairF(n.a, n.b)
         g.a.sse(ops[op], 0, 1)
         return
     }
@@ -4643,13 +4845,16 @@ fn (g: mut &Gen) genCall(e: int) {
         append(mut &argReg, if ti - nInt < 6 { INT_REGS[ti - nInt] } else { -1 })
     }
     // the arguments into temporaries, except those loaded straight into their registers
-    // below (slot 0: constants, locals, members of locals; slot 1: in rax)
-    // the last of the others stays in rax if it is an integer and no argument is on the stack
+    // below (slot 0: constants, locals, members of locals; slot 1: in rax; slot 4: in xmm0)
+    // the last of the others stays in rax if it is an integer and no argument is on the stack, in
+    // xmm0 if it is a double in a register
     var inRax = -1
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         if !(place[j] < 0 && g.argDirect(x, pts[j])) { inRax = j }
     }
+    var inX = -1
+    if inRax >= 0 && place[inRax] < 0 && g.isF(pts[inRax]) { inX = inRax }
     if inRax >= 0 && (stackOff > 0 || g.isAggr(pts[inRax]) || g.isF(pts[inRax]) || g.is128(pts[inRax])) {
         inRax = -1
     }
@@ -4684,6 +4889,10 @@ fn (g: mut &Gen) genCall(e: int) {
         g.gen(x)
         if j == inRax {
             append(mut &slots, 1)
+            continue
+        }
+        if j == inX {
+            append(mut &slots, 4)
             continue
         }
         if place[j] < 0 && g.dupArg(e, j) {
@@ -4738,6 +4947,17 @@ fn (g: mut &Gen) genCall(e: int) {
         }
     }
     if stackOff > g.outArgs { g.outArgs = stackOff }
+    if inX >= 0 {
+        // the double in xmm0 into its register first (the others may load xmm0)
+        var k = 0
+        for j in 0..inX {
+            if place[j] < 0 {
+                let cls = g.classify(pts[j])
+                k += countCl(&cls, CL_SSE)
+            }
+        }
+        if k > 0 { g.a.sse66(MOVAPD, k, 0) }
+    }
     for j in 0..nargs {
         if place[j] < 0 {
             let x = g.u.listAt(n.b, j)
@@ -4760,6 +4980,20 @@ fn (g: mut &Gen) genCall(e: int) {
             if slots[j] == 3 {
                 g.arithInto(x, INT_REGS[ni], true)
                 ni += 1
+                continue
+            }
+            if slots[j] == 4 {
+                nx += 1
+                continue
+            }
+            if slots[j] == 0 && g.fregOf(x) >= 0 {
+                g.a.sse66(MOVAPD, nx, g.fregOf(x))
+                nx += 1
+                continue
+            }
+            if slots[j] == 0 && g.isF(pts[j]) && g.u.nk(x) == ir.E_FLT {
+                g.sseSrc(MOVSD, nx, x)
+                nx += 1
                 continue
             }
             let m = if slots[j] == 0 { g.staticMem(x) } else if slots[j] == -1 { g.staticMem(dups[j]) } else {
@@ -4848,9 +5082,10 @@ fn (g: mut &Gen) dupArg(e: int, j: int): bool {
 
 // Whether argument x (of type t, passed in registers) can be loaded into its registers at the
 // call with no other register used: a simple integer, or a double or aggregate in memory that
-// needs no code.
+// needs no code; a double in a register or a constant.
 fn (g: &Gen) argDirect(x: int, t: int): bool {
     if g.is128(t) { return false }
+    if g.isF(t) && (g.fregOf(x) >= 0 || g.u.nk(x) == ir.E_FLT) { return true }
     if g.isAggr(t) || g.isF(t) { return g.staticMem(x).base != -9 }
     return g.simple(x)
 }
@@ -4950,7 +5185,8 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
         if al[j] < 0 && !g.inlineDirect(g.u.listAt(n.b, j), ps[j]) { lastNon = j }
     }
     // the others into temporaries (tmp: a frame slot, below 0, or a callee-saved register, 3), the
-    // last integer one in rax (1); an aliased parameter (2) is not assigned: the body names its local
+    // last integer one in rax (1), the last double in xmm0 (4); an aliased parameter (2) is not
+    // assigned: the body names its local
     var tmp: []int = []
     var hregs: []int = []
     for j in 0..nargs {
@@ -4969,8 +5205,8 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
         }
         g.gen(x)
         if !g.isF(t) && !g.normAs(g.u.nodes[x].ty, t) { g.normR(g.tk(t), RAX) }
-        if j == lastNon && !g.isF(t) {
-            append(mut &tmp, 1)
+        if j == lastNon {
+            append(mut &tmp, if g.isF(t) { 4 } else { 1 })
             continue
         }
         if !g.isF(t) {
@@ -4999,9 +5235,11 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
     for j in 0..nargs {
         let p = ps[j]
         let t = g.u.locals[p].ty
-        if tmp[j] == 1 {
+        if tmp[j] == 1 || tmp[j] == 4 {
             if g.reg[p] >= 0 {
                 g.a.movRR(8, g.reg[p], RAX)
+            } else if g.freg[p] >= 0 {
+                g.a.sse66(MOVAPD, g.freg[p], 0)
             } else {
                 g.slots[p] = g.tempFor(t)
                 g.storeT(t, rbp(g.slots[p]))
@@ -5014,6 +5252,8 @@ fn (g: mut &Gen) inlineArgs(f: int, e: int, al: &[]int) {
         if tmp[j] < 0 {
             if g.reg[p] >= 0 {
                 g.loadInt(t, g.reg[p], rbp(tmp[j]))
+            } else if g.freg[p] >= 0 {
+                g.a.movsdLoad(g.freg[p], rbp(tmp[j]))
             } else {
                 g.slots[p] = tmp[j]
             }
@@ -6016,6 +6256,15 @@ fn (g: mut &Gen) link(): []byte {
         for j in 0..len(s) { append(mut &ro, strByte(s, j)) }
         append(mut &ro, 0)
     }
+    // double constants
+    var fAddr: []int = []
+    if len(g.flts) > 0 { growTo(mut &ro, ir.alignUp(len(ro), 8)) }
+    for b in g.flts {
+        let off = len(ro)
+        growTo(mut &ro, off + 8)
+        putN(mut &ro, off, b, 8)
+        append(mut &fAddr, roBase + off)
+    }
     // dynamic linking: the dynamic section and the GOT at the end of the data, the tables at
     // the end of the rodata
     var dynAt = 0
@@ -6065,6 +6314,8 @@ fn (g: mut &Gen) link(): []byte {
             append(mut &addr, gAddr[s.idx])
         } else if s.kind == SK_STR {
             append(mut &addr, sAddr[s.idx])
+        } else if s.kind == SK_FLT {
+            append(mut &addr, fAddr[s.idx])
         } else if s.kind == SK_DYN {
             append(mut &addr, gotAt + 8 * s.idx)
         } else {
