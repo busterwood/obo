@@ -834,7 +834,14 @@ batches). Neither blocks this design.
 
 ## 20. Decisions
 
-For the user:
+Decided by the user on 2026-11-06:
+
+- **Module names:** as recommended: `pgwire` (protocol), `postgres` (native, API unchanged), `postgres_libpq` (the old client).
+- **`sslmode` default:** `prefer`, as libpq.
+- **`postgres_libpq`:** stays until P4 is merged and the differential test has run clean for two weeks, then moves to `archive/`.
+- **Password role for the live TCP/TLS tests:** not yet; the user will add it after the work is complete. Until then those tests exit 77 and the fake server covers the paths.
+
+The original options, for the record:
 
 | decision | recommendation | alternative |
 |---|---|---|
