@@ -2001,6 +2001,11 @@ fn (g: &Gen) inline128(e: int): bool {
     if (op == "wadd" || op == "wsub" || op == "wmul") && nargs == 2 { return true }
     if nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2)) { return false }
     if op == "add" || op == "sub" || op == "mul" { return true }
+    if op == "div" || op == "rem" {
+        // by a constant below 2^64: no call
+        let kb = g.const128(g.u.listAt(n.b, 1))
+        return kb.ok && kb.hi == 0 && kb.lo != 0
+    }
     return (op == "shl" || op == "shr") && g.shiftConst(g.u.listAt(n.b, 1)) >= 0
 }
 
@@ -2774,7 +2779,8 @@ fn (g: mut &Gen) stmtsTo(l: int, j0: int, j1: int) {
         let x = g.u.listAt(l, j)
         let before = g.frame
         if j + 1 < j1 && !g.spillsHere(x) && !g.spillsHere(g.u.listAt(l, j + 1)) &&
-            (g.fusedIf(x, g.u.listAt(l, j + 1)) || g.fusedReturn(x, g.u.listAt(l, j + 1))) {
+            (g.fusedIf(x, g.u.listAt(l, j + 1)) || g.fusedReturn(x, g.u.listAt(l, j + 1)) ||
+            g.fusedDivMod(x, g.u.listAt(l, j + 1))) {
             j += 2
             continue
         }
@@ -2945,6 +2951,10 @@ fn (g: mut &Gen) genEffect(e: int) {
         return
     }
     if x.k != ir.E_ASSIGN {
+        var c = e
+        while g.u.nk(c) == ir.E_CAST { c = g.u.nodes[c].a }
+        let ck = g.u.nk(c)
+        if ck == ir.E_INT || ck == ir.E_LOCAL { return }       // `(void)0;`: nothing to do
         g.gen(e)
         return
     }
@@ -3977,6 +3987,87 @@ fn (g: mut &Gen) unholdInto(h: Hold, r: int) {
 
 // The position of the code of node x: the scan's (a node it saw at one position), in a body
 // generated in place that of the outermost call; -1 when not known.
+// Whether compares of type c are those branchSel folds: integers of 64 bits or less.
+fn (g: &Gen) selCmp(c: int): bool { return g.u.isInt(c) && !g.is128(c) && !g.isF(c) }
+
+// The truth of x op k (x of type c) when it is known without code: 1, 0, or -1 (unknown). x is a
+// constant, or c ? a : b with c pure and both known the same.
+fn (g: &Gen) selKnown(x: int, op: int, k: int, c: int): int {
+    let cv = g.intConst(x, c)
+    if cv.c == 0 {
+        let v = cv.v
+        let sgn = g.u.isSigned(c)
+        // the values as the type orders them (unsigned: compare with the sign bit flipped)
+        let a = if sgn { v } else { v ^ (-9223372036854775807 - 1) }
+        let b = if sgn { k } else { k ^ (-9223372036854775807 - 1) }
+        let r = if op == ir.OP_EQ { a == b } else if op == ir.OP_NE { a != b } else if op == ir.OP_LT { a < b } else if
+            op == ir.OP_LE { a <= b } else if op == ir.OP_GT { a > b } else { a >= b }
+        return if r { 1 } else { 0 }
+    }
+    let n = g.u.nodes[x]
+    if n.k == ir.E_COND && g.pure(n.a) {
+        let p = g.selKnown(n.b, op, k, c)
+        if p >= 0 && p == g.selKnown(n.c, op, k, c) { return p }
+    }
+    return -1
+}
+
+// The branch on `x op k`, x a conditional c ? a : b of type ty (int.cmp's -1/1/0 inlined into
+// a generic max's `x.cmp(&y) > 0`, opt's select): the condition decides which arm is compared,
+// and an arm that is a constant is no code. Jumps to l when the compare is `when`.
+fn (g: mut &Gen) branchSel(x: int, op: int, k: int, ty: int, l: int, when: bool) {
+    let known = g.selKnown(x, op, k, ty)
+    if known >= 0 {
+        if (known == 1) == when { g.a.jmp(l) }
+        return
+    }
+    let n = g.u.nodes[x]
+    if n.k != ir.E_COND {
+        // an arm: compared with k
+        append(mut &g.u.nodes, ir.Node{k: ir.E_INT, ty: ty, line: n.line, a: -1, b: -1, c: -1, d: -1, v: k})
+        let kn = len(g.u.nodes) - 1
+        append(mut &g.u.nodes, ir.Node{k: ir.E_BIN, ty: ir.TY_BOOL, line: n.line, a: x, b: kn, c: ty, d: -1, v: op})
+        g.branch(len(g.u.nodes) - 1, l, when)
+        return
+    }
+    let ka = g.selKnown(n.b, op, k, ty)
+    let kb = g.selKnown(n.c, op, k, ty)
+    if ka >= 0 {
+        // the first arm known: on the condition, to l or past the second
+        if (ka == 1) == when {
+            g.branch(n.a, l, true)
+        } else {
+            let end = g.a.newLabel()
+            g.branch(n.a, end, true)
+            g.branchSel(n.c, op, k, ty, l, when)
+            g.a.bind(end)
+            return
+        }
+        g.branchSel(n.c, op, k, ty, l, when)
+        return
+    }
+    if kb >= 0 {
+        if (kb == 1) == when {
+            g.branch(n.a, l, false)
+            g.branchSel(n.b, op, k, ty, l, when)
+        } else {
+            let end = g.a.newLabel()
+            g.branch(n.a, end, false)
+            g.branchSel(n.b, op, k, ty, l, when)
+            g.a.bind(end)
+        }
+        return
+    }
+    let elseL = g.a.newLabel()
+    let end = g.a.newLabel()
+    g.branch(n.a, elseL, false)
+    g.branchSel(n.b, op, k, ty, l, when)
+    g.a.jmp(end)
+    g.a.bind(elseL)
+    g.branchSel(n.c, op, k, ty, l, when)
+    g.a.bind(end)
+}
+
 fn (g: &Gen) posAt(x: int): int {
     if len(g.inlStack) > 0 { return g.inlPos }
     if x >= 0 && x < len(g.posOf) && g.posSeen[x] == g.stamp { return g.posOf[x] }
@@ -4881,6 +4972,8 @@ fn (g: mut &Gen) genBin(e: int) {
             g.a.alu(a, 8, RDX, R9)
         } else if op == ir.OP_MUL {
             g.mul128()
+        } else if ck == ir.TY_U128 {
+            g.divU128(op == ir.OP_DIV, -1)
         } else {
             g.a.movRR(8, RDI, RAX)
             g.a.movRR(8, RSI, RDX)
@@ -5059,6 +5152,37 @@ fn (g: mut &Gen) inlineU128(e: int, op: str, nargs: int): bool {
         g.a.bind(done)
         return true
     }
+    if op == "div" || op == "rem" {
+        let isDiv = op == "div"
+        let b = g.u.listAt(n.b, 1)
+        let kb = g.const128(b)
+        if kb.ok && kb.hi == 0 && kb.lo != 0 {
+            g.gen(a)
+            if kb.lo > 0 && (kb.lo & (kb.lo - 1)) == 0 {
+                // a power of two: a shift, or the low bits
+                var sh = 0
+                while (1 << sh) != kb.lo { sh += 1 }
+                if isDiv {
+                    g.shift128I(ir.OP_SHR, false, sh)
+                } else {
+                    if x64.fits32(kb.lo - 1) {
+                        g.a.aluI(x64.AND, 8, RAX, kb.lo - 1)
+                    } else {
+                        g.a.movRI(R11, kb.lo - 1)
+                        g.a.alu(x64.AND, 8, RAX, R11)
+                    }
+                    g.a.alu(x64.XOR, 4, RDX, RDX)
+                }
+                return true
+            }
+            g.a.movRI(R8, kb.lo)
+            g.divBy64(isDiv)
+            return true
+        }
+        g.pair128(a, b)
+        g.divU128(isDiv, w)
+        return true
+    }
     if op == "shl" || op == "shr" {
         let c = g.shiftConst(g.u.listAt(n.b, 1))
         if c < 0 { return false }
@@ -5087,6 +5211,187 @@ fn (g: &Gen) below64(e: int): bool {
 }
 
 // rax:rdx * r8:r9, the low 128 bits (clobbers r10, r11).
+// The local a statement s sets and the value it sets it to, `l = v;` or `T l = v;` (l a 128-bit
+// local whose address is not taken), as [l, v]; else empty.
+fn (g: &Gen) set128(s: int): []int {
+    let n = g.u.nodes[s]
+    if n.k == ir.S_DECL && n.b >= 0 && n.c < 0 && g.is128(g.u.locals[n.a].ty) && !g.aTaken[n.a] { return [n.a, n.b] }
+    if n.k != ir.S_EXPR || g.u.nk(n.a) != ir.E_ASSIGN { return [] }
+    let as1 = g.u.nodes[n.a]
+    if g.u.nk(as1.a) != ir.E_LOCAL || !g.is128(as1.ty) || g.aTaken[g.u.nodes[as1.a].a] { return [] }
+    return [g.u.nodes[as1.a].a, as1.b]
+}
+
+// Whether the trees x and y compute the same value the same way (the same kinds, types,
+// constants, locals and strings).
+fn (g: &Gen) sameTree(x: int, y: int): bool {
+    if x < 0 || y < 0 { return x == y }
+    let a = g.u.nodes[x]
+    let b = g.u.nodes[y]
+    if a.k != b.k || a.ty != b.ty || a.v != b.v { return false }
+    if a.k == ir.E_STR { return g.u.strs[a.v] == g.u.strs[b.v] }
+    let kc = ir.KIDS[a.k]
+    if kc == ir.K_NONE { return a.a == b.a }
+    if a.k == ir.E_CALL {
+        if !g.sameTree(a.a, b.a) || g.u.listLen(a.b) != g.u.listLen(b.b) { return false }
+        for j in 0..g.u.listLen(a.b) {
+            if !g.sameTree(g.u.listAt(a.b, j), g.u.listAt(b.b, j)) { return false }
+        }
+        return true
+    }
+    if kc == ir.K_A { return a.c == b.c && g.sameTree(a.a, b.a) }
+    if kc == ir.K_AB { return a.c == b.c && g.sameTree(a.a, b.a) && g.sameTree(a.b, b.b) }
+    return false
+}
+
+// `q = rt_div_u128(a, b, w); r = rt_rem_u128(a, b, w2);` (or declarations), the same a and b
+// (pure, not naming q): one division gives both (the second's check for 0 cannot fail where
+// the first passed), as gcc's __udivmodti4 does for the C build.
+fn (g: mut &Gen) fusedDivMod(s1: int, s2: int): bool {
+    let d = g.set128(s1)
+    let m = g.set128(s2)
+    if len(d) == 0 || len(m) == 0 || d[0] == m[0] { return false }
+    if g.rtName(d[1]) != "rt_div_u128" || g.rtName(m[1]) != "rt_rem_u128" { return false }
+    let dn = g.u.nodes[d[1]]
+    let mn = g.u.nodes[m[1]]
+    if g.u.listLen(dn.b) != 3 || g.u.listLen(mn.b) != 3 || !g.isWhere(g.u.listAt(dn.b, 2)) { return false }
+    let a = g.u.listAt(dn.b, 0)
+    let b = g.u.listAt(dn.b, 1)
+    if !g.sameTree(a, g.u.listAt(mn.b, 0)) || !g.sameTree(b, g.u.listAt(mn.b, 1)) { return false }
+    if !g.pure(a) || !g.pure(b) || g.walk(a, 0, d[0], -1) > 0 || g.walk(b, 0, d[0], -1) > 0 { return false }
+    let kb = g.const128(b)
+    if kb.ok && (kb.lo == 0 && kb.hi == 0) { return false }
+    g.pair128(a, b)
+    let done = g.a.newLabel()
+    if kb.ok && kb.hi == 0 {
+        g.divModBy64(done)
+    } else {
+        let slow = g.a.newLabel()
+        g.a.test(8, R9, R9)
+        g.a.jcc(x64.CC_NE, slow)
+        if !kb.ok {
+            g.a.test(8, R8, R8)
+            g.a.jcc(x64.CC_E, g.stub(10, "division by zero", g.u.listAt(dn.b, 2)))
+        }
+        g.divModBy64(done)
+        g.a.bind(slow)
+        // a divisor of 2^64 or more: the runtime's remainder, then its quotient
+        let t = g.temp(48, 16)
+        g.a.store(8, rbp(t), RAX)
+        g.a.store(8, rbp(t + 8), RDX)
+        g.a.store(8, rbp(t + 16), R8)
+        g.a.store(8, rbp(t + 24), R9)
+        g.a.movRR(8, RDI, RAX)
+        g.a.movRR(8, RSI, RDX)
+        g.a.movRR(8, RDX, R8)
+        g.a.movRR(8, RCX, R9)
+        g.callRt("rt_n_umod128")
+        g.a.store(8, rbp(t + 32), RAX)
+        g.a.store(8, rbp(t + 40), RDX)
+        g.a.load(8, RDI, rbp(t))
+        g.a.load(8, RSI, rbp(t + 8))
+        g.a.load(8, RDX, rbp(t + 16))
+        g.a.load(8, RCX, rbp(t + 24))
+        g.callRt("rt_n_udiv128")
+        g.a.load(8, R10, rbp(t + 32))
+        g.a.load(8, R11, rbp(t + 40))
+    }
+    g.a.bind(done)
+    // the quotient in rax:rdx, the remainder in r10:r11
+    g.set128From(s1, d[0], RAX, RDX)
+    g.set128From(s2, m[0], R10, R11)
+    return true
+}
+
+// Local l (set by statement s, perhaps its declaration) from the registers lo and hi.
+fn (g: mut &Gen) set128From(s: int, l: int, lo: int, hi: int) {
+    if g.u.nk(s) == ir.S_DECL && g.preg[l] < 0 {
+        g.slots[l] = g.temp(16, 16)
+    }
+    if g.preg[l] >= 0 {
+        g.a.movRR(8, g.preg[l], lo)
+        g.a.movRR(8, g.preg2[l], hi)
+    } else {
+        g.a.store(8, rbp(g.slots[l]), lo)
+        g.a.store(8, rbp(g.slots[l] + 8), hi)
+    }
+}
+
+// rax:rdx / r8 (r8 not 0): the quotient in rax:rdx, the remainder in r10:r11; then to done.
+fn (g: mut &Gen) divModBy64(done: int) {
+    let two = g.a.newLabel()
+    g.a.alu(x64.CMP, 8, RDX, R8)
+    g.a.jcc(x64.CC_AE, two)
+    g.a.unary(x64.DIV, 8, R8)
+    g.a.movRR(8, R10, RDX)
+    g.a.alu(x64.XOR, 4, R11, R11)
+    g.a.alu(x64.XOR, 4, RDX, RDX)
+    g.a.jmp(done)
+    g.a.bind(two)
+    g.a.movRR(8, R10, RAX)
+    g.a.movRR(8, RAX, RDX)
+    g.a.alu(x64.XOR, 4, RDX, RDX)
+    g.a.unary(x64.DIV, 8, R8)
+    g.a.movRR(8, R11, RAX)
+    g.a.movRR(8, RAX, R10)
+    g.a.unary(x64.DIV, 8, R8)
+    g.a.movRR(8, R10, RDX)
+    g.a.movRR(8, RDX, R11)
+    g.a.alu(x64.XOR, 4, R11, R11)
+    g.a.jmp(done)
+}
+
+// rax:rdx / r8:r9 (unsigned; w: the location of a check for 0, or -1), the quotient (isDiv)
+// or the remainder: by a divisor below 2^64 one or two div instructions, else the runtime's
+// division (which calls; a divisor of 0 traps as rt_div_u128 does).
+fn (g: mut &Gen) divU128(isDiv: bool, w: int) {
+    let slow = g.a.newLabel()
+    let done = g.a.newLabel()
+    g.a.test(8, R9, R9)
+    g.a.jcc(x64.CC_NE, slow)
+    if w >= 0 {
+        g.a.test(8, R8, R8)
+        g.a.jcc(x64.CC_E, g.stub(10, "division by zero", w))
+    }
+    g.divBy64(isDiv)
+    g.a.jmp(done)
+    g.a.bind(slow)
+    g.a.movRR(8, RDI, RAX)
+    g.a.movRR(8, RSI, RDX)
+    g.a.movRR(8, RDX, R8)
+    g.a.movRR(8, RCX, R9)
+    g.callRt(if isDiv { "rt_n_udiv128" } else { "rt_n_umod128" })
+    g.a.bind(done)
+}
+
+// rax:rdx / r8 (unsigned, r8 not 0): the quotient or the remainder in rax:rdx. A high word below
+// the divisor needs one div; else two (the high word's remainder above the low word).
+fn (g: mut &Gen) divBy64(isDiv: bool) {
+    let two = g.a.newLabel()
+    let end = g.a.newLabel()
+    g.a.alu(x64.CMP, 8, RDX, R8)
+    g.a.jcc(x64.CC_AE, two)
+    g.a.unary(x64.DIV, 8, R8)
+    if !isDiv { g.a.movRR(8, RAX, RDX) }
+    g.a.alu(x64.XOR, 4, RDX, RDX)
+    g.a.jmp(end)
+    g.a.bind(two)
+    g.a.movRR(8, R10, RAX)
+    g.a.movRR(8, RAX, RDX)
+    g.a.alu(x64.XOR, 4, RDX, RDX)
+    g.a.unary(x64.DIV, 8, R8)
+    g.a.movRR(8, R11, RAX)
+    g.a.movRR(8, RAX, R10)
+    g.a.unary(x64.DIV, 8, R8)
+    if isDiv {
+        g.a.movRR(8, RDX, R11)
+    } else {
+        g.a.movRR(8, RAX, RDX)
+        g.a.alu(x64.XOR, 4, RDX, RDX)
+    }
+    g.a.bind(end)
+}
+
 fn (g: mut &Gen) mul128() {
     g.a.movRR(8, R10, RDX)
     g.a.imul(8, R10, R8)
@@ -5327,6 +5632,8 @@ fn (g: mut &Gen) branch(e: int, l: int, when: bool) {
         }
     } else if k == ir.E_CALL && g.branchInline(e, l, when) {
         // done
+    } else if k == ir.E_BIN && isCmp(n.v) && g.u.nk(n.a) == ir.E_COND && g.selCmp(n.c) && g.intConst(n.b, n.c).c == 0 {
+        g.branchSel(n.a, n.v, g.intConst(n.b, n.c).v, n.c, l, when)
     } else if k == ir.E_BIN && isCmp(n.v) {
         g.jumpCC(g.genCmp(e), l, when)
     } else if k == ir.E_CAST && g.tk(n.ty) == ir.TY_BOOL && !g.is128(g.u.nodes[n.a].ty) {

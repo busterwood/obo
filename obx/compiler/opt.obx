@@ -374,7 +374,66 @@ fn (o: mut &Opt) shape(f: int): int {
     var out: []int = []
     o.budget = 4 * o.limit
     if !o.tail(&xs, 0, mut &out) { return -1 }
+    let rt = o.u.tys[o.u.funcs[f].ty].base
+    if len(out) > 0 && o.u.isScalar(rt) && !o.u.isAggr(rt) {
+        out[len(out) - 1] = o.select(out[len(out) - 1], rt)
+    }
     return o.block(&out)
+}
+
+// The statement s, when it is an if whose branches are each one return of a value (or such an
+// if, in turn), as one return of a conditional expression: `if (c) { return a; } else { return
+// b; }` is `return c ? a : b;` (int.cmp's `if lt { return -1 } if gt { return 1 } return 0`:
+// one expression, so that `x.cmp(&y) > 0` of a generic max inlines small and folds; see
+// x64gen's branchSel). Else s.
+fn (o: mut &Opt) select(s: int, rt: int): int {
+    if o.u.nk(s) != ir.S_IF || o.u.nodes[s].c < 0 { return s }
+    let a = o.retVal(o.u.nodes[s].b, rt)
+    let b = o.retVal(o.u.nodes[s].c, rt)
+    if a < 0 || b < 0 { return s }
+    let e = o.mk1(ir.E_COND, rt, o.u.nodes[s].a, a, b)
+    return o.mk1(ir.S_RETURN, ir.TY_VOID, e, -1, -1)
+}
+
+// The value the branch s returns when it is (a block of) one return of a value of type rt, or
+// an if that select makes one; else -1.
+fn (o: mut &Opt) retVal(s: int, rt: int): int {
+    var xs: []int = []
+    for y in o.items(s) {
+        if !o.nop(y) { append(mut &xs, y) }
+    }
+    while len(xs) == 1 && o.u.nk(xs[0]) == ir.S_BLOCK {
+        let inner = o.items(xs[0])
+        xs = []
+        for y in inner {
+            if !o.nop(y) { append(mut &xs, y) }
+        }
+    }
+    if len(xs) == 2 && o.u.nk(xs[0]) == ir.S_DECL && o.u.nk(xs[1]) == ir.S_IF {
+        // `bool c = e; if (c) ...` with c named nowhere else: `if (e) ...`
+        let d = o.u.nodes[xs[0]]
+        let f = o.u.nodes[xs[1]]
+        if d.b >= 0 && d.c < 0 && !o.aTaken[d.a] && o.u.nk(f.a) == ir.E_LOCAL && o.u.nodes[f.a].a == d.a &&
+            o.walk(f.b, W_NAMES, d.a) == 0 && o.walk(f.c, W_NAMES, d.a) == 0 {
+            xs = [o.mk1(ir.S_IF, ir.TY_VOID, d.b, f.b, f.c)]
+        }
+    }
+    var v = -1
+    if len(xs) == 1 && o.u.nk(xs[0]) == ir.S_IF {
+        let x = o.select(xs[0], rt)
+        if o.u.nk(x) == ir.S_RETURN { v = o.u.nodes[x].a }
+    } else if len(xs) == 1 && o.u.nk(xs[0]) == ir.S_RETURN {
+        v = o.u.nodes[xs[0]].a
+    } else if len(xs) == 2 && o.u.nk(xs[0]) == ir.S_DECL && o.u.nk(xs[1]) == ir.S_RETURN {
+        // `T r = e; return r;`
+        let d = o.u.nodes[xs[0]]
+        let r = o.u.nodes[xs[1]].a
+        if d.b >= 0 && d.c < 0 && r >= 0 && o.u.nk(r) == ir.E_LOCAL && o.u.nodes[r].a == d.a && !o.aTaken[d.a] {
+            v = d.b
+        }
+    }
+    if v < 0 || o.u.nodes[v].ty != rt { return -1 }
+    return v
 }
 
 // The statements xs[i..] with every return made the last statement of its path, into out: an

@@ -1,0 +1,43 @@
+// Small scalar functions whose if/else returns become one select (opt.obx select), inlined, and
+// compares of selects with constants as branches on the select's conditions (native backend
+// branchSel): both backends the same.
+// expect: 0>=n -1<~n -1<~ -1<~ -1<~ 1>=!~n 0>=n -1<~ -1<~ -1<~ 1>=!~ 1>=!~ 0>= -1<~ -1<~ 1>=!~ 1>=!~ 1>=!~ 0>=p -1<~p 1>=!~ 1>=!~ 1>=!~ 1>=!~p 0>=p 
+// expect: 3 4
+// expect: 0 5 9
+// expect: 40 3 7
+
+fn sgn(a: int, b: int): int {
+    if a < b { return -1 } else if a > b { return 1 } else { return 0 }
+}
+fn pick(c: bool, a: i32, b: i32): i32 {
+    let t = c
+    if t { return a } else { return b }
+}
+fn clampTo(x: int, lo: int, hi: int): int { return min(max(x, lo), hi) }
+fn sel3(x: int): int {
+    if x > 10 {
+        let r = x * 2
+        return r
+    } else {
+        if x < 0 { return -x } else { return 7 }
+    }
+}
+fn main() {
+    var s = ""
+    for a in -2..3 {
+        for b in -2..3 {
+            s += sgn(a, b).toStr()
+            if sgn(a, b) < 0 { s += "<" }
+            if sgn(a, b) >= 0 { s += ">=" }
+            if sgn(a, b) == 1 { s += "!" }
+            if sgn(a, b) != 0 { s += "~" }
+            if min(a, b) > 0 { s += "p" }
+            if max(a, b) <= -1 { s += "n" }
+            s += " "
+        }
+    }
+    println(s)
+    println(pick(true, 3, 4).toStr() + " " + pick(false, 3, 4).toStr())
+    println(clampTo(-5, 0, 9).toStr() + " " + clampTo(5, 0, 9).toStr() + " " + clampTo(50, 0, 9).toStr())
+    println(sel3(20).toStr() + " " + sel3(-3).toStr() + " " + sel3(4).toStr())
+}
