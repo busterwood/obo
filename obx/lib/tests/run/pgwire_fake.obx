@@ -46,6 +46,8 @@
 // expect: cancel 4: error 1021: query: deadline passed | ready true | after: ok || cancel pid=4242 key=KEYK
 // expect: cancel 32: error 1021: query: deadline passed | ready true | after: ok || cancel pid=77 keylen=32
 // expect: mutated: mutated: 300 replies, each ended || served 300
+// expect: silent server, deadline: deadline: error 1021: connect: deadline passed || startup seen, silent
+// expect: silent server, connect_timeout: connect_timeout: error 1021: connect: connect_timeout passed || startup seen, silent
 // expect: tls handles: 0
 import "pgwire"
 import "sqldialect"
@@ -444,7 +446,7 @@ fn runScram(name: str, mode: int, cli: fn(): str) {
 fn authTests() {
     run("trust tcp", serveTrust, cliTrust)
     // a Unix socket in the working directory
-    let dir = if len(os.cwd()) < 60 { os.cwd() + "/pgsock" } else { "/tmp/pgwire-fake-" + os.pid().toStr() }
+    let dir = if len(os.cwd()) < 60 { os.cwd() + "/pgsock" + os.pid().toStr() } else { "/tmp/pgwire-fake-" + os.pid().toStr() }
     fs.mkdirAll(dir).unwrap()
     let path = dir + "/.s.PGSQL.5432"
     let gone = fs.remove(path)
@@ -456,6 +458,7 @@ fn authTests() {
         println("trust unix: " + line + " || " + f.wait().unwrap())
     })
     let gone2 = fs.remove(path)
+    let gone3 = fs.remove(dir)
     run("cleartext", serveCleartext, cliPlain)
     run("no password", serveRefuseOnly, cliNoPassword)
     run("md5", serveMd5, cliPlain)
@@ -928,10 +931,40 @@ fn queryTests() {
     run("mutated", serveMutated, cliMutated)
 }
 
+// A server that accepts and never answers.
+fn serveSilent(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {
+            let rest = x.message()
+            return "startup seen, silent"
+        }
+        None { return "closed" }
+    }
+}
+
+fn cliDeadline(): str {
+    let cfg = cfgFor("")
+    let r = task.within(150, fn(): Result[pgwire.Session, pgwire.Error] { return pgwire.connect(&cfg) })
+    return "deadline: " + show(&r, "connected")
+}
+
+fn cliConnectTimeout(): str {
+    let cfg = cfgFor("connect_timeout=1")
+    let r = pgwire.connect(&cfg)
+    return "connect_timeout: " + show(&r, "connected")
+}
+
+fn timeoutTests() {
+    run("silent server, deadline", serveSilent, cliDeadline)
+    run("silent server, connect_timeout", serveSilent, cliConnectTimeout)
+}
+
 fn main() {
     tt.pki()
     authTests()
     tlsTests()
     queryTests()
+    timeoutTests()
     println("tls handles: " + tls.openHandles().toStr())
 }

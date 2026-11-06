@@ -1,0 +1,133 @@
+// pgwire against a live server over TCP with a password: SCRAM-SHA-256, TLS in
+// every sslmode, channel binding, a wrong password, a cancel over TLS. The
+// connection string comes from $OBX_PG_TLS_DSN, else the first line of the file
+// ~/.obo-pg-tls-dsn (a keyword/value line with host, port, user, dbname and
+// password); the test exits 77, skipped, when neither exists or the server does
+// not answer. $OBX_PG_TLS_CA names the CA file for verify-ca (default
+// /etc/ssl/certs/ssl-cert-snakeoil.pem; that line is skipped when the file is
+// missing). Nothing the connection string holds is printed.
+// needs: ssl
+// expect: sslmode=disable: ok | ssl f
+// expect: sslmode=prefer: ok | ssl t
+// expect: sslmode=require: ok | ssl t
+// expect: sslmode=verify-ca: ok | ssl t
+// expect: sslmode=verify-full against the DSN's host: error 1 | tls name error true
+// expect: channel_binding=require over TLS (SCRAM-SHA-256-PLUS): ok
+// expect: channel_binding=require without TLS: error 1 | no PLUS true
+// expect: channel_binding=prefer and disable over TLS: ok ok
+// expect: require_auth=scram-sha-256: ok
+// expect: wrong password: error 1 (28P01) | password not in the text true
+// expect: queries over TLS: 100000 rows | sum 5000050000 | param 84
+// expect: cancel over TLS: error 1021: query: deadline passed | ready true | after 2
+import "pgwire"
+import "sqldialect"
+import "task"
+import "io"
+import "fs"
+import "os"
+
+type Error = pgwire.Error
+
+fn dsn(): str {
+    match os.env("OBX_PG_TLS_DSN") {
+        Some(v) { if len(v) > 0 { return v } }
+        None {}
+    }
+    let path = os.homeDir() + "/.obo-pg-tls-dsn"
+    if !fs.isFile(path) { exit(77) }
+    match io.read(path) {
+        Ok(t) {
+            for line in split(t, '\n') {
+                let l = trim(line)
+                if len(l) > 0 { return l }
+            }
+            exit(77)
+        }
+        Err(_) { exit(77) }
+    }
+}
+
+fn code[T](r: &Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + (if len(e.state) > 0 { " (" + e.state + ")" } else { "" }) }
+    }
+}
+
+fn errMsg[T](r: &Result[T, Error]): str {
+    match r {
+        Ok(_) { return "" }
+        Err(e) { return e.msg }
+    }
+}
+
+fn one(s: mut &pgwire.Session, sql: str): str {
+    match s.query(sql, &[]) {
+        Ok(r) { return if r.rows.isNull(0, 0) { "NULL" } else { r.rows.bytes(0, 0) } }
+        Err(_) { return "failed" }
+    }
+}
+
+const SSL_SQL = "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
+
+fn open(base: str, extra: str): Result[pgwire.Session, Error] {
+    let cfg = try pgwire.parseConfig(base + " " + extra + " connect_timeout=5")
+    return pgwire.connect(&cfg)
+}
+
+fn sslLine(label: str, base: str, extra: str) {
+    match open(base, extra) {
+        Ok(x) {
+            var s = x
+            println(label + ": ok | ssl " + one(mut &s, SSL_SQL))
+        }
+        Err(e) { println(label + ": error " + e.code.toStr()) }
+    }
+}
+
+fn main() {
+    let base = dsn()
+    // the server must answer
+    match open(base, "sslmode=prefer") {
+        Ok(_) {}
+        Err(_) { exit(77) }
+    }
+    sslLine("sslmode=disable", base, "sslmode=disable")
+    sslLine("sslmode=prefer", base, "sslmode=prefer")
+    sslLine("sslmode=require", base, "sslmode=require")
+    let ca = os.envOr("OBX_PG_TLS_CA", "/etc/ssl/certs/ssl-cert-snakeoil.pem")
+    if fs.isFile(ca) {
+        sslLine("sslmode=verify-ca", base, "sslmode=verify-ca sslrootcert=" + ca)
+        let vf = open(base, "sslmode=verify-full sslrootcert=" + ca)
+        match vf {
+            Ok(_) { println("sslmode=verify-full against the DSN's host: ok (the certificate names this host)") }
+            Err(e) { println("sslmode=verify-full against the DSN's host: error " + e.code.toStr() + " | tls name error " + contains(e.msg, "SSL error").toStr()) }
+        }
+    } else {
+        println("sslmode=verify-ca: skipped (no CA file)")
+    }
+    let pl = open(base, "sslmode=require channel_binding=require")
+    println("channel_binding=require over TLS (SCRAM-SHA-256-PLUS): " + code(&pl))
+    let np = open(base, "sslmode=disable channel_binding=require")
+    println("channel_binding=require without TLS: " + code(&np) + " | no PLUS " + contains(errMsg(&np), "did not offer").toStr())
+    let cp = open(base, "sslmode=require channel_binding=prefer")
+    let cd = open(base, "sslmode=require channel_binding=disable")
+    println("channel_binding=prefer and disable over TLS: " + code(&cp) + " " + code(&cd))
+    let ra = open(base, "sslmode=require require_auth=scram-sha-256")
+    println("require_auth=scram-sha-256: " + code(&ra))
+    // a wrong password
+    let wc = pgwire.parseConfig(base + " sslmode=require").unwrap()
+    var bad = wc
+    bad.password = Some("wrong-password-for-the-test")
+    let wr = pgwire.connect(&bad)
+    println("wrong password: " + code(&wr) + " | password not in the text " + (!contains(errMsg(&wr), "wrong-password-for-the-test")).toStr())
+    // queries and a cancel over TLS
+    var s = open(base, "sslmode=require").unwrap()
+    let big = s.query("SELECT count(*), sum(g)::text FROM generate_series(1, 100000) g", &[]).unwrap()
+    let n = pgwire.param(&sqldialect.Value.Int(42)).unwrap()
+    let two = one(mut &s, "SELECT 2")
+    let pr = s.query("SELECT $1::int8 * 2", &[n]).unwrap()
+    println("queries over TLS: " + big.rows.bytes(0, 0) + " rows | sum " + big.rows.bytes(0, 1) + " | param " + pr.rows.bytes(0, 0))
+    let d = task.within(200, fn(): Result[pgwire.Reply, Error] { return s.query("SELECT pg_sleep(30)", &[]) })
+    println("cancel over TLS: " + (if d.isErr() { d.unwrapErr().toStr() } else { "ok" }) + " | ready " + s.ready().toStr() + " | after " + one(mut &s, "SELECT 2"))
+}
