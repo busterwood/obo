@@ -41,7 +41,7 @@
 // expect: verify-ca, no root file: error 1: root certificate file "MISSING" does not exist. || none
 // expect: negotiate minor 0: ok || startup user=u,database=d,client_encoding=UTF8
 // expect: negotiate with an option: error 1: connection to server at "127.0.0.1", port PORT failed: the server does not support the protocol options requested || startup user=u,database=d,client_encoding=UTF8
-// expect: queries: tz Asia/Tokyo | notices 1 | two results: 2 rows tag SELECT 2 1,x;2,NULL; | script error: error 7: division by zero tx 73 ready true state 22012 | extended: 2 rows 1,x;2,NULL; cols a/25 | nodata: 3 cols 0 | empty: true | portal 43 batches 300 rows | rows ok true | ready true | cols 1 | close: more true open true closed ready true idle true then ok | settle: ok ready true | fatal: error 7: terminating connection due to administrator command broken true next error 1023: pgwire: the connection is broken: FATAL: terminating connection due to administrator command || Q:tz Q:two Q:fail ext:PBDES ext:PBDES Q:empty portal:E43 limits 7x42 C0 S1 p5:E1 limits 5 C1 S1 ext:PBDES p5:E1 limits 5 C1 S1 ext:PBDES Q:fatal
+// expect: queries: tz Asia/Tokyo | notices 1 | two results: 2 rows tag SELECT 2 1,x;2,NULL; | script error: error 7: division by zero tx 73 ready true state 22012 | extended: 2 rows 1,x;2,NULL; cols a/25 | nodata: 3 cols 0 | empty: true | portal 43 batches 300 rows | rows ok true | ready true | cols 1 | close: more true open true closed ready true idle true then ok | settle: ok ready true | fatal: error 7: terminating connection due to administrator command broken true next error 1023: pgwire: the connection is broken: FATAL: terminating connection due to administrator command || Q:tz Q:two Q:fail ext:PBDES ext:PBDES Q:empty ext:PBDES portal:rows 300 ext:PBDES p5:rows 300 ext:PBDES ext:PBDES p5:rows 300 ext:PBDES Q:fatal
 // expect: split: split replies: 117 positions: 117 ok || served 117
 // expect: cancel 4: error 1021: query: deadline passed | ready true | after: ok || cancel pid=4242 key=KEYK
 // expect: cancel 32: error 1021: query: deadline passed | ready true | after: ok || cancel pid=77 keylen=32
@@ -536,53 +536,23 @@ fn letter(t: int): str {
     return strFromBytes(&b)
 }
 
-// A portal of `total` rows of one int8 column, served Execute by Execute.
-fn portalReply(first: int, count: int, last: bool, total: int): str {
-    var out = ""
-    for i in 0..count { out = out + pt.dataRow(&[(first + i).toStr()]) }
-    return out + (if last { pt.cmd("SELECT " + total.toStr()) } else { pt.suspended() })
-}
-
-// Serves the messages after an Execute, one portal: the client's Executes (each
-// followed by Flush), Close, Sync. The tokens it saw.
-fn portalFlow(x: mut &pt.Wire, total: int, limit: int, name: str): str {
-    var sent = 0
-    var executes = 0
-    var syncs = 0
-    var closes = 0
-    var limits = ""
-    var cur = limit
-    var out = ""
+// The reply of a stream (fire hose, design/pgwire.md 12): the client's Parse,
+// Bind, Describe, Execute (no row limit) and Sync came in one write, which
+// serveQueries has read; the server sends all `total` rows of one int8 column,
+// in pieces of 7 so the client reads them in several socket reads, then
+// CommandComplete and ReadyForQuery. Nothing is read after the Sync.
+fn portalFlow(x: mut &pt.Wire, total: int, name: str): str {
     x.send(pt.parseOk() + pt.bindOk() + pt.rowDesc(&["n"], &[20]))
-    var pendingExecute = true
-    while true {
-        if pendingExecute {
-            executes += 1
-            limits = limits + (if executes == 1 { "" } else { "," }) + cur.toStr()
-            let take = min(cur, total - sent)
-            let last = sent + take >= total && take < cur
-            x.send(portalReply(sent + 1, take, last, total))
-            sent += take
-            pendingExecute = false
-            if last { sent = total }
-        }
-        let m = match x.message() { Some(m) { m } None { break } }
-        if m.t == 72 { continue }                         // Flush
-        if m.t == 69 {
-            cur = int32of(m.body, 1)
-            pendingExecute = true
-        } else if m.t == 67 {
-            closes += 1
-            x.send(pt.closeOk())
-        } else if m.t == 83 {
-            syncs += 1
-            x.send(pt.ready("I"))
-            break
-        } else {
-            return name + " unexpected " + m.t.toStr()
-        }
+    var sent = 0
+    while sent < total {
+        let take = min(7, total - sent)
+        var out = ""
+        for i in 0..take { out = out + pt.dataRow(&[(sent + i + 1).toStr()]) }
+        x.send(out)
+        sent += take
     }
-    return name + ":E" + executes.toStr() + " limits " + (if executes <= 3 { limits } else { "7x" + (executes - 1).toStr() }) + " C" + closes.toStr() + " S" + syncs.toStr()
+    x.send(pt.cmd("SELECT " + total.toStr()) + pt.ready("I"))
+    return name + ":rows " + total.toStr()
 }
 
 fn serveQueries(ln: net.Listener): str {
@@ -633,9 +603,8 @@ fn serveQueries(ln: net.Listener): str {
             }
             let query = cstrAt(m.body, 1)
             if query == "portal" || query == "p5" {
-                let total = 300
-                let first = if query == "portal" { int32of(exec, 1) } else { 5 }
-                append(mut &log, portalFlow(mut &x, total, first, query))
+                append(mut &log, "ext:" + letters)
+                append(mut &log, portalFlow(mut &x, 300, query))
                 continue
             }
             append(mut &log, "ext:" + letters)
@@ -674,12 +643,12 @@ fn cell(r: &pgwire.Reply, row: int, col: int): str { return r.rows.bytes(row, co
 
 // Reads a 300 row portal in batches of `limit`; rows are checked to be 1..300 in order.
 fn readPortal(s: mut &pgwire.Session, name: str, limit: int): str {
-    let cols = s.openPortal(name, &[], limit).unwrap()
+    let cols = s.openStream(name, &[]).unwrap()
     var batches = 0
     var rows = 0
     var ok = true
     while true {
-        let b = s.receiveBatch().unwrap()
+        let b = s.receiveBatch(limit).unwrap()
         batches += 1
         for i in 0..len(b.rowChunk) {
             var st = [0]
@@ -689,7 +658,6 @@ fn readPortal(s: mut &pgwire.Session, name: str, limit: int): str {
             if b.chunks[int(b.rowChunk[i])][st[0]..st[0] + ln[0]] != rows.toStr() { ok = false }
         }
         if !b.more { break }
-        s.execute(limit).unwrap()
     }
     return batches.toStr() + " batches " + rows.toStr() + " rows | rows ok " + ok.toStr() + " | ready " + s.ready().toStr() + " | cols " + len(cols).toStr()
 }
@@ -712,14 +680,14 @@ fn cliQueries(): str {
     out = out + " | empty: " + f.empty.toStr()
     out = out + " | portal " + readPortal(mut &s, "portal", 7)
     // close early
-    s.openPortal("p5", &[], 5).unwrap()
-    let b5 = s.receiveBatch().unwrap()
+    s.openStream("p5", &[]).unwrap()
+    let b5 = s.receiveBatch(5).unwrap()
     out = out + " | close: more " + b5.more.toStr() + " open " + s.portalOpen().toStr()
     s.closePortal().unwrap()
     out = out + " closed ready " + s.ready().toStr() + " idle " + (s.txStatus() == pgwire.TX_IDLE).toStr() + " then " + show(&s.query("ext", &[]), "ok")
-    // an abandoned portal is settled by the next request
-    s.openPortal("p5", &[], 5).unwrap()
-    let b6 = s.receiveBatch().unwrap()
+    // an abandoned stream is settled by the next request
+    s.openStream("p5", &[]).unwrap()
+    let b6 = s.receiveBatch(5).unwrap()
     out = out + " | settle: " + show(&s.query("ext", &[]), "ok") + " ready " + s.ready().toStr()
     let g = s.script("fatal")
     out = out + " | fatal: " + show(&g, "ok") + " broken " + s.broken().toStr() + " next " + show(&s.script("tz"), "ok")
@@ -899,14 +867,13 @@ fn cliMutated(): str {
         } else if mode == 1 {
             let q = s.query("x", &[])
         } else {
-            match s.openPortal("x", &[], 2) {
+            match s.openStream("x", &[]) {
                 Ok(_) {
                     var k = 0
                     while k < 10 {
-                        match s.receiveBatch() {
+                        match s.receiveBatch(2) {
                             Ok(b) {
                                 if !b.more { break }
-                                if s.execute(2).isErr() { break }
                             }
                             Err(_) { break }
                         }

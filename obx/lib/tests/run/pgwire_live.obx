@@ -112,12 +112,12 @@ fn main() {
     s.script("ROLLBACK").unwrap()
     println("block: " + show(&e3) + " | tx " + t3.toStr() + " | next " + show(&e4) + " | after ROLLBACK tx " + s.txStatus().toStr())
     // a portal in batches
-    let cols = s.openPortal("SELECT g FROM generate_series(1, 10000) g", &[], 1000).unwrap()
+    let cols = s.openStream("SELECT g FROM generate_series(1, 10000) g", &[]).unwrap()
     var batches = 0
     var rows = 0
     var sum = 0
     while true {
-        let b = s.receiveBatch().unwrap()
+        let b = s.receiveBatch(1000).unwrap()
         batches += 1
         for i in 0..len(b.rowChunk) {
             var st = [0]
@@ -128,11 +128,10 @@ fn main() {
             rows += 1
         }
         if !b.more { break }
-        s.execute(1000).unwrap()
     }
     println("portal: " + batches.toStr() + " batches " + rows.toStr() + " rows | ready " + s.ready().toStr() + " | sum " + sum.toStr())
-    s.openPortal("SELECT g FROM generate_series(1, 10000) g", &[], 1000).unwrap()
-    let part = s.receiveBatch().unwrap()
+    s.openStream("SELECT g FROM generate_series(1, 10000) g", &[]).unwrap()
+    let part = s.receiveBatch(1000).unwrap()
     s.closePortal().unwrap()
     println("close portal: rows " + len(part.rowChunk).toStr() + " | closed ready " + s.ready().toStr() + " tx " + s.txStatus().toStr() + " | then " +
             one(mut &s, "SELECT 5"))

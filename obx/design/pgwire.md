@@ -627,76 +627,70 @@ they stay readable after it closes (the test checks it).
 
 ## 12. Streaming
 
+*Changed by the user's decision on 2026-11-06: fire hose instead of Execute row limits.* Row limits went: each Execute with a limit is a round trip (1M rows took 164, 1,376 ms at a 6.4 ms round trip, against libpq's 625 ms), and with no limit the server sends the result once, with TCP flow control holding it back while the program reads slowly.
+
 ### 12.1 The transaction rule
 
-Portals die at the end of their transaction. Outside a transaction block a
-Sync ends the implicit transaction, so the portal must live across Executes
-without a Sync.
+`stream` sends what `query` sends: Parse, Bind, Describe portal, Execute with no row limit, Sync, in one write, on the unnamed portal. The Sync comes after the Execute, so the implicit transaction ends only when the whole result has been sent, and no portal outlives it. Inside an explicit block (`T`) the same messages work: the final Sync does not end the block.
 
 | option | verdict |
 |---|---|
-| Flush instead of Sync between Executes; Sync at the end or at close | **chosen**: the protocol allows it ("A Flush must be sent after any extended-query command except Sync, if the frontend wishes to examine the results"); the implicit transaction stays open while the stream is open, exactly as a running query holds its snapshot today |
+| one write: Execute 0 and Sync | **chosen**: one round trip per stream, as libpq sends a query; memory is bounded by the reader's batch and the socket buffers, because TCP holds the server back |
+| Execute with a row limit, Flush between Executes (P3) | dropped: a round trip per batch, 164 per 1M rows |
 | BEGIN around every stream | an extra round trip, and changes the semantics inside an explicit block |
-| simple protocol, single-row style | no row limit, no clean early close: what we leave libpq to get away from |
-
-Inside an explicit block (`T`) the same messages work: the final Sync does
-not end the block.
 
 ### 12.2 Messages
 
 | moment | client sends | server answers |
 |---|---|---|
-| `stream()` | Parse, Bind, Describe portal, Execute `FIRST_ROWS`, Flush | ParseComplete, BindComplete, RowDescription or NoData, then the first batch |
-| `stream()` returns | after RowDescription: `bind` runs on the columns; the batch stays on the wire | |
-| a batch | | DataRows, then PortalSuspended `s` (more rows) or CommandComplete (the end) or ErrorResponse |
-| more rows | Execute n, Flush (12.4: sent as soon as the previous batch is read) | the next batch |
-| the end | Sync | ReadyForQuery |
-| early close | Close portal, Sync | CloseComplete, ReadyForQuery |
-| an error | Sync | ReadyForQuery |
+| `stream()` | Parse, Bind, Describe portal, Execute 0, Sync: one write | ParseComplete, BindComplete, RowDescription or NoData; `bind` runs on the columns |
+| `fill` needs rows | nothing: the rows are read off the socket as the buffer needs them | DataRows, then CommandComplete (the end) or ErrorResponse, then ReadyForQuery |
+| an error mid-stream | nothing | the rows before it, ErrorResponse, ReadyForQuery: the connection is idle after |
+| early close, or a drop with rows still coming | nothing (12.4) | the rest of the reply, read and discarded, to ReadyForQuery |
 
-### 12.3 Rows per Execute
+### 12.3 Reading
 
-| Execute | rows asked |
-|---|---|
-| the first (sent before the columns are known) | `FIRST_ROWS` = 256: a short result is one round trip |
-| the next ones | the rows of `FETCH_TARGET` (256 KB) at the average DataRow size of the last batch, at least the stream buffer's free space, at least 64, at most what `FETCH_LIMIT` (4 MB) holds at the largest DataRow seen, at most 100,000 |
-| `setFetchRows(n)` | n rows every time (0: the byte rule) |
+`receiveBatch(rowsWanted)` reads DataRows off the socket until `rowsWanted`
+rows are in hand or `BATCH_BYTES` (256 KB) of them are, whichever comes first;
+the rest of the reply stays in the kernel's socket buffers. A buffer of 7
+therefore reads 7 rows per batch, and a stream's memory is one batch (at most
+256 KB of rows, plus the inbox's 64 KB chunk) whatever the size of the result.
+The rows are scanned in place, as before (`scanRow`, no decoding of a row
+until `read` asks for its values).
 
-The constants follow `oracle` (design/oracle.md, "round trips sized by
-bytes"); P3 may tune them by measurement and records why.
+### 12.4 Early close and dropped streams
 
-### 12.4 Fetch-ahead
+Closing a stream early, or dropping it with rows still coming, reads and
+discards the rest of the reply to ReadyForQuery. Each message is taken by its
+length and never decoded. There is no time cap: a drain only reads, and it ends
+when the result does. An ErrorResponse during the drain goes to
+`lastServerError`. A failed read breaks the session. The cost is the transfer
+of the rows nobody reads: closing a 1,000,000-row stream after 10 rows took
+about 210 ms on both backends (measured, P3b), and the next query 0.2 to 0.5 ms.
+A dropped stream is drained by the connection's next call (`idle()` is false
+until then).
 
-As `oracle` does: when a batch's reply has been read to its PortalSuspended,
-the next Execute and Flush are sent at once, and only then are the batch's
-rows handed out. The server makes batch k+1 while the program decodes batch
-k. At most one Execute is outstanding; the stream holds one batch of raw
-rows. `setFetchAhead(false)` sends the Execute when the rows run out (for
-measurement). Buffered `query` has nothing to fetch ahead (one Execute 0).
+**Follow-up, not in P3b:** a CancelRequest on a second connection (as section
+13) would stop the server at once, so the rows nobody reads are never sent.
+It needs the cancel key and the same endpoint, and a cancel that arrives after
+the result ended may hit the next request (as with libpq); both are the
+reason it waits for its own stage.
 
-### 12.5 fill, errors, close
+### 12.5 fill, errors
 
 | event | behaviour |
 |---|---|
-| `fill(out)` | scans the batch's next DataRows in place into the stream's `starts`/`lens`, calls `read(bound, RowView)`, until `out` is full or the batch ends; then reads the outstanding batch (sending the next Execute at once) and goes on |
+| `fill(out)` | scans DataRows in place into the stream's `starts`/`lens`, calls `read(bound, RowView)` until `out` is full or the reply ends; a batch is read when the last one is used |
 | an ErrorResponse after rows | the rows first, the error from the next `fill` (as today: `later error: 4999 rows then error 7 22012`) |
-| `read` or a decoder fails | the stream ends with that error; the portal is closed (Close, Sync) |
-| `close()` with no Execute outstanding | Close portal, Sync; read CloseComplete and ReadyForQuery |
-| `close()` with an Execute outstanding | read its reply and drop it; if it has not ended within `CLOSE_WAIT_MS` (1,000 ms: a slow query), send a CancelRequest and keep reading, at most `ABORT_MS` (5,000 ms) in all; then Close, Sync (after an error: Sync). Past `ABORT_MS`: broken |
-| the end (CommandComplete) | Sync, read ReadyForQuery; `fill` returns 0 |
-
-### 12.6 A dropped stream
-
-`Stream` holds `mut &Conn` and has no `drop` (a value record of borrows).
-The next call on the connection settles it first, with `close()`'s steps.
-`idle()` is false until then (as today: `dropped: 3 rows | idle false |
-after: 2 | idle true`).
+| `read` or a decoder fails | the stream ends with that error; the rest of its reply is drained |
+| the end (CommandComplete) | ReadyForQuery is read; `fill` returns 0 |
+| `roundTrips()` | 1 per stream (the Execute's round trip; the Sync and the drain are not counted) |
 
 ## 13. Cancellation
 
 | piece | rule |
 |---|---|
-| when | a task cancelled, or past its deadline, while it waits for a reply; `close()` of a slow stream (12.5) |
+| when | a task cancelled, or past its deadline, while it waits for a reply; a stream closed or dropped early does not cancel: it is drained (12.4) |
 | how | a new connection to the same endpoint (the socket path, or the address that worked), no SSLRequest, CancelRequest (Int32 16, Int32 80877102, Int32 pid, the key), then wait for the server to close it (at most 1 s), as libpq 16's `PQcancel` |
 | then | read the original connection's reply to its ReadyForQuery (sending Sync first if a stream's portal is open), at most `ABORT_MS` (5,000 ms), dropping what comes (57014 "canceling statement due to user request" expected) |
 | I/O in a cancelled task | through `net`'s and `tls`'s `...For(ms)` calls (P0), which ignore the task's cancellation and deadline: the same thing today's `postgres` does with `rtFdWait(..., cancellable false)` |
@@ -1313,3 +1307,79 @@ At this scale the two clients serve GET /db at the same rate: about 22,000
 requests/s at 10 or more clients and about 2,900 at one client, and about
 20,000 requests/s with one worker in each pool. Nothing in these runs
 favours either client.
+
+## 28. As built (P3b)
+
+Branch `pgwire-p3b` (from 12031e6e). Section 12 as the user decided on
+2026-11-06: fire hose, one Execute with no row limit, no Flush.
+
+**Differences from the brief.**
+
+- **Early close is a drain, not a cancel** (the coordinator's change, before
+  any cancel code was merged): `closePortal` and a dropped stream read and
+  discard the rest of the reply to ReadyForQuery (`discardRest`), by message
+  length, with no decoding of DataRows and no ABORT_MS cap. An ErrorResponse
+  during the drain goes to `lastServerError` (57014 included). A failed read
+  breaks the session. **Follow-up:** a CancelRequest on a second connection, as
+  section 13, to stop the server at once (12.4).
+- **A cancelled task still cancels** (`abort`: CancelRequest, then drain up to
+  ABORT_MS, as in P2): the existing task cancellation, not the stream close.
+- **Open:** `discardRest` reads with the task's Where, so a task cancelled
+  during a drain breaks the session (the drain stops; the next call reports
+  the broken connection). Not in the brief; the user may want the drain
+  uncancellable.
+- **Session API**: `openStream(sql, params, w)` replaces `openPortal`
+  (no row count); `receiveBatch(rowsWanted, w)` reads at most `rowsWanted` rows
+  or `BATCH_BYTES` (256 KB) of DataRows; `execute` and `syncUp` are gone.
+  `Batch` lost `bytes` and `widest`. `CLOSE_WAIT_MS` is gone (no cancel on
+  close).
+- **postgres API**: `setFetchRows`, `setFetchAhead`, the fetch sizing and the
+  fetch-ahead are removed (they were never released). `Conn` has only the
+  session. `roundTrips()` is 1 per streamed query (the Execute; the Sync and
+  the drain are not round trips of the query's work). Buffered `query` is
+  unchanged.
+- **Early close cost**: closing a 1,000,000-row stream after 10 rows, the drain
+  takes about 200 to 220 ms on both backends (C 203, 215, 219 ms; native 213,
+  222, 218 ms, three rounds in one connection); the next query then takes
+  0.2 to 0.5 ms (`closetime` scratch program, not committed).
+
+**Tests.** Changed:
+
+- `postgres_live_fetch`: rewritten for fire hose (narrow and wide rows against
+  the buffered query, a buffer of 7, a 1M-row stream closed after 10 rows and
+  reused, a drop, an error on row 500 through buffers of 7 and 1000, one round
+  trip per stream). Its expect lines are new; the live test ran (not skipped).
+- `pgwire_fake`: the portal is served as one reply (Parse, Bind, Describe,
+  Execute, Sync in one request; the rows sent in pieces of 7, then
+  CommandComplete and ReadyForQuery); `readPortal`, the early close and the
+  settle use `openStream`/`receiveBatch(n)`; `cliMutated` loops on
+  `receiveBatch`. The one expect line that changed is `queries`, in its server
+  log only (`portal:E43 limits 7x42 ...` became `portal:rows 300`); every
+  client-visible value of it is unchanged (43 batches, 300 rows, closed ready,
+  settle). The TLS verify-ca and verify-full lines failed once with "certificate
+  is not yet valid" (the test PKI is made fresh per run); the next two runs
+  passed. Not a stream problem; noted.
+- `pgwire_live`: `openPortal`/`execute` replaced by `openStream`/
+  `receiveBatch(1000)` (the same 11 batches, the same sums). Expect lines
+  unchanged.
+- `postgres_live_stream`, `postgres_live_diff` (the streamed half), all other
+  postgres, pgwire and task_postgres tests: expect lines unchanged.
+
+**Measured** (dbstream, `--cpu 10`, a quiet box, load under 1; the full
+outputs: `p3b_0ms.txt`, `p3b_latency_pg.txt`; the oracle latency table
+`p3b_latency.txt` was run first by mistake and is not used here). Milliseconds for
+1,000,000 rows, pg client (pglibpq in brackets):
+
+| one way | pg C stream | pg native stream | pg native buffered | [pglibpq native stream] |
+|---|---:|---:|---:|---:|
+| 0 ms | 438 | 386 | 656 | 598 |
+| 2.5 ms | 461 | 431 | 689 | 607 |
+
+P3 at 0 ms: streamed 497 ms, latency run 430 ms. Native streamed is now 386
+ms at 0 ms (the 0 ms table of the first run: 395 ms); at 2.5 ms it is 431 ms,
+within 10% of libpq and faster than it. Peak RSS of the native stream stays
+at 12 to 13 MB at 1,000,000 rows (buffered 94 to 114 MB).
+
+**Open:** the cancel on a second connection (the follow-up above); a drain
+that the task cancellation should not break (the open item above); the batch
+size at high latency is unchanged (note 8 of section 21).
