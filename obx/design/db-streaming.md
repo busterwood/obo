@@ -153,7 +153,27 @@ checksum (equal across modes), buffer 1,024 rows, peak RSS of the process
 (VmHWM), least of 3 interleaved runs pinned to one CPU. The servers run on
 the same machine.
 
-RESULTS_TABLE
+Measured 2026-11-06 13:53 on CPU 10 (11 idle), branch `streaming` at
+deb05bea. The load average was 4.1 at the start and 12.6 at the end (other
+agents' builds on other CPUs, and the servers on this machine): take the
+times as indicative; the memory numbers do not depend on it.
+
+| client | backend | streamed 100,000 | streamed 1,000,000 | buffered 1,000,000 |
+|---|---|---:|---:|---:|
+| SQL Server | C | 137 ms, 11.2 MB | 668 ms, 11.2 MB | 1,590 ms, 364.5 MB |
+| SQL Server | native | 139 ms, 11.7 MB | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB |
+| PostgreSQL | C | 114 ms, 8.0 MB | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB |
+| PostgreSQL | native | 85 ms, 8.4 MB | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB |
+| Oracle | C | 183 ms, 10.5 MB | 1,460 ms, 10.5 MB | 2,114 ms, 378.0 MB |
+| Oracle | native | 171 ms, 11.0 MB | 1,346 ms, 11.1 MB | 2,323 ms, 410.4 MB |
+
+- Peak RSS stays flat while streaming: the same at 100,000 and 1,000,000
+  rows (8 to 12 MB, the program and the buffer). Buffered grows with the
+  result: 109 MB (libpq's PGresult) to 365 to 410 MB (Cells per value).
+- Streaming is faster everywhere: 2.4x to 2.7x for SQL Server, 1.0x to
+  1.8x for PostgreSQL (libpq's per-row PGresult costs about as much as
+  the whole buffered result's parse via C), 1.4x to 1.7x for Oracle.
+- The checksums are equal in every row (rows, ids, name lengths, amounts).
 
 ## 8. API as built
 
