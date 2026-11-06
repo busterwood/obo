@@ -1,6 +1,6 @@
 # A native Oracle Database client
 
-Status: stages O1 to O3 built (branch `oracle`; see "As built" at the end);
+Status: stages O1 to O3 and O5 built (see the "As built" sections at the end);
 items marked **provisional, for the user** are choices made to get going that
 the user should confirm or change.
 
@@ -257,9 +257,77 @@ The test container: `obx/tools/oracle_container.sh create` (rootless podman,
 `~/.obo-oracle-dsn` mode 600), `tls` (run by create: orapki from a throwaway
 container of the full image makes a self-signed CN=localhost wallet; the CA
 goes to `~/.obo-oracle-ca.pem` and the TLS Data Source to `~/.obo-oracle-tls`),
-`start` after a reboot, `stop`, `status`, `logs`, `rm`.
+`start` after a reboot, `stop`, `status`, `logs`, `rm`, and `grants` (run by
+create: SELECT on V$MYSTAT, V$STATNAME and V$OPEN_CURSOR for APP, which the
+cursor leak check of `oracle_live_out` reads).
 
-Next stages: O4 LOBs (LONG defines, then locators), REF CURSORs and implicit
-results, PL/SQL OUT binds, intervals, JSON and VECTOR, REDIRECT packets (RAC
-and shared servers), out-of-band breaks, statement cache, pooling and DRCP,
-Advanced Queuing, NNE.
+## As built: OUT binds, REF CURSORs, implicit results (O5)
+
+Branch `oracle-out`. Live on 23.26 Free on the C and the native backend
+under `OBX_CHECK=1` (`oracle_live_out`; the placeholder parser also offline
+in `tns_codec`).
+
+API, the shape of `sqlserver.call`:
+
+    conn.call(sql, args: &[Value], outs: &[Out], w): Result[Results, Error]
+    conn.callWith(sql, params: &[Param], outs: &[Out], w)
+    oracle.out(name, sqlType): Out              // OUT
+    oracle.inOut(name, sqlType, value: Param): Out  // IN OUT
+    Results{sets: []Rows, outputs: Rows, affected: int}
+
+- **Binding** (provisional, for the user): `tns.placeholders` finds the
+  statement's placeholders the way python-oracledb's StatementParser does
+  (strings, q-strings, quoted names and comments skipped; each occurrence in
+  SQL, each name once in PL/SQL; the ones after RETURNING ... INTO in DML
+  marked). A placeholder whose name is an Out's (without ':', upper case
+  unless written in double quotes) takes that Out; the others take args in
+  order. An Out without a placeholder, two Outs of one name, an unknown
+  type, too many or too few args are E_INPUT before anything is sent.
+  sqlserver's outs come after the args by position; Oracle binds by
+  position too, so naming the Outs keeps the args positional however the
+  two are interleaved in the SQL.
+- **Types and sizes** (provisional, for the user): `Out.sqlType` is the
+  Oracle type: NUMBER[(p[,s])] (p and s only label the output column, so
+  `decimal()` shows NUMBER(10,2) as 12.50), INTEGER, BINARY_DOUBLE,
+  BINARY_FLOAT (bound as BINARY_DOUBLE: the widening is exact),
+  VARCHAR2(n) / CHAR(n) / RAW(n) in bytes (`n CHAR`: 4n bytes),
+  NVARCHAR2(n) / NCHAR(n) in UTF-16 units, DATE, TIMESTAMP, TIMESTAMP WITH
+  TIME ZONE, BOOLEAN (23ai), SYS_REFCURSOR / REF CURSOR. The size is the bind
+  buffer: a longer value is the server's ORA-06502 ("character string buffer
+  too small"), and an IN OUT value longer than its size is E_INPUT. An OUT
+  value the server still cut (its actual length is not 0) fails the call,
+  never a shortened value.
+- **Wire** (python-oracledb's messages/base.pyx): binds carry no direction;
+  the server answers a PL/SQL execute with an IO_VECTOR giving each bind's
+  (IN 32, OUT 16, IN OUT 48), then one ROW_DATA with the OUT and IN OUT
+  values in bind order, each followed by its actual length. DML RETURNING
+  binds are declared with the others but get no value in the request; each
+  comes back as a count and that many values (one row of `outputs` per row
+  changed). FLUSH_OUT_BINDS is answered with a FLUSH_OUT_BINDS request.
+- **REF CURSORs**: an OUT cursor is sent as NULL (1, 0) and comes back as a
+  describe and a cursor id. Its rows are fetched with an EXECUTE carrying
+  FETCH alone on that cursor (python does this for a cursor without SQL),
+  Fetch Size rows a round trip, and the cursor is closed by the
+  CLOSE_CURSORS piggyback of the next request, also when a fetch fails (the
+  query of an opened cursor can fail only then: ORA-01476 for 1/0) and when
+  an earlier cursor of the call failed. `Results.sets` holds the cursors in
+  the order of the Outs, then the implicit results (IMPLICIT_RESULTSET: a
+  describe and a cursor id each), after a query's own rows when the
+  statement is a query. A cursor the PL/SQL never opened comes back with id
+  0: E_INPUT "REF CURSOR :c was not opened by the PL/SQL". Cursor Outs are
+  not columns of `outputs` (provisional). Strong REF CURSOR types work the
+  same way (the describe gives the columns).
+- **Leaks**: `oracle_live_out` runs twenty rounds of cursors, failing
+  cursors, unopened cursors and implicit results and compares the session's
+  "opened cursors current" before and after: equal (the count is taken after
+  a first round, as PL/SQL keeps its own static SQL's cursors open; with the
+  close left out the check sees 100 more).
+- `query`/`run` with a PL/SQL block that has OUT binds now run (the values
+  are dropped) instead of failing on the IO_VECTOR; any cursor such a reply
+  returns is closed.
+
+Next stages: O4 LOBs (LONG defines, then locators; LOB OUT binds),
+PL/SQL collections and records as binds, array DML (executemany), REF
+CURSOR IN binds, nested cursors (CURSOR(...) columns), intervals, JSON and
+VECTOR, REDIRECT packets (RAC and shared servers), out-of-band breaks,
+statement cache, pooling and DRCP, Advanced Queuing, NNE.
