@@ -153,6 +153,7 @@ type Gen = record {
     scanExpr: int               // > 0: the scan is in the body of a call generated in place (one position)
     loud: []bool                // per position: its code may change rsi, rdi, r8 or r9 (calls, ...)
     loud89: []bool              // ... may change r8 or r9 but not rsi and rdi (128-bit arithmetic)
+    any89: bool                 // ... some position is
     fpLoud: []bool              // ... may change xmm8-xmm14 (calls but of native/math.c, ...)
     fpKeep: Map[str, bool]      // the runtime functions that leave xmm8-xmm15 alone (rtx.FP_KEEP)
     regions: []int              // the loops: first and last position of each
@@ -252,7 +253,7 @@ fn newGen(u: ir.Ir): Gen {
         strs: [], flts: [], fltSym: newMap(), funcPos: [], pend: [], pendLo: 0, pendN: 0, order: [], gLive: [], gQueue: [], relocSeen: 0, slots: [], frame: 0, maxFrame: 0, outArgs: 0, declMark: 0, breakL: [], contL: [],
         caseL: newMap(), retPtr: 0, wideAt: -1, initVia: 0, viaLoaded: false, retTy: 0, epiL: -1, epiJmps: [], loopTops: [], funcAlign: padFromEnv("OBX_FALIGN", FUNC_ALIGN), padBefore: padFromEnv("OBX_PADB", 0), loopEnds: [], entrySym: -1, dyn: false, libs: [], imports: [], importSym: newMap(), stubs: [],
         stubOf: newMap(), codeEnd: 0, reg: [], freg: [], preg: [], preg2: [], fpLoud: [], fpKeep: newMap(), uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
-        noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], loud89: [], regions: [], openLoops: [],
+        noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], loud89: [], any89: false, regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
         loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, simpF: -1, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
         inlPos: -1, held: [], nLocalRegs: 0, bareRet: false, rm: newMap(), noCopy: -1, sites: [],
@@ -993,6 +994,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
     g.pos = 0
     g.loud = [true]                     // position 0: the entry, where the arguments arrive
     g.loud89 = [false]
+    g.any89 = false
     g.fpLoud = [false]                  // ... in xmm0-xmm7 (the prologue moves doubles from there)
     g.sites = []
     g.noSites = 0
@@ -1045,9 +1047,12 @@ fn (g: mut &Gen) allocRegs(f: int) {
     var loudBefore: []int = [0]
     for i in 0..len(g.loud) { append(mut &loudBefore, loudBefore[i] + (if g.loud[i] { 1 } else { 0 })) }
     // ... and of the positions that may change r8 and r9
+    // (most functions have none: then the same counts)
     var l89Before: []int = [0]
-    for i in 0..len(g.loud) {
-        append(mut &l89Before, l89Before[i] + (if g.loud[i] || g.loud89[i] { 1 } else { 0 }))
+    if g.any89 {
+        for i in 0..len(g.loud) {
+            append(mut &l89Before, l89Before[i] + (if g.loud[i] || g.loud89[i] { 1 } else { 0 }))
+        }
     }
     // the data pointer and the length of a str that loops hoisted (they save two loads and one a
     // use): half the weight, and no register of their own to save
@@ -1109,7 +1114,7 @@ fn (g: mut &Gen) allocRegs(f: int) {
         }
         var r = -1
         let quiet = g.quietLive(l, &loudBefore) || g.quietTail(l, false)
-        let quiet89 = g.quietLive(l, &l89Before) || g.quietTail(l, true)
+        let quiet89 = quiet && (!g.any89 || g.quietLive(l, &l89Before) || g.quietTail(l, true))
         if quiet {
             for q in QUIET_REGS {
                 if r < 0 && (quiet89 || (q != R8 && q != R9)) && g.regFree(&given, q, l) { r = q }
@@ -1178,7 +1183,7 @@ fn (g: mut &Gen) spillReg(given: mut &[][]int, l: int, innerSite: &[]int, loudBe
         }
     }
     var has89 = false
-    for i in 0..len(sp) / 2 {
+    for i in 0..(if g.any89 { len(sp) / 2 } else { 0 }) {
         for p in sp[2 * i]..sp[2 * i + 1] + 1 {
             if g.loud89[p] { has89 = true }
         }
@@ -1721,10 +1726,10 @@ fn (g: mut &Gen) forwardLit(l: int, j: int) {
     let x = g.u.listAt(l, j)
     let t = g.u.nodes[x].a
     let y = g.u.listAt(l, j + 1)
-    let ty = g.u.locals[t].ty
-    if g.uses[t] != 2 || !g.isAggr(ty) || g.aTaken[t] { return }
     let v = g.u.nodes[x].b
-    if g.u.nk(v) != ir.E_CLIT || g.u.nodes[v].ty != ty { return }
+    if g.u.nk(v) != ir.E_CLIT || g.uses[t] != 2 || g.aTaken[t] { return }
+    let ty = g.u.locals[t].ty
+    if !g.isAggr(ty) || g.u.nodes[v].ty != ty { return }
     let yk = g.u.nk(y)
     var root = -1
     if yk == ir.S_EXPR || yk == ir.S_RETURN {
@@ -2012,6 +2017,7 @@ fn (g: &Gen) loud89Node(x: int): bool {
 // Whether the call e of a runtime function on u128 values is generated inline by inlineU128
 // (with no call; r8 to r11 changed).
 fn (g: &Gen) inline128(e: int): bool {
+    if !g.is128(g.u.nodes[e].ty) { return false }     // all of them give 128-bit values
     let name = g.rtName(e)
     let n = g.u.nodes[e]
     let nargs = g.u.listLen(n.b)
@@ -2122,6 +2128,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
     if !g.counting && x != g.noCopy && g.loudNode(x) {
         if g.loud89Node(x) {
             g.loud89[g.pos] = true
+            g.any89 = true
         } else {
             g.loud[g.pos] = true
             g.fpLoud[g.pos] = true
@@ -2188,6 +2195,7 @@ fn (g: mut &Gen) scan(x: int, depth: int) {
             g.unalias(&ch)
         } else if !g.counting && g.inline128(x) {
             g.loud89[g.pos] = true
+            g.any89 = true
         } else if !g.counting && !g.quietRt(x) {
             g.loud[g.pos] = true
             if !g.fpKeepCall(x) { g.fpLoud[g.pos] = true }
@@ -3159,9 +3167,10 @@ fn (g: mut &Gen) genReturn(x: int) {
     if !g.isAggr(t) { return }
     let cls = g.classify(t)
     if cls[0] == CL_MEM {
-        let wide = g.a.pos() == g.wideAt
+        // 16 bytes at a time whatever the value is: measured, a returned value is seldom one
+        // just written by narrower stores (the compiler 0.3% fewer instructions; Decimal the same)
         g.a.load(8, R11, rbp(g.retPtr))
-        if wide { g.wideAt = g.a.pos() }
+        g.wideAt = g.a.pos()
         g.copyMem(x64.mem(R11, 0), x64.mem(RAX, 0), g.size(t))
         g.a.movRR(8, RAX, R11)
         return
@@ -3530,7 +3539,8 @@ fn (g: mut &Gen) fillEntries(s: int, n: int, ents: int) {
     // value, zero-extended, stored as the whole word. Zeroing the word and then storing the byte
     // would make a later 8-byte load of the word wait (it cannot be forwarded from two stores):
     // Decimal's sign behind its zeroed padding, read by the copy of the record
-    var alone: []bool = array(g.u.listLen(ents), false)
+    var alone: []bool = []                  // made when one is
+
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
         let k = g.tk(en.ty)
@@ -3541,11 +3551,14 @@ fn (g: mut &Gen) fillEntries(s: int, n: int, ents: int) {
             let o = g.u.nodes[g.u.listAt(ents, i)]
             if i != j && o.v < en.v + 8 && o.v + g.size(o.ty) > en.v { other = true }
         }
-        alone[j] = !other
+        if !other {
+            if len(alone) == 0 { alone = array(g.u.listLen(ents), false) }
+            alone[j] = true
+        }
     }
     for j in 0..g.u.listLen(ents) {
         let en = g.u.nodes[g.u.listAt(ents, j)]
-        var sz = if alone[j] { 8 } else { g.size(en.ty) }
+        var sz = if len(alone) > 0 && alone[j] { 8 } else { g.size(en.ty) }
         if g.u.nk(en.a) == ir.E_STR && g.tk(en.ty) == ir.TY_ARR && len(g.u.strs[g.u.nodes[en.a].v]) + 1 < sz {
             sz = len(g.u.strs[g.u.nodes[en.a].v]) + 1            // the copied bytes; the rest stays zero
         }
@@ -3594,7 +3607,7 @@ fn (g: mut &Gen) fillEntries(s: int, n: int, ents: int) {
         } else if g.isAggr(t) && g.u.nk(x) == ir.E_CLIT && g.u.nodes[x].ty == t {
             // a literal inside: built in its place
             g.fillEntries(s + en.v, g.size(t), g.u.nodes[x].b)
-        } else if alone[j] && g.directOk(x, t) {
+        } else if len(alone) > 0 && alone[j] && g.directOk(x, t) {
             let cv = g.intConst(x, t)
             if cv.c == 0 && x64.fits32(cv.v) {
                 g.a.storeI(8, g.initAt(s + en.v), cv.v)
@@ -3607,7 +3620,7 @@ fn (g: mut &Gen) fillEntries(s: int, n: int, ents: int) {
         } else {
             g.gen(x)
             g.viaLoaded = false
-            if alone[j] {
+            if len(alone) > 0 && alone[j] {
                 if !g.normAs(g.u.nodes[x].ty, t) { g.normR(g.tk(t), RAX) }
                 g.a.store(8, g.initAt(s + en.v), RAX)
             } else {
@@ -3661,11 +3674,11 @@ fn (g: mut &Gen) genAddr(e: int) {
         g.a.movRSym(RAX, g.symStr(g.u.strs[n.v]), 0)
     } else if k == ir.E_DEREF {
         g.gen(n.a)
-        if g.inElement(e) { g.wideAt = g.a.pos() }
+        if g.inElement(e) || g.viaPtr(e) { g.wideAt = g.a.pos() }
     } else if k == ir.E_MEMBER {
         let m = g.place(e)
         if m.base != RAX || m.index >= 0 || m.disp != 0 { g.a.lea(RAX, m) }
-        if g.inElement(e) { g.wideAt = g.a.pos() }
+        if g.inElement(e) || g.viaPtr(e) { g.wideAt = g.a.pos() }
     } else if k == ir.E_CLIT {
         let s = g.tempFor(n.ty)
         g.initEntries(s, g.size(n.ty), n.b)
@@ -3682,6 +3695,18 @@ fn (g: &Gen) inElement(e: int): bool {
     var x = e
     while g.u.nk(x) == ir.E_MEMBER { x = g.u.nodes[x].a }
     return g.u.nk(x) == ir.E_DEREF && g.u.nk(g.u.nodes[x].a) == ir.E_PADD
+}
+
+// Whether the place e is reached through a pointer held in a local or loaded from memory (not
+// the address of a local): mostly memory written long before.
+fn (g: &Gen) viaPtr(e: int): bool {
+    var x = e
+    while g.u.nk(x) == ir.E_MEMBER { x = g.u.nodes[x].a }
+    if g.u.nk(x) != ir.E_DEREF { return false }
+    var y = g.u.nodes[x].a
+    while g.u.nk(y) == ir.E_CAST { y = g.u.nodes[y].a }
+    let k = g.u.nk(y)
+    return k == ir.E_LOCAL || k == ir.E_MEMBER || k == ir.E_DEREF
 }
 
 // Whether e can be loaded into a register other than rax with no other register used.
@@ -5904,7 +5929,7 @@ fn (g: mut &Gen) genCall(e: int) {
     var slots: []int = []
     var dups: []int = []
     var hregs: []int = []           // an integer argument held in a callee-saved register, or -1
-    var inOut: []bool = array(nargs, false)  // an aggregate written straight to its place in the outgoing area
+    var inOut: []bool = []                  // an aggregate written straight to its place in the outgoing area (made when one is)
     for j in 0..nargs {
         let x = g.u.listAt(n.b, j)
         let t = pts[j]
@@ -5926,6 +5951,7 @@ fn (g: mut &Gen) genCall(e: int) {
                 g.gen(x)
                 g.copyMem(x64.mem(RSP, place[j]), x64.mem(RAX, 0), ir.alignUp(g.size(t), 8))
             }
+            if len(inOut) == 0 { inOut = array(nargs, false) }
             inOut[j] = true
             append(mut &slots, 0)
             continue
@@ -6014,7 +6040,7 @@ fn (g: mut &Gen) genCall(e: int) {
         }
     }
     for j in 0..nargs {
-        if place[j] >= 0 && !inOut[j] {
+        if place[j] >= 0 && (len(inOut) == 0 || !inOut[j]) {
             let t = pts[j]
             g.copyMem(x64.mem(RSP, place[j]), rbp(slots[j]), ir.alignUp(g.size(t), 8))
         }
