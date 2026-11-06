@@ -116,17 +116,17 @@ unconstrained numeric (`sum(int8)`) follows the same rule.
 
 ## 5. Per client
 
-| | SQL Server (`sqlserver` over `tds`) | PostgreSQL (`postgres` over libpq) | Oracle (`oracle` over `tns`) |
+| | SQL Server (`sqlserver` over `tds`) | PostgreSQL (`postgres` over `pgwire`) | Oracle (`oracle` over `tns`) |
 |---|---|---|---|
-| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | libpq single-row mode (`PQsetSingleRowMode`): one PGresult per row, its values copied into one row string; text format | FETCH round trips; ROW_DATA scanned in place (`tns.scanRaw`) and kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too); a row cut off at a packet's end is scanned again with the next packet joined on |
-| per fill | as many packets as the buffer needs | as many rows as the buffer holds, parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB: at the widest row for the first FETCH (`Conn.rowsFor`), then at the size the last rows took, at most 4 MB at the widest row (`tns.rowsSeen`); `Fetch Size` when set; rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
-| state while open | in the `Session` (`RowReader`) | in the stream (the pending PGresult) and libpq | in the stream (the last fetch) and the `Session` (`streamCursor`; `pending`: a FETCH sent ahead whose reply is not read) |
-| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | `PQcancel`, then the results read to the end (at most 5 s, as for a cancelled query) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
-| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call cancels first (libpq says a command is active); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
+| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | portal batches (Execute with a row limit: 256 rows, then 1,024): the DataRows of a batch kept as they came off the wire and scanned in place (`pgwire.scanRow`) into the stream's spans; text format. The first batch is left on the wire until the first `fill`, so a statement that fails before its first row reports it from the first `fill`, not from `stream()` | FETCH round trips; ROW_DATA scanned in place (`tns.scanRaw`) and kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too); a row cut off at a packet's end is scanned again with the next packet joined on |
+| per fill | as many packets as the buffer needs | as many rows as the buffer holds; when a batch is used up, Execute 1,024 and read it (no fetching ahead yet: P3), parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB: at the widest row for the first FETCH (`Conn.rowsFor`), then at the size the last rows took, at most 4 MB at the widest row (`tns.rowsSeen`); `Fetch Size` when set; rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
+| state while open | in the `Session` (`RowReader`) | in the stream (the current batch) and the `Session` (the open portal, `pending`: an Execute whose reply is not read) | in the stream (the last fetch) and the `Session` (`streamCursor`; `pending`: a FETCH sent ahead whose reply is not read) |
+| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | Close portal and Sync (the portal is closed on the server; no cancel unless a running Execute is slow to answer, 1 s, then a CancelRequest, 5 s in all) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
+| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call closes the portal first (the session is in the portal state); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
 | more result sets | the first is streamed; at its end the rest of the reply is read and skipped; their errors come from `fill` | one statement only (as `query`) | one statement |
 | error after some rows | rows then `Err` (8134 at row 5,000: 4,999 rows, then the error) | rows then `Err` (22012: 4,999 rows) | the FETCH that fails brings no rows: with 3,449-row fetches (76-byte rows) 3,449 rows, then ORA-01476, also when that FETCH was sent ahead |
 | using the connection while open | refused by the checker (the stream holds `mut &Conn`) | the same (`mut &Conn`; `&Conn` methods are refused too) | the same |
-| chunked rows | - | libpq 17's `PQsetChunkedRowsMode` is not used: this machine has libpq 16 and the extern would not link; obx cannot call a symbol looked up at run time | - |
+| chunked rows | - | not relevant: Execute's row limit does the same on the wire (libpq 17's `PQsetChunkedRowsMode` was never used) | - |
 
 Rows before an error: when an error comes after rows in the same `fill`,
 the rows are returned first and the error comes from the next `fill`
@@ -152,6 +152,8 @@ decimal(12,2)), every value decoded into an `Order` and folded into a
 checksum (equal across modes), buffer 1,024 rows, peak RSS of the process
 (VmHWM), least of 3 interleaved runs pinned to one CPU. The servers run on
 the same machine.
+
+(The PostgreSQL rows of the tables below were measured with the libpq client, before `postgres` moved to `pgwire`; the native client is measured in P3 of design/pgwire-stages.md.)
 
 Measured 2026-11-06 13:53 on CPU 10 (11 idle), branch `streaming` at
 deb05bea. The load average was 4.1 at the start and 12.6 at the end (other

@@ -2219,3 +2219,14 @@ quantize. What remains on M2:6 is BMI2 (gcc's `mulx`), left as it is. A
 Decimal) still stalls in every build; passing such values by pointer in the
 generated C would remove it. On the other bench programs the flags change no
 instruction counts, and natively (perfsuite) none at all.
+
+### PostgreSQL on its own protocol (2026-11-06)
+
+`postgres` no longer calls libpq: it is a thin API over `pgwire`, the native
+protocol module (connection strings, TLS, SCRAM, simple and extended queries,
+portals, cancel requests). The old client lives on as `postgres_libpq`, the
+oracle of `postgres_live_diff`, which runs thousands of queries through both
+(edge values of every mapped type, 2,000 generated rows, parameters, errors),
+buffered and streamed, and compares every column, cell and error. The calls now
+take `mut &Conn`, as `oracle` and `sqlserver` do, and `transaction`'s body
+gets the connection back. See `obx/design/pgwire.md`, "As built (P2)".
