@@ -78,8 +78,14 @@ pub const OID_TIME = pgwire.OID_TIME
 pub const OID_TIMESTAMP = pgwire.OID_TIMESTAMP
 pub const OID_TIMESTAMPTZ = pgwire.OID_TIMESTAMPTZ
 
-const FIRST_ROWS = 256             // the first Execute of a stream: a short result is one round trip
-const NEXT_ROWS = 1024             // the later ones (P3 sizes them by bytes and fetches ahead)
+// Rows per Execute of a stream (design/pgwire.md 12.3): the first asks for
+// FIRST_ROWS, so a short result is one round trip; the later ones for the
+// rows of FETCH_TARGET bytes at the average row of the last batch.
+const FIRST_ROWS = 256
+const FETCH_TARGET = 262144        // bytes a later Execute asks for, at the average DataRow
+const FETCH_LIMIT = 4194304        // at most this many bytes, at the widest DataRow seen
+const MIN_ROWS = 64
+const MAX_ROWS = 100000
 
 var OPEN: int = 0
 
@@ -88,7 +94,9 @@ pub fn openHandles(): int { return OPEN }
 
 // -------------------------------------------------------------- connections
 
-pub type Conn = record { s: pgwire.Session }
+// fetchRows: rows each later Execute asks for (0: by bytes); ahead: whether a
+// stream sends its next Execute as a batch arrives (setFetchAhead).
+pub type Conn = record { s: pgwire.Session; fetchRows: int; ahead: bool }
 
 fn (c: mut &Conn) drop() {
     c.s.close()
@@ -103,11 +111,22 @@ pub fn connect(conninfo: str, w: Where): Result[Conn, Error] {
     let cfg = try pgwire.parseConfig(conninfo)
     let s = try pgwire.connect(&cfg, w)
     OPEN += 1
-    return Ok(Conn{s: s})
+    return Ok(Conn{s: s, fetchRows: 0, ahead: true})
 }
 
 // Closes the connection (dropping it does the same).
 pub fn (c: Conn) close() {}
+
+// The number of round trips the connection has made, the login included.
+pub fn (c: &Conn) roundTrips(): int { return c.s.roundTrips() }
+
+// The rows each later Execute of a stream asks for, 1 to 100,000; 0 (or less)
+// sizes them by bytes (the default).
+pub fn (c: mut &Conn) setFetchRows(n: int) { c.fetchRows = if n <= 0 { 0 } else { min(n, MAX_ROWS) } }
+
+// Whether a stream sends its next Execute as soon as a batch has arrived, before
+// its rows are used (the default); off sends it when the rows run out (for measurement).
+pub fn (c: mut &Conn) setFetchAhead(on: bool) { c.ahead = on }
 
 // The server's version: 160015 for 16.15.
 pub fn (c: &Conn) serverVersion(): int { return c.s.serverVersion() }
@@ -508,9 +527,11 @@ pub type Kind = sqlrows.Kind
 // A result read a row at a time into the program's own records
 // (design/db-streaming.md), through a portal: Execute with a row limit, the
 // rows of each batch scanned in place from the bytes off the wire, the whole
-// result never held. It holds the connection (a mut & borrow): the checker
-// refuses any other use of it while the stream is in scope. Provisional, for
-// the user.
+// result never held. Each Execute asks for the rows of FETCH_TARGET bytes
+// (rowsNext), and the next one is sent as soon as a batch has arrived, so the
+// server makes batch k+1 while the program reads batch k (design/pgwire.md
+// 12.3, 12.4). It holds the connection (a mut & borrow): the checker refuses
+// any other use of it while the stream is in scope. Provisional, for the user.
 pub type Stream[B, T] = value record {
     c: mut &Conn
     cols: sqlrows.Columns
@@ -520,6 +541,8 @@ pub type Stream[B, T] = value record {
     batch: pgwire.Batch         // the current batch of DataRows (raw)
     k: int                      // the next row of batch
     waiting: bool               // an Execute whose batch is not read yet
+    want: int                   // the free space of the buffer of the last fill (at most MAX_ROWS)
+    widest: int                 // the largest DataRow read so far, in bytes
     starts: []int               // the current row's values in its chunk
     lens: []int
     row: int
@@ -551,9 +574,9 @@ pub fn (c: mut &Conn) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): 
     }
     let bound = made.unwrap()
     let n = len(cols.list())
-    let first = pgwire.Batch{chunks: [], rowChunk: [], rowAt: [], more: true, err: None, bytes: 0}
+    let first = pgwire.Batch{chunks: [], rowChunk: [], rowAt: [], more: true, err: None, bytes: 0, widest: 0}
     return Ok(Stream{c: c, cols: cols, codec: pgwire.codec(), bound: bound, read: read, batch: first, k: 0, waiting: true,
-                     starts: array(n, 0), lens: array(n, -1), row: 0, state: sqlrows.LIVE, held: None})
+                     want: 0, widest: 0, starts: array(n, 0), lens: array(n, -1), row: 0, state: sqlrows.LIVE, held: None})
 }
 
 // The result's columns (a copy).
@@ -569,16 +592,42 @@ fn (s: mut &Stream[B, T]) failed(e: Error, w: Where): Error {
     return e
 }
 
+// The rows the next Execute asks for (design/pgwire.md 12.3): setFetchRows
+// when set; else the rows of FETCH_TARGET bytes at the average DataRow of the
+// batch just read, at least the buffer's free space and MIN_ROWS, at most what
+// FETCH_LIMIT holds at the widest DataRow seen, and MAX_ROWS.
+fn (s: &Stream[B, T]) rowsNext(): int {
+    if s.c.fetchRows > 0 { return s.c.fetchRows }
+    let rows = len(s.batch.rowAt)
+    let avg = if rows > 0 { max(1, s.batch.bytes / rows) } else { max(1, s.widest) }
+    let cap = min(max(FETCH_LIMIT / max(s.widest, 1), MIN_ROWS), MAX_ROWS)
+    return max(max(MIN_ROWS, s.want), min(FETCH_TARGET / avg, cap))
+}
+
+// Sends the next Execute now, when a batch with more rows has arrived and fetching
+// ahead is on. A failed send ends the stream after the rows it has (batch.err).
+fn (s: mut &Stream[B, T]) sendAhead(w: Where) {
+    if !s.batch.more || !s.c.ahead || s.waiting { return }
+    match s.c.s.execute(s.rowsNext(), w) {
+        Ok(_) { s.waiting = true }
+        Err(e) {
+            s.batch.more = false
+            s.batch.err = Some(e)
+        }
+    }
+}
+
 // To the next row, reading the next batch when the last one is used: true
 // (its values in the current chunk, starts, lens), false at the end, or the
-// stream's error (once).
-fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
+// stream's error (once). want is the free space of the caller's buffer.
+fn (s: mut &Stream[B, T]) advance(want: int, w: Where): Result[bool, Error] {
     if s.state != sqlrows.LIVE {
         match replace(mut &s.held, None) {
             Some(e) { return Err(e) }
             None { return Ok(false) }
         }
     }
+    s.want = max(s.want, min(want, MAX_ROWS))
     while s.k >= len(s.batch.rowAt) {
         match replace(mut &s.batch.err, None) {
             Some(e) { return Err(s.failed(e, w)) }
@@ -589,7 +638,7 @@ fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
             return Ok(false)
         }
         if !s.waiting {
-            match s.c.s.execute(NEXT_ROWS, w) {
+            match s.c.s.execute(s.rowsNext(), w) {
                 Ok(_) {}
                 Err(e) { return Err(s.failed(e, w)) }
             }
@@ -601,6 +650,8 @@ fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
         }
         s.waiting = false
         s.k = 0
+        s.widest = max(s.widest, s.batch.widest)
+        s.sendAhead(w)
     }
     let at = int(s.batch.rowAt[s.k])
     match pgwire.scanRow(&s.batch.chunks[int(s.batch.rowChunk[s.k])], at, len(s.lens), mut &s.starts, mut &s.lens) {
@@ -625,7 +676,7 @@ fn (s: &Stream[B, T]) current(): Result[T, Error] {
 pub fn (s: mut &Stream[B, T]) fill(out: mut &[T], w: Where): Result[int, Error] {
     var n = 0
     while n < len(out) {
-        let a = s.advance(w)
+        let a = s.advance(len(out) - n, w)
         if a.isOk() {
             if !a.unwrap() { break }
             let v = s.current()
@@ -648,7 +699,7 @@ pub fn (s: mut &Stream[B, T]) fill(out: mut &[T], w: Where): Result[int, Error] 
 
 // The next row's record, or None at the end (fill with one row).
 pub fn (s: mut &Stream[B, T]) next(w: Where): Result[Option[T], Error] {
-    if !(try s.advance(w)) { return Ok(None) }
+    if !(try s.advance(1, w)) { return Ok(None) }
     match s.current() {
         Ok(v) { return Ok(Some(v)) }
         Err(e) { return Err(s.failed(e, w)) }

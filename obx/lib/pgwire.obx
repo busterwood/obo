@@ -1306,8 +1306,62 @@ pub fn kindsOf(oid: int, tm: int, p: int, s: int): int {
     }
 }
 
-// The decimal a numeric's text denotes (sqldialect.parseDecimal; P3 adds the fast path here).
-pub fn decimalOfText(t: &str): Result[Decimal, Error] { return sqldialect.parseDecimal(t) }
+// The decimal a numeric's text denotes. The fast path (design/pgwire.md 7.6)
+// reads [-]digits[.digits] with at most 38 significant digits and at most
+// FAST_SCALE fraction digits into an i128 in one pass and makes it with
+// fromFraction; anything else (a sign, an exponent, NaN, an error) goes to
+// sqldialect.parseDecimal, so its values, scales and codes are the same.
+pub fn decimalOfText(t: &str): Result[Decimal, Error] {
+    match fastDecimal(t) {
+        Some(d) { return Ok(d) }
+        None {}
+    }
+    return sqldialect.parseDecimal(t)
+}
+
+const FAST_SCALE = 1000
+const FAST_DIGITS = 38
+
+fn fastDecimal(t: &str): Option[Decimal] {
+    let n = len(t)
+    var i = 0
+    var neg = false
+    if n > 0 && t[0] == '-' {
+        neg = true
+        i = 1
+    }
+    var units: i128 = 0
+    var sig = 0                       // significant digits: after the first non-zero one
+    var intDigits = 0
+    while i < n && isDigit(t[i]) {
+        let d = int(t[i] - '0')
+        if units != 0 || d != 0 {
+            sig += 1
+            if sig > FAST_DIGITS { return None }
+        }
+        units = units * 10 + i128(d)
+        intDigits += 1
+        i += 1
+    }
+    if intDigits == 0 { return None }
+    var scale = 0
+    if i < n && t[i] == '.' {
+        i += 1
+        while i < n && isDigit(t[i]) {
+            let d = int(t[i] - '0')
+            if units != 0 || d != 0 {
+                sig += 1
+                if sig > FAST_DIGITS { return None }
+            }
+            units = units * 10 + i128(d)
+            scale += 1
+            i += 1
+        }
+        if scale == 0 || scale > FAST_SCALE { return None }
+    }
+    if i != n { return None }
+    return Some(fromFraction(if neg { -units } else { units }, scale))
+}
 
 fn pInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
     if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 {
@@ -2587,6 +2641,7 @@ pub type Batch = record {
     pub more: bool                 // PortalSuspended: more rows to Execute for
     pub err: Option[Error]         // an ErrorResponse after these rows (the portal is gone, Sync done)
     pub bytes: int                 // the DataRows' bytes, for sizing the next Execute
+    pub widest: int                // the largest DataRow's bytes (the same sizing)
 }
 
 // Sends Sync and reads to ReadyForQuery: the end of an extended exchange that had no Sync yet.
@@ -2664,7 +2719,7 @@ pub fn (s: mut &Session) execute(rows: int, w: Where): Result[Unit, Error] {
 pub fn (s: mut &Session) receiveBatch(w: Where): Result[Batch, Error] {
     if s.state == S_BROKEN { return Err(s.brokenError()) }
     if s.state != S_PORTAL || !s.pending { return Err(input("no Execute is outstanding")) }
-    var b = Batch{chunks: [], rowChunk: [], rowAt: [], more: false, err: None, bytes: 0}
+    var b = Batch{chunks: [], rowChunk: [], rowAt: [], more: false, err: None, bytes: 0, widest: 0}
     let n = len(s.portalCols)
     var sS = array(n, 0)
     var sL = array(n, 0)
@@ -2687,6 +2742,7 @@ pub fn (s: mut &Session) receiveBatch(w: Where): Result[Batch, Error] {
                 append(mut &b.rowChunk, i32(len(b.chunks) - 1))
                 append(mut &b.rowAt, i32(m.at))
                 b.bytes += m.end - m.at
+                if m.end - m.at > b.widest { b.widest = m.end - m.at }
             }
             115 {                                       // s PortalSuspended
                 s.pending = false

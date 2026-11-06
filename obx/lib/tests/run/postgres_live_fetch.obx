@@ -1,0 +1,281 @@
+// postgres's round-trip sizes and fetching ahead against a live server
+// ($OBX_PG_DSN, default the local socket; exits 77, skipped, when it cannot
+// connect). A later Execute asks for the rows of 256 KB at the average row of
+// the last batch, at least the buffer's free space and 64, at most 4 MB at the
+// widest row seen (design/pgwire.md 12.3); the first asks for 256 rows. A
+// stream sends its next Execute as a batch arrives, before its rows are used
+// (12.4). Checked: the round trips of a narrow and a wide row stream through a
+// buffer of 7, a short result in one round trip, one row with fetching ahead
+// on and off, setFetchRows(100) with fetching ahead off against the byte rule
+// (the same rows), an early close and a dropped stream with an Execute in
+// flight (the connection used after), an error in the batch fetched ahead (the
+// rows before it first), and roundTrips(). The round trips of a stream closed
+// early include its close (the open, the batch, the close).
+// expect: narrow buffer 7: 200000 rows in 28572 fills, 20 round trips, sum 20000100000 names 1888895
+// expect: wide buffer 7: 3000 rows in 429 fills, 44 round trips, bytes 12000000
+// expect: short: 3 rows in 1 round trip
+// expect: one row: 3 round trips ahead | 2 round trips without
+// expect: fetch rows 100, ahead off: 200000 rows in 28572 fills, 1999 round trips, sum 20000100000 names 1888895
+// expect: early close in flight: 7 rows | after: 2 | again: 7 rows | after: 2
+// expect: dropped in flight: 3 rows | after: 2
+// expect: error ahead: 3449 rows then error 7 22012 | after: 2 | ahead off: 3449 rows then error 7 22012 | after: 2
+// expect: query round trips: 1
+// expect: open handles: 0
+
+import "postgres"
+import "sqldialect"
+import "os"
+
+type Kind = postgres.Kind
+type Error = postgres.Error
+type Columns = postgres.Columns
+type RowView = postgres.RowView
+
+fn err[T: borrow](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+type Narrow = value record { id: int; name: str }
+type NarrowCols = value record { id: int; name: int }
+
+fn bindNarrow(c: &Columns): Result[NarrowCols, Error] {
+    return Ok(NarrowCols{id: try c.index("id", Kind.Int), name: try c.index("name", Kind.Text)})
+}
+
+fn readNarrow(b: &NarrowCols, r: &RowView): Result[Narrow, Error] {
+    return Ok(Narrow{id: try r.int(b.id), name: try r.text(b.name)})
+}
+
+fn emptyNarrow(): Narrow { return Narrow{id: 0, name: ""} }
+
+const NARROW = "SELECT i::int8 AS id, 'name' || i AS name FROM generate_series(1, 200000) i"
+
+type Wide = value record { id: int; wide: str }
+type WideCols = value record { id: int; wide: int }
+
+fn bindWide(c: &Columns): Result[WideCols, Error] {
+    return Ok(WideCols{id: try c.index("id", Kind.Int), wide: try c.index("wide", Kind.Text)})
+}
+
+fn readWide(b: &WideCols, r: &RowView): Result[Wide, Error] {
+    return Ok(Wide{id: try r.int(b.id), wide: try r.text(b.wide)})
+}
+
+fn emptyWide(): Wide { return Wide{id: 0, wide: ""} }
+
+const WIDE = "SELECT i::int8 AS id, repeat('w', 4000) AS wide FROM generate_series(1, 3000) i"
+
+// Reads a whole stream through a buffer of size: fills, rows, sum of the ids,
+// characters of the text, and the round trips the stream made.
+fn narrowRun(c: mut &postgres.Conn, size: int): Result[Unit, Error] {
+    let r0 = c.roundTrips()
+    var src = try c.stream(NARROW, [], bindNarrow, readNarrow)
+    var buf = array(size, emptyNarrow())
+    var fills = 0
+    var sum = 0
+    var chars = 0
+    var rows = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            chars += len(o.name)
+        }
+    }
+    try src.close()
+    let trips = c.roundTrips() - r0
+    println("narrow buffer " + size.toStr() + ": " + rows.toStr() + " rows in " + fills.toStr() + " fills, " + trips.toStr() +
+            " round trips, sum " + sum.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn fetchRowsRun(c: mut &postgres.Conn): Result[Unit, Error] {
+    c.setFetchRows(100)
+    c.setFetchAhead(false)
+    let r0 = c.roundTrips()
+    var src = try c.stream(NARROW, [], bindNarrow, readNarrow)
+    var buf = array(7, emptyNarrow())
+    var fills = 0
+    var sum = 0
+    var chars = 0
+    var rows = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            chars += len(o.name)
+        }
+    }
+    try src.close()
+    let trips = c.roundTrips() - r0
+    c.setFetchRows(0)
+    c.setFetchAhead(true)
+    println("fetch rows 100, ahead off: " + rows.toStr() + " rows in " + fills.toStr() + " fills, " + trips.toStr() +
+            " round trips, sum " + sum.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn wideRun(c: mut &postgres.Conn): Result[Unit, Error] {
+    let r0 = c.roundTrips()
+    var src = try c.stream(WIDE, [], bindWide, readWide)
+    var buf = array(7, emptyWide())
+    var fills = 0
+    var bytes = 0
+    var rows = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            bytes += len(o.wide)
+        }
+    }
+    try src.close()
+    let trips = c.roundTrips() - r0
+    println("wide buffer 7: " + rows.toStr() + " rows in " + fills.toStr() + " fills, " + trips.toStr() +
+            " round trips, bytes " + bytes.toStr())
+    return Ok(Unit{})
+}
+
+fn short(c: mut &postgres.Conn): Result[Unit, Error] {
+    let r0 = c.roundTrips()
+    var src = try c.stream("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3", [], bindFirst, readInt)
+    var n = 0
+    while (try src.next()).isSome() { n += 1 }
+    try src.close()
+    println("short: " + n.toStr() + " rows in " + (c.roundTrips() - r0).toStr() + " round trip")
+    return Ok(Unit{})
+}
+
+fn bindFirst(c: &Columns): Result[int, Error] { return c.at(0, Kind.Int) }
+fn readInt(b: &int, r: &RowView): Result[int, Error] { return r.int(b) }
+
+fn one(c: mut &postgres.Conn): Result[Unit, Error] {
+    var line = "one row:"
+    for ahead in [true, false] {
+        c.setFetchAhead(ahead)
+        let r0 = c.roundTrips()
+        var src = try c.stream(NARROW, [], bindNarrow, readNarrow)
+        let first = try src.next()
+        try src.close()
+        let trips = c.roundTrips() - r0
+        if ahead {
+            line = line + " " + trips.toStr() + " round trips ahead |"
+        } else {
+            line = line + " " + trips.toStr() + " round trips without"
+        }
+    }
+    c.setFetchAhead(true)
+    println(line)
+    return Ok(Unit{})
+}
+
+fn after(c: mut &postgres.Conn): str {
+    match c.query("SELECT 1 + 1", &[]) {
+        Ok(r) { return r.int(0, 0).unwrap().toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn early(c: mut &postgres.Conn): Result[Unit, Error] {
+    var src = try c.stream(NARROW, [], bindNarrow, readNarrow)
+    var buf = array(7, emptyNarrow())
+    let n = try src.fill(mut &buf)
+    try src.close()
+    let a = after(c)
+    var src2 = try c.stream(NARROW, [], bindNarrow, readNarrow)
+    let m = try src2.fill(mut &buf)
+    try src2.close()
+    println("early close in flight: " + n.toStr() + " rows | after: " + a + " | again: " + m.toStr() + " rows | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn dropped(c: mut &postgres.Conn): Result[Unit, Error] {
+    var n = 0
+    if true {
+        var src = try c.stream(NARROW, [], bindNarrow, readNarrow)
+        for i in 0..3 { if (try src.next()).isSome() { n += 1 } }
+    }
+    println("dropped in flight: " + n.toStr() + " rows | after: " + after(c))
+    return Ok(Unit{})
+}
+
+// An error on row 3450 of a streamed query: the rows before it come first, then
+// the error, with fetching ahead on and off.
+fn errorAhead(c: mut &postgres.Conn): Result[Unit, Error] {
+    let sql = "SELECT i::int8 AS id, 1 / (3450 - i) AS d FROM generate_series(1, 200000) i"
+    var line = "error ahead:"
+    for ahead in [true, false] {
+        c.setFetchAhead(ahead)
+        var src = try c.stream(sql, [], bindFirst, readInt)
+        var buf = array(7, 0)
+        var rows = 0
+        var msg = "none"
+        while true {
+            match src.fill(mut &buf) {
+                Ok(n) {
+                    if n == 0 { break }
+                    rows += n
+                }
+                Err(e) {
+                    msg = "error " + e.code.toStr() + " " + e.state
+                    break
+                }
+            }
+        }
+        try src.close()
+        let a = after(c)
+        if ahead {
+            line = line + " " + rows.toStr() + " rows then " + msg + " | after: " + a + " |"
+        } else {
+            line = line + " ahead off: " + rows.toStr() + " rows then " + msg + " | after: " + a
+        }
+    }
+    c.setFetchAhead(true)
+    println(line)
+    return Ok(Unit{})
+}
+
+fn trips(c: mut &postgres.Conn): Result[Unit, Error] {
+    let r0 = c.roundTrips()
+    let r = try c.query("SELECT 1", &[])
+    println("query round trips: " + (c.roundTrips() - r0).toStr())
+    return Ok(Unit{})
+}
+
+fn run(c: mut &postgres.Conn): Result[Unit, Error] {
+    try narrowRun(c, 7)
+    try wideRun(c)
+    try short(c)
+    try one(c)
+    try fetchRowsRun(c)
+    try early(c)
+    try dropped(c)
+    try errorAhead(c)
+    try trips(c)
+    return Ok(Unit{})
+}
+
+fn main() {
+    let dsn = os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
+    if true {
+        let r = postgres.connect(dsn)
+        if r.isErr() { exit(77) }
+        var c = r.unwrap()
+        match run(mut &c) {
+            Ok(_) {}
+            Err(e) { println("FAIL " + e.toStr()) }
+        }
+    }
+    println("open handles: " + postgres.openHandles().toStr())
+}
