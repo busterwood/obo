@@ -206,6 +206,7 @@ binds); `sqlserver.Conn.streaming()`.
 | `sqlserver_live_stream` | C, native; OBX_CHECK=1 | 20 checks: names, missing, ambiguous, type, wide int, NULL, every type (incl. nvarchar(max) longer than a packet), 200,000 rows with buffers 7 and 1,024 against the buffered query, rows kept across fills, next, early close, dropped, later error, no result set, by position, parameters, no handle left |
 | `postgres_live_stream` | C, native; OBX_CHECK=1 | the same, and a pool lease |
 | `oracle_live_stream` | C, native; OBX_CHECK=1 | the same, and no cursor left open (V$MYSTAT over repeated early closes, drops, errors and bind failures) |
+| `sqlserver_fake_stream` | C, native; OBX_CHECK=1; no server needed | a scripted server in 512-byte packets: rows spanning packets, NBCROW NULLs, nvarchar(max) chunks longer than a packet, an early close (ATTENTION seen and acknowledged, the connection reused), 300 mutated or cut replies through a buffer of 7: each ends in rows or an Err |
 | `stream_conn_in_use` (error) | checker | the connection used while a stream is open |
 | `stream_keep_row_borrow` (error) | checker | `&buf[0]` kept across the next fill |
 

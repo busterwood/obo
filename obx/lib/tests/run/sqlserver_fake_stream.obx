@@ -1,0 +1,297 @@
+// sqlserver streams against a scripted fake server on 127.0.0.1 (a task of
+// this program), without TLS, in packets of 512 bytes: rows spanning
+// packets, NBCROWs with NULLs, nvarchar(max) values (PLP chunks) longer
+// than a packet, an early close (the server sees ATTENTION and acknowledges
+// it; the connection is reused), and 300 mutated and truncated streamed
+// replies, each read through a buffer of 7: every one ends in rows or an
+// Err, never a trap or a hang.
+// needs: ssl
+// expect: rows: 300 sum 44850 nulls 100 long 100 of 1200 chars | last 299 'row 299 é' Some(n299)
+// expect: early close: 5 rows | idle true | after: 3
+// expect: mutated: 300 replies, each ended
+// expect: server: attention after 2 requests | acknowledged
+// expect: open handles: 0
+
+import "sqlserver"
+import "tds"
+import "net"
+import "task"
+import "strings"
+import "../support/tdstest" as tt
+
+type Kind = sqlserver.Kind
+type Error = sqlserver.Error
+
+var ADDR: str = ""
+const MUTATIONS = 300
+
+type Wire = record { c: net.Conn; pending: str }
+
+fn (x: mut &Wire) fill(n: int): bool {
+    var tmp = array(4096, byte(0))
+    while len(x.pending) < n {
+        match x.c.read(mut &tmp) {
+            Ok(k) {
+                if k == 0 { return false }
+                x.pending = x.pending + strFromBytes(&tmp[0..k])
+            }
+            Err(_) { return false }
+        }
+    }
+    return true
+}
+
+type Msg = value record { ptype: int; data: str }
+
+fn (x: mut &Wire) message(): Option[Msg] {
+    var data = ""
+    var ptype = -1
+    while true {
+        if !x.fill(8) { return None }
+        let n = (int(x.pending[2]) << 8) | int(x.pending[3])
+        if n < 8 || !x.fill(n) { return None }
+        ptype = int(x.pending[0])
+        let eom = (int(x.pending[1]) & 1) != 0
+        data = data + x.pending[8..n]
+        x.pending = x.pending[n..]
+        if eom { break }
+    }
+    return Some(Msg{ptype: ptype, data: data})
+}
+
+fn (x: &Wire) send(payload: str) { let r = x.c.write(&tds.packets(tds.PT_REPLY, payload, 512)) }
+
+fn done(status: int, count: int): str {
+    var b = tt.bytesOf()
+    b.done(tds.TK_DONE, status, 0xC1, count)
+    return b.str()
+}
+
+// Accepts a connection and logs it in (packet size 512).
+fn session(ln: &net.Listener): Option[Wire] {
+    let a = ln.accept()
+    if a.isErr() { return None }
+    var w = Wire{c: a.unwrap(), pending: ""}
+    if w.message().isNone() { return None }
+    var p = tt.bytesOf()
+    for v in [0, 0, 11, 0, 6, 1, 0, 17, 0, 1, 0xff] { p.u8(v) }
+    for v in [17, 0, 0x13, 0xab, 0, 0] { p.u8(v) }
+    p.u8(tds.ENCRYPT_NOT_SUP)
+    w.send(p.str())
+    if w.message().isNone() { return None }
+    var l = tt.bytesOf()
+    l.loginAck()
+    l.envText(1, "app", "master")
+    l.envText(4, "512", "4096")
+    l.raw(done(0, 0))
+    w.send(l.str())
+    return Some(w)
+}
+
+// n rows of (id int, name nvarchar(80), note nvarchar(max)): every third an
+// NBCROW with note NULL, every third a note of 1,200 characters.
+fn rowsReply(n: int): str {
+    var b = tt.bytesOf()
+    b.u8(tds.TK_COLMETADATA)
+    b.u16(3)
+    b.col("id", tds.T_INTN)
+    b.u8(4)
+    b.name("id")
+    b.col("name", tds.T_NVARCHAR)
+    b.u16(160)
+    b.collation(0x0409, 1, 52)
+    b.name("name")
+    b.col("note", tds.T_NVARCHAR)
+    b.u16(0xFFFF)
+    b.collation(0x0409, 1, 52)
+    b.name("note")
+    for i in 0..n {
+        let k = i % 3
+        b.u8(if k == 0 { tds.TK_NBCROW } else { tds.TK_ROW })
+        if k == 0 { b.u8(4) }                 // note is NULL
+        b.u8(4)
+        b.u32(i)
+        b.utf16Value("row " + i.toStr() + " é")
+        if k != 0 {
+            let note = if k == 1 { strings.padLeft("", 1200, 'x') } else { "n" + i.toStr() }
+            let u = tds.toUtf16(note).unwrap()
+            b.u64(len(u))
+            var off = 0
+            while off < len(u) {                  // chunks of 1,000 bytes
+                let m = min(1000, len(u) - off)
+                b.u32(m)
+                b.raw(strFromBytes(&u[off..off + m]))
+                off += m
+            }
+            b.u32(0)
+        }
+    }
+    b.raw(done(0x10, n))
+    return b.str()
+}
+
+// A deterministic generator (an LCG; the high bits are used).
+fn mix(x: int): int { return (x * 1103515245 + 12345) % 2147483648 }
+
+// The reply with a few bytes changed, or cut short.
+fn mutate(s: str, seed: int): str {
+    var b = strToBytes(s)
+    var r = mix(mix(seed + 1))
+    let kind = (r >> 16) % 4
+    r = mix(r)
+    if kind == 0 {
+        let at = 1 + (r >> 8) % (len(b) - 1)
+        return strFromBytes(&b[0..at])
+    }
+    let n = 1 + kind * 2
+    for i in 0..n {
+        r = mix(r)
+        let at = (r >> 8) % len(b)
+        r = mix(r)
+        b[at] = byte((r >> 16) % 256)
+    }
+    return strFromBytes(&b)
+}
+
+// Answers every request of a connection with reply, an ATTENTION with its
+// acknowledgement, until the client closes. The number of ATTENTIONs.
+fn answer(w: mut &Wire, reply: str): int {
+    var attns = 0
+    while true {
+        match w.message() {
+            Some(m) {
+                if m.ptype == tds.PT_ATTENTION {
+                    attns += 1
+                    w.send(done(0x20, 0))
+                } else {
+                    w.send(reply)
+                }
+            }
+            None { return attns }
+        }
+    }
+    return attns
+}
+
+fn serve(ln: net.Listener): str {
+    var log: []str = []
+    var w = match session(&ln) {
+        Some(x) { x }
+        None { return "no session" }
+    }
+    let m1 = w.message().unwrap()
+    w.send(rowsReply(300))
+    let m2 = w.message().unwrap()
+    w.send(rowsReply(2000))
+    let m3 = w.message().unwrap()
+    if m3.ptype == tds.PT_ATTENTION {
+        append(mut &log, "attention after 2 requests")
+        w.send(done(0x20, 0))
+        let m4 = w.message().unwrap()
+        w.send(done(0x10, 3))
+        append(mut &log, "acknowledged")
+    } else {
+        append(mut &log, "no attention: type " + m3.ptype.toStr())
+    }
+    let rest = answer(mut &w, done(0, 0))
+    let base = rowsReply(40)
+    for i in 0..MUTATIONS {
+        var f = match session(&ln) {
+            Some(x) { x }
+            None { return "no session " + i.toStr() }
+        }
+        let n = answer(mut &f, mutate(base, i))
+    }
+    return strings.join(&log, " | ")
+}
+
+type Row = value record { id: int; name: str; note: Option[str] }
+type Cols = value record { id: int; name: int; note: int }
+
+fn bindRow(c: &sqlserver.Columns): Result[Cols, Error] {
+    return Ok(Cols{id: try c.index("id", Kind.Int), name: try c.index("name", Kind.Text), note: try c.index("note", Kind.Text)})
+}
+
+fn readRow(b: &Cols, r: &sqlserver.RowView): Result[Row, Error] {
+    return Ok(Row{id: try r.int(b.id), name: try r.text(b.name), note: try r.textOrNull(b.note)})
+}
+
+fn connStr(): str { return "Server=tcp:" + strings.replaceAll(ADDR, ":", ",") + ";UID=u;PWD=p;Database=app;Encrypt=no" }
+
+fn client(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var src = try c.stream("SELECT rows", [], bindRow, readRow)
+    var buf = array(7, Row{id: 0, name: "", note: None})
+    var rows = 0
+    var sum = 0
+    var nulls = 0
+    var long = 0
+    var last = Row{id: 0, name: "", note: None}
+    var chars = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            match o.note {
+                None { nulls += 1 }
+                Some(t) {
+                    if len(t) > 1000 {
+                        long += 1
+                        chars = len(t)
+                    }
+                }
+            }
+            last = o
+        }
+    }
+    println("rows: " + rows.toStr() + " sum " + sum.toStr() + " nulls " + nulls.toStr() + " long " + long.toStr() + " of " +
+            chars.toStr() + " chars | last " + last.id.toStr() + " '" + last.name + "' " + last.note.toStr())
+    var e = try c.stream("SELECT many", [], bindRow, readRow)
+    var five = array(5, Row{id: 0, name: "", note: None})
+    let n = try e.fill(mut &five)
+    try e.close()
+    println("early close: " + n.toStr() + " rows | idle " + c.idle().toStr() + " | after: " + (try c.run("UPDATE x", &[])).toStr())
+    return Ok(Unit{})
+}
+
+fn fuzzed(): bool {
+    let r = sqlserver.connect(connStr())
+    if r.isErr() { return false }
+    var c = r.unwrap()
+    match c.stream("SELECT rows", [], bindRow, readRow) {
+        Ok(s) {
+            var src = s
+            var buf = array(7, Row{id: 0, name: "", note: None})
+            while true {
+                match src.fill(mut &buf) {
+                    Ok(n) { if n == 0 { break } }
+                    Err(_) { break }
+                }
+            }
+        }
+        Err(_) {}
+    }
+    return true
+}
+
+fn main() {
+    let log = task.scoped(fn(sc: mut &task.Scope): str {
+        let ln = net.listen("127.0.0.1:0").unwrap()
+        ADDR = ln.localAddr()
+        let srv = sc.start(serve, ln)
+        if true {
+            var c = sqlserver.connect(connStr()).unwrap()
+            match client(mut &c) {
+                Ok(_) {}
+                Err(e) { println("FAIL " + e.toStr()) }
+            }
+        }
+        var ended = 0
+        for i in 0..MUTATIONS { if fuzzed() { ended += 1 } }
+        println("mutated: " + MUTATIONS.toStr() + " replies, " + if ended == MUTATIONS { "each ended" } else { (MUTATIONS - ended).toStr() + " failed to connect" })
+        return srv.wait().unwrap()
+    })
+    println("server: " + log)
+    println("open handles: " + sqlserver.openHandles().toStr())
+}

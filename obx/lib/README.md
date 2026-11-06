@@ -1346,7 +1346,8 @@ the program's own records (design/db-streaming.md; names provisional):
   request), `columns()`, `rowsRead()`. A dropped stream is cleaned up by the
   connection's next call. `postgres.Lease.stream`, `oracle.Conn.streamWith`.
 - Tests: `sqlserver_live_stream`, `postgres_live_stream`,
-  `oracle_live_stream` (skipped without their servers), error tests
+  `oracle_live_stream` (skipped without their servers), `sqlserver_fake_stream`
+  (a scripted server: packet-spanning rows, ATTENTION, mutated replies), error tests
   `stream_conn_in_use` and `stream_keep_row_borrow`. Timings:
   `python3 obx/bench/dbstream/run.py`.
 
