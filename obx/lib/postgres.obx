@@ -31,6 +31,7 @@
 // string libpq cannot parse E_INPUT.
 
 import "sqldialect"
+import "sqlrows"
 import "math"
 import "ffi"
 import "task"
@@ -46,6 +47,7 @@ pub const PGRES_EMPTY_QUERY = 0
 pub const PGRES_COMMAND_OK = 1
 pub const PGRES_TUPLES_OK = 2
 pub const PGRES_FATAL_ERROR = 7
+pub const PGRES_SINGLE_TUPLE = 9
 
 pub const OID_BOOL = 16
 pub const OID_BYTEA = 17
@@ -56,6 +58,14 @@ pub const OID_TEXT = 25
 pub const OID_FLOAT4 = 700
 pub const OID_FLOAT8 = 701
 pub const OID_NUMERIC = 1700
+pub const OID_CHAR = 18
+pub const OID_NAME = 19
+pub const OID_BPCHAR = 1042
+pub const OID_VARCHAR = 1043
+pub const OID_DATE = 1082
+pub const OID_TIME = 1083
+pub const OID_TIMESTAMP = 1114
+pub const OID_TIMESTAMPTZ = 1184
 
 const DIAG_SQLSTATE = 67           // 'C'
 const DIAG_MESSAGE_PRIMARY = 77    // 'M'
@@ -65,6 +75,7 @@ const POLLING_READING = 1
 const POLLING_WRITING = 2
 const POLLING_OK = 3
 const PQTRANS_IDLE = 0
+const PQTRANS_ACTIVE = 1
 const ABORT_MS = 5000              // how long a cancelled query's results are waited for
 
 extern "pq" fn PQlibVersion(): i32
@@ -104,6 +115,7 @@ extern "pq" fn PQfmod(r: ptr, col: i32): i32
 extern "pq" fn PQgetisnull(r: ptr, row: i32, col: i32): i32
 extern "pq" fn PQgetvalue(r: ptr, row: i32, col: i32): str
 extern "pq" fn PQcmdTuples(r: ptr): str
+extern "pq" fn PQsetSingleRowMode(c: ptr): i32
 
 var OPEN: int = 0
 
@@ -223,14 +235,23 @@ pub fn (c: &Conn) idle(): bool {
 // Runs a script of any number of statements, without parameters.
 pub fn (c: &Conn) exec(script: str, w: Where): Result[Unit, Error] {
     try sqldialect.noNul(script, "SQL text")
+    try c.settle(w)
     let r = try c.finish(PQsendQuery(c.h, script), w)
     return Ok(Unit{})
 }
 
 // Runs one statement with $1, $2, ... bound to args, in order.
 pub fn (c: &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
+    let sent = try c.send(sql, args, w)
+    return c.finish(sent, w)
+}
+
+// Sends sql with its parameters (PQsendQueryParams), after a stream left
+// unfinished is cancelled; its result, for finish.
+fn (c: &Conn) send(sql: str, args: &[Value], w: Where): Result[i32, Error] {
     try sqldialect.noNul(sql, "SQL text")
     if len(args) > 65535 { return Err(sqldialect.inputError("more than 65535 parameters")) }
+    try c.settle(w)
     var ps: []Param = []
     for v in args { append(mut &ps, try param(v)) }
     var types: []u32 = []
@@ -245,8 +266,7 @@ pub fn (c: &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error]
             append(mut &values, copies[len(copies) - 1].ptr())
         }
     }
-    let sent = PQsendQueryParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0)
-    return c.finish(sent, w)
+    return Ok(PQsendQueryParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0))
 }
 
 // Runs a fragment with $1, $2, ... placeholders and its arguments.
@@ -275,15 +295,7 @@ pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error], w: Where): Resul
 // first error, else the last result (as PQexec). Cancellation and the task's
 // deadline end the wait: the query is cancelled on the server then (abort).
 fn (c: &Conn) finish(sent: i32, w: Where): Result[Rows, Error] {
-    if sent == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    while true {
-        let f = int(PQflush(c.h))
-        if f == 0 { break }
-        if f < 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-        let r = sockWait(c.h, 2, -1, true, w)
-        if r != 0 { return Err(c.abort(r, w)) }
-        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    }
+    try c.flush(sent, w)
     var keep = nullPtr()
     while true {
         while PQisBusy(c.h) != 0 {
@@ -309,12 +321,45 @@ fn (c: &Conn) finish(sent: i32, w: Where): Result[Rows, Error] {
     return c.result(keep)
 }
 
+// Flushes a query just sent (sent: what PQsendQuery or PQsendQueryParams
+// returned), parking while the socket is full.
+fn (c: &Conn) flush(sent: i32, w: Where): Result[Unit, Error] {
+    if sent == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    while true {
+        let f = int(PQflush(c.h))
+        if f == 0 { break }
+        if f < 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+        let r = sockWait(c.h, 2, -1, true, w)
+        if r != 0 { return Err(c.abort(r, w)) }
+        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    }
+    return Ok(Unit{})
+}
+
 // The query was given up (why: 1 cancelled, 3 deadline): asks the server to
 // cancel it (PQcancel, a blocking extern: it opens a second connection), then
 // reads what is left, for at most ABORT_MS, without being cancellable, so the
 // connection is idle again. If the server does not answer in time the
 // connection stays busy, and a pool closes it (idle() is false).
 fn (c: &Conn) abort(why: int, w: Where): Error {
+    c.cancel(w)
+    return waitError(why, "query")
+}
+
+// Whether a query is running: a stream left unfinished.
+fn (c: &Conn) busy(): bool { return int(PQtransactionStatus(c.h)) == PQTRANS_ACTIVE }
+
+// Cancels a stream left unfinished (as abort), so the connection takes the
+// next query.
+fn (c: &Conn) settle(w: Where): Result[Unit, Error] {
+    if !c.busy() { return Ok(Unit{}) }
+    c.cancel(w)
+    if c.busy() { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, "an unfinished stream could not be cancelled")) }
+    return Ok(Unit{})
+}
+
+// Asks the server to cancel the running query and reads what is left.
+fn (c: &Conn) cancel(w: Where) {
     let cn = PQgetCancel(c.h)
     if !isNull(cn) {
         var buf = array(256, byte(0))
@@ -337,7 +382,6 @@ fn (c: &Conn) abort(why: int, w: Where): Error {
         if isNull(res) { break }
         PQclear(res)
     }
-    return waitError(why, "query")
 }
 
 // Rows for a PGresult, or the error it reports (it is cleared then).
@@ -681,6 +725,392 @@ pub fn (l: &Lease) query(sql: str, args: &[Value], w: Where): Result[Rows, Error
 
 pub fn (l: &Lease) querySql(q: &Sql, w: Where): Result[Rows, Error] { return l.c.querySql(q, w) }
 
+// A stream over the leased connection (Conn.stream); the lease is held
+// while the stream is in scope.
+pub fn (l: mut &Lease) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): Result[B, Error],
+                                    read: fn(&B, &RowView): Result[T, Error], w: Where): Result[Stream[B, T], Error] {
+    return l.c.stream(sql, args, bind, read, w)
+}
+
 pub fn (l: &Lease) transaction[T](body: &fn(): Result[T, Error], w: Where): Result[T, Error] {
     return l.c.transaction(body, w)
+}
+
+// ------------------------------------------------------------------ streams
+
+pub type Columns = sqlrows.Columns
+pub type RowView = sqlrows.RowView
+pub type Kind = sqlrows.Kind
+
+// A PGresult owned by a stream (cleared when dropped).
+type Res = record { h: ptr }
+
+fn (r: mut &Res) drop() {
+    if !isNull(r.h) {
+        PQclear(r.h)
+        OPEN -= 1
+    }
+}
+
+fn res(h: ptr): Res {
+    if !isNull(h) { OPEN += 1 }
+    return Res{h: h}
+}
+
+// A result read a row at a time into the program's own records
+// (design/db-streaming.md), in libpq's single-row mode: libpq hands over one
+// row at a time, the stream decodes it into the caller's buffer, and the
+// whole result is never held. It holds the connection (a mut & borrow): the
+// checker refuses any other use of it while the stream is in scope.
+// Provisional, for the user.
+pub type Stream[B, T] = value record {
+    c: mut &Conn
+    cols: sqlrows.Columns
+    codec: sqlrows.Codec
+    bound: B
+    read: fn(&B, &RowView): Result[T, Error]
+    pending: Res                // the first row's result (read to describe the columns), until fill takes it
+    data: str                   // the current row: its values' text, one after the other
+    starts: []int
+    lens: []int
+    row: int
+    state: int                  // sqlrows.LIVE, ENDED or FAILED
+    held: Option[Error]         // an error to give at the next fill (rows came before it)
+}
+
+// Runs one statement with $1, $2, ... bound to args (taken, so the stream
+// borrows only the connection), in single-row mode, and waits for its first
+// row (or its end) to describe the columns; bind gets them and resolves the
+// record's fields once, and read makes one record from a row. The
+// statement's error before its first row, or bind's, is the Err.
+//
+// Ending a stream early (close, or dropping it) cancels the query (PQcancel)
+// and reads what is left, so the connection takes the next query; a dropped
+// stream is cancelled by the connection's next call (idle() is false until
+// then).
+pub fn (c: mut &Conn) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): Result[B, Error],
+                                   read: fn(&B, &RowView): Result[T, Error], w: Where): Result[Stream[B, T], Error] {
+    let sent = try c.send(sql, &args, w)
+    if sent != 0 && PQsetSingleRowMode(c.h) != 1 {
+        c.cancel(w)
+        return Err(sqldialect.dbError(PGRES_FATAL_ERROR, "single-row mode refused"))
+    }
+    try c.flush(sent, w)
+    let first = res(try c.nextResult(w))
+    if isNull(first.h) { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    let st = int(PQresultStatus(first.h))
+    if st != PGRES_SINGLE_TUPLE && st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK {
+        let e = resultError(first.h, st)
+        c.cancel(w)
+        return Err(e)
+    }
+    let cols = sqlrows.columns(describe(first.h))
+    let bound = match bind(&cols) {
+        Ok(b) { b }
+        Err(e) { return Err(c.cancelled(e, w)) }
+    }
+    let n = len(cols.list())
+    return Ok(Stream{c: c, cols: cols, codec: pgCodec(), bound: bound, read: read, pending: first, data: "",
+                     starts: array(n, 0), lens: array(n, -1), row: 0, state: sqlrows.LIVE, held: None})
+}
+
+fn (c: &Conn) cancelled(e: Error, w: Where): Error {
+    c.cancel(w)
+    return e
+}
+
+// The error a result reports.
+fn resultError(r: ptr, st: int): Error {
+    var msg = PQresultErrorField(r, DIAG_MESSAGE_PRIMARY)
+    if len(msg) == 0 { msg = chomp(PQresultErrorMessage(r)) }
+    if len(msg) == 0 { msg = "unsupported result status " + st.toStr() + " (COPY?)" }
+    return Error{code: st, state: PQresultErrorField(r, DIAG_SQLSTATE), msg: msg}
+}
+
+// The next result of the running query (null at its end), parking until it
+// is in.
+fn (c: &Conn) nextResult(w: Where): Result[ptr, Error] {
+    while PQisBusy(c.h) != 0 {
+        let r = sockWait(c.h, 0, -1, true, w)
+        if r != 0 { return Err(c.abort(r, w)) }
+        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
+    }
+    return Ok(PQgetResult(c.h))
+}
+
+// The result's columns for sqlrows: wire is the type OID, aux the typmod.
+fn describe(r: ptr): []sqlrows.Column {
+    var out: []sqlrows.Column = []
+    let n = int(PQnfields(r))
+    for i in 0..n {
+        let oid = int(PQftype(r, i32(i)))
+        let tm = int(PQfmod(r, i32(i)))
+        let p = if oid == OID_NUMERIC && tm >= 4 { ((tm - 4) >> 16) & 0xffff } else { 0 }
+        let s = if oid == OID_NUMERIC && tm >= 4 { (((tm - 4) & 0x7ff) ^ 1024) - 1024 } else { 0 }
+        append(mut &out, sqlrows.column(PQfname(r, i32(i)), typeText(oid, tm, p, s), kindsOf(oid, tm, p, s),
+                                        sqlrows.NULLABLE_UNKNOWN, oid, 0, p, s, tm))
+    }
+    return out
+}
+
+fn typeText(oid: int, tm: int, p: int, s: int): str {
+    match oid {
+        OID_BOOL { return "bool" }
+        OID_BYTEA { return "bytea" }
+        OID_INT8 { return "int8" }
+        OID_INT2 { return "int2" }
+        OID_INT4 { return "int4" }
+        OID_TEXT { return "text" }
+        OID_FLOAT4 { return "float4" }
+        OID_FLOAT8 { return "float8" }
+        OID_NUMERIC { return if tm >= 4 { "numeric(" + p.toStr() + "," + s.toStr() + ")" } else { "numeric" } }
+        OID_CHAR { return "char" }
+        OID_NAME { return "name" }
+        OID_BPCHAR { return "bpchar" }
+        OID_VARCHAR { return "varchar" }
+        OID_DATE { return "date" }
+        OID_TIME { return "time" }
+        OID_TIMESTAMP { return "timestamp" }
+        OID_TIMESTAMPTZ { return "timestamptz" }
+        else { return "type " + oid.toStr() }
+    }
+}
+
+// What a column can be read as (design/db-streaming.md, section 3). An
+// unconstrained numeric (sum(int8), count's numeric cousins) reads as int too,
+// each value checked; a type without a case here reads as its text.
+fn kindsOf(oid: int, tm: int, p: int, s: int): int {
+    match oid {
+        OID_INT8, OID_INT2, OID_INT4 { return sqlrows.kinds(&[Kind.Int, Kind.Decimal]) }
+        OID_NUMERIC {
+            if tm < 4 || (s == 0 && p <= 18) { return sqlrows.kinds(&[Kind.Decimal, Kind.Int]) }
+            return sqlrows.kinds(&[Kind.Decimal])
+        }
+        OID_FLOAT4, OID_FLOAT8 { return sqlrows.kinds(&[Kind.Float]) }
+        OID_BOOL { return sqlrows.kinds(&[Kind.Bool]) }
+        OID_BYTEA { return sqlrows.kinds(&[Kind.Bytes]) }
+        OID_DATE { return sqlrows.kinds(&[Kind.Date]) }
+        OID_TIME { return sqlrows.kinds(&[Kind.Time]) }
+        OID_TIMESTAMP { return sqlrows.kinds(&[Kind.DateTime]) }
+        OID_TIMESTAMPTZ { return sqlrows.kinds(&[Kind.OffsetDateTime]) }
+        else { return sqlrows.kinds(&[Kind.Text]) }
+    }
+}
+
+// The result's columns (a copy).
+pub fn (s: &Stream[B, T]) columns(): Columns { return s.cols.clone() }
+
+// The rows read so far.
+pub fn (s: &Stream[B, T]) rowsRead(): int { return s.row }
+
+// Ends the stream after an error: the rest of the query is cancelled.
+fn (s: mut &Stream[B, T]) failed(e: Error, w: Where): Error {
+    s.state = sqlrows.FAILED
+    s.c.cancel(w)
+    return e
+}
+
+// To the next row: true (its values in data, starts, lens), false at the
+// end, or the stream's error (once).
+fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
+    if s.state != sqlrows.LIVE {
+        match replace(mut &s.held, None) {
+            Some(e) { return Err(e) }
+            None { return Ok(false) }
+        }
+    }
+    var h = replace(mut &s.pending, Res{h: nullPtr()})
+    if isNull(h.h) {
+        match s.c.nextResult(w) {
+            Ok(p) { h = res(p) }
+            Err(e) { return Err(s.failed(e, w)) }
+        }
+    }
+    if isNull(h.h) {
+        s.state = sqlrows.ENDED
+        return Ok(false)
+    }
+    let st = int(PQresultStatus(h.h))
+    if st == PGRES_SINGLE_TUPLE {
+        var b = newStrBuf()
+        for i in 0..len(s.lens) {
+            if PQgetisnull(h.h, 0, i32(i)) == 1 {
+                s.lens[i] = -1
+            } else {
+                let v = PQgetvalue(h.h, 0, i32(i))
+                s.starts[i] = b.size()
+                s.lens[i] = len(v)
+                b.add(v)
+            }
+        }
+        s.data = b.toStr()
+        s.row += 1
+        return Ok(true)
+    }
+    if st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK {
+        s.state = sqlrows.ENDED
+        while true {                            // the end of the query: libpq's last null
+            match s.c.nextResult(w) {
+                Ok(p) {
+                    if isNull(p) { break }
+                    let more = res(p)
+                }
+                Err(e) { return Err(s.failed(e, w)) }
+            }
+        }
+        return Ok(false)
+    }
+    return Err(s.failed(resultError(h.h, st), w))
+}
+
+// The record of the current row.
+fn (s: &Stream[B, T]) current(): Result[T, Error] {
+    let rv = sqlrows.rowView(s.cols.list(), &s.codec, &s.data, &s.starts, &s.lens, s.row)
+    return s.read(&s.bound, &rv)
+}
+
+// Reads up to len(out) rows into out[0..n] and returns n; 0 at the end.
+// An error (the server's, a decoding error, read's) ends the stream; when
+// rows came before it in this call they are returned first and the error
+// comes from the next call. Provisional, for the user.
+pub fn (s: mut &Stream[B, T]) fill(out: mut &[T], w: Where): Result[int, Error] {
+    var n = 0
+    while n < len(out) {
+        let a = s.advance(w)
+        if a.isOk() {
+            if !a.unwrap() { break }
+            let v = s.current()
+            if v.isOk() {
+                out[n] = v.unwrap()
+                n += 1
+                continue
+            }
+            let e = s.failed(v.unwrapErr(), w)
+            if n == 0 { return Err(e) }
+            s.held = Some(e)
+            break
+        }
+        if n == 0 { return Err(a.unwrapErr()) }
+        s.held = Some(a.unwrapErr())
+        break
+    }
+    return Ok(n)
+}
+
+// The next row's record, or None at the end (fill with one row).
+pub fn (s: mut &Stream[B, T]) next(w: Where): Result[Option[T], Error] {
+    if !(try s.advance(w)) { return Ok(None) }
+    match s.current() {
+        Ok(v) { return Ok(Some(v)) }
+        Err(e) { return Err(s.failed(e, w)) }
+    }
+}
+
+// Ends the stream; a query still running is cancelled and what is left of
+// it read, so the connection takes the next query.
+pub fn (s: Stream[B, T]) close(w: Where): Result[Unit, Error] {
+    var t = s
+    let p = replace(mut &t.pending, Res{h: nullPtr()})
+    t.state = sqlrows.ENDED
+    return t.c.settle(w)
+}
+
+// ---------------------------------------------------------------- values (text format)
+
+fn pgErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, msg) }
+
+fn pInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 {
+        match parseInt(b) {
+            Some(v) { return Ok(v) }
+            None { return Err(pgErr("an integer of " + b)) }
+        }
+    }
+    if col.wire == OID_NUMERIC {
+        let d = try sqldialect.parseDecimal(b)
+        match d.toInt(Rounding.UNNECESSARY) {
+            Ok(v) { return Ok(v) }
+            Err(_) { return Err(pgErr(d.toStr() + " is not an int")) }
+        }
+    }
+    return Err(sqlrows.wrongKind(col, "int"))
+}
+
+fn pDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
+    if col.wire == OID_NUMERIC {
+        let d = try sqldialect.parseDecimal(b)
+        if col.aux >= 4 && col.scale >= 0 { return sqldialect.fitDecimal(d, col.precision, col.scale) }
+        return Ok(d)
+    }
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 { return Ok(decimalOf(try pInt(b, col))) }
+    if col.wire == OID_FLOAT4 || col.wire == OID_FLOAT8 {
+        return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal"))
+    }
+    return Err(sqlrows.wrongKind(col, "Decimal"))
+}
+
+fn pFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
+    if col.wire != OID_FLOAT8 && col.wire != OID_FLOAT4 { return Err(sqlrows.wrongKind(col, "float")) }
+    if b == "Infinity" { return Ok(math.inf()) }
+    if b == "-Infinity" { return Ok(-math.inf()) }
+    match math.parse(b) {
+        Some(f) { return Ok(f) }
+        None { return Err(pgErr("a float of " + b)) }
+    }
+}
+
+fn pText(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire == OID_BYTEA { return Err(sqlrows.wrongKind(col, "text")) }
+    return Ok(b)
+}
+
+fn pBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire != OID_BYTEA { return Err(sqlrows.wrongKind(col, "bytes")) }
+    if len(b) < 2 || b[0] != '\\' || b[1] != 'x' { return Err(pgErr("bytea not in hex format")) }
+    match sqldialect.unhex(b[2..]) {
+        Some(x) { return Ok(x) }
+        None { return Err(pgErr("bytea not in hex format")) }
+    }
+}
+
+fn pBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
+    if col.wire != OID_BOOL { return Err(sqlrows.wrongKind(col, "bool")) }
+    return Ok(b == "t")
+}
+
+fn pDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
+    if col.wire != OID_DATE { return Err(sqlrows.wrongKind(col, "date")) }
+    match time.parseDate(b) {
+        Some(d) { return Ok(d) }
+        None { return Err(pgErr("a date of " + b + " (only years 1 to 9999)")) }
+    }
+}
+
+fn pTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
+    if col.wire != OID_TIME { return Err(sqlrows.wrongKind(col, "time")) }
+    match time.parseTimeOfDay(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a time of " + b)) }
+    }
+}
+
+fn pDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
+    if col.wire != OID_TIMESTAMP { return Err(sqlrows.wrongKind(col, "date-time")) }
+    match time.parseLocalDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamp of " + b)) }
+    }
+}
+
+fn pOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
+    if col.wire != OID_TIMESTAMPTZ { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
+    match time.parseOffsetDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamptz of " + b)) }
+    }
+}
+
+fn pgCodec(): sqlrows.Codec {
+    return sqlrows.Codec{int: pInt, decimal: pDecimal, float: pFloat, text: pText, bytes: pBytes, bool: pBool, date: pDate,
+                         time: pTime, dateTime: pDateTime, offsetDateTime: pOffset}
 }

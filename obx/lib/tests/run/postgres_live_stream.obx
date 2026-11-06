@@ -1,0 +1,365 @@
+// postgres streams against a live server ($OBX_PG_DSN, default the local
+// socket; exits 77, skipped, when it cannot connect). Rows decoded into the
+// program's records in libpq's single-row mode (sqlrows): names matched with
+// case and underscores ignored, a missing column (the error lists the
+// columns), a type refused at bind, NULL into an Option and into a plain
+// field (the error names the column and the row), every mapped type,
+// 200,000 rows through a buffer of 7 and of 1,024 against the buffered
+// query, rows kept in a list across fills, next(), an early close and a
+// dropped stream (PQcancel; the connection is idle and reusable after), an
+// error on a later row, a statement without rows, by position, a lease.
+// needs: pq
+// expect: names: 3 rows | 1 7 'Ann' 12.50 | 3 9 'Cy' 0.01 | columns ID, Customer_Id, CUSTOMERNAME, amount, extra
+// expect: missing: error 1024: no column "email" (case and underscores ignored); the columns are: ID, Customer_Id, CUSTOMERNAME, amount, extra
+// expect: ambiguous: error 1024: column "a_b" is ambiguous: ab and A_B both match
+// expect: type: error 1002: column CUSTOMERNAME (text) cannot be read as Decimal; it reads as text
+// expect: wide int: error 1002: column w (numeric(19,0)) cannot be read as int; it reads as Decimal
+// expect: null: Some(5) None | plain: 1 row, then error 1001: column note is NULL at row 2: read it with textOrNull into an Option | idle true
+// expect: types: 42 7 -3 12.50 123456789012 0.1 0.5 'café' 'naïve' x'00ff10' true false 2026-11-05 13:45:07.123 2026-11-05T13:45:07.123456 2026-11-05T13:45:07+01:30 9000 x'' None 7
+// expect: buffered: 200000 rows sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 7: 200000 rows in 28572 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 1024: 200000 rows in 196 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: kept: 300 rows equal to the buffered query true | first 'name1' 0.01 last 'name300' 3.00
+// expect: next: 1 2 3 None
+// expect: early close: 5 rows | idle true | after: 2
+// expect: dropped: 3 rows | idle false | after: 2 | idle true
+// expect: later error: 4999 rows then error 7 22012 | idle true | after: 2
+// expect: no rows: 0 rows | columns none
+// expect: position: 7 'x'
+// expect: lease: 3 rows 24
+// expect: open handles 0
+
+import "postgres"
+import "sqldialect"
+import "os"
+import "strings"
+
+type Kind = postgres.Kind
+type Error = postgres.Error
+type Columns = postgres.Columns
+type RowView = postgres.RowView
+
+fn err[T: borrow](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+type Order = value record { id: int; customer: int; name: str; amount: Decimal }
+type OrderCols = value record { id: int; customer: int; name: int; amount: int }
+
+fn bindOrder(c: &Columns): Result[OrderCols, Error] {
+    return Ok(OrderCols{id: try c.index("id", Kind.Int), customer: try c.index("customer_id", Kind.Int),
+                        name: try c.index("customerName", Kind.Text), amount: try c.index("AMOUNT", Kind.Decimal)})
+}
+
+fn readOrder(b: &OrderCols, r: &RowView): Result[Order, Error] {
+    return Ok(Order{id: try r.int(b.id), customer: try r.int(b.customer), name: try r.text(b.name), amount: try r.decimal(b.amount)})
+}
+
+fn show(o: &Order): str { return o.id.toStr() + " " + o.customer.toStr() + " '" + o.name + "' " + o.amount.toStr() }
+
+const ORDERS = "SELECT id AS \"ID\", cust AS \"Customer_Id\", nm AS \"CUSTOMERNAME\", amt AS amount, 0 AS extra FROM so ORDER BY id"
+
+fn empty(): Order { return Order{id: 0, customer: 0, name: "", amount: 0.00m} }
+
+fn names(c: mut &postgres.Conn): Result[Unit, Error] {
+    var src = try c.stream(ORDERS, [], bindOrder, readOrder)
+    var buf = array(2, empty())
+    var all: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for o in buf[0..n] { append(mut &all, o) }
+    }
+    println("names: " + len(all).toStr() + " rows | " + show(&all[0]) + " | " + show(&all[2]) + " | columns " + src.columns().names())
+    return Ok(Unit{})
+}
+
+type Email = value record { email: str }
+fn bindEmail(c: &Columns): Result[int, Error] { return c.index("email", Kind.Text) }
+fn readEmail(b: &int, r: &RowView): Result[Email, Error] { return Ok(Email{email: try r.text(b)}) }
+fn bindAb(c: &Columns): Result[int, Error] { return c.index("a_b", Kind.Int) }
+fn readInt(b: &int, r: &RowView): Result[int, Error] { return r.int(b) }
+fn bindNameAsDecimal(c: &Columns): Result[int, Error] { return c.index("customername", Kind.Decimal) }
+fn readDec(b: &int, r: &RowView): Result[Decimal, Error] { return r.decimal(b) }
+fn bindW(c: &Columns): Result[int, Error] { return c.index("w", Kind.Int) }
+
+type Noted = value record { qty: Option[int]; note: str }
+type NotedCols = value record { qty: int; note: int }
+fn bindNoted(c: &Columns): Result[NotedCols, Error] {
+    return Ok(NotedCols{qty: try c.index("qty", Kind.Int), note: try c.index("note", Kind.Text)})
+}
+fn readNoted(b: &NotedCols, r: &RowView): Result[Noted, Error] { return Ok(Noted{qty: try r.intOrNull(b.qty), note: try r.text(b.note)}) }
+fn readQty(b: &NotedCols, r: &RowView): Result[Option[int], Error] { return r.intOrNull(b.qty) }
+
+fn nulls(c: mut &postgres.Conn): Result[Unit, Error] {
+    let sql = "SELECT 5::int4 AS qty, 'a'::text AS note UNION ALL SELECT NULL, NULL"
+    var q = try c.stream(sql, [], bindNoted, readQty)
+    let a = try q.next()
+    let b = try q.next()
+    var line = "null: " + a.unwrap().toStr() + " " + b.unwrap().toStr()
+    try q.close()
+    var p = try c.stream(sql, [], bindNoted, readNoted)
+    var buf = array(4, Noted{qty: None, note: ""})
+    let first = try p.fill(mut &buf)
+    line = line + " | plain: " + first.toStr() + " row, then " + err(p.fill(mut &buf))
+    println(line + " | idle " + c.idle().toStr())
+    return Ok(Unit{})
+}
+
+type All = value record {
+    big: int; small: int; neg: int; amount: Decimal; whole: int; ratio: float; half: float
+    name: str; code: str; data: str; flag: bool; off: bool; day: str; at: str; stamp: str; zoned: str
+    long: int; empty: str; none: Option[str]; count: int
+}
+type AllCols = value record {
+    big: int; small: int; neg: int; amount: int; whole: int; ratio: int; half: int
+    name: int; code: int; data: int; flag: int; off: int; day: int; at: int; stamp: int; zoned: int
+    long: int; empty: int; none: int; count: int
+}
+
+fn bindAll(c: &Columns): Result[AllCols, Error] {
+    return Ok(AllCols{big: try c.index("big", Kind.Int), small: try c.index("small", Kind.Int), neg: try c.index("neg", Kind.Int),
+                      amount: try c.index("amount", Kind.Decimal), whole: try c.index("whole", Kind.Int),
+                      ratio: try c.index("ratio", Kind.Float), half: try c.index("half", Kind.Float),
+                      name: try c.index("name", Kind.Text), code: try c.index("code", Kind.Text),
+                      data: try c.index("data", Kind.Bytes), flag: try c.index("flag", Kind.Bool), off: try c.index("off", Kind.Bool),
+                      day: try c.index("day", Kind.Date), at: try c.index("at", Kind.Time), stamp: try c.index("stamp", Kind.DateTime),
+                      zoned: try c.index("zoned", Kind.OffsetDateTime), long: try c.index("long_text", Kind.Text),
+                      empty: try c.index("empty", Kind.Bytes), none: try c.index("none", Kind.Text), count: try c.index("count", Kind.Int)})
+}
+
+fn readAll(b: &AllCols, r: &RowView): Result[All, Error] {
+    return Ok(All{big: try r.int(b.big), small: try r.int(b.small), neg: try r.int(b.neg), amount: try r.decimal(b.amount),
+                  whole: try r.int(b.whole), ratio: try r.float(b.ratio), half: try r.float(b.half),
+                  name: try r.text(b.name), code: try r.text(b.code), data: try r.bytes(b.data), flag: try r.bool(b.flag),
+                  off: try r.bool(b.off), day: (try r.date(b.day)).toStr(), at: (try r.timeOfDay(b.at)).toStr(),
+                  stamp: (try r.localDateTime(b.stamp)).toStr(), zoned: (try r.offsetDateTime(b.zoned)).toStr(),
+                  long: len(try r.text(b.long)), empty: try r.bytes(b.empty), none: try r.textOrNull(b.none), count: try r.int(b.count)})
+}
+
+fn types(c: mut &postgres.Conn): Result[Unit, Error] {
+    let sql = "SELECT 42::int8 AS big, 7::int2 AS small, -3::int4 AS neg, 12.5::numeric(12,2) AS amount, " +
+              "123456789012::numeric(18,0) AS whole, 0.1::float8 AS ratio, 0.5::float4 AS half, 'café'::text AS name, " +
+              "'naïve'::varchar(20) AS code, '\\x00ff10'::bytea AS data, true AS flag, false AS off, '2026-11-05'::date AS day, " +
+              "'13:45:07.123'::time AS at, '2026-11-05 13:45:07.123456'::timestamp AS stamp, " +
+              "'2026-11-05 13:45:07+01:30'::timestamptz AS zoned, repeat('x', 9000) AS long_text, ''::bytea AS empty, " +
+              "NULL::text AS none, (SELECT sum(x) FROM generate_series(1, 3) x)::numeric + 1 AS count"
+    try c.exec("SET TIME ZONE INTERVAL '+01:30' HOUR TO MINUTE")
+    var s = try c.stream(sql, [], bindAll, readAll)
+    let a = (try s.next()).unwrap()
+    println("types: " + a.big.toStr() + " " + a.small.toStr() + " " + a.neg.toStr() + " " + a.amount.toStr() + " " + a.whole.toStr() +
+            " " + a.ratio.toStr() + " " + a.half.toStr() + " '" + a.name + "' '" + a.code + "' x'" + sqldialect.hex(a.data) + "' " +
+            a.flag.toStr() + " " + a.off.toStr() + " " + a.day + " " + a.at + " " + a.stamp + " " + a.zoned + " " + a.long.toStr() +
+            " x'" + sqldialect.hex(a.empty) + "' " + a.none.toStr() + " " + a.count.toStr())
+    try s.close()
+    try c.exec("RESET TIME ZONE")
+    return Ok(Unit{})
+}
+
+const MANY = "SELECT i::int8 AS id, (i % 1000)::int4 AS customer_id, 'name' || i AS customer_name, " +
+             "(i / 100.0)::numeric(12,2) AS amount FROM generate_series(1, 200000) i ORDER BY i"
+
+fn many(c: mut &postgres.Conn, size: int): Result[Unit, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(size, empty())
+    var rows = 0
+    var fills = 0
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            amounts = amounts + o.amount
+            chars += len(o.name)
+        }
+    }
+    println("buffer " + size.toStr() + ": " + rows.toStr() + " rows in " + fills.toStr() + " fills sum " + sum.toStr() + " amounts " +
+            amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn buffered(c: mut &postgres.Conn): Result[Unit, Error] {
+    let r = try c.query(MANY, &[])
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    for i in 0..r.rowCount() {
+        sum += try r.int(i, 0)
+        amounts = amounts + try r.decimal(i, 3)
+        chars += len(try r.text(i, 2))
+    }
+    println("buffered: " + r.rowCount().toStr() + " rows sum " + sum.toStr() + " amounts " + amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn kept(c: mut &postgres.Conn): Result[Unit, Error] {
+    let sql = strings.replaceAll(MANY, "200000", "300")
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(7, empty())
+    var list: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for i in 0..n { append(mut &list, buf[i]) }
+    }
+    let r = try c.query(sql, &[])
+    var same = len(list) == r.rowCount()
+    for i in 0..len(list) {
+        let o = list[i]
+        same = same && o.id == (try r.int(i, 0)) && o.customer == (try r.int(i, 1)) && o.name == (try r.text(i, 2)) &&
+               o.amount == (try r.decimal(i, 3))
+    }
+    let last = list[len(list) - 1]
+    println("kept: " + len(list).toStr() + " rows equal to the buffered query " + same.toStr() + " | first '" + list[0].name + "' " +
+            list[0].amount.toStr() + " last '" + last.name + "' " + last.amount.toStr())
+    return Ok(Unit{})
+}
+
+fn bindFirst(c: &Columns): Result[int, Error] { return c.at(0, Kind.Int) }
+
+fn nexts(c: mut &postgres.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3", [], bindFirst, readInt)
+    var line = "next:"
+    for i in 0..3 { line = line + " " + (try s.next()).unwrap().toStr() }
+    println(line + " " + (try s.next()).toStr())
+    return Ok(Unit{})
+}
+
+fn after(c: mut &postgres.Conn): str {
+    match c.query("SELECT 1 + 1", &[]) {
+        Ok(r) { return r.int(0, 0).unwrap().toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn early(c: mut &postgres.Conn): Result[Unit, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(5, empty())
+    let n = try src.fill(mut &buf)
+    try src.close()
+    println("early close: " + n.toStr() + " rows | idle " + c.idle().toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn dropped(c: mut &postgres.Conn): Result[Unit, Error] {
+    var n = 0
+    if true {
+        var src = try c.stream(MANY, [], bindOrder, readOrder)
+        for i in 0..3 { if (try src.next()).isSome() { n += 1 } }
+    }
+    let idle = c.idle()
+    println("dropped: " + n.toStr() + " rows | idle " + idle.toStr() + " | after: " + after(c) + " | idle " + c.idle().toStr())
+    return Ok(Unit{})
+}
+
+fn later(c: mut &postgres.Conn): Result[Unit, Error] {
+    let sql = "SELECT (100 / (i - 5000))::int8 AS id, 1 AS customer_id, 'n' AS customer_name, 1::numeric(12,2) AS amount " +
+              "FROM generate_series(1, 10000) i"
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(64, empty())
+    var rows = 0
+    var e = ""
+    while true {
+        match src.fill(mut &buf) {
+            Ok(n) {
+                if n == 0 { break }
+                rows += n
+            }
+            Err(x) {
+                e = "error " + x.code.toStr() + " " + x.state
+                break
+            }
+        }
+    }
+    println("later error: " + rows.toStr() + " rows then " + e + " | idle " + c.idle().toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn bindNone(c: &Columns): Result[int, Error] { return Ok(c.count()) }
+
+fn noRows(c: mut &postgres.Conn): Result[Unit, Error] {
+    var s = try c.stream("UPDATE so SET amt = amt WHERE id < 0", [], bindNone, readInt)
+    var buf = array(4, 0)
+    let n = try s.fill(mut &buf)
+    println("no rows: " + n.toStr() + " rows | columns " + s.columns().names())
+    return Ok(Unit{})
+}
+
+type Pos = value record { n: int; s: str }
+fn bindPos(c: &Columns): Result[int, Error] {
+    let a = try c.at(0, Kind.Int)
+    let b = try c.at(1, Kind.Text)
+    return Ok(a + b)
+}
+fn readPos(b: &int, r: &RowView): Result[Pos, Error] { return Ok(Pos{n: try r.int(0), s: try r.text(1)}) }
+
+fn position(c: mut &postgres.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 7, 'x'", [], bindPos, readPos)
+    let p = (try s.next()).unwrap()
+    println("position: " + p.n.toStr() + " '" + p.s + "'")
+    return Ok(Unit{})
+}
+
+fn lease(dsn: str): Result[Unit, Error] {
+    let pool = postgres.newPool(dsn, 1)
+    var l = try pool.acquire()
+    try l.exec("CREATE TEMP TABLE so(id int8, cust int4, nm text, amt numeric(12,2))")
+    try l.exec("INSERT INTO so VALUES (1, 7, 'Ann', 12.50), (2, 8, 'Bo', 3.00), (3, 9, 'Cy', 0.01)")
+    var s = try l.stream("SELECT id AS \"ID\", cust AS \"Customer_Id\", nm AS \"CUSTOMERNAME\", amt AS amount FROM so WHERE id >= $1 AND nm <> $2 ORDER BY id",
+                         [postgres.Value.Int(1), postgres.Value.Text("zz")], bindOrder, readOrder)
+    var buf = array(8, empty())
+    let n = try s.fill(mut &buf)
+    var t = 0
+    for o in buf[0..n] { t += o.customer }
+    println("lease: " + n.toStr() + " rows " + t.toStr())
+    return Ok(Unit{})
+}
+
+fn run(c: mut &postgres.Conn): Result[Unit, Error] {
+    try c.exec("CREATE TEMP TABLE so(id int8, cust int4, nm text, amt numeric(12,2), qty int4, note text)")
+    try c.exec("INSERT INTO so VALUES (1, 7, 'Ann', 12.50, 5, 'a'), (2, 8, 'Bo', 3.00, NULL, NULL), (3, 9, 'Cy', 0.01, 1, 'c')")
+    try names(c)
+    println("missing: " + err(c.stream(ORDERS, [], bindEmail, readEmail)))
+    println("ambiguous: " + err(c.stream("SELECT 1 AS ab, 2 AS \"A_B\"", [], bindAb, readInt)))
+    println("type: " + err(c.stream(ORDERS, [], bindNameAsDecimal, readDec)))
+    println("wide int: " + err(c.stream("SELECT 1::numeric(19,0) AS w", [], bindW, readInt)))
+    try nulls(c)
+    try types(c)
+    try buffered(c)
+    try many(c, 7)
+    try many(c, 1024)
+    try kept(c)
+    try nexts(c)
+    try early(c)
+    try dropped(c)
+    try later(c)
+    try noRows(c)
+    try position(c)
+    return Ok(Unit{})
+}
+
+fn main() {
+    let dsn = os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
+    if true {
+        let r = postgres.connect(dsn)
+        if r.isErr() { exit(77) }
+        var c = r.unwrap()
+        match run(mut &c) {
+            Ok(_) {}
+            Err(e) { println("FAIL " + e.toStr()) }
+        }
+        match lease(dsn) {
+            Ok(_) {}
+            Err(e) { println("FAIL lease " + e.toStr()) }
+        }
+    }
+    println("open handles " + postgres.openHandles().toStr())
+}
