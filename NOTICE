@@ -203,3 +203,21 @@ is preserved.
 
 The sinh, cosh, tanh, hypot, fmod, scalbn and __expo2 files are musl's own
 (the MIT license above). No code of the GNU C Library is used.
+
+The Oracle Database client (obx/lib/tns.obx, obx/lib/oracle.obx and their
+tests) is a port of the thin mode of python-oracledb
+(https://github.com/oracle/python-oracledb, src/oracledb/impl/thin and
+src/oracledb/impl/base: the TNS packets, the TTC messages, the data type
+table, the value encodings and the authentication arithmetic), read
+together with node-oracledb's lib/thin. python-oracledb carries this
+notice:
+
+Copyright (c) 2016, 2026, Oracle and/or its affiliates.
+
+This software is dual-licensed to you under the Universal Permissive License
+(UPL) 1.0 as shown at https://oss.oracle.com/licenses/upl and Apache License
+2.0 as shown at http://www.apache.org/licenses/LICENSE-2.0. You may choose
+either license.
+
+obx takes it under the Apache License, Version 2.0 (the license of obx
+itself, in LICENSE).

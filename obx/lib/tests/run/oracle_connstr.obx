@@ -1,0 +1,64 @@
+// oracle's connection strings (no server): the ODP.NET keywords, Easy
+// Connect and connect descriptors, defaults, errors that name an entry by
+// position and never echo a value, and masked().
+// expect: easy: app db.example.com 1521 FREEPDB1 tls false program obx timeout 15000 fetch 100
+// expect: port and tcps: h 2484 svc tls true trust true name cert.example.com ca /etc/ca.pem
+// expect: ipv6: ::1 1522 orcl
+// expect: descriptor: dbhost 1600 sales.example.com tls true
+// expect: options: timeout 0 fetch 500 program reports
+// expect: quoted: p;w}d 'x' tls false
+// expect: error: connection string: no Data Source
+// expect: error: connection string: no User Id
+// expect: error: connection string: an unknown keyword (entry 3)
+// expect: error: connection string: Data Source needs a service: host[:port]/service
+// expect: error: connection string: only the tcp and tcps protocols are supported
+// expect: error: connection string: Fetch Size must be 1 to 100000
+// expect: error: connection string: Encrypt must be yes or no
+// expect: error: connection string: a value in braces or quotes is not closed (entry 2)
+// expect: error: connection string: Encrypt=no with a tcps Data Source
+// expect: error: connection string: SID is not supported: give SERVICE_NAME
+// expect: secret not echoed: true
+// expect: masked: User Id=app;Password=***;Data Source=h/s; PWD=***
+
+import "oracle"
+
+fn show(s: str) {
+    match oracle.parseConnString(s) {
+        Ok(_) { println("ok?") }
+        Err(e) { println("error: " + e.msg) }
+    }
+}
+
+fn main() {
+    let a = oracle.parseConnString("User Id=app;Password=pw;Data Source=db.example.com/FREEPDB1").unwrap()
+    let c = a.config
+    println("easy: " + c.user + " " + c.host + " " + c.port.toStr() + " " + c.service + " tls " + c.tls.toStr() +
+            " program " + c.program + " timeout " + a.connectTimeoutMs.toStr() + " fetch " + a.fetchSize.toStr())
+    let b = oracle.parseConnString("uid=u; pwd=p; server=tcps://h:2484/svc; TrustServerCertificate=yes; " +
+                                   "Server Certificate Name=cert.example.com; CA File= /etc/ca.pem ").unwrap().config
+    println("port and tcps: " + b.host + " " + b.port.toStr() + " " + b.service + " tls " + b.tls.toStr() + " trust " +
+            b.trustServerCertificate.toStr() + " name " + b.serverCertName + " ca " + b.caFile)
+    let v6 = oracle.parseConnString("User=u;Data Source=[::1]:1522/orcl").unwrap().config
+    println("ipv6: " + v6.host + " " + v6.port.toStr() + " " + v6.service)
+    let d = oracle.parseConnString("User Id=u;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=dbhost)(PORT=1600))" +
+                                   "(CONNECT_DATA=(SERVICE_NAME=sales.example.com)))").unwrap().config
+    println("descriptor: " + d.host + " " + d.port.toStr() + " " + d.service + " tls " + d.tls.toStr())
+    let o = oracle.parseConnString("User Id=u;Data Source=h/s;Connect Timeout=0;Fetch Size=500;Application Name=reports").unwrap()
+    println("options: timeout " + o.connectTimeoutMs.toStr() + " fetch " + o.fetchSize.toStr() + " program " + o.config.program)
+    let q = oracle.parseConnString("User Id=u;Password={p;w}}d};Data Source=h/s;Program='x';Encrypt=no").unwrap().config
+    println("quoted: " + q.password + " '" + q.program + "' tls " + q.tls.toStr())
+
+    show("User Id=u;Password=p")
+    show("Data Source=h/s;Password=p")
+    show("User Id=u;Data Source=h/s;Colour=blue")
+    show("User Id=u;Data Source=h")
+    show("User Id=u;Data Source=ldap://h/s")
+    show("User Id=u;Data Source=h/s;Fetch Size=0")
+    show("User Id=u;Data Source=h/s;Encrypt=maybe")
+    show("User Id=u;Password={secret-value;Data Source=h/s")
+    show("User Id=u;Data Source=tcps://h/s;Encrypt=no")
+    show("User Id=u;Data Source=(DESCRIPTION=(ADDRESS=(HOST=h))(CONNECT_DATA=(SID=orcl)))")
+    let e = oracle.parseConnString("User Id=u;Data Source=h/s;secret-value-7=1")
+    println("secret not echoed: " + (indexOf(e.unwrapErr().msg, "secret", 0) < 0).toStr())
+    println("masked: " + oracle.masked("User Id=app;Password=hunter2;Data Source=h/s; PWD={x;y}"))
+}

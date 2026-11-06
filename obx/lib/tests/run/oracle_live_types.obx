@@ -1,0 +1,203 @@
+// oracle's type mapping against a live Oracle Database ($ORACLE_TEST_DSN or
+// ~/.obo-oracle-dsn; exits 77, skipped, without one). Every mapped type is
+// bound, stored in a column of its type, read back and compared exactly:
+// NUMBER (0, negatives, 38 digits, 1e125, 1e-130, a column's scale),
+// BINARY_FLOAT, BINARY_DOUBLE, VARCHAR2, NVARCHAR2, CHAR, RAW, DATE,
+// TIMESTAMP, TIMESTAMP WITH TIME ZONE, BOOLEAN and NULL; and bound values
+// echoed from dual.
+// needs: ssl
+// expect: number 0: 0 true
+// expect: number -1: -1 true
+// expect: number 123.45: 123.45 true
+// expect: number -0.001: -0.001 true
+// expect: number 38 digits: 12345678901234567890123456789012345678 true
+// expect: number -38 digits fraction: -1234567890123456789.0123456789012345678 true
+// expect: number 1e125: 1 125 true
+// expect: number 1e-130: 1 -130 true
+// expect: number -9.99e-125: 999 -127 true
+// expect: number int max: 9223372036854775807 true
+// expect: number(10,2): 12.50 12.50 true | precision 10 scale 2
+// expect: number(10,2) rounds: 1.24
+// expect: binary_float: 1.5 -1024.125 true
+// expect: binary_double: 0.1 -2.5e-300 1.7976931348623157e308 true
+// expect: varchar2: true 19
+// expect: nvarchar2: true NVARCHAR2
+// expect: char(5): 'ab   '
+// expect: varchar2 4000: true
+// expect: raw: true 256
+// expect: date: 2026-11-06T12:34:56 true | midnight 1999-12-31 true
+// expect: timestamp: 2026-11-06T12:34:56.123456789 true
+// expect: timestamp tz: 2026-11-06T12:34:56.123456789+05:30 true | 1969-07-20T20:17:40-08:00 true
+// expect: boolean: true false
+// expect: nulls: 13 of 13
+// expect: dual: Dec 42 | Dec -7.25 | Float 0.5 | Text 'x y' | Bytes 3 | Bool true | Null true
+// expect: open handles: 0
+
+import "oracle"
+import "sqldialect"
+import "tns"
+import "time"
+import "io"
+import "os"
+
+type Value = sqldialect.Value
+type Param = oracle.Param
+
+fn dsn(): Option[str] {
+    match os.env("ORACLE_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-oracle-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn dec(s: str): Decimal { return Decimal.parse(s).unwrap() }
+
+fn num(neg: bool, digits: str, exp: int): tns.Num { return tns.Num{neg: neg, digits: digits, exp: exp} }
+
+fn same(a: &tns.Num, b: &tns.Num): bool { return a.neg == b.neg && a.digits == b.digits && a.exp == b.exp }
+
+// Stores n in a NUMBER column and reads it back.
+fn numberTrip(c: mut &oracle.Conn, id: int, p: Param): tns.Num {
+    let n = c.runWith("INSERT INTO obx_num (id, n) VALUES (:1, :2)", &[Param.Of(Value.Int(id)), p]).unwrap()
+    let r = c.query("SELECT n FROM obx_num WHERE id = :1", &[Value.Int(id)]).unwrap()
+    return r.number(0, 0).unwrap()
+}
+
+fn showNum(c: mut &oracle.Conn, id: int, what: str, d: Decimal) {
+    let back = numberTrip(c, id, Param.Of(Value.Dec(d)))
+    let want = tns.numOfDecimal(d)
+    println("number " + what + ": " + back.toStr() + " " + (same(&back, &want) && back.toStr() == d.toStr()).toStr())
+}
+
+fn showBig(c: mut &oracle.Conn, id: int, what: str, n: tns.Num) {
+    let back = numberTrip(c, id, Param.Number(n))
+    println("number " + what + ": " + back.digits + " " + back.exp.toStr() + " " + same(&back, &n).toStr())
+}
+
+fn ldt(y: int, mo: int, d: int, h: int, mi: int, s: int, ns: int): time.LocalDateTime {
+    return time.localDateTime(time.Date{year: y, month: mo, day: d}, time.timeOfDay(h, mi, s, ns).unwrap())
+}
+
+fn main() {
+    let od = dsn()
+    if od.isNone() {
+        println("no ORACLE_TEST_DSN or ~/.obo-oracle-dsn: skipped")
+        exit(77)
+    }
+    var c = oracle.connect(od.unwrap()).unwrap()
+    let d1 = c.exec("BEGIN EXECUTE IMMEDIATE 'DROP TABLE obx_num'; EXCEPTION WHEN OTHERS THEN NULL; END;")
+    let d2 = c.exec("BEGIN EXECUTE IMMEDIATE 'DROP TABLE obx_types'; EXCEPTION WHEN OTHERS THEN NULL; END;")
+    c.exec("CREATE TABLE obx_num (id NUMBER(10) PRIMARY KEY, n NUMBER, n2 NUMBER(10,2))").unwrap()
+
+    // NUMBER
+    showNum(mut &c, 1, "0", dec("0"))
+    showNum(mut &c, 2, "-1", dec("-1"))
+    showNum(mut &c, 3, "123.45", 123.45m)
+    showNum(mut &c, 4, "-0.001", -0.001m)
+    showNum(mut &c, 5, "38 digits", dec("12345678901234567890123456789012345678"))
+    showNum(mut &c, 6, "-38 digits fraction", dec("-1234567890123456789.0123456789012345678"))
+    showBig(mut &c, 7, "1e125", num(false, "1", 125))
+    showBig(mut &c, 8, "1e-130", num(false, "1", -130))
+    showBig(mut &c, 9, "-9.99e-125", num(true, "999", -127))
+    let mx = numberTrip(mut &c, 10, Param.Of(Value.Int(9223372036854775807)))
+    println("number int max: " + mx.toStr() + " " + (mx.int().unwrap() == 9223372036854775807).toStr())
+    let s1 = c.run("INSERT INTO obx_num (id, n2) VALUES (11, :1)", &[Value.Dec(12.5m)]).unwrap()
+    let s2 = c.run("INSERT INTO obx_num (id, n2) VALUES (12, :1)", &[Value.Dec(1.235m)]).unwrap()
+    let sr = c.query("SELECT n2 FROM obx_num WHERE id IN (11, 12) ORDER BY id", &[]).unwrap()
+    let dt = sr.decimalType(0).unwrap()
+    let v1 = sr.decimal(0, 0).unwrap()
+    let vv = sr.value(0, 0).unwrap()
+    let vs = match vv {
+        Value.Dec(x) { x.toStr() }
+        else { "?" }
+    }
+    println("number(10,2): " + v1.toStr() + " " + vs + " " + (v1.scale() == 2).toStr() + " | precision " +
+            dt.precision.toStr() + " scale " + dt.scale.toStr())
+    println("number(10,2) rounds: " + sr.decimal(1, 0).unwrap().toStr())
+
+    // The other types, one column each
+    c.exec("CREATE TABLE obx_types (id NUMBER(10) PRIMARY KEY, f BINARY_FLOAT, f2 BINARY_FLOAT, d BINARY_DOUBLE, " +
+           "d2 BINARY_DOUBLE, d3 BINARY_DOUBLE, v VARCHAR2(4000), nv NVARCHAR2(100), ch CHAR(5), r RAW(2000), dt DATE, " +
+           "ts TIMESTAMP(9), tz TIMESTAMP(9) WITH TIME ZONE, b BOOLEAN)").unwrap()
+    let text = "café ü 日本 ✓"
+    var raw = newStrBuf()
+    for i in 0..256 { raw.addByte(byte(255 - i)) }
+    let rawS = raw.toStr()
+    let when = ldt(2026, 11, 6, 12, 34, 56, 0)
+    let fine = ldt(2026, 11, 6, 12, 34, 56, 123456789)
+    let east = time.OffsetDateTime{local: fine, offset: 330}
+    let west = time.OffsetDateTime{local: ldt(1969, 7, 20, 20, 17, 40, 0), offset: -480}
+    let ins = "INSERT INTO obx_types VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10, :11, :12, :13, :14)"
+    let a = c.runWith(ins, &[Param.Of(Value.Int(1)), Param.Of(Value.Float(1.5f)), Param.Of(Value.Float(-1024.125f)),
+                             Param.Of(Value.Float(0.1f)), Param.Of(Value.Float(-2.5e-300f)),
+                             Param.Of(Value.Float(1.7976931348623157e308f)), Param.Of(Value.Text(text)),
+                             Param.Of(Value.Text(text)), Param.Of(Value.Text("ab")), Param.Of(Value.Bytes(rawS)),
+                             Param.DateTime(when), Param.DateTime(fine), Param.Offset(east), Param.Of(Value.Bool(true))]).unwrap()
+    let b = c.runWith(ins, &[Param.Of(Value.Int(2)), Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null),
+                             Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Text(repeat("x", 4000))),
+                             Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null),
+                             Param.Date(time.Date{year: 1999, month: 12, day: 31}), Param.Of(Value.Null),
+                             Param.Offset(west), Param.Of(Value.Bool(false))]).unwrap()
+    let e = c.runWith(ins, &[Param.Of(Value.Int(3)), Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null),
+                             Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null),
+                             Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null), Param.Of(Value.Null),
+                             Param.Of(Value.Null), Param.Of(Value.Null)]).unwrap()
+    let r = c.query("SELECT id, f, f2, d, d2, d3, v, nv, ch, r, dt, ts, tz, b FROM obx_types ORDER BY id", &[]).unwrap()
+    let f1 = r.float(0, 1).unwrap()
+    let f2 = r.float(0, 2).unwrap()
+    println("binary_float: " + f1.toStr() + " " + f2.toStr() + " " + (f1 == 1.5f && f2 == -1024.125f).toStr())
+    let g1 = r.float(0, 3).unwrap()
+    let g2 = r.float(0, 4).unwrap()
+    let g3 = r.float(0, 5).unwrap()
+    println("binary_double: " + g1.toStr() + " " + g2.toStr() + " " + g3.toStr() + " " +
+            (g1 == 0.1f && g2 == -2.5e-300f && g3 == 1.7976931348623157e308f).toStr())
+    println("varchar2: " + (r.text(0, 6).unwrap() == text).toStr() + " " + len(r.text(0, 6).unwrap()).toStr())
+    println("nvarchar2: " + (r.text(0, 7).unwrap() == text).toStr() + " " + r.columnTypeName(7).unwrap())
+    println("char(5): '" + r.text(0, 8).unwrap() + "'")
+    println("varchar2 4000: " + (r.text(1, 6).unwrap() == repeat("x", 4000)).toStr())
+    println("raw: " + (r.bytes(0, 9).unwrap() == rawS).toStr() + " " + len(r.bytes(0, 9).unwrap()).toStr())
+    let dd = r.localDateTime(0, 10).unwrap()
+    let mid = r.date(1, 10).unwrap()
+    println("date: " + dd.toStr() + " " + dd.eq(&when).toStr() + " | midnight " + mid.toStr() + " " +
+            mid.eq(&time.Date{year: 1999, month: 12, day: 31}).toStr())
+    let ts = r.localDateTime(0, 11).unwrap()
+    println("timestamp: " + ts.toStr() + " " + ts.eq(&fine).toStr())
+    let z1 = r.offsetDateTime(0, 12).unwrap()
+    let z2 = r.offsetDateTime(1, 12).unwrap()
+    println("timestamp tz: " + z1.toStr() + " " + z1.eq(&east).toStr() + " | " + z2.toStr() + " " + z2.eq(&west).toStr())
+    println("boolean: " + r.bool(0, 13).unwrap().toStr() + " " + r.bool(1, 13).unwrap().toStr())
+    var nulls = 0
+    for k in 1..13 { if r.isNull(2, k).unwrap() { nulls += 1 } }
+    if r.isNull(2, 13).unwrap() { nulls += 1 }
+    println("nulls: " + nulls.toStr() + " of 13")
+
+    // Bound values echoed by the server
+    let q = c.query("SELECT :1, :2, :3, :4, :5, :6, :7 FROM dual",
+                    &[Value.Int(42), Value.Dec(-7.25m), Value.Float(0.5f), Value.Text("x y"), Value.Bytes("\x00\x01\xff"),
+                      Value.Bool(true), Value.Null]).unwrap()
+    var parts = newStrBuf()
+    for k in 0..7 {
+        let s = match q.value(0, k).unwrap() {
+            Value.Int(n) { "Int " + n.toStr() }
+            Value.Dec(x) { "Dec " + x.toStr() }
+            Value.Float(f) { "Float " + f.toStr() }
+            Value.Text(t) { "Text '" + t + "'" }
+            Value.Bytes(y) { "Bytes " + len(y).toStr() }
+            Value.Bool(x) { "Bool " + x.toStr() }
+            Value.Null { "Null true" }
+        }
+        if k > 0 { parts.add(" | ") }
+        parts.add(s)
+    }
+    println("dual: " + parts.toStr())
+
+    c.exec("DROP TABLE obx_num PURGE").unwrap()
+    c.exec("DROP TABLE obx_types PURGE").unwrap()
+    c.close()
+    println("open handles: " + oracle.openHandles().toStr())
+}

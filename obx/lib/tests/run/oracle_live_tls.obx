@@ -1,0 +1,68 @@
+// oracle over TLS (tcps) against a live Oracle Database: the test DSN
+// ($ORACLE_TEST_DSN or ~/.obo-oracle-dsn) with the TCPS entries of
+// $ORACLE_TEST_TLS or ~/.obo-oracle-tls appended (obx/tools/oracle_container.sh
+// tls writes "Data Source=tcps://localhost:2484/FREEPDB1;CA File=..."). Exits
+// 77, skipped, without both. Verified against the given CA, against the
+// system's store (refused: the certificate is self-signed), with
+// TrustServerCertificate, and with a wrong Server Certificate Name.
+// needs: ssl
+// expect: verified: ok 1 | 5000 rows over TLS sum 12502500
+// expect: system store: refused true
+// expect: trust server certificate: ok
+// expect: wrong name: refused true | right name: ok
+// expect: open handles: 0
+
+import "oracle"
+import "sqldialect"
+import "io"
+import "os"
+
+fn setting(env: str, file: str): Option[str] {
+    match os.env(env) {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/" + file) {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+// Connects and runs one query; "ok", or "refused <E_IO>" for an error.
+fn attempt(d: str): str {
+    match oracle.connect(d) {
+        Ok(c) {
+            var k = c
+            let r = k.query("SELECT 1 FROM dual", &[])
+            k.logoff()
+            return if r.isOk() { "ok" } else { "query failed" }
+        }
+        Err(e) { return "refused " + (e.code == sqldialect.E_IO).toStr() }
+    }
+}
+
+fn main() {
+    let od = setting("ORACLE_TEST_DSN", ".obo-oracle-dsn")
+    let ot = setting("ORACLE_TEST_TLS", ".obo-oracle-tls")
+    if od.isNone() || ot.isNone() {
+        println("no test DSN or no TLS settings: skipped")
+        exit(77)
+    }
+    let base = od.unwrap()
+    let tlsd = base + ";" + ot.unwrap()
+    var c = oracle.connect(tlsd).unwrap()
+    let one = c.query("SELECT 1 FROM dual", &[]).unwrap().int(0, 0).unwrap()
+    let many = c.query("SELECT level, RPAD('x', 100, 'y') FROM dual CONNECT BY level <= 5000", &[]).unwrap()
+    var sum = 0
+    for i in 0..many.rowCount() { sum += many.int(i, 0).unwrap() }
+    println("verified: ok " + one.toStr() + " | " + many.rowCount().toStr() + " rows over TLS sum " + sum.toStr())
+    c.logoff()
+    c.close()
+    // The TLS entries without the CA File: the system's store
+    println("system store: " + attempt(base + ";Data Source=tcps://localhost:2484/FREEPDB1"))
+    println("trust server certificate: " + attempt(base + ";Data Source=tcps://localhost:2484/FREEPDB1;TrustServerCertificate=yes"))
+    println("wrong name: " + attempt(tlsd + ";Server Certificate Name=other.example.com") + " | right name: " +
+            attempt(tlsd + ";Server Certificate Name=localhost"))
+    println("open handles: " + oracle.openHandles().toStr())
+}
