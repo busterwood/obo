@@ -132,9 +132,9 @@ fn main() {
     }
     println("int " + s1 + " | 9223372036854775808 " + i2.int().isSome().toStr() + " | 1.5 " + i3.int().isSome().toStr())
 
-    let e1 = tns.encodeDouble(1.5)
-    let e2 = tns.encodeDouble(-2.25)
-    let e3 = tns.encodeDouble(0.0)
+    let e1 = tns.encodeDouble(1.5f)
+    let e2 = tns.encodeDouble(-2.25f)
+    let e3 = tns.encodeDouble(0.0f)
     println("double 1.5: " + hex(e1) + " -> " + tns.decodeDouble(e1).unwrap().toStr() + " | -2.25: " + hex(e2) + " -> " +
             tns.decodeDouble(e2).unwrap().toStr() + " | 0: " + hex(e3) + " -> " + tns.decodeDouble(e3).unwrap().toStr())
     println("float 0.5: bf 00 00 00 -> " + tns.decodeFloat("\xbf\x00\x00\x00").unwrap().toStr() + " | -0.5: 40 ff ff ff -> " +

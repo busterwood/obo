@@ -1,0 +1,186 @@
+// oracle against a live Oracle Database ($ORACLE_TEST_DSN or
+// ~/.obo-oracle-dsn, an ODP.NET connection string; never printed, and
+// neither are the server's messages on a failed connect: only codes).
+// Exits 77, skipped, without one. Login, a query from dual, ORA- errors,
+// DDL and DML with autocommit, transaction[T] committed and rolled back,
+// thousands of rows over many FETCH round trips, a wrong password, a
+// connection the server has ended, closing in the middle of a result.
+// needs: ssl
+// expect: connect: version true sid true idle true
+// expect: dual: 1 row, X 'X' VARCHAR2 | 1 + 1 = 2
+// expect: missing table: error 942 true | idle true
+// expect: syntax: error 900
+// expect: divide: error 1476
+// expect: insert: 3 | update none: 0
+// expect: select: 4 rows, ID NUMBER, NAME VARCHAR2 | 1 'a' | 3 NULL
+// expect: duplicate: error 1, rows now 4
+// expect: transaction[T]: ok 1, rows 5 | failed: error 1, rows 5, idle true
+// expect: rollback in body: inTransaction true | after false
+// expect: many: 5000 sum 12502500
+// expect: fetch size 7: 5000 sum 12502500
+// expect: wrong password: error 1017
+// expect: killed: error true | broken idle false | next call error 1023
+// expect: early close: 2 open -> 0 open
+// expect: open handles: 0
+
+import "oracle"
+import "sqldialect"
+import "io"
+import "os"
+import "strings"
+
+type Value = sqldialect.Value
+
+fn dsn(): Option[str] {
+    match os.env("ORACLE_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-oracle-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn connectOrExit(d: str): oracle.Conn {
+    let r = oracle.connect(d)
+    if r.isErr() {
+        println("connect failed: " + r.unwrapErr().code.toStr())
+        exit(1)
+    }
+    return r.unwrap()
+}
+
+fn code[T](r: Result[T, oracle.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() }
+    }
+}
+
+fn q(r: &oracle.Rows, row: int, col: int): str {
+    if r.isNull(row, col).unwrap() { return "NULL" }
+    return "'" + r.text(row, col).unwrap() + "'"
+}
+
+// The password replaced by another (the DSN's keys as the container
+// script writes them).
+fn wrongPassword(d: str): str {
+    var out = newStrBuf()
+    for part in strings.split(&d, &";") {
+        let p = trim(part.toStr())
+        if len(p) == 0 { continue }
+        if out.size() > 0 { out.add(";") }
+        if startsWith(strings.toLower(p), "password=") || startsWith(strings.toLower(p), "pwd=") {
+            out.add("Password=Wrong-Password-1")
+        } else {
+            out.add(p)
+        }
+    }
+    return out.toStr()
+}
+
+fn main() {
+    let od = dsn()
+    if od.isNone() {
+        println("no ORACLE_TEST_DSN or ~/.obo-oracle-dsn: skipped")
+        exit(77)
+    }
+    let d = od.unwrap()
+    var c = connectOrExit(d)
+    println("connect: version " + (len(c.serverVersion()) > 0).toStr() + " sid " + (c.sessionId() > 0).toStr() +
+            " idle " + c.idle().toStr())
+
+    let r1 = c.query("SELECT dummy x FROM dual", &[]).unwrap()
+    let r2 = c.query("SELECT 1 + 1 FROM dual", &[]).unwrap()
+    println("dual: " + r1.rowCount().toStr() + " row, " + r1.columnName(0).unwrap() + " " + q(&r1, 0, 0) + " " +
+            r1.columnTypeName(0).unwrap() + " | 1 + 1 = " + r2.int(0, 0).unwrap().toStr())
+
+    let m = c.query("SELECT * FROM no_such_table", &[])
+    let mt = match m {
+        Ok(_) { "ok" }
+        Err(e) { "error " + e.code.toStr() + " " + startsWith(e.msg, "ORA-00942").toStr() }
+    }
+    println("missing table: " + mt + " | idle " + c.idle().toStr())
+    println("syntax: " + code(c.query("SELEC 1 FROM dual", &[])))
+    println("divide: " + code(c.query("SELECT 1/0 FROM dual", &[])))
+
+    let drop = c.exec("BEGIN EXECUTE IMMEDIATE 'DROP TABLE obx_t1'; EXCEPTION WHEN OTHERS THEN NULL; END;")
+    c.exec("CREATE TABLE obx_t1 (id NUMBER(10) PRIMARY KEY, name VARCHAR2(50))").unwrap()
+    let n = c.run("INSERT INTO obx_t1 SELECT level, CHR(96 + level) FROM dual CONNECT BY level <= 3", &[]).unwrap()
+    let u = c.run("UPDATE obx_t1 SET name = 'z' WHERE id > 100", &[]).unwrap()
+    println("insert: " + n.toStr() + " | update none: " + u.toStr())
+    let i4 = c.run("INSERT INTO obx_t1 VALUES (:1, :2)", &[Value.Int(4), Value.Null]).unwrap()
+    let u3 = c.run("UPDATE obx_t1 SET name = NULL WHERE id = 3", &[]).unwrap()
+    let s = c.query("SELECT id, name FROM obx_t1 ORDER BY id", &[]).unwrap()
+    println("select: " + s.rowCount().toStr() + " rows, " + s.columnName(0).unwrap() + " " + s.columnTypeName(0).unwrap() +
+            ", " + s.columnName(1).unwrap() + " " + s.columnTypeName(1).unwrap() + " | " + s.int(0, 0).unwrap().toStr() +
+            " " + q(&s, 0, 1) + " | " + s.int(2, 0).unwrap().toStr() + " " + q(&s, 2, 1))
+    let dup = c.run("INSERT INTO obx_t1 VALUES (1, 'again')", &[])
+    let cnt = c.query("SELECT COUNT(*) FROM obx_t1", &[]).unwrap().int(0, 0).unwrap()
+    println("duplicate: " + code(dup) + ", rows now " + cnt.toStr())
+
+    let t1 = c.transaction(fn(k: mut &oracle.Conn): Result[int, oracle.Error] {
+        return k.run("INSERT INTO obx_t1 VALUES (5, 'e')", &[])
+    })
+    let cnt2 = c.query("SELECT COUNT(*) FROM obx_t1", &[]).unwrap().int(0, 0).unwrap()
+    let t2 = c.transaction(fn(k: mut &oracle.Conn): Result[int, oracle.Error] {
+        let a = try k.run("INSERT INTO obx_t1 VALUES (6, 'f')", &[])
+        return k.run("INSERT INTO obx_t1 VALUES (1, 'dup')", &[])
+    })
+    let cnt3 = c.query("SELECT COUNT(*) FROM obx_t1", &[]).unwrap().int(0, 0).unwrap()
+    println("transaction[T]: " + code(t1) + " " + t1.unwrapOr(0).toStr() + ", rows " + cnt2.toStr() + " | failed: " +
+            code(t2) + ", rows " + cnt3.toStr() + ", idle " + c.idle().toStr())
+    var inside = false
+    let t3 = c.transaction(fn(k: mut &oracle.Conn): Result[int, oracle.Error] {
+        let a = try k.run("DELETE FROM obx_t1", &[])
+        inside = k.inTransaction()
+        return Err(sqldialect.inputError("give up"))
+    })
+    println("rollback in body: inTransaction " + inside.toStr() + " | after " + c.inTransaction().toStr())
+
+    let many = c.query("SELECT level FROM dual CONNECT BY level <= 5000", &[]).unwrap()
+    var sum = 0
+    for i in 0..many.rowCount() { sum += many.int(i, 0).unwrap() }
+    println("many: " + many.rowCount().toStr() + " sum " + sum.toStr())
+    c.setFetchSize(7)
+    let many2 = c.query("SELECT level, 'row ' || level FROM dual CONNECT BY level <= 5000", &[]).unwrap()
+    var sum2 = 0
+    for i in 0..many2.rowCount() { sum2 += many2.int(i, 0).unwrap() }
+    c.setFetchSize(100)
+    println("fetch size 7: " + many2.rowCount().toStr() + " sum " + sum2.toStr())
+    c.exec("DROP TABLE obx_t1 PURGE").unwrap()
+
+    println("wrong password: " + code(oracle.connect(wrongPassword(d))))
+
+    // A session the server ends: another session kills it.
+    var victim = connectOrExit(d)
+    let sid = victim.sessionId()
+    let serial = victim.serial()
+    let kill = c.exec("ALTER SYSTEM KILL SESSION '" + sid.toStr() + "," + serial.toStr() + "' IMMEDIATE")
+    var killed = ""
+    match kill {
+        Ok(_) {
+            let k = victim.query("SELECT 1 FROM dual", &[])
+            killed = "error " + k.isErr().toStr()
+        }
+        Err(e) {
+            // no ALTER SYSTEM privilege: end it from this side instead
+            victim.logoff()
+            let k = victim.query("SELECT 1 FROM dual", &[])
+            killed = "error " + k.isErr().toStr()
+        }
+    }
+    println("killed: " + killed + " | broken idle " + victim.idle().toStr() + " | next call " +
+            code(victim.query("SELECT 1 FROM dual", &[])))
+    victim.close()
+
+    var a = connectOrExit(d)
+    let half = a.query("SELECT level FROM dual CONNECT BY level <= 3", &[]).unwrap()
+    let before = oracle.openHandles()
+    a.close()
+    c.close()
+    println("early close: " + before.toStr() + " open -> " + oracle.openHandles().toStr() + " open")
+    println("open handles: " + oracle.openHandles().toStr())
+}

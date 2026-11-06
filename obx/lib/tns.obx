@@ -69,6 +69,9 @@ const NSI_NA_REQUIRED = 0x10
 const NSI_FLAGS = 0x84                  // security renegotiation, NA disabled
 const SDU = 8192
 const MAX_CONNECT_DATA = 230
+const VERSION_MIN_END_OF_RESPONSE = 319
+const ACCEPT_FAST_AUTH = 0x10000000
+const ACCEPT_HAS_END_OF_RESPONSE = 0x02000000
 
 // TTC message types
 pub const MT_PROTOCOL = 1
@@ -90,6 +93,7 @@ pub const MT_SERVER_SIDE_PIGGYBACK = 23
 pub const MT_IMPLICIT_RESULTSET = 27
 pub const MT_END_OF_RESPONSE = 29
 pub const MT_TOKEN = 33
+pub const MT_FAST_AUTH = 34
 
 // TTC functions
 pub const FN_FETCH = 5
@@ -137,6 +141,7 @@ pub const CHARSET_UTF16 = 2000
 const FV_12_2 = 8
 const FV_12_2_EXT1 = 9
 const FV_18_1_EXT_1 = 11
+const FV_19_1_EXT_1 = 13
 const FV_20_1 = 14
 const FV_23_1 = 17
 const FV_23_1_EXT_1 = 18
@@ -541,20 +546,20 @@ pub fn decodeNumber(b: str): Result[Num, Error] {
 
 // The IEEE 754 double bits of f, exactly (tds.bitsOfFloat).
 pub fn bitsOfFloat(f: float): int {
-    if f == 0.0 { return if f.toStr() == "-0" { -9223372036854775807 - 1 } else { 0 } }
+    if f == 0.0f { return if f.toStr() == "-0" { -9223372036854775807 - 1 } else { 0 } }
     if f.isNaN() { return 0x7ff8000000000000 }
-    if !f.isFinite() { return if f > 0.0 { 0x7ff0000000000000 } else { -4503599627370496 } }
-    let neg = f < 0.0
+    if !f.isFinite() { return if f > 0.0f { 0x7ff0000000000000 } else { -4503599627370496 } }
+    let neg = f < 0.0f
     var x = if neg { -f } else { f }
     var e = 0
     let top = float(1 << 53)
     let low = float(1 << 52)
     while x >= top {
-        x = x / 2.0
+        x = x / 2.0f
         e += 1
     }
     while x < low {
-        x = x * 2.0
+        x = x * 2.0f
         e -= 1
     }
     let m = int(x)
@@ -588,7 +593,7 @@ fn pow2(x: float, e: int): float {
 pub fn floatOfBits(b: int): float {
     let e = (b >> 52) & 0x7ff
     let m = b & 0xfffffffffffff
-    var f: float = 0.0
+    var f: float = 0.0f
     if e == 0x7ff {
         f = if m == 0 { math.inf() } else { math.nan() }
     } else {
@@ -600,7 +605,7 @@ pub fn floatOfBits(b: int): float {
 fn floatOfBits32(b: int): float {
     let e = (b >> 23) & 0xff
     let m = b & 0x7fffff
-    var f: float = 0.0
+    var f: float = 0.0f
     if e == 0xff {
         f = if m == 0 { math.inf() } else { math.nan() }
     } else {
@@ -716,3 +721,1663 @@ fn floorDiv(a: int, b: int): int {
 }
 
 fn floorMod(a: int, b: int): int { return a - floorDiv(a, b) * b }
+
+// ---------------------------------------------------------------- ROWID
+
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+fn base64Chars(b: mut &StrBuf, v: int, n: int) {
+    for i in 0..n { b.addByte(BASE64[(v >> (6 * (n - 1 - i))) & 0x3f]) }
+}
+
+// The 18-character text of a physical ROWID (python-oracledb's _encode_rowid).
+pub fn rowidText(rba: int, partition: int, block: int, slot: int): str {
+    var b = newStrBuf()
+    base64Chars(mut &b, rba, 6)
+    base64Chars(mut &b, partition, 3)
+    base64Chars(mut &b, block, 6)
+    base64Chars(mut &b, slot, 3)
+    return b.toStr()
+}
+
+// ---------------------------------------------------------------- columns and cells
+
+// A column of a query, from DESCRIBE_INFO.
+pub type Column = value record {
+    pub name: str
+    pub oraType: int        // T_*
+    pub csfrm: int          // CS_NCHAR for NCHAR, NVARCHAR2, NCLOB
+    pub precision: int
+    pub scale: int          // -127 with precision 0: NUMBER without precision (floating)
+    pub bufferSize: int     // 0: the column is always NULL (SELECT NULL ...)
+    pub maxSize: int
+    pub nullable: bool
+}
+
+// The Oracle name of a column's type: "NUMBER", "VARCHAR2", "NVARCHAR2", ...
+pub fn (c: &Column) typeName(): str { return typeNameOf(c.oraType, c.csfrm) }
+
+pub fn typeNameOf(t: int, csfrm: int): str {
+    let n = csfrm == CS_NCHAR
+    match t {
+        T_VARCHAR { return if n { "NVARCHAR2" } else { "VARCHAR2" } }
+        T_NUMBER { return "NUMBER" }
+        T_BINARY_INTEGER { return "BINARY_INTEGER" }
+        T_LONG { return "LONG" }
+        T_ROWID { return "ROWID" }
+        T_DATE { return "DATE" }
+        T_RAW { return "RAW" }
+        T_LONG_RAW { return "LONG RAW" }
+        T_CHAR { return if n { "NCHAR" } else { "CHAR" } }
+        T_BINARY_FLOAT { return "BINARY_FLOAT" }
+        T_BINARY_DOUBLE { return "BINARY_DOUBLE" }
+        T_CURSOR { return "REF CURSOR" }
+        T_OBJECT { return "OBJECT" }
+        T_CLOB { return if n { "NCLOB" } else { "CLOB" } }
+        T_BLOB { return "BLOB" }
+        T_BFILE { return "BFILE" }
+        T_JSON { return "JSON" }
+        T_VECTOR { return "VECTOR" }
+        T_TIMESTAMP { return "TIMESTAMP" }
+        T_TIMESTAMP_TZ { return "TIMESTAMP WITH TIME ZONE" }
+        T_TIMESTAMP_LTZ { return "TIMESTAMP WITH LOCAL TIME ZONE" }
+        T_INTERVAL_YM { return "INTERVAL YEAR TO MONTH" }
+        T_INTERVAL_DS { return "INTERVAL DAY TO SECOND" }
+        T_UROWID { return "UROWID" }
+        T_BOOLEAN { return "BOOLEAN" }
+        else { return "type " + t.toStr() }
+    }
+}
+
+// A value of a row.
+pub type Cell = value closed {
+    Null
+    Number(Num)       // NUMBER, FLOAT, INTEGER: exact
+    Float(float)      // BINARY_FLOAT, BINARY_DOUBLE
+    Text(str)         // VARCHAR2, CHAR, LONG, NVARCHAR2, NCHAR; ROWID as its text
+    Bytes(str)        // RAW, LONG RAW
+    Stamp(Stamp)      // DATE, TIMESTAMP, TIMESTAMP WITH [LOCAL] TIME ZONE
+    Bool(bool)        // BOOLEAN
+    Failed(str)       // a value that could not be decoded, and why
+}
+
+// ---------------------------------------------------------------- replies
+
+// The server's ERROR message: the call's end status. num 0: success;
+// 1403: no (more) rows; otherwise an ORA- error with its text.
+pub type ErrorInfo = value record {
+    pub num: int
+    pub msg: str
+    pub pos: int            // the offset in the SQL text, when the server gives one
+    pub cursorId: int
+    pub rowCount: int       // rows fetched so far (queries) or changed (DML)
+    pub callStatus: int
+}
+
+pub type KeyValue = value record { pub key: str; pub value: str; pub flags: int }
+
+pub type ProtocolInfo = value record {
+    pub banner: str
+    pub charset: int
+    pub ncharset: int
+    pub compileCaps: str
+    pub runtimeCaps: str
+}
+
+// What a reply says. kind tells PARAMETER messages apart (the
+// authentication pairs, or an execute's return parameters).
+pub type Reply = record {
+    pub kind: int
+    pub columns: []Column
+    pub described: bool
+    pub rows: [][]Cell
+    pub hasError: bool
+    pub error: ErrorInfo
+    pub params: []KeyValue
+    pub warnings: []str
+    pub callStatus: int
+    pub protocol: ProtocolInfo
+    pub eor: bool           // the reply ends with END_OF_RESPONSE (not at ERROR or STATUS)
+    pub fast: bool          // a fast authentication's reply: PROTOCOL and DATA_TYPES do not end it
+    last: []Cell            // the previous row, for BIT_VECTOR's repeated columns
+    bitvec: str             // "" when the next row has every column
+    done: bool
+}
+
+pub const K_PLAIN = 0
+pub const K_AUTH = 1
+pub const K_EXECUTE = 2
+
+// An empty reply of a kind; columns and last row: the cursor's so far (a FETCH).
+pub fn newReply(kind: int, columns: &[]Column, last: &[]Cell): Reply {
+    var cols: []Column = []
+    for x in columns { append(mut &cols, x) }
+    var prev: []Cell = []
+    for x in last { append(mut &prev, x) }
+    return Reply{kind: kind, columns: cols, described: false, rows: [], hasError: false,
+                 error: ErrorInfo{num: 0, msg: "", pos: 0, cursorId: 0, rowCount: 0, callStatus: 0}, params: [],
+                 warnings: [], callStatus: 0,
+                 protocol: ProtocolInfo{banner: "", charset: 0, ncharset: 0, compileCaps: "", runtimeCaps: ""},
+                 eor: false, fast: false, last: prev, bitvec: "", done: false}
+}
+
+// The last row decoded (BIT_VECTOR repeats columns from it).
+pub fn (r: &Reply) lastRow(): []Cell {
+    var out: []Cell = []
+    for x in r.last { append(mut &out, x) }
+    return out
+}
+
+pub fn (r: &Reply) isDone(): bool { return r.done }
+
+// Decodes one message into r. Each message is decoded into locals first and
+// stored in r only once it is whole, so a message cut off at the end of c
+// (c.short) leaves r as it was and can be decoded again with more bytes.
+pub fn decodeMessage(c: mut &Cur, r: mut &Reply, fv: int): Result[Unit, Error] {
+    let mt = try c.u8("message type")
+    match mt {
+        MT_PROTOCOL {
+            r.protocol = try protocolInfo(c)
+            r.done = !r.fast
+        }
+        MT_DATA_TYPES {
+            while true {
+                let t = try c.u16be("data type")
+                if t == 0 { break }
+                let conv = try c.u16be("data type")
+                if conv != 0 { try c.skip(4, "data type") }
+            }
+            r.done = !r.fast
+        }
+        MT_ERROR {
+            r.error = try errorInfo(c, fv)
+            r.callStatus = r.error.callStatus
+            r.hasError = true
+            r.done = !r.eor
+        }
+        MT_STATUS {
+            r.callStatus = try c.ub4("status")
+            try c.skipUb("status")
+            r.done = !r.eor
+        }
+        MT_END_OF_RESPONSE { r.done = true }
+        MT_FLUSH_OUT_BINDS { r.done = true }
+        MT_WARNING {
+            let num = try c.ub2("warning")
+            let n = try c.ub2("warning")
+            try c.skipUb("warning")
+            if num != 0 && n > 0 {
+                let m = try c.bytesOrEmpty("warning")
+                append(mut &r.warnings, strings.trimRight(m))
+            }
+        }
+        MT_PARAMETER {
+            if r.kind == K_AUTH {
+                let n = try c.ub2("parameters")
+                var kv: []KeyValue = []
+                for i in 0..n {
+                    let k = try c.str2("parameter key")
+                    let v = try c.str2("parameter value")
+                    let f = try c.ub4("parameter flags")
+                    append(mut &kv, KeyValue{key: k, value: v, flags: f})
+                }
+                for x in kv { append(mut &r.params, x) }
+            } else {
+                let n = try c.ub2("return parameters")
+                try c.skipN(n, "return parameters")
+                let nb = try c.ub2("return parameters")
+                try c.skip(nb, "return parameters")
+                let np = try c.ub2("return parameters")
+                try keywordPairs(c, np)
+                let rb = try c.ub2("return parameters")
+                try c.skip(rb, "return parameters")
+            }
+        }
+        MT_SERVER_SIDE_PIGGYBACK { try serverPiggyback(c) }
+        MT_TOKEN {
+            let t = try c.ub8("token")
+            if t != 0 { return Err(proto("a reply for token " + t.toStr())) }
+        }
+        MT_DESCRIBE_INFO {
+            let skipped = try c.bytes("describe info")
+            let cols = try describeInfo(c, fv)
+            r.columns = cols
+            r.described = true
+            r.last = []
+            r.bitvec = ""
+        }
+        MT_ROW_HEADER {
+            try c.skip(1, "row header")
+            try c.skipN(4, "row header")
+            let n = try c.ub4("row header")
+            var bv = ""
+            if n > 0 {
+                try c.skip(1, "row header")
+                bv = try c.take(n, "row header")
+            }
+            let rid = try c.str2("row header")
+            if n > 0 { r.bitvec = bv }
+        }
+        MT_BIT_VECTOR {
+            try c.skipUb("bit vector")
+            let n = (len(r.columns) + 7) / 8
+            r.bitvec = try c.take(n, "bit vector")
+        }
+        MT_ROW_DATA {
+            let row = try rowData(c, r)
+            r.last = []
+            for x in row { append(mut &r.last, x) }
+            r.bitvec = ""
+            append(mut &r.rows, row)
+        }
+        MT_IO_VECTOR {
+            try c.skip(1, "IO vector")
+            let req = try c.ub2("IO vector")
+            let iters = try c.ub4("IO vector")
+            let binds = iters * 256 + req
+            try c.skipN(2, "IO vector")
+            let a = try c.ub2("IO vector")
+            try c.skip(a, "IO vector")
+            let b = try c.ub2("IO vector")
+            try c.skip(b, "IO vector")
+            for i in 0..binds {
+                let dir = try c.u8("IO vector")
+                if dir != 32 { return Err(typeErr("PL/SQL OUT and IN OUT binds are not supported yet")) }
+            }
+        }
+        else {
+            return Err(proto("message type " + mt.toStr() + " is not supported"))
+        }
+    }
+    return Ok(Unit{})
+}
+
+fn keywordPairs(c: mut &Cur, n: int): Result[Unit, Error] {
+    for i in 0..n {
+        let a = try c.ub2("keyword pair")
+        if a > 0 { let t = try c.bytes("keyword pair") }
+        let b = try c.ub2("keyword pair")
+        if b > 0 { let v = try c.bytes("keyword pair") }
+        try c.skipUb("keyword pair")
+    }
+    return Ok(Unit{})
+}
+
+fn serverPiggyback(c: mut &Cur): Result[Unit, Error] {
+    let op = try c.u8("piggyback")
+    match op {
+        1 { }
+        3 { }
+        2 {
+            try c.skipUb("piggyback")
+            let b = try c.bytes("piggyback")
+        }
+        5 {
+            try c.skipUb("piggyback")
+            try c.skip(1, "piggyback")
+            let n = try c.ub2("piggyback")
+            try c.skip(1, "piggyback")
+            try keywordPairs(c, n)
+            try c.skipUb("piggyback")
+        }
+        9 {
+            try c.skipUb("piggyback")
+            try c.skip(1, "piggyback")
+        }
+        8 {
+            try c.skipUb("piggyback")
+            try c.skip(1, "piggyback")
+            try c.skipN(2, "piggyback")
+            try c.skip(1, "piggyback")
+            let b = try c.str2("piggyback")
+        }
+        4 {
+            try c.skipUb("piggyback")
+            try c.skip(1, "piggyback")
+            let n = try c.ub2("piggyback")
+            if n > 0 {
+                try c.skip(1, "piggyback")
+                for i in 0..n {
+                    let k = try c.ub2("piggyback")
+                    if k > 0 { let kb = try c.bytes("piggyback") }
+                    let v = try c.ub2("piggyback")
+                    if v > 0 { let vb = try c.bytes("piggyback") }
+                    try c.skipUb("piggyback")
+                }
+            }
+            try c.skipN(3, "piggyback")
+        }
+        7 { let b = try c.str2("piggyback") }
+        10 {
+            try c.skipUb("piggyback")
+            try c.skip(1, "piggyback")
+            try c.skipN(3, "piggyback")
+        }
+        else { return Err(proto("server piggyback " + op.toStr())) }
+    }
+    return Ok(Unit{})
+}
+
+fn protocolInfo(c: mut &Cur): Result[ProtocolInfo, Error] {
+    try c.skip(2, "protocol")
+    var banner = newStrBuf()
+    while true {
+        let b = try c.u8("protocol banner")
+        if b == 0 { break }
+        banner.addByte(byte(b))
+    }
+    let cs = try c.u16le("protocol")
+    try c.skip(1, "protocol")
+    let ne = try c.u16le("protocol")
+    try c.skip(ne * 5, "protocol")
+    let fl = try c.u16be("protocol")
+    let fdo = try c.take(fl, "protocol")
+    if fl < 7 { return Err(proto("a protocol FDO of " + fl.toStr() + " bytes")) }
+    let ix = 6 + int(fdo[5]) + int(fdo[6])
+    if fl < ix + 5 { return Err(proto("a protocol FDO of " + fl.toStr() + " bytes")) }
+    let ncs = (int(fdo[ix + 3]) << 8) + int(fdo[ix + 4])
+    let cc = try c.bytesOrEmpty("compile capabilities")
+    let rc = try c.bytesOrEmpty("runtime capabilities")
+    return Ok(ProtocolInfo{banner: banner.toStr(), charset: cs, ncharset: ncs, compileCaps: cc, runtimeCaps: rc})
+}
+
+fn errorInfo(c: mut &Cur, fv: int): Result[ErrorInfo, Error] {
+    let status = try c.ub4("error")
+    try c.skipN(5, "error")
+    let cursor = try c.ub2("error")
+    let pos = try c.ub2("error")
+    try c.skip(6, "error")
+    try c.skipN(2, "error rowid")
+    try c.skip(1, "error rowid")
+    try c.skipN(2, "error rowid")
+    try c.skipUb("error")
+    try c.skip(2, "error")
+    try c.skipN(2, "error")
+    let dd = try c.str2("error")
+    let ne = try c.ub2("error")
+    if ne > 0 {
+        let first = try c.u8("error")
+        for i in 0..ne {
+            if first == 254 { try c.skipUb("error") }
+            try c.skipUb("error")
+        }
+        if first == 254 { try c.skip(1, "error") }
+    }
+    let no = try c.ub4("error")
+    if no > 0 {
+        if no > 65535 { return Err(proto("too many batch errors")) }
+        let first = try c.u8("error")
+        for i in 0..no {
+            if first == 254 { try c.skipUb("error") }
+            try c.skipUb("error")
+        }
+        if first == 254 { try c.skip(1, "error") }
+    }
+    let nm = try c.ub2("error")
+    if nm > 0 {
+        try c.skip(1, "error")
+        for i in 0..nm {
+            try c.skipUb("error")
+            let m = try c.bytes("error")
+            try c.skip(2, "error")
+        }
+    }
+    let num = try c.ub4("error")
+    let rows = try c.ub8("error")
+    if fv >= FV_20_1 { try c.skipN(2, "error") }
+    var msg = ""
+    if num != 0 { msg = strings.trimRight(try c.bytesOrEmpty("error message")) }
+    return Ok(ErrorInfo{num: num, msg: msg, pos: pos, cursorId: cursor, rowCount: rows, callStatus: status})
+}
+
+fn describeInfo(c: mut &Cur, fv: int): Result[[]Column, Error] {
+    try c.skipUb("describe")
+    let n = try c.ub4("describe")
+    if n > 1000 { return Err(proto("a describe of " + n.toStr() + " columns")) }
+    if n > 0 { try c.skip(1, "describe") }
+    var cols: []Column = []
+    for i in 0..n {
+        let t = try c.u8("column")
+        try c.skip(1, "column")
+        let p0 = try c.u8("column")
+        let s0 = try c.u8("column")
+        let prec = if p0 >= 128 { p0 - 256 } else { p0 }
+        let scale = if s0 >= 128 { s0 - 256 } else { s0 }
+        let bs = try c.ub4("column")
+        try c.skipN(2, "column")
+        let oid = try c.str2("column")
+        try c.skipN(2, "column")
+        let cs = try c.u8("column")
+        var ms = try c.ub4("column")
+        if t == T_RAW { ms = bs }
+        if fv >= FV_12_2 { try c.skipUb("column") }
+        let nulls = try c.u8("column")
+        try c.skip(1, "column")
+        let name = try c.str2("column name")
+        let schema = try c.str2("column")
+        let tname = try c.str2("column")
+        try c.skipUb("column")
+        let uds = try c.ub4("column")
+        if fv >= FV_23_1 {
+            let ds = try c.str2("column")
+            let dn = try c.str2("column")
+        }
+        if fv >= FV_23_1_EXT_3 {
+            let na = try c.ub4("column")
+            if na > 0 {
+                try c.skip(1, "column")
+                let m = try c.ub4("column")
+                try c.skip(1, "column")
+                for k in 0..m {
+                    let key = try c.str2("column")
+                    let val = try c.str2("column")
+                    try c.skipUb("column")
+                }
+                try c.skipUb("column")
+            }
+        }
+        if fv >= FV_23_4 {
+            try c.skipUb("column")
+            try c.skip(2, "column")
+        }
+        append(mut &cols, Column{name: try utf8(name, "a column name"), oraType: t, csfrm: cs, precision: prec, scale: scale,
+                                 bufferSize: bs, maxSize: ms, nullable: nulls != 0})
+    }
+    let cd = try c.str2("describe")
+    try c.skipN(4, "describe")
+    let ck = try c.str2("describe")
+    return Ok(cols)
+}
+
+fn rowData(c: mut &Cur, r: &Reply): Result[[]Cell, Error] {
+    var row: []Cell = []
+    for i in 0..len(r.columns) {
+        let col = r.columns[i]
+        if len(r.bitvec) > 0 && (int(r.bitvec[i / 8]) & (1 << (i % 8))) == 0 {
+            if i >= len(r.last) { return Err(proto("a repeated column without a previous row")) }
+            append(mut &row, r.last[i])
+            continue
+        }
+        append(mut &row, try columnValue(c, &col))
+    }
+    return Ok(row)
+}
+
+fn columnValue(c: mut &Cur, col: &Column): Result[Cell, Error] {
+    let t = col.oraType
+    if col.bufferSize == 0 && t != T_LONG && t != T_LONG_RAW && t != T_UROWID { return Ok(Cell.Null) }
+    if t == T_ROWID {
+        let l = try c.u8("ROWID")
+        if l == 0 || l == 255 { return Ok(Cell.Null) }
+        let rba = try c.ub4("ROWID")
+        let part = try c.ub2("ROWID")
+        try c.skip(1, "ROWID")
+        let block = try c.ub4("ROWID")
+        let slot = try c.ub2("ROWID")
+        return Ok(Cell.Text(rowidText(rba, part, block, slot)))
+    }
+    if t == T_CLOB || t == T_BLOB || t == T_BFILE {
+        let n = try c.ub4("LOB")
+        if n == 0 { return Ok(Cell.Null) }
+        if t != T_BFILE { try c.skipN(2, "LOB") }
+        let loc = try c.bytes("LOB")
+        return Ok(Cell.Failed(col.typeName() + " columns are not supported yet"))
+    }
+    if t == T_CURSOR || t == T_JSON || t == T_VECTOR || t == T_OBJECT {
+        return Err(typeErr(col.typeName() + " columns are not supported yet"))
+    }
+    let v = try c.bytes("column " + col.name)
+    if t == T_LONG || t == T_LONG_RAW { try c.skipN(2, "LONG") }
+    match v {
+        None { return Ok(Cell.Null) }
+        Some(b) { return Ok(cellOf(col, b)) }
+    }
+}
+
+fn cellOf(col: &Column, b: str): Cell {
+    let t = col.oraType
+    if t == T_VARCHAR || t == T_CHAR || t == T_LONG {
+        if col.csfrm == CS_NCHAR {
+            match fromUtf16be(b) {
+                Ok(s) { return Cell.Text(s) }
+                Err(e) { return Cell.Failed(e.msg) }
+            }
+        }
+        if !strings.isValidUtf8(b) { return Cell.Failed("invalid UTF-8 in column " + col.name) }
+        return Cell.Text(b)
+    }
+    if t == T_NUMBER || t == T_BINARY_INTEGER {
+        match decodeNumber(b) {
+            Ok(n) { return Cell.Number(n) }
+            Err(e) { return Cell.Failed(e.msg) }
+        }
+    }
+    if t == T_DATE || t == T_TIMESTAMP || t == T_TIMESTAMP_TZ || t == T_TIMESTAMP_LTZ {
+        match decodeStamp(b) {
+            Ok(s) { return Cell.Stamp(s) }
+            Err(e) { return Cell.Failed(e.msg) }
+        }
+    }
+    if t == T_BINARY_DOUBLE {
+        match decodeDouble(b) {
+            Ok(f) { return Cell.Float(f) }
+            Err(e) { return Cell.Failed(e.msg) }
+        }
+    }
+    if t == T_BINARY_FLOAT {
+        match decodeFloat(b) {
+            Ok(f) { return Cell.Float(f) }
+            Err(e) { return Cell.Failed(e.msg) }
+        }
+    }
+    if t == T_RAW || t == T_LONG_RAW { return Cell.Bytes(b) }
+    if t == T_BOOLEAN { return Cell.Bool(len(b) > 0 && int(b[len(b) - 1]) == 1) }
+    if t == T_UROWID { return Cell.Failed("UROWID values are not supported yet") }
+    return Cell.Failed(col.typeName() + " values are not supported yet")
+}
+
+// ---------------------------------------------------------------- statements
+
+pub const S_QUERY = 1       // SELECT, WITH
+pub const S_DML = 2         // INSERT, UPDATE, DELETE, MERGE
+pub const S_DDL = 3         // CREATE, ALTER, DROP, TRUNCATE, GRANT, ...
+pub const S_PLSQL = 4       // BEGIN, DECLARE, CALL
+pub const S_OTHER = 5
+
+// What kind of statement sql is, from its first keyword (after blanks and
+// comments), as python-oracledb's Statement does.
+pub fn statementKind(sql: str): int {
+    var i = 0
+    let n = len(sql)
+    while i < n {
+        let c = sql[i]
+        if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' {
+            i += 1
+        } else if c == '-' && i + 1 < n && sql[i + 1] == '-' {
+            while i < n && sql[i] != '\n' { i += 1 }
+        } else if c == '/' && i + 1 < n && sql[i + 1] == '*' {
+            i += 2
+            while i + 1 < n && !(sql[i] == '*' && sql[i + 1] == '/') { i += 1 }
+            i += 2
+        } else {
+            break
+        }
+    }
+    var j = i
+    while j < n && ((sql[j] >= 'a' && sql[j] <= 'z') || (sql[j] >= 'A' && sql[j] <= 'Z')) { j += 1 }
+    let w = strings.toUpper(sql[min(i, n)..j])
+    if w == "SELECT" || w == "WITH" { return S_QUERY }
+    if w == "INSERT" || w == "UPDATE" || w == "DELETE" || w == "MERGE" { return S_DML }
+    if w == "BEGIN" || w == "DECLARE" || w == "CALL" { return S_PLSQL }
+    if w == "CREATE" || w == "ALTER" || w == "DROP" || w == "GRANT" || w == "REVOKE" || w == "ANALYZE" || w == "AUDIT" ||
+            w == "COMMENT" || w == "TRUNCATE" || w == "RENAME" || w == "PURGE" || w == "FLASHBACK" {
+        return S_DDL
+    }
+    return S_OTHER
+}
+
+// ---------------------------------------------------------------- requests
+
+// A bind value, ready to send: its type, its buffer size and its bytes
+// (None: NULL).
+pub type Bind = value record {
+    pub oraType: int
+    pub csfrm: int
+    pub bufferSize: int
+    pub data: Option[str]
+}
+
+pub fn nullBind(): Bind { return Bind{oraType: T_VARCHAR, csfrm: CS_IMPLICIT, bufferSize: 1, data: None} }
+
+// Text as VARCHAR2 (LONG beyond maxString bytes).
+pub fn textBind(s: str, maxString: int): Result[Bind, Error] {
+    if !strings.isValidUtf8(s) { return Err(sqldialect.inputError("text with invalid UTF-8")) }
+    let t = if len(s) > maxString { T_LONG } else { T_VARCHAR }
+    return Ok(Bind{oraType: t, csfrm: CS_IMPLICIT, bufferSize: max(len(s), 1), data: Some(s)})
+}
+
+// Bytes as RAW (LONG RAW beyond maxString bytes).
+pub fn bytesBind(b: str, maxString: int): Bind {
+    let t = if len(b) > maxString { T_LONG_RAW } else { T_RAW }
+    return Bind{oraType: t, csfrm: 0, bufferSize: max(len(b), 1), data: Some(b)}
+}
+
+pub fn numberBind(n: &Num): Result[Bind, Error] {
+    return Ok(Bind{oraType: T_NUMBER, csfrm: 0, bufferSize: 22, data: Some(try encodeNumber(n))})
+}
+
+pub fn doubleBind(f: float): Bind { return Bind{oraType: T_BINARY_DOUBLE, csfrm: 0, bufferSize: 8, data: Some(encodeDouble(f))} }
+
+pub fn boolBind(v: bool): Bind {
+    return Bind{oraType: T_BOOLEAN, csfrm: 0, bufferSize: 4, data: Some(if v { "\x01\x01" } else { "\x00" })}
+}
+
+pub fn dateBind(l: &time.LocalDateTime): Bind {
+    return Bind{oraType: T_DATE, csfrm: 0, bufferSize: 7, data: Some(encodeDate(l))}
+}
+
+pub fn timestampBind(l: &time.LocalDateTime): Bind {
+    return Bind{oraType: T_TIMESTAMP, csfrm: 0, bufferSize: 11, data: Some(encodeTimestamp(l))}
+}
+
+pub fn timestampTzBind(o: &time.OffsetDateTime): Bind {
+    return Bind{oraType: T_TIMESTAMP_TZ, csfrm: 0, bufferSize: 13, data: Some(encodeTimestampTz(o))}
+}
+
+// An execute: the SQL (with cursor 0: parse it), its binds, the rows to
+// prefetch for a query, and whether to commit after it.
+pub type Execute = record {
+    pub sql: str
+    pub kind: int               // S_*
+    pub cursorId: int           // 0: a new cursor (the SQL is parsed)
+    pub binds: []Bind
+    pub prefetch: int
+    pub commit: bool
+}
+
+fn longBind(b: &Bind, maxString: int): bool { return b.bufferSize > maxString || b.oraType == T_LONG || b.oraType == T_LONG_RAW }
+
+fn putBindValue(m: mut &[]byte, b: &Bind) {
+    match b.data {
+        None {
+            if b.oraType == T_BOOLEAN {
+                put8(m, 253)
+                put8(m, 1)
+            } else {
+                put8(m, 0)
+            }
+        }
+        Some(d) { putBytes(m, d) }
+    }
+}
+
+pub fn executeBody(m: mut &[]byte, e: &Execute, fv: int, maxString: int) {
+    let parse = e.cursorId == 0 || e.kind == S_DDL
+    let query = e.kind == S_QUERY
+    let nb = len(e.binds)
+    var options = 0x20                                  // EXECUTE
+    if parse { options = options | 0x01 }
+    if query && e.prefetch > 0 { options = options | 0x40 }
+    if e.kind != S_PLSQL { options = options | 0x8000 } else if nb > 0 { options = options | 0x400 }
+    if nb > 0 { options = options | 0x08 }
+    if e.commit { options = options | 0x100 }
+    putUb(m, options)
+    putUb(m, e.cursorId)
+    if parse {
+        put8(m, 1)
+        putUb(m, len(e.sql))
+    } else {
+        put8(m, 0)
+        putUb(m, 0)
+    }
+    put8(m, 1)
+    putUb(m, 13)
+    put8(m, 0)
+    put8(m, 0)
+    putUb(m, 0)
+    putUb(m, if query { e.prefetch } else { 1 })
+    putUb(m, 0x7fffffff)
+    put8(m, if nb > 0 { 1 } else { 0 })
+    putUb(m, nb)
+    for i in 0..5 { put8(m, 0) }
+    put8(m, 0)
+    putUb(m, 0)
+    putUb(m, 0)                                         // registration id (low)
+    put8(m, 0)
+    put8(m, 1)
+    put8(m, 0)
+    putUb(m, 0)
+    put8(m, 0)
+    putUb(m, 0)
+    putUb(m, 0)                                         // registration id (high)
+    put8(m, 0)
+    putUb(m, 0)
+    put8(m, 0)
+    if fv >= FV_12_2 {
+        put8(m, 0)
+        putUb(m, 0)
+        put8(m, 0)
+        putUb(m, 0)
+        put8(m, 0)
+        if fv >= FV_12_2_EXT1 {
+            put8(m, 0)
+            putUb(m, 0)
+        }
+    }
+    if parse {
+        putBytes(m, e.sql)
+        putUb(m, 1)
+    } else {
+        putUb(m, 0)
+    }
+    putUb(m, if query { if e.cursorId == 0 { 0 } else { e.prefetch } } else { 1 })
+    for i in 0..5 { putUb(m, 0) }
+    putUb(m, if query { 1 } else { 0 })
+    putUb(m, 0)
+    putUb(m, 0x8000)                                    // IMPLICIT_RESULTSET, as python-oracledb sends
+    putUb(m, 0)
+    putUb(m, 0)
+    putUb(m, 0)
+    if nb == 0 { return }
+    for b in e.binds {
+        put8(m, b.oraType)
+        put8(m, 1)                                      // USE_INDICATORS
+        put8(m, 0)
+        put8(m, 0)
+        putUb(m, b.bufferSize)
+        putUb(m, 0)
+        putUb(m, 0)
+        putUb(m, 0)
+        putUb(m, 0)
+        putUb(m, if b.csfrm != 0 { CHARSET_UTF8 } else { 0 })
+        put8(m, b.csfrm)
+        putUb(m, 0)
+        if fv >= FV_12_2 { putUb(m, 0) }
+    }
+    put8(m, MT_ROW_DATA)
+    let plsql = e.kind == S_PLSQL
+    for b in e.binds {
+        if plsql || !longBind(&b, maxString) { putBindValue(m, &b) }
+    }
+    if !plsql {
+        for b in e.binds {
+            if longBind(&b, maxString) { putBindValue(m, &b) }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- transport
+
+type Stream = value closed {
+    Plain(net.Conn)
+    Tls(tls.Conn)
+    Gone
+}
+
+fn (s: &Stream) isTls(): bool {
+    match s {
+        Stream.Tls(_) { return true }
+        else { return false }
+    }
+}
+
+fn (s: mut &Stream) takeTls(): tls.Conn {
+    match replace(s, Stream.Gone) {
+        Stream.Tls(t) { return t }
+        else { panic("tns: not a TLS stream") }
+    }
+}
+
+fn (s: mut &Stream) put(t: tls.Conn) { let old = replace(s, Stream.Tls(t)) }
+
+fn (s: mut &Stream) read(b: mut &[byte], w: Where): Result[int, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.read(b, w)
+        s.put(t)
+        return match r {
+            Ok(n) { Ok(n) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            return match c.read(b, w) {
+                Ok(n) { Ok(n) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+fn (s: mut &Stream) write(data: &[byte], w: Where): Result[Unit, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = t.write(data, w)
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            return match c.write(data, w) {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+type Inbox = record { buf: []byte; pos: int; end: int }
+
+fn readFull(s: mut &Stream, ib: mut &Inbox, dst: mut &[byte], w: Where): Result[Unit, Error] {
+    var have = 0
+    while have < len(dst) {
+        if ib.pos < ib.end {
+            let n = min(ib.end - ib.pos, len(dst) - have)
+            for k in 0..n { dst[have + k] = ib.buf[ib.pos + k] }
+            ib.pos += n
+            have += n
+            continue
+        }
+        let n = try s.read(mut &ib.buf, w)
+        if n == 0 { return Err(ioErr("the server closed the connection")) }
+        ib.pos = 0
+        ib.end = n
+    }
+    return Ok(Unit{})
+}
+
+// A packet received: its type, flags and payload (after the header).
+pub type Packet = value record { pub ptype: int; pub flags: int; pub data: str }
+
+pub type Transport = record {
+    s: Stream
+    inbox: Inbox
+    hdr: []byte
+    large: bool             // after an ACCEPT of version 315 and up: 32-bit lengths
+    pub sdu: int
+}
+
+fn transport(s: Stream): Transport {
+    return Transport{s: s, inbox: Inbox{buf: array(16384, byte(0)), pos: 0, end: 0}, hdr: array(HEADER, byte(0)),
+                     large: false, sdu: SDU}
+}
+
+// The header of a packet of n bytes in all.
+fn putHeader(b: mut &[]byte, n: int, ptype: int, flags: int, large: bool) {
+    if large {
+        put32be(b, n)
+    } else {
+        put16be(b, n)
+        put16be(b, 0)
+    }
+    put8(b, ptype)
+    put8(b, flags)
+    put16be(b, 0)
+}
+
+pub fn packet(ptype: int, flags: int, payload: str, large: bool): []byte {
+    var b: []byte = []
+    putHeader(mut &b, HEADER + len(payload), ptype, flags, large)
+    putStr(mut &b, payload)
+    return b
+}
+
+fn (t: mut &Transport) sendPacket(ptype: int, flags: int, payload: str, w: Where): Result[Unit, Error] {
+    let b = packet(ptype, flags, payload, t.large)
+    return t.s.write(&b, w)
+}
+
+// Sends a TTC message in DATA packets of at most the SDU.
+fn (t: mut &Transport) sendData(msg: &[]byte, w: Where): Result[Unit, Error] {
+    let room = t.sdu - HEADER - 2
+    var off = 0
+    var out: []byte = []
+    while true {
+        let k = min(room, len(msg) - off)
+        putHeader(mut &out, HEADER + 2 + k, PT_DATA, 0, t.large)
+        put16be(mut &out, 0)
+        for i in 0..k { append(mut &out, msg[off + i]) }
+        off += k
+        if off >= len(msg) { break }
+    }
+    return t.s.write(&out, w)
+}
+
+fn (t: mut &Transport) receive(w: Where): Result[Packet, Error] {
+    try readFull(mut &t.s, mut &t.inbox, mut &t.hdr, w)
+    var n = 0
+    if t.large {
+        n = (int(t.hdr[0]) << 24) | (int(t.hdr[1]) << 16) | (int(t.hdr[2]) << 8) | int(t.hdr[3])
+    } else {
+        n = (int(t.hdr[0]) << 8) | int(t.hdr[1])
+    }
+    if n < HEADER || n > 4194304 { return Err(proto("a packet length of " + n.toStr())) }
+    var body = array(n - HEADER, byte(0))
+    try readFull(mut &t.s, mut &t.inbox, mut &body, w)
+    return Ok(Packet{ptype: int(t.hdr[4]), flags: int(t.hdr[5]), data: strFromBytes(&body)})
+}
+
+// ---------------------------------------------------------------- connecting
+
+// Where and how to connect: oracle fills it from a connection string.
+pub type Config = value record {
+    pub host: str
+    pub port: int
+    pub service: str
+    pub user: str
+    pub password: str
+    pub program: str
+    pub tls: bool                       // tcps
+    pub trustServerCertificate: bool    // tls's insecureSkipVerify
+    pub serverCertName: str             // "" : host
+}
+
+fn addrOf(host: str, port: int): str {
+    if indexOf(host, ":", 0) >= 0 { return "[" + host + "]:" + port.toStr() }
+    return host + ":" + port.toStr()
+}
+
+fn machine(): str {
+    match os.env("HOSTNAME") {
+        Some(h) { if h != "" { return h } }
+        None { }
+    }
+    return "localhost"
+}
+
+fn osUser(): str { return os.envOr("USER", "obx") }
+
+// The connect descriptor the listener reads.
+pub fn descriptor(cfg: &Config): str {
+    let proto = if cfg.tls { "tcps" } else { "tcp" }
+    return "(DESCRIPTION=(ADDRESS=(PROTOCOL=" + proto + ")(HOST=" + cfg.host + ")(PORT=" + cfg.port.toStr() +
+           "))(CONNECT_DATA=(SERVICE_NAME=" + cfg.service + ")(CID=(PROGRAM=" + cfg.program + ")(HOST=" + machine() +
+           ")(USER=" + osUser() + "))))"
+}
+
+// The CONNECT packet's body (after the header) for a descriptor; the
+// descriptor goes in a DATA packet of its own when it is long.
+pub fn connectBody(desc: str): str {
+    var b: []byte = []
+    put16be(mut &b, VERSION_DESIRED)
+    put16be(mut &b, VERSION_MINIMUM)
+    put16be(mut &b, 0x0001)                 // service options: don't care (no out-of-band breaks)
+    put16be(mut &b, SDU)
+    put16be(mut &b, SDU)
+    put16be(mut &b, 0x4f98)                 // protocol characteristics
+    put16be(mut &b, 0)
+    put16be(mut &b, 1)
+    put16be(mut &b, len(desc))
+    put16be(mut &b, 74)                     // offset of the connect data
+    put32be(mut &b, 0)
+    put8(mut &b, NSI_FLAGS)
+    put8(mut &b, NSI_FLAGS)
+    for i in 0..24 { put8(mut &b, 0) }
+    put32be(mut &b, SDU)
+    put32be(mut &b, SDU)
+    put32be(mut &b, 0)
+    put32be(mut &b, 0)
+    if len(desc) <= MAX_CONNECT_DATA { putStr(mut &b, desc) }
+    return strFromBytes(&b)
+}
+
+// The listener's answer to a CONNECT.
+pub type Accept = value record { pub version: int; pub sdu: int; pub flags2: int }
+
+pub fn parseAccept(d: str): Result[Accept, Error] {
+    var c = cursor(d)
+    let v = try c.u16be("ACCEPT")
+    if v < VERSION_MIN_ACCEPTED {
+        return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: the server speaks TNS version " + v.toStr() +
+                                      "; Oracle Database 12.1 or later (315) is needed"))
+    }
+    try c.skip(12, "ACCEPT")
+    let f1 = try c.u8("ACCEPT")
+    if (f1 & NSI_NA_REQUIRED) != 0 {
+        return Err(sqldialect.dbError(sqldialect.E_PROTOCOL,
+                                      "tns: the server requires Native Network Encryption, which is not supported (use TLS)"))
+    }
+    try c.skip(9, "ACCEPT")
+    let sdu = try c.u32be("ACCEPT")
+    var f2 = 0
+    if v >= VERSION_MIN_OOB_CHECK {
+        try c.skip(5, "ACCEPT")
+        f2 = try c.u32be("ACCEPT")
+    }
+    return Ok(Accept{version: v, sdu: sdu, flags2: f2})
+}
+
+// The error a REFUSE packet gives: the listener's ERR= number as the code.
+pub fn refuseError(d: str, cfg: &Config): Error {
+    var text = ""
+    if len(d) >= 4 {
+        let n = (int(d[2]) << 8) | int(d[3])
+        if 4 + n <= len(d) { text = d[4..4 + n] }
+    }
+    var code = 0
+    let at = indexOf(text, "(ERR=", 0)
+    if at >= 0 {
+        let rest = text[at + 5..]
+        let e = indexOf(rest, ")", 0)
+        if e > 0 {
+            match parseInt(rest[0..e]) {
+                Some(v) { code = v }
+                None { }
+            }
+        }
+    }
+    if code == 12514 {
+        return Error{code: 12514, state: "", msg: "ORA-12514: the listener does not know the service " + cfg.service +
+                                                    " (" + addrOf(cfg.host, cfg.port) + ")"}
+    }
+    if code == 0 { return sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: the listener refused the connection") }
+    let pad = if code < 10000 { "0" } else { "" }
+    return Error{code: code, state: "", msg: "ORA-" + pad + code.toStr() + ": the listener refused the connection"}
+}
+
+// ---------------------------------------------------------------- sessions
+
+// A logged-in connection.
+pub type Session = record {
+    t: Transport
+    pub fieldVersion: int
+    seq: int
+    pub broken: bool
+    pub maxString: int          // 32767 with MAX_STRING_SIZE=EXTENDED, else 4000
+    pub charset: int
+    pub ncharset: int
+    pub banner: str
+    pub version: str            // "23.0.0.0.0"
+    pub sessionId: int
+    pub serial: int
+    pub inTransaction: bool     // the last call's status had a transaction in progress
+    pub warnings: []str
+    pub maxReply: int           // bytes a reply may have
+    toClose: []int              // cursors to close with the next request
+    eor: bool                   // the server ends every reply with END_OF_RESPONSE (ACCEPT's flag)
+    fastAuth: bool              // the server takes the fast authentication (Oracle 23 and up)
+}
+
+fn compileCaps(fv: int, eor: bool): str {
+    var c = array(55, byte(0))
+    c[0] = byte(6)
+    c[4] = byte(8 | 2 | 32 | 64 | 0x80)
+    c[5] = byte(0x08 | 0x10)
+    c[7] = byte(fv)
+    c[8] = byte(1)
+    c[9] = byte(1)
+    c[15] = byte(0x20 | 0x01 | 0x08)
+    c[16] = byte(0x10 | 0x80)
+    c[17] = byte(3)
+    c[18] = byte(7)
+    c[19] = byte(3)
+    c[21] = byte(1)
+    c[23] = byte(0x01 | 0x02 | 0x40 | 0x08 | 0x80 | 0x04)
+    c[26] = byte(0x04)
+    c[27] = byte(1)
+    c[31] = byte(0x10)
+    c[34] = byte(12)
+    c[35] = byte(0x20)
+    c[37] = byte(0x10 | 0x20 | 0x80 | 0x08)
+    c[39] = byte(FV_12_2)
+    c[40] = byte(if eor { 0x04 | 0x20 } else { 0x04 })     // inband notification, end of response
+    c[42] = byte(0x01 | 0x04)
+    c[44] = byte(0x02)                                      // TTC5: a token in function headers
+    return strFromBytes(&c)
+}
+
+fn runtimeCaps(): str {
+    var c = array(13, byte(0))
+    c[0] = byte(2)
+    c[6] = byte(0x01 | 0x04)
+    return strFromBytes(&c)
+}
+
+// The conversion table python-oracledb sends (data_types.pyx): 322 entries
+// of (data type, conversion type, representation).
+const DATA_TYPES: []int = [
+    1, 1, 1, 2, 2, 10, 8, 8, 1, 12, 12, 10, 23, 23, 1, 24, 24, 1, 25, 25, 1, 26, 26, 1,
+    27, 27, 10, 28, 28, 1, 29, 29, 1, 30, 30, 1, 31, 31, 1, 32, 32, 1, 33, 33, 1, 10, 10, 1,
+    11, 11, 1, 40, 40, 1, 41, 41, 1, 117, 117, 1, 120, 120, 1, 290, 290, 1, 291, 291, 1, 292, 292, 1,
+    293, 293, 1, 294, 294, 1, 298, 298, 1, 299, 299, 1, 300, 300, 1, 301, 301, 1, 302, 302, 1, 303, 303, 1,
+    304, 304, 1, 305, 305, 1, 306, 306, 1, 307, 307, 1, 308, 308, 1, 309, 309, 1, 310, 310, 1, 311, 311, 1,
+    312, 312, 1, 313, 313, 1, 315, 315, 1, 316, 316, 1, 317, 317, 1, 318, 318, 1, 319, 319, 1, 320, 320, 1,
+    321, 321, 1, 322, 322, 1, 323, 323, 1, 327, 327, 1, 328, 328, 1, 329, 329, 1, 331, 331, 1, 333, 333, 1,
+    334, 334, 1, 335, 335, 1, 336, 336, 1, 337, 337, 1, 338, 338, 1, 339, 339, 1, 340, 340, 1, 341, 341, 1,
+    342, 342, 1, 343, 343, 1, 344, 344, 1, 345, 345, 1, 346, 346, 1, 348, 348, 1, 349, 349, 1, 354, 354, 1,
+    355, 355, 1, 359, 359, 1, 363, 363, 1, 380, 380, 1, 381, 381, 1, 382, 382, 1, 383, 383, 1, 384, 384, 1,
+    385, 385, 1, 386, 386, 1, 387, 387, 1, 388, 388, 1, 389, 389, 1, 390, 390, 1, 391, 391, 1, 393, 393, 1,
+    394, 394, 1, 395, 395, 1, 396, 396, 1, 397, 397, 1, 398, 398, 1, 399, 399, 1, 400, 400, 1, 401, 401, 1,
+    404, 404, 1, 405, 405, 1, 406, 406, 1, 407, 407, 1, 413, 413, 1, 414, 414, 1, 415, 415, 1, 416, 416, 1,
+    417, 417, 1, 418, 418, 1, 419, 419, 1, 420, 420, 1, 421, 421, 1, 422, 422, 1, 423, 423, 1, 424, 424, 1,
+    425, 425, 1, 426, 426, 1, 427, 427, 1, 429, 429, 1, 430, 430, 1, 431, 431, 1, 432, 432, 1, 433, 433, 1,
+    449, 449, 1, 450, 450, 1, 454, 454, 1, 455, 455, 1, 456, 456, 1, 457, 457, 1, 458, 458, 1, 459, 459, 1,
+    460, 460, 1, 461, 461, 1, 462, 462, 1, 463, 463, 1, 466, 466, 1, 467, 467, 1, 468, 468, 1, 469, 469, 1,
+    470, 470, 1, 471, 471, 1, 472, 472, 1, 473, 473, 1, 474, 474, 1, 475, 475, 1, 476, 476, 1, 477, 477, 1,
+    478, 478, 1, 479, 479, 1, 480, 480, 1, 481, 481, 1, 482, 482, 1, 483, 483, 1, 484, 484, 1, 485, 485, 1,
+    486, 486, 1, 490, 490, 1, 491, 491, 1, 492, 492, 1, 493, 493, 1, 494, 494, 1, 495, 495, 1, 496, 496, 1,
+    498, 498, 1, 499, 499, 1, 500, 500, 1, 501, 501, 1, 502, 502, 1, 509, 509, 1, 510, 510, 1, 513, 513, 1,
+    514, 514, 1, 516, 516, 1, 517, 517, 1, 518, 518, 1, 519, 519, 1, 520, 520, 1, 521, 521, 1, 522, 522, 1,
+    523, 523, 1, 524, 524, 1, 525, 525, 1, 526, 526, 1, 527, 527, 1, 528, 528, 1, 529, 529, 1, 530, 530, 1,
+    531, 531, 1, 532, 532, 1, 533, 533, 1, 534, 534, 1, 535, 535, 1, 536, 536, 1, 537, 537, 1, 538, 538, 1,
+    539, 539, 1, 540, 540, 1, 541, 541, 1, 542, 542, 1, 543, 543, 1, 560, 560, 1, 565, 565, 1, 572, 572, 1,
+    573, 573, 1, 574, 574, 1, 575, 575, 1, 576, 576, 1, 578, 578, 1, 563, 563, 1, 564, 564, 1, 579, 579, 1,
+    580, 580, 1, 581, 581, 1, 582, 582, 1, 583, 583, 1, 584, 584, 1, 585, 585, 1, 3, 2, 10, 4, 2, 10,
+    5, 1, 1, 6, 2, 10, 7, 2, 10, 9, 1, 1, 15, 1, 1, 39, 39, 1, 68, 2, 10, 91, 2, 10,
+    94, 1, 1, 95, 23, 1, 96, 96, 1, 97, 96, 1, 100, 100, 1, 101, 101, 1, 102, 102, 1, 104, 11, 1,
+    106, 106, 1, 108, 109, 1, 109, 109, 1, 110, 111, 1, 111, 111, 1, 112, 112, 1, 113, 113, 1, 114, 114, 1,
+    115, 115, 1, 116, 102, 1, 119, 119, 1, 198, 198, 1, 146, 146, 1, 152, 2, 10, 153, 2, 10, 154, 2, 10,
+    155, 1, 1, 156, 12, 10, 172, 2, 10, 178, 178, 1, 179, 179, 1, 180, 180, 1, 181, 181, 1, 182, 182, 1,
+    183, 183, 1, 184, 12, 10, 185, 185, 1, 186, 186, 1, 187, 187, 1, 188, 188, 1, 189, 189, 1, 190, 190, 1,
+    195, 112, 1, 196, 113, 1, 197, 114, 1, 208, 208, 1, 231, 231, 1, 232, 231, 1, 233, 233, 1, 241, 109, 1,
+    252, 252, 1, 590, 590, 1, 591, 591, 1, 592, 592, 1, 613, 613, 1, 614, 614, 1, 615, 615, 1, 616, 616, 1,
+    611, 611, 1, 612, 612, 1, 593, 593, 1, 594, 594, 1, 595, 595, 1, 596, 596, 1, 597, 597, 1, 598, 598, 1,
+    599, 599, 1, 600, 600, 1, 601, 601, 1, 602, 602, 1, 603, 603, 1, 604, 604, 1, 605, 605, 1, 622, 622, 1,
+    623, 623, 1, 624, 624, 1, 625, 625, 1, 626, 626, 1, 627, 627, 1, 628, 628, 1, 629, 629, 1, 630, 630, 1,
+    631, 631, 1, 632, 632, 1, 637, 637, 1, 638, 638, 1, 636, 636, 1, 639, 639, 1, 663, 663, 1, 640, 640, 1,
+    652, 652, 1, 646, 646, 1, 647, 647, 1, 127, 127, 1, 660, 660, 1, 661, 661, 1, 665, 665, 1, 668, 668, 1,
+    669, 669, 1, 670, 670, 1
+]
+
+fn putProtocol(m: mut &[]byte) {
+    put8(m, MT_PROTOCOL)
+    put8(m, 6)
+    put8(m, 0)
+    putStr(m, "obx")
+    put8(m, 0)
+}
+
+fn putDataTypes(m: mut &[]byte, fv: int, eor: bool) {
+    put8(m, MT_DATA_TYPES)
+    put16le(m, CHARSET_UTF8)
+    put16le(m, CHARSET_UTF8)
+    put8(m, 0x01 | 0x02)
+    putBytes(m, compileCaps(fv, eor))
+    putBytes(m, runtimeCaps())
+    var i = 0
+    while i + 2 < len(DATA_TYPES) {
+        put16be(m, DATA_TYPES[i])
+        put16be(m, DATA_TYPES[i + 1])
+        put16be(m, DATA_TYPES[i + 2])
+        put16be(m, 0)
+        i += 3
+    }
+    put16be(m, 0)
+}
+
+fn (s: mut &Session) nextSeq(): int {
+    s.seq = (s.seq + 1) & 0xff
+    if s.seq == 0 { s.seq = 1 }
+    return s.seq
+}
+
+// A function message's header, after the piggybacks (cursors to close).
+fn (s: mut &Session) header(m: mut &[]byte, fnCode: int) {
+    if len(s.toClose) > 0 {
+        put8(m, MT_PIGGYBACK)
+        put8(m, FN_CLOSE_CURSORS)
+        put8(m, s.nextSeq())
+        if s.fieldVersion >= FV_23_1_EXT_1 { putUb(m, 0) }
+        put8(m, 1)
+        putUb(m, len(s.toClose))
+        for id in s.toClose { putUb(m, id) }
+        s.toClose = []
+    }
+    put8(m, MT_FUNCTION)
+    put8(m, fnCode)
+    put8(m, s.nextSeq())
+    if s.fieldVersion >= FV_23_1_EXT_1 { putUb(m, 0) }
+}
+
+// Queues a server cursor to be closed with the next request.
+pub fn (s: mut &Session) closeCursor(id: int) { if id != 0 { append(mut &s.toClose, id) } }
+
+// Whether the server has the BOOLEAN type in SQL (Oracle Database 23 and up).
+pub fn (s: &Session) hasBoolean(): bool { return s.fieldVersion >= FV_23_1 }
+
+// Bytes received after a marker exchange or a packet: the next DATA payload.
+type Data = value record { data: str; reset: bool }
+
+fn (s: mut &Session) nextData(w: Where): Result[Data, Error] {
+    var reset = false
+    while true {
+        let p = try s.t.receive(w)
+        if p.ptype == PT_DATA {
+            if len(p.data) < 2 { return Err(proto("a DATA packet without data flags")) }
+            let flags = (int(p.data[0]) << 8) | int(p.data[1])
+            if (flags & DATA_FLAGS_EOF) != 0 { return Err(ioErr("the server ended the session")) }
+            if len(p.data) == 2 { continue }
+            return Ok(Data{data: p.data[2..], reset: reset})
+        } else if p.ptype == PT_MARKER {
+            // The server broke off the call: reset, then the error follows.
+            try s.t.sendPacket(PT_MARKER, 0, "\x01\x00\x02", w)
+            var q = p
+            while true {
+                if q.ptype == PT_MARKER && len(q.data) >= 3 && int(q.data[2]) == MARKER_RESET { break }
+                q = try s.t.receive(w)
+            }
+            reset = true
+        } else if p.ptype == PT_CONTROL {
+            continue
+        } else {
+            return Err(proto("a packet of type " + p.ptype.toStr() + " in a reply"))
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Sends a request and decodes its reply into r.
+pub fn (s: mut &Session) call(msg: &[]byte, r: mut &Reply, w: Where): Result[Unit, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    match s.exchange(msg, r, w) {
+        Ok(_) { return Ok(Unit{}) }
+        Err(e) {
+            s.broken = true
+            return Err(e)
+        }
+    }
+}
+
+fn (s: mut &Session) exchange(msg: &[]byte, r: mut &Reply, w: Where): Result[Unit, Error] {
+    try s.t.sendData(msg, w)
+    var data = ""
+    var total = 0
+    while !r.done {
+        if len(data) == 0 {
+            let d = try s.nextData(w)
+            data = d.data
+            total += len(data)
+        }
+        var c = cursor(data)
+        match decodeMessage(mut &c, r, s.fieldVersion) {
+            Ok(_) { data = data[c.pos..] }
+            Err(e) {
+                if !c.short { return Err(e) }
+                let d = try s.nextData(w)
+                total += len(d.data)
+                if total > s.maxReply {
+                    return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tns: a reply larger than " + s.maxReply.toStr() + " bytes"))
+                }
+                data = if d.reset { d.data } else { data + d.data }
+            }
+        }
+    }
+    if len(data) > 0 { return Err(proto(len(data).toStr() + " bytes after the end of a reply")) }
+    s.inTransaction = (r.callStatus & 0x2) != 0
+    for x in r.warnings { append(mut &s.warnings, x) }
+    return Ok(Unit{})
+}
+
+// The error a reply ends with as an Error: ORA-nnnnn with the server's text.
+pub fn serverError(e: &ErrorInfo): Error { return Error{code: e.num, state: "", msg: e.msg} }
+
+fn hexUpper(s: str): str { return strings.toUpper(crypto.hex(s)) }
+
+fn unhexOr(h: str, what: str): Result[str, Error] {
+    match crypto.unhex(h) {
+        Some(b) { return Ok(b) }
+        None { return Err(proto(what + " is not hex")) }
+    }
+}
+
+fn param(kv: &[]KeyValue, key: str): str {
+    for p in kv { if p.key == key { return p.value } }
+    return ""
+}
+
+fn paramInt(kv: &[]KeyValue, key: str): Result[int, Error] {
+    match parseInt(param(kv, key)) {
+        Some(v) { return Ok(v) }
+        None { return Err(proto(key + " is not a number")) }
+    }
+}
+
+fn putPair(m: mut &[]byte, k: str, v: str, flags: int) {
+    putBytes2(m, k)
+    putBytes2(m, v)
+    putUb(m, flags)
+}
+
+// The verifier arithmetic of python-oracledb's auth.pyx (_generate_verifier)
+// and the pairs of phase two that come from it.
+pub type Verifier = value record {
+    pub sessionKey: str         // AUTH_SESSKEY to send (hex)
+    pub speedyKey: str          // AUTH_PBKDF2_SPEEDY_KEY (12c, hex) or ""
+    pub password: str           // AUTH_PASSWORD (hex)
+    pub comboKey: str           // the key that decrypts AUTH_SVR_RESPONSE
+}
+
+pub fn verifier(vtype: int, kv: &[]KeyValue, password: str, partB: str, salt1: str, salt2: str): Result[Verifier, Error] {
+    let vfr = try unhexOr(param(kv, "AUTH_VFR_DATA"), "AUTH_VFR_DATA")
+    var keylen = 0
+    var hash = ""
+    var pwKey = ""
+    if vtype == 0x4815 {
+        keylen = 32
+        let iters = try paramInt(kv, "AUTH_PBKDF2_VGEN_COUNT")
+        pwKey = match crypto.pbkdf2Sha512(password, vfr + "AUTH_PBKDF2_SPEEDY_KEY", iters, 64) {
+            Ok(k) { k }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        let h = match crypto.sha512(pwKey + vfr) {
+            Ok(x) { x }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        hash = h[0..32]
+    } else if vtype == 0xb152 || vtype == 0x1b25 {
+        keylen = 24
+        let h = match crypto.sha1(password + vfr) {
+            Ok(x) { x }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        hash = h + "\x00\x00\x00\x00"
+    } else {
+        return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: password verifier type " + vtype.toStr() +
+                                      " is not supported (10g verifiers are not)"))
+    }
+    let iv = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    let server = try unhexOr(param(kv, "AUTH_SESSKEY"), "AUTH_SESSKEY")
+    let partA = match crypto.aesCbcDecrypt(hash, iv, server, false) {
+        Ok(x) { x }
+        Err(e) { return Err(cryptoFail(e)) }
+    }
+    if len(partB) != len(partA) { return Err(proto("AUTH_SESSKEY of " + len(partA).toStr() + " bytes")) }
+    let client = match crypto.aesCbcEncrypt(hash, iv, partB, true) {
+        Ok(x) { x }
+        Err(e) { return Err(cryptoFail(e)) }
+    }
+    var sessKey = ""
+    var combo = ""
+    if len(partA) == 48 {
+        sessKey = hexUpper(client)[0..96]
+        var x: []byte = []
+        for i in 16..40 { append(mut &x, partA[i] ^ partB[i]) }
+        let xs = strFromBytes(&x)
+        let m1 = match crypto.md5(xs[0..16]) {
+            Ok(v) { v }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        let m2 = match crypto.md5(xs[16..]) {
+            Ok(v) { v }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        combo = (m1 + m2)[0..keylen]
+    } else {
+        if len(partA) < keylen { return Err(proto("AUTH_SESSKEY of " + len(partA).toStr() + " bytes")) }
+        sessKey = hexUpper(client)[0..64]
+        let salt = try unhexOr(param(kv, "AUTH_PBKDF2_CSK_SALT"), "AUTH_PBKDF2_CSK_SALT")
+        let iters = try paramInt(kv, "AUTH_PBKDF2_SDER_COUNT")
+        let temp = hexUpper(partB[0..keylen] + partA[0..keylen])
+        combo = match crypto.pbkdf2Sha512(temp, salt, iters, keylen) {
+            Ok(k) { k }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+    }
+    var speedy = ""
+    if vtype == 0x4815 {
+        let sk = match crypto.aesCbcEncrypt(combo, iv, salt1 + pwKey, true) {
+            Ok(x) { x }
+            Err(e) { return Err(cryptoFail(e)) }
+        }
+        speedy = hexUpper(sk[0..80])
+    }
+    let pw = match crypto.aesCbcEncrypt(combo, iv, salt2 + password, true) {
+        Ok(x) { x }
+        Err(e) { return Err(cryptoFail(e)) }
+    }
+    return Ok(Verifier{sessionKey: sessKey, speedyKey: speedy, password: hexUpper(pw), comboKey: combo})
+}
+
+fn random(n: int): Result[str, Error] {
+    match crypto.randomBytes(n) {
+        Ok(b) { return Ok(b) }
+        Err(e) { return Err(cryptoFail(e)) }
+    }
+}
+
+fn versionText(v: int, fv: int): str {
+    if fv >= FV_18_1_EXT_1 {
+        return ((v >> 24) & 0xff).toStr() + "." + ((v >> 16) & 0xff).toStr() + "." + ((v >> 12) & 0x0f).toStr() + "." +
+               ((v >> 4) & 0xff).toStr() + "." + (v & 0x0f).toStr()
+    }
+    return ((v >> 24) & 0xff).toStr() + "." + ((v >> 20) & 0x0f).toStr() + "." + ((v >> 12) & 0x0f).toStr() + "." +
+           ((v >> 8) & 0x0f).toStr() + "." + (v & 0x0f).toStr()
+}
+
+// Connects (TCP, TLS for tcps), negotiates the protocol and logs in.
+// Every step parks only the task. A wrong password is the server's
+// ORA-01017.
+pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
+    let sock = match net.dial(addrOf(cfg.host, cfg.port), w) {
+        Ok(c) { c }
+        Err(e) { return Err(ioFail(e)) }
+    }
+    let nd = sock.setNoDelay(true)
+    var st = Stream.Plain(sock)
+    if cfg.tls {
+        var o = tls.defaults()
+        o.insecureSkipVerify = cfg.trustServerCertificate
+        let ctx = match tls.client(o) {
+            Ok(x) { x }
+            Err(e) { return Err(tlsFail(e)) }
+        }
+        let plain = match replace(mut &st, Stream.Gone) {
+            Stream.Plain(c) { c }
+            else { return Err(ioErr("no socket")) }
+        }
+        let name = if cfg.serverCertName != "" { cfg.serverCertName } else { cfg.host }
+        match ctx.connect(plain, name, w) {
+            Ok(t) { st = Stream.Tls(t) }
+            Err(e) { return Err(tlsFail(e)) }
+        }
+    }
+    var s = Session{t: transport(st), fieldVersion: FV_MAX, seq: 0, broken: false, maxString: 4000, charset: 0,
+                    ncharset: 0, banner: "", version: "", sessionId: 0, serial: 0, inTransaction: false, warnings: [],
+                    maxReply: 1 << 30, toClose: [], eor: false, fastAuth: false}
+    try s.connect(cfg, w)
+    try s.login(cfg, w)
+    return Ok(s)
+}
+
+fn (s: mut &Session) connect(cfg: &Config, w: Where): Result[Unit, Error] {
+    let desc = descriptor(cfg)
+    var tries = 0
+    while true {
+        try s.t.sendPacket(PT_CONNECT, 0, connectBody(desc), w)
+        if len(desc) > MAX_CONNECT_DATA {
+            var d: []byte = []
+            put16be(mut &d, 0)
+            putStr(mut &d, desc)
+            try s.t.sendPacket(PT_DATA, 0, strFromBytes(&d), w)
+        }
+        let p = try s.t.receive(w)
+        if p.ptype == PT_ACCEPT {
+            let a = try parseAccept(p.data)
+            s.t.large = true
+            s.t.sdu = max(512, min(a.sdu, 2097152))
+            s.eor = a.version >= VERSION_MIN_END_OF_RESPONSE && (a.flags2 & ACCEPT_HAS_END_OF_RESPONSE) != 0
+            s.fastAuth = (a.flags2 & ACCEPT_FAST_AUTH) != 0
+            return Ok(Unit{})
+        }
+        if p.ptype == PT_REFUSE { return Err(refuseError(p.data, cfg)) }
+        if p.ptype == PT_REDIRECT {
+            return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: the listener redirects the connection; redirects are not supported yet"))
+        }
+        if p.ptype != PT_RESEND || tries > 3 { return Err(proto("a packet of type " + p.ptype.toStr() + " for CONNECT")) }
+        tries += 1
+    }
+    return Err(proto("unreachable"))
+}
+
+fn (s: mut &Session) authOne(m: mut &[]byte, cfg: &Config) {
+    s.header(m, FN_AUTH_PHASE_ONE)
+    put8(m, 1)
+    putUb(m, len(cfg.user))
+    putUb(m, 0x1)                           // LOGON
+    put8(m, 1)
+    putUb(m, 5)
+    put8(m, 1)
+    put8(m, 1)
+    putBytes(m, cfg.user)
+    putPair(m, "AUTH_TERMINAL", "unknown", 0)
+    putPair(m, "AUTH_PROGRAM_NM", cfg.program, 0)
+    putPair(m, "AUTH_MACHINE", machine(), 0)
+    putPair(m, "AUTH_PID", os.pid().toStr(), 0)
+    putPair(m, "AUTH_SID", osUser(), 0)
+}
+
+// The server's banner, character sets and capabilities, from its PROTOCOL.
+fn (s: mut &Session) useProtocol(info: &ProtocolInfo): Result[Unit, Error] {
+    if len(info.compileCaps) <= 7 { return Err(proto("the server sent no compile capabilities")) }
+    s.fieldVersion = min(FV_MAX, int(info.compileCaps[7]))
+    if s.fieldVersion < 7 {
+        return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: the server's TTC field version " + s.fieldVersion.toStr() +
+                                      " is older than Oracle Database 12.1's"))
+    }
+    s.maxString = if len(info.runtimeCaps) > 6 && (int(info.runtimeCaps[6]) & 0x04) != 0 { 32767 } else { 4000 }
+    s.charset = info.charset
+    s.ncharset = info.ncharset
+    s.banner = info.banner
+    if s.charset != CHARSET_UTF8 {
+        return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: the database character set is " + s.charset.toStr() +
+                                      "; only AL32UTF8 (873) is supported"))
+    }
+    return Ok(Unit{})
+}
+
+// An empty reply for this session (ending as the server ends replies).
+fn (s: &Session) reply(kind: int, columns: &[]Column, last: &[]Cell): Reply {
+    var r = newReply(kind, columns, last)
+    r.eor = s.eor
+    return r
+}
+
+fn (s: mut &Session) login(cfg: &Config, w: Where): Result[Unit, Error] {
+    var r1 = s.reply(K_AUTH, &[], &[])
+    if s.fastAuth {
+        // Oracle 23 and up: PROTOCOL, DATA_TYPES and phase one in one
+        // message (python-oracledb's FastAuthMessage), written at field
+        // version 13 (no token in the header).
+        var m: []byte = []
+        put8(mut &m, MT_FAST_AUTH)
+        put8(mut &m, 1)                     // version
+        put8(mut &m, 1)                     // the server converts characters
+        put8(mut &m, 0)
+        putProtocol(mut &m)
+        put16be(mut &m, 0)
+        put8(mut &m, 0)
+        put16be(mut &m, 0)
+        put8(mut &m, FV_19_1_EXT_1)
+        putDataTypes(mut &m, FV_MAX, s.eor)
+        s.fieldVersion = FV_19_1_EXT_1
+        s.authOne(mut &m, cfg)
+        s.fieldVersion = FV_MAX
+        r1.fast = true
+        try s.call(&m, mut &r1, w)
+        try s.useProtocol(&r1.protocol)
+    } else {
+        // Protocol and data types first; the server ends neither reply
+        // with END_OF_RESPONSE.
+        var pr = newReply(K_PLAIN, &[], &[])
+        var pm: []byte = []
+        putProtocol(mut &pm)
+        try s.call(&pm, mut &pr, w)
+        if pr.hasError { return Err(serverError(&pr.error)) }
+        try s.useProtocol(&pr.protocol)
+        var dr = newReply(K_PLAIN, &[], &[])
+        var dm: []byte = []
+        putDataTypes(mut &dm, s.fieldVersion, s.eor)
+        try s.call(&dm, mut &dr, w)
+        if dr.hasError { return Err(serverError(&dr.error)) }
+        var m1: []byte = []
+        s.authOne(mut &m1, cfg)
+        try s.call(&m1, mut &r1, w)
+    }
+    if r1.hasError && r1.error.num != 0 { return Err(serverError(&r1.error)) }
+    var vtype = 0
+    for p in r1.params { if p.key == "AUTH_VFR_DATA" { vtype = p.flags } }
+
+    // Phase two: the session key and the encrypted password.
+    let v = try verifier(vtype, &r1.params, cfg.password, try random(if len(param(&r1.params, "AUTH_SESSKEY")) == 96 { 48 } else { 32 }),
+                         try random(16), try random(16))
+    let twelve = vtype == 0x4815
+    var m2: []byte = []
+    s.header(mut &m2, FN_AUTH_PHASE_TWO)
+    put8(mut &m2, 1)
+    putUb(mut &m2, len(cfg.user))
+    putUb(mut &m2, 0x1 | 0x100)
+    put8(mut &m2, 1)
+    putUb(mut &m2, if twelve { 7 } else { 6 })
+    put8(mut &m2, 1)
+    put8(mut &m2, 1)
+    putBytes(mut &m2, cfg.user)
+    putPair(mut &m2, "AUTH_SESSKEY", v.sessionKey, 1)
+    if twelve { putPair(mut &m2, "AUTH_PBKDF2_SPEEDY_KEY", v.speedyKey, 0) }
+    putPair(mut &m2, "AUTH_PASSWORD", v.password, 0)
+    putPair(mut &m2, "SESSION_CLIENT_CHARSET", "873", 0)
+    putPair(mut &m2, "SESSION_CLIENT_DRIVER_NAME", DRIVER_NAME, 0)
+    putPair(mut &m2, "SESSION_CLIENT_VERSION", "16777216", 0)
+    putPair(mut &m2, "AUTH_ALTER_SESSION", "ALTER SESSION SET TIME_ZONE='+00:00'\x00", 1)
+    var r2 = s.reply(K_AUTH, &[], &[])
+    try s.call(&m2, mut &r2, w)
+    if r2.hasError && r2.error.num != 0 { return Err(serverError(&r2.error)) }
+    let resp = try unhexOr(param(&r2.params, "AUTH_SVR_RESPONSE"), "AUTH_SVR_RESPONSE")
+    let iv = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    let plain = match crypto.aesCbcDecrypt(v.comboKey, iv, resp, false) {
+        Ok(x) { x }
+        Err(e) { return Err(cryptoFail(e)) }
+    }
+    if len(plain) < 32 || plain[16..32] != "SERVER_TO_CLIENT" {
+        return Err(proto("the server's AUTH_SVR_RESPONSE does not prove it knows the password"))
+    }
+    s.sessionId = match parseInt(param(&r2.params, "AUTH_SESSION_ID")) {
+        Some(x) { x }
+        None { 0 }
+    }
+    s.serial = match parseInt(param(&r2.params, "AUTH_SERIAL_NUM")) {
+        Some(x) { x }
+        None { 0 }
+    }
+    match parseInt(param(&r2.params, "AUTH_VERSION_NO")) {
+        Some(x) { s.version = versionText(x, s.fieldVersion) }
+        None { }
+    }
+    return Ok(Unit{})
+}
+
+// ---------------------------------------------------------------- calls
+
+// Runs an execute; the reply has the columns, the first rows and the end
+// status (an ORA- error is r.error, not Err).
+pub fn (s: mut &Session) execute(e: &Execute, columns: &[]Column, w: Where): Result[Reply, Error] {
+    var m: []byte = []
+    s.header(mut &m, FN_EXECUTE)
+    executeBody(mut &m, e, s.fieldVersion, s.maxString)
+    var r = s.reply(K_EXECUTE, columns, &[])
+    try s.call(&m, mut &r, w)
+    return Ok(r)
+}
+
+// Fetches up to n more rows of an open cursor.
+pub fn (s: mut &Session) fetch(cursorId: int, n: int, columns: &[]Column, last: &[]Cell, w: Where): Result[Reply, Error] {
+    var m: []byte = []
+    s.header(mut &m, FN_FETCH)
+    putUb(mut &m, cursorId)
+    putUb(mut &m, n)
+    var r = s.reply(K_EXECUTE, columns, last)
+    try s.call(&m, mut &r, w)
+    return Ok(r)
+}
+
+// COMMIT, ROLLBACK or LOGOFF; the server's error, if any, as Err.
+pub fn (s: mut &Session) simple(fnCode: int, w: Where): Result[Unit, Error] {
+    var m: []byte = []
+    s.header(mut &m, fnCode)
+    var r = s.reply(K_PLAIN, &[], &[])
+    try s.call(&m, mut &r, w)
+    if r.hasError && r.error.num != 0 { return Err(serverError(&r.error)) }
+    return Ok(Unit{})
+}
+
+pub fn (s: mut &Session) commit(w: Where): Result[Unit, Error] { return s.simple(FN_COMMIT, w) }
+pub fn (s: mut &Session) rollback(w: Where): Result[Unit, Error] { return s.simple(FN_ROLLBACK, w) }
+
+// Logs off (when the session is not broken) and closes the socket.
+pub fn (s: mut &Session) close(w: Where) {
+    if !s.broken {
+        let r = s.simple(FN_LOGOFF, w)
+        if !s.broken {
+            var eof: []byte = []
+            put16be(mut &eof, DATA_FLAGS_EOF)
+            let r2 = s.t.sendPacket(PT_DATA, 0, strFromBytes(&eof), w)
+        }
+    }
+    s.broken = true
+    let old = replace(mut &s.t.s, Stream.Gone)
+}

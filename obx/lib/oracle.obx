@@ -1,0 +1,839 @@
+// oracle: Oracle Database over its own protocol (TNS and TTC, the `tns`
+// module), written in obx: no Oracle client libraries, no helper threads.
+// Every call that waits for the server parks only its task, as net's calls
+// do. A port of the thin mode of python-oracledb (Copyright (c) 2016, 2026,
+// Oracle and/or its affiliates, Apache-2.0 OR UPL-1.0; see NOTICE), read
+// together with node-oracledb's lib/thin.
+//
+//     var conn = try oracle.connect("User Id=app;Password=...;Data Source=db.example.com:1521/FREEPDB1")
+//     try conn.exec("CREATE TABLE t (id NUMBER(10), name VARCHAR2(50))")
+//     let n = try conn.run("INSERT INTO t VALUES (:1, :2)", &[Value.Int(1), Value.Text("café")])
+//     let rows = try conn.query("SELECT id, name FROM t ORDER BY id", &[])
+//     for r in 0..rows.rowCount() {
+//         println((try rows.int(r, 0)).toStr() + " " + try rows.text(r, 1))
+//     }
+//
+// Stages O1 and O2 (design/oracle.md): Oracle Database 12.1 and later, the
+// 12c and 11g password verifiers, plain TCP or TLS (tcps); SQL and PL/SQL
+// with positional binds :1, :2, ...; rows read whole (a FETCH a round trip
+// of Fetch Size rows until the last). Types: NUMBER (exact, as Num and
+// Decimal), BINARY_FLOAT and BINARY_DOUBLE, VARCHAR2, CHAR, NVARCHAR2,
+// NCHAR, LONG, RAW, LONG RAW, DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE (an
+// offset; a region name is E_TYPE), TIMESTAMP WITH LOCAL TIME ZONE (in the
+// session's time zone, UTC), BOOLEAN, ROWID (its text). LOB columns are
+// an E_TYPE error for their cells until stage O4; REF CURSOR, JSON, VECTOR
+// and object columns fail the query with E_TYPE.
+//
+// Autocommit (provisional): outside transaction[T], every statement is
+// committed with its execute (Oracle's COMMIT option, no extra round trip),
+// as SQL Server and the sqlserver module do. Inside, nothing is until the
+// body returns Ok.
+//
+// Connection strings take the ODP.NET keywords:
+//
+//   User Id, UID, User                 the user (database authentication only)
+//   Password, PWD
+//   Data Source, Server                host[:port]/service, [tcp://|tcps://]host[:port]/service
+//                                      (the Easy Connect form; port 1521), or a connect
+//                                      descriptor (DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=h)
+//                                      (PORT=p))(CONNECT_DATA=(SERVICE_NAME=s)))
+//   Encrypt                            yes: TLS (tcps); no (the default, unless tcps is named)
+//   TrustServerCertificate             yes: the certificate is not verified (tls's insecureSkipVerify)
+//   Server Certificate Name            the name to verify instead of the host
+//   Connect Timeout, Connection Timeout seconds for the whole connect (15; 0 none)
+//   Fetch Size                         rows a round trip fetches (100; 1 to 100000)
+//   Application Name, Program          the program name the server sees ("obx")
+//
+// Keys are case-insensitive; a value may be in braces or quotes. Errors name
+// an entry by its position, never by its text.
+//
+// Errors are sqldialect.DbError. A server error has its ORA- number as the
+// code (942: "ORA-00942: table or view does not exist", 1017: invalid
+// username/password) and the server's text; the adapter's own are the E_*
+// codes: E_IO, E_PROTOCOL, E_TIMEOUT, E_CANCELLED, E_INPUT, E_TYPE, E_NULL,
+// E_INEXACT, E_LIMIT. A failure on the wire leaves the connection broken:
+// its later calls are E_IO, and idle() is false.
+
+import "tns"
+import "sqldialect"
+import "strings"
+import "task"
+import "time"
+
+pub type Value = sqldialect.Value
+pub type Error = sqldialect.DbError
+type Sql = sqldialect.Sql
+
+var OPEN: int = 0
+
+// The number of Conn values not yet closed or dropped.
+pub fn openHandles(): int { return OPEN }
+
+pub const DEFAULT_FETCH = 100
+
+// ---------------------------------------------------------------- connection strings
+
+// A parsed connection string: what tns.open needs, the connect timeout and
+// the fetch size.
+pub type Settings = value record {
+    pub config: tns.Config
+    pub connectTimeoutMs: int     // 0: none
+    pub fetchSize: int
+}
+
+fn bad(msg: str): Error { return sqldialect.inputError("connection string: " + msg) }
+
+type Entry = value record { key: str; value: str; next: int }
+
+// Settings from a connection string (above). E_INPUT for a malformed
+// string, an unknown keyword, a bad value, or no Data Source or no user.
+pub fn parseConnString(s: str): Result[Settings, Error] {
+    var cfg = tns.Config{host: "", port: 1521, service: "", user: "", password: "", program: "obx", tls: false,
+                         trustServerCertificate: false, serverCertName: ""}
+    var timeout = 15000
+    var fetch = DEFAULT_FETCH
+    var source = ""
+    var encrypt = -1
+    var haveUser = false
+    var i = 0
+    var nth = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == ';' || isSpace(c) {
+            i += 1
+            continue
+        }
+        nth += 1
+        let kv = try entry(s, i, nth)
+        i = kv.next
+        let v = kv.value
+        match kv.key {
+            "data source", "server" { source = trim(v) }
+            "user id", "uid", "user" {
+                cfg.user = v
+                haveUser = true
+            }
+            "password", "pwd" { cfg.password = v }
+            "encrypt" { encrypt = if try yesNo(v, "Encrypt") { 1 } else { 0 } }
+            "trustservercertificate", "trust server certificate" {
+                cfg.trustServerCertificate = try yesNo(v, "TrustServerCertificate")
+            }
+            "server certificate name", "servercertificatename", "hostnameincertificate" { cfg.serverCertName = trim(v) }
+            "connect timeout", "connection timeout" {
+                let n = try number(v, "Connect Timeout")
+                if n > 2147483 { return Err(bad("Connect Timeout is too large")) }
+                timeout = n * 1000
+            }
+            "fetch size" {
+                let n = try number(v, "Fetch Size")
+                if n < 1 || n > 100000 { return Err(bad("Fetch Size must be 1 to 100000")) }
+                fetch = n
+            }
+            "application name", "program" { cfg.program = v }
+            else { return Err(bad("an unknown keyword" + at(nth))) }
+        }
+    }
+    if len(source) == 0 { return Err(bad("no Data Source")) }
+    if !haveUser || len(cfg.user) == 0 { return Err(bad("no User Id")) }
+    try sourceOf(source, mut &cfg)
+    if encrypt == 1 { cfg.tls = true }
+    if encrypt == 0 && cfg.tls { return Err(bad("Encrypt=no with a tcps Data Source")) }
+    return Ok(Settings{config: cfg, connectTimeoutMs: timeout, fetchSize: fetch})
+}
+
+fn at(nth: int): str { return " (entry " + nth.toStr() + ")" }
+
+fn entry(s: str, from: int, nth: int): Result[Entry, Error] {
+    var i = from
+    var key = newStrBuf()
+    var space = false
+    while i < len(s) && s[i] != '=' {
+        let c = s[i]
+        if c == ';' || c == '{' || c == '}' { return Err(bad("a keyword without '='" + at(nth))) }
+        if isSpace(c) {
+            space = key.size() > 0
+        } else {
+            if space { key.addByte(' ') }
+            space = false
+            key.addByte(if c >= 'A' && c <= 'Z' { c + 32 } else { c })
+        }
+        i += 1
+    }
+    if i >= len(s) { return Err(bad("a keyword without '='" + at(nth))) }
+    let k = key.toStr()
+    if len(k) == 0 { return Err(bad("an empty keyword" + at(nth))) }
+    i += 1
+    while i < len(s) && (s[i] == ' ' || s[i] == '\t') { i += 1 }
+    var v = newStrBuf()
+    if i < len(s) && (s[i] == '{' || s[i] == '"' || s[i] == '\'') {
+        let close = if s[i] == '{' { '}' } else { s[i] }
+        i += 1
+        var ended = false
+        while i < len(s) {
+            if s[i] == close {
+                if i + 1 < len(s) && s[i + 1] == close {
+                    v.addByte(close)
+                    i += 2
+                    continue
+                }
+                ended = true
+                i += 1
+                break
+            }
+            v.addByte(s[i])
+            i += 1
+        }
+        if !ended { return Err(bad("a value in braces or quotes is not closed" + at(nth))) }
+        while i < len(s) && isSpace(s[i]) { i += 1 }
+        if i < len(s) && s[i] != ';' { return Err(bad("text after a value in braces or quotes" + at(nth))) }
+        return Ok(Entry{key: k, value: v.toStr(), next: i})
+    }
+    let start = i
+    while i < len(s) && s[i] != ';' { i += 1 }
+    return Ok(Entry{key: k, value: trim(s[start..i]), next: i})
+}
+
+fn yesNo(v: str, what: str): Result[bool, Error] {
+    match strings.toLower(trim(v)) {
+        "yes", "true", "1" { return Ok(true) }
+        "no", "false", "0" { return Ok(false) }
+        else { return Err(bad(what + " must be yes or no")) }
+    }
+}
+
+fn number(v: str, what: str): Result[int, Error] {
+    match strings.parseInt(trim(v)) {
+        Ok(n) {
+            if n < 0 { return Err(bad(what + " must be a number of 0 or more")) }
+            return Ok(n)
+        }
+        Err(_) { return Err(bad(what + " must be a number")) }
+    }
+}
+
+// The value of (KEY=value) in a connect descriptor, "" without one.
+fn descriptorValue(d: str, key: str): str {
+    let up = strings.toUpper(d)
+    var i = 0
+    while i < len(up) {
+        if up[i] == '(' {
+            var j = i + 1
+            while j < len(up) && up[j] == ' ' { j += 1 }
+            if startsWith(up[j..], key) {
+                var k = j + len(key)
+                while k < len(up) && up[k] == ' ' { k += 1 }
+                if k < len(up) && up[k] == '=' {
+                    var e = k + 1
+                    while e < len(d) && d[e] != ')' && d[e] != '(' { e += 1 }
+                    return trim(d[k + 1..e])
+                }
+            }
+        }
+        i += 1
+    }
+    return ""
+}
+
+// Data Source's value: Easy Connect or a connect descriptor.
+fn sourceOf(v: str, cfg: mut &tns.Config): Result[Unit, Error] {
+    if startsWith(v, "(") {
+        cfg.host = descriptorValue(v, "HOST")
+        let p = descriptorValue(v, "PORT")
+        if p != "" {
+            cfg.port = try number(p, "the descriptor's PORT")
+            if cfg.port < 1 || cfg.port > 65535 { return Err(bad("the port must be 1 to 65535")) }
+        }
+        cfg.service = descriptorValue(v, "SERVICE_NAME")
+        let pr = strings.toLower(descriptorValue(v, "PROTOCOL"))
+        if pr == "tcps" { cfg.tls = true } else if pr != "" && pr != "tcp" { return Err(bad("only the tcp and tcps protocols are supported")) }
+        if descriptorValue(v, "SID") != "" && cfg.service == "" { return Err(bad("SID is not supported: give SERVICE_NAME")) }
+        if cfg.host == "" || cfg.service == "" { return Err(bad("a descriptor needs HOST and SERVICE_NAME")) }
+        return Ok(Unit{})
+    }
+    var s = v
+    let low = strings.toLower(s)
+    if startsWith(low, "tcps://") {
+        cfg.tls = true
+        s = s[7..]
+    } else if startsWith(low, "tcp://") {
+        s = s[6..]
+    } else if indexOf(s, "://", 0) >= 0 {
+        return Err(bad("only the tcp and tcps protocols are supported"))
+    }
+    let q = indexOf(s, "?", 0)
+    if q >= 0 { return Err(bad("Easy Connect parameters (?...) are not supported")) }
+    let slash = indexOf(s, "/", 0)
+    if slash < 0 { return Err(bad("Data Source needs a service: host[:port]/service")) }
+    var hp = s[0..slash]
+    var svc = s[slash + 1..]
+    let colon2 = indexOf(svc, ":", 0)
+    if colon2 >= 0 { svc = svc[0..colon2] }          // host/service:server (dedicated, pooled): ignored
+    if len(hp) > 0 && hp[0] == '[' {
+        let e = indexOf(hp, "]", 0)
+        if e < 0 { return Err(bad("an IPv6 address without ']'")) }
+        cfg.host = hp[1..e]
+        let rest = hp[e + 1..]
+        if len(rest) > 0 {
+            if rest[0] != ':' { return Err(bad("text after an IPv6 address")) }
+            cfg.port = try number(rest[1..], "the port")
+        }
+    } else {
+        let c = strings.lastIndexOf(hp, ":")
+        if c >= 0 {
+            cfg.port = try number(hp[c + 1..], "the port")
+            hp = hp[0..c]
+        }
+        cfg.host = trim(hp)
+    }
+    if cfg.port < 1 || cfg.port > 65535 { return Err(bad("the port must be 1 to 65535")) }
+    cfg.service = trim(svc)
+    if cfg.host == "" { return Err(bad("no host in Data Source")) }
+    if cfg.service == "" { return Err(bad("no service in Data Source")) }
+    return Ok(Unit{})
+}
+
+// The connection string with the values of Password and PWD replaced by
+// "***", for messages and logs.
+pub fn masked(s: str): str {
+    var out = newStrBuf()
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == ';' || isSpace(c) {
+            out.addByte(c)
+            i += 1
+            continue
+        }
+        match entry(s, i, 0) {
+            Ok(kv) {
+                let eq = strings.indexOfByte(s, '=', i)
+                out.add(s[i..eq + 1])
+                if kv.key == "pwd" || kv.key == "password" { out.add("***") } else { out.add(s[eq + 1..kv.next]) }
+                i = kv.next
+            }
+            Err(_) {
+                out.add("***")
+                i = len(s)
+            }
+        }
+    }
+    return out.toStr()
+}
+
+// ---------------------------------------------------------------- parameters
+
+// A bind value: one of sqldialect's, or a date or time, which Value has
+// no case for.
+pub type Param = value closed {
+    Of(Value)
+    Date(time.Date)                         // DATE, midnight
+    DateTime(time.LocalDateTime)            // TIMESTAMP (a DATE column takes it, to the second)
+    Offset(time.OffsetDateTime)             // TIMESTAMP WITH TIME ZONE
+}
+
+fn paramsOf(args: &[Value]): []Param {
+    var out: []Param = []
+    for a in args { append(mut &out, Param.Of(a)) }
+    return out
+}
+
+fn bindOf(p: &Param, s: &tns.Session): Result[tns.Bind, Error] {
+    match p {
+        Param.Of(v) {
+            match v {
+                Value.Null { return Ok(tns.nullBind()) }
+                Value.Int(n) {
+                    let x = tns.numOfInt(n)
+                    return tns.numberBind(&x)
+                }
+                Value.Float(f) { return Ok(tns.doubleBind(f)) }
+                Value.Bool(b) {
+                    if s.hasBoolean() { return Ok(tns.boolBind(b)) }
+                    let x = tns.numOfInt(if b { 1 } else { 0 })
+                    return tns.numberBind(&x)
+                }
+                Value.Text(t) { return tns.textBind(t, s.maxString) }
+                Value.Bytes(b) { return Ok(tns.bytesBind(b, s.maxString)) }
+                Value.Dec(d) {
+                    let x = tns.numOfDecimal(d)
+                    return tns.numberBind(&x)
+                }
+            }
+        }
+        Param.Date(d) {
+            let l = time.LocalDateTime{date: d, time: time.timeOfDay(0, 0, 0, 0).unwrap()}
+            return Ok(tns.dateBind(&l))
+        }
+        Param.DateTime(l) { return Ok(tns.timestampBind(&l)) }
+        Param.Offset(o) { return Ok(tns.timestampTzBind(&o)) }
+    }
+}
+
+// ---------------------------------------------------------------- connections
+
+// A connection: owns its socket, closed when dropped (closing never parks;
+// the server rolls back what was not committed). One task uses it at a
+// time; every call that waits parks only that task.
+pub type Conn = record {
+    s: tns.Session
+    fetchSize: int
+    inBlock: bool               // inside transaction[T]
+    lastErrors: []Error
+}
+
+fn (c: mut &Conn) drop() { OPEN -= 1 }
+
+// Connects and logs in, within the string's Connect Timeout (E_TIMEOUT when
+// it passes) and the task's own deadline.
+pub fn connect(connStr: str, w: Where): Result[Conn, Error] {
+    let st = try parseConnString(connStr)
+    return connectWith(&st, w)
+}
+
+pub fn connectWith(st: &Settings, w: Where): Result[Conn, Error] {
+    let cfg = st.config
+    let r = if st.connectTimeoutMs > 0 {
+        task.within(st.connectTimeoutMs, fn(): Result[tns.Session, Error] { return tns.open(&cfg, w) })
+    } else {
+        tns.open(&cfg, w)
+    }
+    match move(r) {
+        Ok(s) {
+            OPEN += 1
+            return Ok(Conn{s: s, fetchSize: st.fetchSize, inBlock: false, lastErrors: []})
+        }
+        Err(e) {
+            if e.code == sqldialect.E_TIMEOUT { return Err(sqldialect.dbError(e.code, "connect: the deadline or Connect Timeout passed")) }
+            return Err(e)
+        }
+    }
+}
+
+// Closes the connection (dropping it does the same).
+pub fn (c: Conn) close() {}
+
+// Logs off (the server's own end of the session) and closes the socket;
+// later calls are E_IO.
+pub fn (c: mut &Conn) logoff(w: Where) { c.s.close(w) }
+
+// "23.0.0.0.0" (the server's AUTH_VERSION_NO).
+pub fn (c: &Conn) serverVersion(): str { return c.s.version }
+
+// The server's banner from the protocol exchange.
+pub fn (c: &Conn) banner(): str { return c.s.banner }
+
+// The session's id and serial number (V$SESSION's SID and SERIAL#).
+pub fn (c: &Conn) sessionId(): int { return c.s.sessionId }
+pub fn (c: &Conn) serial(): int { return c.s.serial }
+
+// The longest VARCHAR2 and RAW value in bytes: 32767 under
+// MAX_STRING_SIZE=EXTENDED, else 4000. Longer binds go as LONG and LONG RAW.
+pub fn (c: &Conn) maxString(): int { return c.s.maxString }
+
+// Whether a transaction is open: inside transaction[T], or work the server
+// says is not committed.
+pub fn (c: &Conn) inTransaction(): bool { return c.inBlock || c.s.inTransaction }
+
+// Whether the connection can take the next request outside a transaction.
+pub fn (c: &Conn) idle(): bool { return !c.s.broken && !c.inTransaction() }
+
+// The server error of the last call, when it had one.
+pub fn (c: &Conn) errors(): []Error {
+    var out: []Error = []
+    for e in c.lastErrors { append(mut &out, e) }
+    return out
+}
+
+// Warnings the server sent since the connection opened (a PL/SQL unit
+// compiled with errors: "ORA-24344"...).
+pub fn (c: &Conn) warnings(): []str {
+    var out: []str = []
+    for x in c.s.warnings { append(mut &out, x) }
+    return out
+}
+
+// The largest reply a call may read, in bytes (1 GiB): a larger one is
+// E_LIMIT and breaks the connection.
+pub fn (c: mut &Conn) setMaxReply(n: int) { c.s.maxReply = max(n, 65536) }
+
+pub fn (c: mut &Conn) setFetchSize(n: int) { c.fetchSize = max(1, min(n, 100000)) }
+
+fn (c: mut &Conn) failWith(e: Error): Error {
+    c.lastErrors = [e]
+    return e
+}
+
+// Runs one statement: every row of a query (FETCH after FETCH), or the
+// rows a DML statement changed.
+fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, Error] {
+    c.lastErrors = []
+    if len(trim(sql)) == 0 { return Err(sqldialect.inputError("an empty statement")) }
+    if len(params) > 65535 { return Err(sqldialect.inputError("more than 65535 binds")) }
+    var binds: []tns.Bind = []
+    for p in params { append(mut &binds, try bindOf(&p, &c.s)) }
+    let kind = tns.statementKind(sql)
+    let e = tns.Execute{sql: sql, kind: kind, cursorId: 0, binds: binds, prefetch: c.fetchSize,
+                        commit: !c.inBlock && kind != tns.S_QUERY}
+    var r = try c.s.execute(&e, &[], w)
+    let cursor = r.error.cursorId
+    let query = kind == tns.S_QUERY || r.described
+    if r.hasError && r.error.num != 0 && !(query && r.error.num == 1403) {
+        c.s.closeCursor(cursor)
+        return Err(c.failWith(tns.serverError(&r.error)))
+    }
+    if !query {
+        c.s.closeCursor(cursor)
+        return Ok(Rows{cols: [], rows: [], affected: r.error.rowCount})
+    }
+    var cols = replace(mut &r.columns, [])
+    var rows = replace(mut &r.rows, [])
+    var more = !(r.hasError && r.error.num == 1403)
+    var last = r.lastRow()
+    while more {
+        var f = try c.s.fetch(cursor, c.fetchSize, &cols, &last, w)
+        if f.hasError && f.error.num != 0 && f.error.num != 1403 {
+            c.s.closeCursor(cursor)
+            return Err(c.failWith(tns.serverError(&f.error)))
+        }
+        more = !(f.hasError && f.error.num == 1403)
+        if len(f.rows) == 0 && more { return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: a FETCH without rows or an end")) }
+        last = f.lastRow()
+        for i in 0..len(f.rows) { append(mut &rows, replace(mut &f.rows[i], [])) }
+    }
+    c.s.closeCursor(cursor)
+    return Ok(Rows{cols: cols, rows: rows, affected: -1})
+}
+
+// Runs a statement without binds (DDL, DML, PL/SQL; one statement, no
+// trailing ';' except PL/SQL's END;).
+pub fn (c: mut &Conn) exec(sql: str, w: Where): Result[Unit, Error] {
+    let r = try c.statement(sql, &[], w)
+    return Ok(Unit{})
+}
+
+// Runs sql with :1, :2, ... bound to args, in order, and returns its rows,
+// every one read (Rows do not hold the connection).
+//
+// Binds: Int and Dec as NUMBER (exact), Float as BINARY_DOUBLE, Bool as
+// BOOLEAN (Oracle 23; NUMBER 1 or 0 before), Text as VARCHAR2 (LONG beyond
+// maxString() bytes), Bytes as RAW (LONG RAW beyond), NULL as a NULL
+// VARCHAR2. Dates and times: queryWith with Param.
+pub fn (c: mut &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
+    let ps = paramsOf(args)
+    return c.statement(sql, &ps, w)
+}
+
+pub fn (c: mut &Conn) queryWith(sql: str, params: &[Param], w: Where): Result[Rows, Error] {
+    return c.statement(sql, params, w)
+}
+
+pub fn (c: mut &Conn) querySql(q: &Sql, w: Where): Result[Rows, Error] {
+    return c.query(q.render(sqldialect.Dialect.Oracle), q.args(), w)
+}
+
+// Runs sql (with binds as query): the rows it changed (0 for DDL and
+// PL/SQL).
+pub fn (c: mut &Conn) run(sql: str, args: &[Value], w: Where): Result[int, Error] {
+    let ps = paramsOf(args)
+    let r = try c.statement(sql, &ps, w)
+    return Ok(max(r.affected, 0))
+}
+
+pub fn (c: mut &Conn) runWith(sql: str, params: &[Param], w: Where): Result[int, Error] {
+    let r = try c.statement(sql, params, w)
+    return Ok(max(r.affected, 0))
+}
+
+// ---------------------------------------------------------------- transactions
+
+// Runs body in a transaction: its statements are not committed with their
+// executes; COMMIT follows when body returns Ok, ROLLBACK when it returns
+// Err, whose error is the result. Transactions do not nest (E_INPUT). DDL
+// in the body commits, as it does in Oracle.
+pub fn (c: mut &Conn) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: Where): Result[T, Error] {
+    if c.inBlock { return Err(sqldialect.inputError("a transaction is already open")) }
+    if c.s.broken { return Err(sqldialect.dbError(sqldialect.E_IO, "tns: the connection is broken by an earlier error")) }
+    c.inBlock = true
+    match body(c) {
+        Ok(v) {
+            c.inBlock = false
+            match c.s.commit(w) {
+                Ok(_) { return Ok(v) }
+                Err(e) { return Err(c.failWith(e)) }
+            }
+        }
+        Err(e) {
+            c.inBlock = false
+            if !c.s.broken {
+                let errs = replace(mut &c.lastErrors, [])
+                let r = c.s.rollback(w)
+                c.lastErrors = errs
+            }
+            return Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------- rows
+
+// A result in client memory.
+pub type Rows = record {
+    cols: []tns.Column
+    rows: [][]tns.Cell
+    affected: int
+}
+
+pub fn (r: &Rows) rowCount(): int { return len(r.rows) }
+
+pub fn (r: &Rows) columnCount(): int { return len(r.cols) }
+
+// From run: the rows changed; from query: -1.
+pub fn (r: &Rows) affected(): int { return r.affected }
+
+fn (r: &Rows) col(col: int): Result[int, Error] {
+    if col < 0 || col >= len(r.cols) {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + len(r.cols).toStr() + " columns)"))
+    }
+    return Ok(col)
+}
+
+// The column's name as the server gives it (upper case unless quoted).
+pub fn (r: &Rows) columnName(col: int): Result[str, Error] { return Ok(r.cols[try r.col(col)].name) }
+
+// The column's Oracle type number (tns.T_NUMBER, tns.T_VARCHAR, ...).
+pub fn (r: &Rows) columnType(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].oraType) }
+
+// "NUMBER", "VARCHAR2", "NVARCHAR2", "TIMESTAMP WITH TIME ZONE", ...
+pub fn (r: &Rows) columnTypeName(col: int): Result[str, Error] { return Ok(r.cols[try r.col(col)].typeName()) }
+
+pub fn (r: &Rows) column(col: int): Result[tns.Column, Error] { return Ok(r.cols[try r.col(col)]) }
+
+pub type DecimalType = value record { pub precision: int; pub scale: int }
+
+// A NUMBER column's precision and scale (0 and -127: NUMBER without them).
+pub fn (r: &Rows) decimalType(col: int): Result[DecimalType, Error] {
+    let c = r.cols[try r.col(col)]
+    if c.oraType != tns.T_NUMBER { return Err(typeError(col, "a NUMBER")) }
+    return Ok(DecimalType{precision: c.precision, scale: c.scale})
+}
+
+fn (r: &Rows) cell(row: int, col: int): Result[tns.Cell, Error] {
+    let k = try r.col(col)
+    if row < 0 || row >= len(r.rows) {
+        return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + len(r.rows).toStr() + " rows)"))
+    }
+    return Ok(r.rows[row][k])
+}
+
+fn typeError(col: int, want: str): Error {
+    return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + " is not " + want)
+}
+
+fn inexact(col: int, why: str): Error {
+    return sqldialect.dbError(sqldialect.E_INEXACT, "column " + col.toStr() + ": " + why)
+}
+
+fn nullError(col: int): Error { return sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL") }
+
+fn failed(col: int, why: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + ": " + why) }
+
+pub fn (r: &Rows) isNull(row: int, col: int): Result[bool, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Null { return Ok(true) }
+        else { return Ok(false) }
+    }
+}
+
+// The exact NUMBER (up to Oracle's 40 digits).
+pub fn (r: &Rows) number(row: int, col: int): Result[tns.Num, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Number(n) { return Ok(n) }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a NUMBER")) }
+    }
+}
+
+// A NUMBER that is an integer within int's range (E_INEXACT otherwise).
+pub fn (r: &Rows) int(row: int, col: int): Result[int, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Number(n) {
+            match n.int() {
+                Some(v) { return Ok(v) }
+                None { return Err(inexact(col, n.toStr() + " is not an int")) }
+            }
+        }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "an integer")) }
+    }
+}
+
+// A BOOLEAN, or a NUMBER that is 0 or 1.
+pub fn (r: &Rows) bool(row: int, col: int): Result[bool, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Bool(b) { return Ok(b) }
+        tns.Cell.Null { return Err(nullError(col)) }
+        else {
+            let n = try r.int(row, col)
+            if n != 0 && n != 1 { return Err(typeError(col, "a 0 or 1 boolean")) }
+            return Ok(n == 1)
+        }
+    }
+}
+
+// A BINARY_DOUBLE or BINARY_FLOAT (exact), or a NUMBER integer that a float
+// holds exactly.
+pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Float(f) { return Ok(f) }
+        tns.Cell.Number(n) {
+            match n.int() {
+                Some(v) {
+                    if v > 9007199254740992 || v < -9007199254740992 { return Err(inexact(col, "not exact as a float")) }
+                    return Ok(float(v))
+                }
+                None { return Err(inexact(col, "a NUMBER with a fraction is not exact as a float")) }
+            }
+        }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a float")) }
+    }
+}
+
+// The value as text: text as it is, a NUMBER's digits ("-12.5"), a float's
+// toStr, dates and times as time writes them, a ROWID's text, BOOLEAN as
+// "true" or "false". E_TYPE for RAW.
+pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Text(s) { return Ok(s) }
+        tns.Cell.Number(n) { return Ok(n.toStr()) }
+        tns.Cell.Float(f) { return Ok(f.toStr()) }
+        tns.Cell.Bool(b) { return Ok(b.toStr()) }
+        tns.Cell.Stamp(s) {
+            if s.hasOffset { return Ok(time.OffsetDateTime{local: s.local, offset: s.offset}.toStr()) }
+            return Ok(s.local.toStr())
+        }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "text")) }
+    }
+}
+
+// The exact bytes of a RAW or LONG RAW value, or the UTF-8 bytes of text.
+pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Bytes(b) { return Ok(b) }
+        tns.Cell.Text(t) { return Ok(t) }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "RAW or text")) }
+    }
+}
+
+// A NUMBER as an exact Decimal, with the column's scale as its display
+// scale (NUMBER(10,2): 12.50). E_INEXACT for BINARY_FLOAT and
+// BINARY_DOUBLE and for 39 and 40 digits (Decimal has 38: number() has
+// them all).
+pub fn (r: &Rows) decimal(row: int, col: int): Result[Decimal, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Number(n) {
+            let d = match n.decimal() {
+                Ok(x) { x }
+                Err(e) { return Err(inexact(col, n.toStr() + " has more digits than a Decimal (" + e.toStr() + ")")) }
+            }
+            let s = r.cols[col].scale
+            if s > 0 && s != -127 && d.scale() < s {
+                match d.withScale(s) {
+                    Ok(x) { return Ok(x) }
+                    Err(_) { return Ok(d) }
+                }
+            }
+            return Ok(d)
+        }
+        tns.Cell.Float(_) { return Err(inexact(col, "a binary float")) }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a NUMBER")) }
+    }
+}
+
+// None for NULL (never zero), otherwise as decimal().
+pub fn (r: &Rows) decimalOrNull(row: int, col: int): Result[Option[Decimal], Error] {
+    if try r.isNull(row, col) { return Ok(None) }
+    return Ok(Some(try r.decimal(row, col)))
+}
+
+fn (r: &Rows) stamp(row: int, col: int): Result[tns.Stamp, Error] {
+    match try r.cell(row, col) {
+        tns.Cell.Stamp(s) { return Ok(s) }
+        tns.Cell.Null { return Err(nullError(col)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Err(typeError(col, "a DATE or TIMESTAMP")) }
+    }
+}
+
+// The date of a DATE or TIMESTAMP whose time is midnight (E_INEXACT when
+// it has a time: localDateTime has it).
+pub fn (r: &Rows) date(row: int, col: int): Result[time.Date, Error] {
+    let s = try r.stamp(row, col)
+    if s.hasOffset { return Err(typeError(col, "a DATE or TIMESTAMP without a time zone")) }
+    let t = s.local.time
+    if t.hour() != 0 || t.minute() != 0 || t.second() != 0 || t.nano() != 0 {
+        return Err(inexact(col, "the value has a time of day"))
+    }
+    return Ok(s.local.date)
+}
+
+// The time of day of a DATE or TIMESTAMP (Oracle has no time-only type).
+pub fn (r: &Rows) timeOfDay(row: int, col: int): Result[time.TimeOfDay, Error] {
+    let s = try r.stamp(row, col)
+    if s.hasOffset { return Err(typeError(col, "a DATE or TIMESTAMP without a time zone")) }
+    return Ok(s.local.time)
+}
+
+// A DATE, TIMESTAMP or TIMESTAMP WITH LOCAL TIME ZONE (in the session's
+// time zone, UTC).
+pub fn (r: &Rows) localDateTime(row: int, col: int): Result[time.LocalDateTime, Error] {
+    let s = try r.stamp(row, col)
+    if s.hasOffset { return Err(typeError(col, "a DATE or TIMESTAMP without a time zone")) }
+    return Ok(s.local)
+}
+
+// A TIMESTAMP WITH TIME ZONE: its local date-time and offset.
+pub fn (r: &Rows) offsetDateTime(row: int, col: int): Result[time.OffsetDateTime, Error] {
+    let s = try r.stamp(row, col)
+    if !s.hasOffset { return Err(typeError(col, "a TIMESTAMP WITH TIME ZONE")) }
+    return Ok(time.OffsetDateTime{local: s.local, offset: s.offset})
+}
+
+// The value by its column's type: Null, Int (a NUMBER column of scale 0
+// whose value fits), Dec (another NUMBER; Text beyond 38 digits), Float,
+// Bool, Bytes (RAW), Text (text types, ROWID; dates and times as text()
+// gives them).
+pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
+    let c = try r.cell(row, col)
+    match c {
+        tns.Cell.Null { return Ok(Value.Null) }
+        tns.Cell.Number(n) {
+            let k = r.cols[col]
+            if k.scale == 0 && k.precision > 0 {
+                match n.int() {
+                    Some(v) { return Ok(Value.Int(v)) }
+                    None { }
+                }
+            }
+            match n.decimal() {
+                Ok(_) { return Ok(Value.Dec(try r.decimal(row, col))) }
+                Err(_) { return Ok(Value.Text(n.toStr())) }
+            }
+        }
+        tns.Cell.Float(f) { return Ok(Value.Float(f)) }
+        tns.Cell.Bool(b) { return Ok(Value.Bool(b)) }
+        tns.Cell.Bytes(b) { return Ok(Value.Bytes(b)) }
+        tns.Cell.Text(s) { return Ok(Value.Text(s)) }
+        tns.Cell.Failed(why) { return Err(failed(col, why)) }
+        else { return Ok(Value.Text(try r.text(row, col))) }
+    }
+}
