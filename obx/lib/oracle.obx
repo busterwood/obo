@@ -516,7 +516,7 @@ fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, 
     let kind = tns.statementKind(sql)
     let e = tns.newExecute(sql, kind, binds, c.firstRows(),
                            !c.inBlock && kind != tns.S_QUERY)
-    var r = try c.s.execute(&e, &[], w)
+    var r = try c.s.executeAs(&e, &[], true, w)
     c.closeReturned(&r, 0)
     let cursor = r.error.cursorId
     let query = kind == tns.S_QUERY || r.described
@@ -526,7 +526,7 @@ fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, 
     }
     if !query {
         c.s.closeCursor(cursor)
-        return Ok(Rows{cols: [], rows: [], affected: r.error.rowCount})
+        return Ok(Rows{cols: [], cells: [], outs: false, data: "", starts: [], lens: [], count: 0, affected: r.error.rowCount})
     }
     return c.rest(mut &r, cursor, false, w)
 }
@@ -541,30 +541,33 @@ fn (c: mut &Conn) closeReturned(r: &tns.Reply, first: int) {
 // Every row of a cursor: the reply's first rows, then FETCH after FETCH
 // (an EXECUTE with FETCH alone for a cursor without SQL: ref) until the
 // end; the cursor is closed with the next request, also after an error.
+// The rows stay raw (their values' bytes, all in r) and are decoded when
+// read.
 fn (c: mut &Conn) rest(r: mut &tns.Reply, cursor: int, ref: bool, w: Where): Result[Rows, Error] {
-    var cols = replace(mut &r.columns, [])
-    var rows = replace(mut &r.rows, [])
     var more = !(r.hasError && r.error.num == 1403)
-    var last = r.lastRow()
     while more {
-        let ask = c.rowsFor(&cols)
-        let got = if ref { c.s.fetchRef(cursor, ask, &cols, &last, w) } else { c.s.fetch(cursor, ask, &cols, &last, w) }
-        if got.isErr() { c.s.closeCursor(cursor) }
-        var f = try got
-        if f.hasError && f.error.num != 0 && f.error.num != 1403 {
+        let ask = c.rowsFor(&r.columns)
+        let had = r.rawRows
+        let got = c.s.fetchInto(cursor, ask, ref, r, w)
+        if got.isErr() {
             c.s.closeCursor(cursor)
-            return Err(c.failWith(tns.serverError(&f.error)))
+            return Err(got.unwrapErr())
         }
-        more = !(f.hasError && f.error.num == 1403)
-        if len(f.rows) == 0 && more {
+        if r.hasError && r.error.num != 0 && r.error.num != 1403 {
+            c.s.closeCursor(cursor)
+            return Err(c.failWith(tns.serverError(&r.error)))
+        }
+        more = !(r.hasError && r.error.num == 1403)
+        if r.rawRows == had && more {
             c.s.closeCursor(cursor)
             return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: a FETCH without rows or an end"))
         }
-        last = f.lastRow()
-        for i in 0..len(f.rows) { append(mut &rows, replace(mut &f.rows[i], [])) }
     }
     c.s.closeCursor(cursor)
-    return Ok(Rows{cols: cols, rows: rows, affected: -1})
+    let data = strFromBytes(&r.rawData)
+    r.rawData = []
+    return Ok(Rows{cols: replace(mut &r.columns, []), cells: [], outs: false, data: data, starts: replace(mut &r.rawStarts, []),
+                   lens: replace(mut &r.rawLens, []), count: r.rawRows, affected: -1})
 }
 
 // Every row of a cursor the server returned (REF CURSOR, implicit result).
@@ -574,6 +577,7 @@ fn (c: mut &Conn) drain(rc: mut &tns.RefCursor, what: str, w: Where): Result[Row
     }
     var r = tns.newReply(tns.K_EXECUTE, &rc.columns, &[])
     r.columns = replace(mut &rc.columns, [])
+    r.raw = true
     return c.rest(mut &r, rc.id, true, w)
 }
 
@@ -940,7 +944,7 @@ pub fn (c: mut &Conn) callWith(sql: str, params: &[Param], outs: &[Out], w: Wher
     }
     if len(binds) > 65535 { return Err(sqldialect.inputError("more than 65535 binds")) }
     let ex = tns.newExecute(sql, kind, binds, c.firstRows(), !c.inBlock && kind != tns.S_QUERY)
-    var r = try c.s.execute(&ex, &[], w)
+    var r = try c.s.executeAs(&ex, &[], true, w)
     let cursor = r.error.cursorId
     let query = kind == tns.S_QUERY || r.described
     if r.hasError && r.error.num != 0 && !(query && r.error.num == 1403) {
@@ -1038,7 +1042,9 @@ pub fn (c: mut &Conn) callWith(sql: str, params: &[Param], outs: &[Out], w: Wher
         }
     }
     let affected = if kind == tns.S_DML { r.error.rowCount } else { 0 }
-    return Ok(Results{sets: sets, outputs: Rows{cols: cols, rows: orows, affected: -1}, affected: affected})
+    let count = len(orows)
+    return Ok(Results{sets: sets, outputs: Rows{cols: cols, cells: orows, outs: true, data: "", starts: [], lens: [], count: count,
+                                                affected: -1}, affected: affected})
 }
 
 // ---------------------------------------------------------------- transactions
@@ -1074,13 +1080,21 @@ pub fn (c: mut &Conn) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: 
 // ---------------------------------------------------------------- rows
 
 // A result in client memory.
+// A query's rows are kept as their values' bytes, as the server sent them
+// (value v = row * columns + column is data[starts[v]..] for lens[v] bytes,
+// -1 for NULL), and decoded when read; call's OUT values are cells.
 pub type Rows = record {
     cols: []tns.Column
-    rows: [][]tns.Cell
+    cells: [][]tns.Cell         // outs: call's OUT values, a row of cells each
+    outs: bool
+    data: str
+    starts: []int
+    lens: []int
+    count: int
     affected: int
 }
 
-pub fn (r: &Rows) rowCount(): int { return len(r.rows) }
+pub fn (r: &Rows) rowCount(): int { return r.count }
 
 pub fn (r: &Rows) columnCount(): int { return len(r.cols) }
 
@@ -1116,10 +1130,28 @@ pub fn (r: &Rows) decimalType(col: int): Result[DecimalType, Error] {
 
 fn (r: &Rows) cell(row: int, col: int): Result[tns.Cell, Error] {
     let k = try r.col(col)
-    if row < 0 || row >= len(r.rows) {
-        return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + len(r.rows).toStr() + " rows)"))
+    if row < 0 || row >= r.count {
+        return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + r.count.toStr() + " rows)"))
     }
-    return Ok(r.rows[row][k])
+    if r.outs { return Ok(r.cells[row][k]) }
+    let v = row * len(r.cols) + k
+    let n = r.lens[v]
+    if n < 0 { return Ok(tns.Cell.Null) }
+    return Ok(tns.rawCell(&r.cols[k], Some(r.data[r.starts[v]..r.starts[v] + n])))
+}
+
+// The value index of row, col in a query's rows; -1 when out of range or
+// for call's OUT values (the cell path then).
+fn (r: &Rows) rawAt(row: int, col: int): int {
+    if r.outs || col < 0 || col >= len(r.cols) || row < 0 || row >= r.count { return -1 }
+    return row * len(r.cols) + col
+}
+
+// Whether the value at v is a NUMBER's bytes (for fixedInt and fixedDecimal).
+fn (r: &Rows) numberAt(v: int, col: int): bool {
+    if v < 0 || r.lens[v] <= 0 { return false }
+    let t = r.cols[col].oraType
+    return (t == tns.T_NUMBER || t == tns.T_BINARY_INTEGER) && r.cols[col].bufferSize > 0
 }
 
 fn typeError(col: int, want: str): Error {
@@ -1135,6 +1167,8 @@ fn nullError(col: int): Error { return sqldialect.dbError(sqldialect.E_NULL, "co
 fn failed(col: int, why: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, "column " + col.toStr() + ": " + why) }
 
 pub fn (r: &Rows) isNull(row: int, col: int): Result[bool, Error] {
+    let at = r.rawAt(row, col)
+    if at >= 0 { return Ok(r.lens[at] < 0) }
     match try r.cell(row, col) {
         tns.Cell.Null { return Ok(true) }
         else { return Ok(false) }
@@ -1153,6 +1187,13 @@ pub fn (r: &Rows) number(row: int, col: int): Result[tns.Num, Error] {
 
 // A NUMBER that is an integer within int's range (E_INEXACT otherwise).
 pub fn (r: &Rows) int(row: int, col: int): Result[int, Error] {
+    let at = r.rawAt(row, col)
+    if r.numberAt(at, col) {
+        match tns.fixedInt(&r.data[r.starts[at]..r.starts[at] + r.lens[at]]) {
+            Some(x) { return Ok(x) }
+            None {}
+        }
+    }
     match try r.cell(row, col) {
         tns.Cell.Number(n) {
             match n.int() {
@@ -1203,6 +1244,14 @@ pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
 // toStr, dates and times as time writes them, a ROWID's text, BOOLEAN as
 // "true" or "false". E_TYPE for RAW.
 pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
+    let at = r.rawAt(row, col)
+    if at >= 0 && r.lens[at] >= 0 {
+        let t = r.cols[col].oraType
+        if (t == tns.T_VARCHAR || t == tns.T_CHAR || t == tns.T_LONG) && r.cols[col].csfrm != tns.CS_NCHAR && r.cols[col].bufferSize > 0 {
+            let b = r.data[r.starts[at]..r.starts[at] + r.lens[at]]
+            if strings.isValidUtf8(b) { return Ok(b) }
+        }
+    }
     match try r.cell(row, col) {
         tns.Cell.Text(s) { return Ok(s) }
         tns.Cell.Number(n) { return Ok(n.toStr()) }
@@ -1234,26 +1283,39 @@ pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
 // BINARY_DOUBLE and for 39 and 40 digits (Decimal has 38: number() has
 // them all).
 pub fn (r: &Rows) decimal(row: int, col: int): Result[Decimal, Error] {
+    let at = r.rawAt(row, col)
+    if r.numberAt(at, col) {
+        match tns.fixedDecimal(&r.data[r.starts[at]..r.starts[at] + r.lens[at]]) {
+            Some(d) { return Ok(r.columnScale(col, d)) }
+            None {}
+        }
+    }
     match try r.cell(row, col) {
         tns.Cell.Number(n) {
             let d = match n.decimal() {
                 Ok(x) { x }
                 Err(e) { return Err(inexact(col, n.toStr() + " has more digits than a Decimal (" + e.toStr() + ")")) }
             }
-            let s = r.cols[col].scale
-            if s > 0 && s != -127 && d.scale() < s {
-                match d.withScale(s) {
-                    Ok(x) { return Ok(x) }
-                    Err(_) { return Ok(d) }
-                }
-            }
-            return Ok(d)
+            return Ok(r.columnScale(col, d))
         }
         tns.Cell.Float(_) { return Err(inexact(col, "a binary float")) }
         tns.Cell.Null { return Err(nullError(col)) }
         tns.Cell.Failed(why) { return Err(failed(col, why)) }
         else { return Err(typeError(col, "a NUMBER")) }
     }
+}
+
+// d with its column's scale as the display scale, when the column has one
+// and d shows fewer digits (NUMBER(10,2): 12.5 as 12.50).
+fn (r: &Rows) columnScale(col: int, d: Decimal): Decimal {
+    let s = r.cols[col].scale
+    if s > 0 && s != -127 && d.scale() < s {
+        match d.withScale(s) {
+            Ok(x) { return x }
+            Err(_) { return d }
+        }
+    }
+    return d
 }
 
 // None for NULL (never zero), otherwise as decimal().

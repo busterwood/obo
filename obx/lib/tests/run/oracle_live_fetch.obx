@@ -8,7 +8,10 @@
 // fetching ahead off, buffered queries, an early close and a drop while a
 // FETCH is on the wire (the connection is used after), an error in the
 // FETCH sent ahead (the rows before it first), and no cursor left open
-// over repeated early closes (V$MYSTAT, as oracle_live_out).
+// over repeated early closes (V$MYSTAT, as oracle_live_out). Repeats:
+// 20,000 rows whose values repeat the row before's (BIT_VECTOR), with
+// NULLs and values over 252 bytes (sent in chunks), buffered and streamed,
+// against the values the program computes.
 // needs: ssl
 // expect: narrow: width 119 rows 2202 | wide: width 12051 rows 21
 // expect: buffer 7: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
@@ -16,6 +19,7 @@
 // expect: ahead off: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
 // expect: buffered: 200000 rows, 92 round trips, sum 20000100000 | fetch size 100: 2001 round trips
 // expect: wide stream: 100 rows, 6 round trips, 1200000 bytes | buffered: 100 rows, 5 round trips
+// expect: repeats: buffered 20000 rows, 0 wrong | stream 7: 20000 rows, 0 wrong | stream 1024: 20000 rows, 0 wrong
 // expect: early close in flight: 7 rows | after: 2 | again: 7 rows | after: 2
 // expect: dropped in flight: 3 rows | after: 2
 // expect: error ahead: 3449 rows then error 1476 | after: 2 | ahead off: 3449 rows then error 1476 | after: 2
@@ -64,6 +68,66 @@ fn bindWide(c: &Columns): Result[WideCols, Error] {
     return Ok(WideCols{a: try c.index("a", Kind.Text), b: try c.index("b", Kind.Text), c: try c.index("c", Kind.Text)})
 }
 fn readWide(b: &WideCols, r: &RowView): Result[Wide, Error] { return Ok(Wide{a: try r.text(b.a), b: try r.text(b.b), c: try r.text(b.c)}) }
+
+type Rep = value record { id: int; k: str; m: int; t: Option[str]; big: str; d: Decimal }
+type RepCols = value record { id: int; k: int; m: int; t: int; big: int; d: int }
+
+fn bindRep(c: &Columns): Result[RepCols, Error] {
+    return Ok(RepCols{id: try c.index("id", Kind.Int), k: try c.index("k", Kind.Text), m: try c.index("m", Kind.Int),
+                      t: try c.index("t", Kind.Text), big: try c.index("big", Kind.Text), d: try c.index("d", Kind.Decimal)})
+}
+
+fn readRep(b: &RepCols, r: &RowView): Result[Rep, Error] {
+    return Ok(Rep{id: try r.int(b.id), k: try r.text(b.k), m: try r.int(b.m), t: try r.textOrNull(b.t), big: try r.text(b.big),
+                  d: try r.decimal(b.d)})
+}
+
+const REPEATS = "SELECT level AS id, 'k' AS k, MOD(level, 3) AS m, " +
+                "CASE WHEN MOD(level, 5) = 0 THEN NULL ELSE 'v' || MOD(level, 7) END AS t, " +
+                "RPAD('x', CASE WHEN MOD(level, 50) = 0 THEN 300 + MOD(level, 7) ELSE 20 END, 'y') AS big, " +
+                "CAST(MOD(level, 4) / 4 AS NUMBER(10,2)) AS d FROM dual CONNECT BY level <= 20000"
+
+// Row i of REPEATS (from 1), as the program computes it.
+fn repeatRow(i: int): Rep {
+    let n = if i % 50 == 0 { 300 + i % 7 } else { 20 }
+    var big = "x"
+    while len(big) < n { big = big + "y" }
+    let t: Option[str] = if i % 5 == 0 { None } else { Some("v" + (i % 7).toStr()) }
+    return Rep{id: i, k: "k", m: i % 3, t: t, big: big, d: fromFraction(i128((i % 4) * 25), 2)}
+}
+
+fn sameRep(a: &Rep, b: &Rep): bool {
+    return a.id == b.id && a.k == b.k && a.m == b.m && a.t == b.t && a.big == b.big && a.d.toStr() == b.d.toStr()
+}
+
+fn repeats(c: mut &oracle.Conn): Result[Unit, Error] {
+    let rows = try c.query(REPEATS, &[])
+    var wrong = 0
+    for i in 0..rows.rowCount() {
+        let t: Option[str] = if try rows.isNull(i, 3) { None } else { Some(try rows.text(i, 3)) }
+        let r = Rep{id: try rows.int(i, 0), k: try rows.text(i, 1), m: try rows.int(i, 2), t: t, big: try rows.text(i, 4),
+                    d: try rows.decimal(i, 5)}
+        if !sameRep(&r, &repeatRow(i + 1)) { wrong += 1 }
+    }
+    var out = "repeats: buffered " + rows.rowCount().toStr() + " rows, " + wrong.toStr() + " wrong"
+    for size in [7, 1024] {
+        var s = try c.stream(REPEATS, [], bindRep, readRep)
+        var buf = array(size, Rep{id: 0, k: "", m: 0, t: None, big: "", d: 0.00m})
+        var n = 0
+        var bad = 0
+        while true {
+            let k = try s.fill(mut &buf)
+            if k == 0 { break }
+            for r in buf[0..k] {
+                n += 1
+                if !sameRep(&r, &repeatRow(n)) { bad += 1 }
+            }
+        }
+        out = out + " | stream " + size.toStr() + ": " + n.toStr() + " rows, " + bad.toStr() + " wrong"
+    }
+    println(out)
+    return Ok(Unit{})
+}
 
 fn after(c: mut &oracle.Conn): str {
     match c.query("SELECT 1 + 1 FROM dual", &[]) {
@@ -221,6 +285,7 @@ fn run(c: mut &oracle.Conn): Result[Unit, Error] {
     c.setFetchAhead(true)
     try buffered(c)
     try wide(c)
+    try repeats(c)
     let e1 = try early(c, false)
     let e2 = try early(c, false)
     println("early close in flight: " + e1 + " | again: " + e2)

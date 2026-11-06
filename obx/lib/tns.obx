@@ -881,7 +881,7 @@ pub type ProtocolInfo = value record {
 }
 
 // A cursor the server opened for the client: a REF CURSOR OUT value or an
-// implicit result. Its rows are fetched with Session.fetchRef; id 0: the
+// implicit result. Its rows are fetched with Session.fetchInto; id 0: the
 // PL/SQL never opened it.
 pub type RefCursor = record {
     pub columns: []Column
@@ -939,13 +939,6 @@ pub fn newReply(kind: int, columns: &[]Column, last: &[]Cell): Reply {
                  eor: false, fast: false, binds: [], outIndex: [], outMode: false, returning: false, outs: [], cursors: [],
                  implicit: [], flush: false, last: prev, bitvec: "", done: false, raw: false, rawData: [], rawStarts: [],
                  rawLens: [], rawFirst: 0, rawRows: 0}
-}
-
-// The last row decoded (BIT_VECTOR repeats columns from it).
-pub fn (r: &Reply) lastRow(): []Cell {
-    var out: []Cell = []
-    for x in r.last { append(mut &out, x) }
-    return out
 }
 
 pub fn (r: &Reply) isDone(): bool { return r.done }
@@ -1460,6 +1453,20 @@ fn columnRaw(c: mut &Cur, col: &Column): Result[Option[str], Error] {
     let v = try c.bytes("column " + col.name)
     if t == T_LONG || t == T_LONG_RAW { try c.skipN(2, "LONG") }
     return Ok(v)
+}
+
+// The cell columnValue makes of a value that columnRaw kept (None: NULL):
+// a buffered query keeps its rows raw and makes cells only when asked.
+pub fn rawCell(col: &Column, v: Option[str]): Cell {
+    match v {
+        None { return Cell.Null }
+        Some(b) {
+            let t = col.oraType
+            if t == T_ROWID { return Cell.Text(b) }
+            if t == T_CLOB || t == T_BLOB || t == T_BFILE { return Cell.Failed(col.typeName() + " columns are not supported yet") }
+            return cellOf(col, b)
+        }
+    }
 }
 
 // A reply's raw rows start after prev's last row (BIT_VECTOR may repeat
@@ -2526,14 +2533,13 @@ fn (s: mut &Session) exchange(msg: &[]byte, r: mut &Reply, w: Where): Result[Uni
 fn (s: mut &Session) receive(r: mut &Reply, w: Where): Result[Unit, Error] {
     var data = ""
     var total = 0
-    let rawRows = r.raw && !(r.outMode && !r.described)
     while !r.done {
         if len(data) == 0 {
             let d = try s.nextData(w)
             data = d.data
             total += len(data)
         }
-        if rawRows && int(data[0]) == MT_ROW_DATA {
+        if r.raw && int(data[0]) == MT_ROW_DATA && !(r.outMode && !r.described) {
             // a run of rows kept raw, scanned in place (decodeMessage's ROW_DATA)
             var p = 0
             var short = false
@@ -2964,33 +2970,10 @@ pub fn (s: mut &Session) executeAs(e: &Execute, columns: &[]Column, raw: bool, w
     return Ok(r)
 }
 
-// The next rows (up to n) of a REF CURSOR or implicit result: an EXECUTE
-// with FETCH alone on its cursor, as python-oracledb does for a cursor
-// without SQL.
-pub fn (s: mut &Session) fetchRef(cursorId: int, n: int, columns: &[]Column, last: &[]Cell, w: Where): Result[Reply, Error] {
-    let e = Execute{sql: "", kind: S_QUERY, cursorId: cursorId, binds: [], prefetch: n, commit: false, fetchOnly: true}
-    var m: []byte = []
-    s.header(mut &m, FN_EXECUTE)
-    executeBody(mut &m, &e, s.fieldVersion, s.maxString)
-    var r = s.reply(K_EXECUTE, columns, last)
-    try s.call(&m, mut &r, w)
-    return Ok(r)
-}
-
-// Fetches up to n more rows of an open cursor.
-pub fn (s: mut &Session) fetch(cursorId: int, n: int, columns: &[]Column, last: &[]Cell, w: Where): Result[Reply, Error] {
-    var m: []byte = []
-    s.header(mut &m, FN_FETCH)
-    putUb(mut &m, cursorId)
-    putUb(mut &m, n)
-    var r = s.reply(K_EXECUTE, columns, last)
-    try s.call(&m, mut &r, w)
-    return Ok(r)
-}
-
-// fetch with the rows kept raw, after prev's (a stream's previous fetch:
-// BIT_VECTOR may repeat its last row's values). The stream's own cursor is
-// not closed by this request (streamCursor).
+// A FETCH of up to n more rows of an open cursor, the rows kept raw after
+// prev's (a stream's previous fetch: BIT_VECTOR may repeat its last row's
+// values). The stream's own cursor is not closed by this request
+// (streamCursor).
 pub fn (s: mut &Session) fetchRaw(cursorId: int, n: int, columns: &[]Column, prev: &Reply, w: Where): Result[Reply, Error] {
     var m: []byte = []
     let keep = s.streamCursor
@@ -3003,6 +2986,34 @@ pub fn (s: mut &Session) fetchRaw(cursorId: int, n: int, columns: &[]Column, pre
     seedRaw(mut &r, prev)
     try s.call(&m, mut &r, w)
     return Ok(r)
+}
+
+// The next rows (up to n) of an open cursor, kept raw and added to r's: a
+// buffered query keeps all its rows in one Reply, so BIT_VECTOR repeats
+// find the row before across fetches. r's end status (error, hasError) is
+// this round trip's. A FETCH; for a REF CURSOR or implicit result (ref)
+// an EXECUTE with FETCH alone on its cursor, as python-oracledb does for a
+// cursor without SQL.
+pub fn (s: mut &Session) fetchInto(cursorId: int, n: int, ref: bool, r: mut &Reply, w: Where): Result[Unit, Error] {
+    var m: []byte = []
+    if ref {
+        let e = Execute{sql: "", kind: S_QUERY, cursorId: cursorId, binds: [], prefetch: n, commit: false, fetchOnly: true}
+        s.header(mut &m, FN_EXECUTE)
+        executeBody(mut &m, &e, s.fieldVersion, s.maxString)
+    } else {
+        s.header(mut &m, FN_FETCH)
+        putUb(mut &m, cursorId)
+        putUb(mut &m, n)
+    }
+    r.raw = true
+    r.done = false
+    r.hasError = false
+    r.error = ErrorInfo{num: 0, msg: "", pos: 0, cursorId: 0, rowCount: 0, callStatus: 0}
+    r.callStatus = 0
+    r.warnings = []
+    r.eor = s.eor
+    try s.call(&m, r, w)
+    return Ok(Unit{})
 }
 
 // COMMIT, ROLLBACK or LOGOFF; the server's error, if any, as Err.
@@ -3135,6 +3146,41 @@ fn numberFixed(b: &str): Result[Option[Fixed], Error] {
     }
     if scale > 38 { return Ok(None) }
     return Ok(Some(Fixed{units: if pos { u } else { -u }, scale: scale}))
+}
+
+// A NUMBER's bytes as an int when it is an integer that numberFixed reads
+// and int holds; None otherwise (also for malformed bytes: the caller's
+// slow path, decodeNumber, says what is wrong).
+pub fn fixedInt(b: &str): Option[int] {
+    match numberFixed(b) {
+        Ok(o) {
+            match o {
+                Some(f) {
+                    if f.scale == 0 && f.units <= i128(9223372036854775807) && f.units >= -i128(9223372036854775807) - 1 {
+                        return Some(int(f.units))
+                    }
+                }
+                None {}
+            }
+        }
+        Err(_) {}
+    }
+    return None
+}
+
+// A NUMBER's bytes as a Decimal (the display scale its digits need) when
+// numberFixed reads it; None otherwise, as fixedInt.
+pub fn fixedDecimal(b: &str): Option[Decimal] {
+    match numberFixed(b) {
+        Ok(o) {
+            match o {
+                Some(f) { return Some(fromFraction(f.units, f.scale)) }
+                None {}
+            }
+        }
+        Err(_) {}
+    }
+    return None
 }
 
 fn oInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
