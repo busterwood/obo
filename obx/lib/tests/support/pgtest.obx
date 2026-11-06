@@ -1,0 +1,263 @@
+// Test support for pgwire (lib/tests/run/pgwire_*.obx): builders for the bytes
+// a PostgreSQL server sends, and Wire, the server's end of a connection: it
+// reads the client's startup packet and typed messages, over a plain socket or
+// (after upgrade) TLS, so a scripted server can play any exchange.
+import "net"
+import "tls"
+import "task"
+import "sqldialect"
+import "pgwire"
+
+// ------------------------------------------------------------ building
+
+pub fn be32(n: int): str {
+    var b = array(4, byte(0))
+    b[0] = byte((n >> 24) & 255)
+    b[1] = byte((n >> 16) & 255)
+    b[2] = byte((n >> 8) & 255)
+    b[3] = byte(n & 255)
+    return strFromBytes(&b)
+}
+
+pub fn be16(n: int): str {
+    var b = array(2, byte(0))
+    b[0] = byte((n >> 8) & 255)
+    b[1] = byte(n & 255)
+    return strFromBytes(&b)
+}
+
+// A message of type t with the body.
+pub fn m(t: int, body: str): str {
+    var b = array(1, byte(t))
+    return strFromBytes(&b) + be32(4 + len(body)) + body
+}
+
+pub fn authReq(code: int, extra: str): str { return m(82, be32(code) + extra) }
+pub fn authOk(): str { return authReq(0, "") }
+pub fn paramStatus(k: str, v: str): str { return m(83, k + "\0" + v + "\0") }
+pub fn backendKey(pid: int, key: str): str { return m(75, be32(pid) + key) }
+pub fn ready(status: str): str { return m(90, status) }
+pub fn cmd(tag: str): str { return m(67, tag + "\0") }
+pub fn parseOk(): str { return m(49, "") }
+pub fn bindOk(): str { return m(50, "") }
+pub fn closeOk(): str { return m(51, "") }
+pub fn noData(): str { return m(110, "") }
+pub fn suspended(): str { return m(115, "") }
+pub fn errorMsg(sev: str, code: str, msg: str): str {
+    return m(69, "S" + sev + "\0V" + sev + "\0C" + code + "\0M" + msg + "\0\0")
+}
+pub fn notice(msg: str): str { return m(78, "SNOTICE\0C00000\0M" + msg + "\0\0") }
+
+// A RowDescription of text columns named names, with the type OIDs.
+pub fn rowDesc(names: &[]str, oids: &[]int): str {
+    var b = be16(len(names))
+    for i in 0..len(names) {
+        b = b + names[i] + "\0" + be32(0) + be16(0) + be32(oids[i]) + be16(-1 & 0xffff) + be32(-1 & 0xffffffff) + be16(0)
+    }
+    return m(84, b)
+}
+
+// A DataRow of texts; "\0NULL" stands for NULL.
+pub const NULL = "\0NULL"
+
+pub fn dataRow(vals: &[]str): str {
+    var b = be16(len(vals))
+    for v in vals {
+        if v == NULL {
+            b = b + be32(-1 & 0xffffffff)
+        } else {
+            b = b + be32(len(v)) + v
+        }
+    }
+    return m(68, b)
+}
+
+// What a server sends when a connection is accepted and trusted.
+pub fn loginReply(pid: int, key: str): str {
+    return authOk() + paramStatus("server_version", "16.15 (test)") + paramStatus("client_encoding", "UTF8") +
+           paramStatus("TimeZone", "Etc/UTC") + backendKey(pid, key) + ready("I")
+}
+
+// The pairs of a StartupMessage body (after the protocol version): "user=u,database=d".
+pub fn pairs(body: str): str {
+    var out = ""
+    var i = 0
+    var key = true
+    var cur = ""
+    var first = true
+    while i < len(body) {
+        var j = i
+        while j < len(body) && body[j] != 0 { j += 1 }
+        let s = body[i..j]
+        i = j + 1
+        if len(s) == 0 { break }
+        if key {
+            cur = s
+        } else {
+            out = out + (if first { "" } else { "," }) + cur + "=" + s
+            first = false
+        }
+        key = !key
+    }
+    return out
+}
+
+// ---------------------------------------------------------------- wire
+
+pub type Link = value closed {
+    Plain(net.Conn)
+    Tls(tls.Conn)
+    Gone
+}
+
+pub type Wire = record {
+    l: Link
+    pending: str
+}
+
+pub type Front = value record { pub t: int; pub body: str }
+pub type Startup = value record { pub code: int; pub body: str }
+
+pub fn wire(c: net.Conn): Wire { return Wire{l: Link.Plain(c), pending: ""} }
+
+// Accepts a connection of a listener.
+pub fn accept(ln: &net.Listener): Option[Wire] {
+    let a = ln.accept()
+    if a.isErr() { return None }
+    return Some(wire(a.unwrap()))
+}
+
+fn (x: &Wire) isTls(): bool {
+    match x.l {
+        Link.Tls(_) { return true }
+        else { return false }
+    }
+}
+
+fn (x: mut &Wire) takeTls(): tls.Conn {
+    match replace(mut &x.l, Link.Gone) {
+        Link.Tls(t) { return t }
+        else { panic("not a TLS wire") }
+    }
+}
+
+fn (x: mut &Wire) readSome(buf: mut &[byte]): int {
+    if x.isTls() {
+        var t = x.takeTls()
+        let r = t.read(buf)
+        x.l = Link.Tls(t)
+        match r {
+            Ok(n) { return n }
+            Err(_) { return 0 }
+        }
+    }
+    match x.l {
+        Link.Plain(c) {
+            match c.read(buf) {
+                Ok(n) { return n }
+                Err(_) { return 0 }
+            }
+        }
+        else { return 0 }
+    }
+}
+
+// Reads until n bytes are pending; false at EOF or an error.
+pub fn (x: mut &Wire) fill(n: int): bool {
+    var tmp = array(4096, byte(0))
+    while len(x.pending) < n {
+        let k = x.readSome(mut &tmp)
+        if k == 0 { return false }
+        x.pending = x.pending + strFromBytes(&tmp[0..k])
+    }
+    return true
+}
+
+fn int32(s: str, at: int): int {
+    var v = (int(s[at]) << 24) | (int(s[at + 1]) << 16) | (int(s[at + 2]) << 8) | int(s[at + 3])
+    if v >= 2147483648 { v -= 4294967296 }
+    return v
+}
+
+// The client's first packet: StartupMessage (196608), SSLRequest (80877103) or CancelRequest (80877102).
+pub fn (x: mut &Wire) startup(): Option[Startup] {
+    if !x.fill(8) { return None }
+    let n = int32(x.pending, 0)
+    if n < 8 || n > 100000 || !x.fill(n) { return None }
+    let code = int32(x.pending, 4)
+    let body = x.pending[8..n]
+    x.pending = x.pending[n..]
+    return Some(Startup{code: code, body: body})
+}
+
+// The client's next typed message.
+pub fn (x: mut &Wire) message(): Option[Front] {
+    if !x.fill(5) { return None }
+    let n = int32(x.pending, 1)
+    if n < 4 || !x.fill(1 + n) { return None }
+    let t = int(x.pending[0])
+    let body = x.pending[5..1 + n]
+    x.pending = x.pending[1 + n..]
+    return Some(Front{t: t, body: body})
+}
+
+// Sends bytes; false when the client has gone.
+pub fn (x: mut &Wire) send(s: str): bool {
+    if x.isTls() {
+        var t = x.takeTls()
+        let r = t.writeStr(s)
+        x.l = Link.Tls(t)
+        return r.isOk()
+    }
+    match x.l {
+        Link.Plain(c) { return c.writeStr(s).isOk() }
+        else { return false }
+    }
+}
+
+// Sends the first k bytes of s, lets the client run, then the rest.
+pub fn (x: mut &Wire) sendSplit(s: str, k: int): bool {
+    if !x.send(s[..k]) { return false }
+    let y = task.sleep(1)
+    return x.send(s[k..])
+}
+
+// After "S": the TLS handshake as the server, with ctx.
+pub fn (x: mut &Wire) upgrade(ctx: &tls.Context): bool {
+    let old = replace(mut &x.l, Link.Gone)
+    match move(old) {
+        Link.Plain(c) {
+            match ctx.accept(c) {
+                Ok(t) {
+                    x.l = Link.Tls(t)
+                    return true
+                }
+                Err(_) { return false }
+            }
+        }
+        else { return false }
+    }
+}
+
+pub fn (x: mut &Wire) noDelay() {
+    match x.l {
+        Link.Plain(c) { let r = c.setNoDelay(true) }
+        else {}
+    }
+}
+
+// Accepts a connection and answers its startup like a trusting server; the
+// pairs of the startup message. "" when no startup came.
+pub fn trust(x: mut &Wire, pid: int, key: str): str {
+    match x.startup() {
+        Some(s) {
+            if s.code != 196608 { return "code " + s.code.toStr() }
+            x.send(loginReply(pid, key))
+            return pairs(s.body)
+        }
+        None { return "" }
+    }
+}
+
+// The mix of a deterministic generator (an LCG; the high bits are used).
+pub fn mix(x: int): int { return (x * 1103515245 + 12345) % 2147483648 }

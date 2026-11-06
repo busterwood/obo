@@ -1796,7 +1796,7 @@ type Failed = value record {
 fn failed(e: Error, stop: bool): Failed { return Failed{e: e, stop: stop, srv: false, hs: false, viaTls: false} }
 
 fn hostLabel(ep: &Endpoint): str {
-    if ep.isUnix() { return "socket \"" + ep.socketPath() + "\"" }
+    if ep.isUnix() { return "on socket \"" + ep.socketPath() + "\"" }
     let name = if len(ep.host) > 0 { ep.host } else { ep.hostaddr }
     if len(ep.hostaddr) > 0 && len(ep.host) > 0 && ep.host != ep.hostaddr {
         return "at \"" + ep.host + "\" (" + ep.hostaddr + "), port " + ep.port.toStr()
@@ -1811,7 +1811,7 @@ fn tcpAddr(host: str, port: int): str {
 }
 
 fn connectText(ep: &Endpoint, reason: str): str {
-    return "connection to server on " + hostLabel(ep) + " failed: " + reason
+    return "connection to server " + hostLabel(ep) + " failed: " + reason
 }
 
 fn connectFail(ep: &Endpoint, e: io.IoError): Failed {
@@ -2411,6 +2411,12 @@ fn (s: mut &Session) collect(w: Where): Result[Reply, Error] {
             69 {                                        // E ErrorResponse
                 let e = try s.errorOf(&m)
                 if c.first.isNone() { c.first = Some(e.dbError()) }
+                if s.state == S_BROKEN {                // FATAL: no ReadyForQuery will come
+                    match c.first {
+                        Some(x) { return Err(x) }
+                        None {}
+                    }
+                }
             }
             90 {                                        // Z ReadyForQuery
                 try s.readyFor(&m)
@@ -2630,6 +2636,7 @@ pub fn (s: mut &Session) openPortal(sql: str, params: &[]Param, rows: int, w: Wh
             69 {                                        // refused before any row: Sync, ReadyForQuery
                 let e = try s.errorOf(&m)
                 s.pending = false
+                if s.state == S_BROKEN { return Err(e.dbError()) }
                 try s.syncUp(w)
                 return Err(e.dbError())
             }
@@ -2696,6 +2703,7 @@ pub fn (s: mut &Session) receiveBatch(w: Where): Result[Batch, Error] {
                 let e = try s.errorOf(&m)
                 s.pending = false
                 b.err = match refused { Some(r) { Some(r) } None { Some(e.dbError()) } }
+                if s.state == S_BROKEN { return Ok(b) }
                 try s.syncUp(w)
                 return Ok(b)
             }

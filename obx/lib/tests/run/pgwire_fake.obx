@@ -1,0 +1,937 @@
+// pgwire against scripted servers (tasks of this program) on 127.0.0.1 and on a
+// Unix socket: startup under trust, cleartext, MD5 and SCRAM-SHA-256 (a wrong
+// server signature, a server nonce without ours, i=0, an e= error), SCRAM-PLUS
+// over TLS with the binding data checked, channel_binding and require_auth,
+// SSLRequest answered N and E and S followed by a stray byte,
+// NegotiateProtocolVersion, 4 and 32 byte cancel keys, ParameterStatus and
+// notices mid-session, scripts with two results and an error, extended queries,
+// a portal of 300 rows in batches of 7, replies split at every byte, closePortal,
+// a cancelled wait (the CancelRequest the server sees), a FATAL, and 300 mutated
+// replies that each end in Ok or Err.
+// needs: ssl
+// expect: trust tcp: pid 4242 | version 160015 | tz Etc/UTC | tx 73 | trips 1 || startup user=u,database=d,client_encoding=UTF8 | terminate
+// expect: trust unix: pid 4242 | version 160015 | tz Etc/UTC | tx 73 | trips 1 || startup user=u,database=d,client_encoding=UTF8 | terminate
+// expect: cleartext: ok || password secret
+// expect: no password: error 1: connection to server at "127.0.0.1", port PORT failed: fe_sendauth: no password supplied || startup
+// expect: md5: ok || md5 ok
+// expect: scram: ok || scram proof ok c=biws
+// expect: scram wrong signature: error 1: connection to server at "127.0.0.1", port PORT failed: SCRAM authentication failed: the server signature does not match || scram proof ok c=biws
+// expect: scram foreign nonce: error 1: connection to server at "127.0.0.1", port PORT failed: malformed SCRAM message (invalid nonce) || scram sent first
+// expect: scram i=0: error 1: connection to server at "127.0.0.1", port PORT failed: malformed SCRAM message (invalid iteration count) || scram sent first
+// expect: scram e=: error 1: connection to server at "127.0.0.1", port PORT failed: error received from server in SCRAM exchange: invalid-proof || scram proof ok c=biws
+// expect: scram-plus: ok plus || scram proof ok c=PLUS
+// expect: scram y gs2: ok || scram proof ok c=eSws
+// expect: channel_binding=require, trust: error 1: connection to server at "127.0.0.1", port PORT failed: channel binding required, but server authenticated client without channel binding || startup user=u,database=d,client_encoding=UTF8 | terminate
+// expect: channel_binding=require, no PLUS: error 1: connection to server at "127.0.0.1", port PORT failed: channel binding is required, but server did not offer an authentication method that supports channel binding || scram sent first
+// expect: channel_binding=require, tls: ok plus || scram proof ok c=PLUS
+// expect: channel_binding=disable, tls: ok || scram proof ok c=biws
+// expect: require_auth scram vs cleartext: error 1: connection to server at "127.0.0.1", port PORT failed: authentication method requirement "scram-sha-256" failed: server requested a cleartext password || startup
+// expect: require_auth !password vs cleartext: error 1: connection to server at "127.0.0.1", port PORT failed: authentication method requirement "!password" failed: server requested a cleartext password || startup
+// expect: require_auth password vs trust: error 1: connection to server at "127.0.0.1", port PORT failed: authentication method requirement "password" failed: server did not complete authentication || startup user=u,database=d,client_encoding=UTF8 | terminate
+// expect: require_auth none vs trust: ok || startup user=u,database=d,client_encoding=UTF8 | terminate
+// expect: sslmode=prefer, server says N: ok plain || SSLRequest N then startup user=u,database=d,client_encoding=UTF8
+// expect: sslmode=require, server says N: error 1: connection to server at "127.0.0.1", port PORT failed: server does not support SSL, but SSL was required || SSLRequest N
+// expect: sslmode=require, ErrorResponse: error 1: connection to server at "127.0.0.1", port PORT failed: server rejected the SSL request with an error || SSLRequest E
+// expect: sslmode=prefer, ErrorResponse: ok plain || SSLRequest E, then a plain connection
+// expect: sslmode=require, S and a stray byte: error 1022: pgwire: received unencrypted data after SSL response || SSLRequest S with a stray byte
+// expect: sslmode=allow, startup refused: ok tls || plain refused, then TLS
+// expect: sslmode=verify-ca: ok tls || SSLRequest S
+// expect: sslmode=verify-full, name localhost: ok tls || SSLRequest S
+// expect: sslmode=verify-full, wrong name: error 1: tls handshake failed || SSLRequest S
+// expect: verify-ca, no root file: error 1: root certificate file "MISSING" does not exist. || none
+// expect: negotiate minor 0: ok || startup user=u,database=d,client_encoding=UTF8
+// expect: negotiate with an option: error 1: connection to server at "127.0.0.1", port PORT failed: the server does not support the protocol options requested || startup user=u,database=d,client_encoding=UTF8
+// expect: queries: tz Asia/Tokyo | notices 1 | two results: 2 rows tag SELECT 2 1,x;2,NULL; | script error: error 7: division by zero tx 73 ready true state 22012 | extended: 2 rows 1,x;2,NULL; cols a/25 | nodata: 3 cols 0 | empty: true | portal 43 batches 300 rows | rows ok true | ready true | cols 1 | close: more true open true closed ready true idle true then ok | settle: ok ready true | fatal: error 7: terminating connection due to administrator command broken true next error 1023: pgwire: the connection is broken: FATAL: terminating connection due to administrator command || Q:tz Q:two Q:fail ext:PBDES ext:PBDES Q:empty portal:E43 limits 7x42 C0 S1 p5:E1 limits 5 C1 S1 ext:PBDES p5:E1 limits 5 C1 S1 ext:PBDES Q:fatal
+// expect: split: split replies: 117 positions: 117 ok || served 117
+// expect: cancel 4: error 1021: query: deadline passed | ready true | after: ok || cancel pid=4242 key=KEYK
+// expect: cancel 32: error 1021: query: deadline passed | ready true | after: ok || cancel pid=77 keylen=32
+// expect: mutated: mutated: 300 replies, each ended || served 300
+// expect: tls handles: 0
+import "pgwire"
+import "sqldialect"
+import "net"
+import "tls"
+import "task"
+import "strings"
+import "crypto"
+import "os"
+import "fs"
+import "io"
+import "../support/pgtest" as pt
+import "../support/tlstest" as tt
+
+var ADDR: str = ""
+var PORT: int = 0
+var MODE: int = 0
+const SALT = "salt-SALT-salt-12"
+const MUTATIONS = 300
+
+fn show[T](r: &Result[T, pgwire.Error], ok: str): str {
+    match r {
+        Ok(_) { return ok }
+        Err(e) { return "error " + e.code.toStr() + ": " + e.msg }
+    }
+}
+
+fn run(name: str, srv: fn(net.Listener): str, cli: fn(): str) {
+    let log = task.within(15000, fn(): str {
+        return task.scoped(fn(sc: mut &task.Scope): str {
+            let ln = net.listen("127.0.0.1:0").unwrap()
+            ADDR = ln.localAddr()
+            var k = len(ADDR)
+            while ADDR[k - 1] != byte(':') { k -= 1 }
+            PORT = parseInt(ADDR[k..]).unwrap()
+            let f = sc.start(srv, ln)
+            let c = cli()
+            let s = match f.wait() {
+                Ok(x) { x }
+                Err(e) { "server " + e.toStr() }
+            }
+            return c + " || " + s
+        })
+    })
+    println(name + ": " + strings.replaceAll(log, PORT.toStr(), "PORT"))
+}
+
+fn cfgFor(extra: str): pgwire.Config {
+    return pgwire.parseConfig("host=127.0.0.1 port=" + PORT.toStr() + " user=u dbname=d password=secret sslmode=disable " + extra).unwrap()
+}
+
+fn connectWith(extra: str): Result[pgwire.Session, pgwire.Error] {
+    let cfg = cfgFor(extra)
+    return pgwire.connect(&cfg)
+}
+
+fn startupLine(x: &str): str { return x }
+
+// ------------------------------------------------------------ servers
+
+fn lastLine(x: mut &pt.Wire): str {
+    match x.message() {
+        Some(m) { return if m.t == 88 { "terminate" } else { "type " + m.t.toStr() } }
+        None { return "eof" }
+    }
+}
+
+fn serveTrust(ln: net.Listener): str {
+    var x = match pt.accept(&ln) {
+        Some(w) { w }
+        None { return "no connection" }
+    }
+    let p = pt.trust(mut &x, 4242, "KEYK")
+    return "startup " + p + " | " + lastLine(mut &x)
+}
+
+// Reads the startup, and answers the SSLRequest first when there is one.
+fn firstStartup(x: mut &pt.Wire, sslAnswer: str, ctx: Option[tls.Context]): Option[pt.Startup] {
+    match x.startup() {
+        Some(s) {
+            if s.code != 80877103 { return Some(s) }
+            x.send(sslAnswer)
+            if sslAnswer == "S" {
+                match ctx {
+                    Some(c) { if !x.upgrade(&c) { return None } }
+                    None { return None }
+                }
+            }
+            return x.startup()
+        }
+        None { return None }
+    }
+}
+
+fn serveCleartext(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    x.send(pt.authReq(3, ""))
+    match x.message() {
+        Some(m) {
+            if m.t != 112 { return "type " + m.t.toStr() }
+            x.send(pt.loginReply(1, "KEYK"))
+            return "password " + m.body[..len(m.body) - 1]
+        }
+        None { return "startup" }
+    }
+}
+
+fn serveMd5(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    x.send(pt.authReq(5, "\x01\x02\x03\x04"))
+    match x.message() {
+        Some(m) {
+            let want = pgwire.md5Password("u", "secret", "\x01\x02\x03\x04").unwrap()
+            x.send(pt.loginReply(1, "KEYK"))
+            return if m.body == want + "\0" { "md5 ok" } else { "md5 WRONG" }
+        }
+        None { return "startup" }
+    }
+}
+
+fn serveRefuseOnly(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    x.send(pt.authReq(3, ""))
+    return "startup"
+}
+
+fn serveCleartextDeny(ln: net.Listener): str { return serveRefuseOnly(ln) }
+
+// MODE: 0 ok, 1 wrong signature, 2 foreign nonce, 3 i=0, 4 e=, 5 PLUS over TLS, 6 PLUS offered but y,, expected
+fn serveScram(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    var ctx: Option[tls.Context] = None
+    let plus = MODE == 5
+    if MODE == 5 || MODE == 6 { ctx = Some(tt.serverContext("srv")) }
+    match firstStartup(mut &x, "S", ctx) {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    let secure = true
+    x.send(pt.authReq(10, "SCRAM-SHA-256\0" + (if plus { "SCRAM-SHA-256-PLUS\0" } else { "" }) + "\0"))
+    return scramRest(mut &x, plus)
+}
+
+fn serveScramPlain(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    x.send(pt.authReq(10, "SCRAM-SHA-256\0\0"))
+    return scramRest(mut &x, false)
+}
+
+// The server side of the exchange, after R10 was sent.
+fn scramRest(x: mut &pt.Wire, plus: bool): str {
+    let init = match x.message() { Some(m) { m } None { return "no initial response" } }
+    if init.t != 112 { return "scram sent first" }
+    var k = 0
+    while init.body[k] != 0 { k += 1 }
+    let mech = init.body[..k]
+    let data = init.body[k + 5..]
+    // data = gs2 header, "n=,r=" nonce
+    let at = indexOf(data, "n=,r=", 0)
+    if at < 0 { return "bad client-first" }
+    let gs2 = data[..at]
+    let bare = data[at..]
+    let cnonce = bare[5..]
+    let iters = if MODE == 3 { 0 } else { 4096 }
+    let combined = if MODE == 2 { "FOREIGN" + cnonce } else { cnonce + "srvNONCE" }
+    let sf = "r=" + combined + ",s=" + crypto.base64(SALT) + ",i=" + iters.toStr()
+    x.send(pt.authReq(11, sf))
+    let fin = match x.message() { Some(m) { m } None { return "scram sent first" } }
+    if fin.t != 112 { return "scram sent first" }
+    let body = fin.body
+    let pAt = strings.lastIndexOf(body, ",p=")
+    let noProof = body[..pAt]
+    let am = bare + "," + sf + "," + noProof
+    let want = pgwire.scramClientProof("secret", SALT, 4096, am).unwrap()
+    let got = crypto.unbase64(body[pAt + 3..]).unwrapOr("")
+    var c = noProof[2..indexOf(noProof, ",r=", 0)]
+    var cShown = c
+    if plus {
+        let hash = certHash()
+        if c == crypto.base64("p=tls-server-end-point,," + hash) { cShown = "PLUS" } else if c != "biws" { cShown = "WRONG " + c }
+    }
+    let log = "scram proof " + (if got == want { "ok" } else { "BAD" }) + " c=" + cShown
+    if MODE == 4 {
+        x.send(pt.authReq(12, "e=invalid-proof"))
+        return log
+    }
+    var sig = pgwire.scramServerSignature("secret", SALT, 4096, am).unwrap()
+    if MODE == 1 { sig = strings.replaceAll(sig, sig[..1], "Z") }
+    x.send(pt.authReq(12, "v=" + crypto.base64(sig)) + pt.loginReply(9, "KEYK"))
+    let end = lastLine(mut &x)
+    return log
+}
+
+// The certificate's SHA-256 (its signature hash), from the openssl command.
+fn certHash(): str {
+    let out = tt.opensslOut(["x509", "-in", "srv.pem", "-noout", "-fingerprint", "-sha256"])
+    let eq = indexOf(out, "=", 0)
+    let hex = strings.toLower(strings.replaceAll(strings.trimRight(out[eq + 1..]), ":", ""))
+    return sqldialect.unhex(hex).unwrap()
+}
+
+// Answers SSLRequest with `answer`; then a plain startup on the same socket, or a second connection.
+fn serveSslAnswer(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    let first = match x.startup() { Some(s) { s } None { return "no request" } }
+    if first.code != 80877103 { return "code " + first.code.toStr() }
+    let answer = if MODE == 0 || MODE == 3 { "N" } else { "E" }
+    if MODE == 4 {
+        x.send(pt.errorMsg("ERROR", "0A000", "unsupported"))
+        return "SSLRequest E"
+    }
+    if MODE == 2 {
+        x.send("S" + "X")
+        return "SSLRequest S with a stray byte"
+    }
+    if MODE == 1 {
+        x.send(pt.errorMsg("ERROR", "0A000", "unsupported"))
+        // prefer: a second, plain connection
+        match pt.accept(&ln) {
+            Some(w) {
+                var y = w
+                let p = pt.trust(mut &y, 4242, "KEYK")
+                return "SSLRequest E, then a plain connection"
+            }
+            None { return "SSLRequest E" }
+        }
+    }
+    x.send(answer)
+    if MODE == 3 { return "SSLRequest N" }
+    if MODE == 4 { return "SSLRequest E" }
+    match x.startup() {
+        Some(s) {
+            x.send(pt.loginReply(4242, "KEYK"))
+            return "SSLRequest N then startup " + pt.pairs(s.body)
+        }
+        None { return "SSLRequest N" }
+    }
+}
+
+// The server for "S" then a TLS handshake: the certificate is checked by the client.
+fn serveTls(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match firstStartup(mut &x, "S", Some(tt.serverContext("srv"))) {
+        Some(_) {
+            x.send(pt.loginReply(4242, "KEYK"))
+            return "SSLRequest S"
+        }
+        None { return "SSLRequest S" }
+    }
+}
+
+// allow: the plain startup is refused; a second connection with TLS is served.
+fn serveAllow(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    match x.startup() {
+        Some(_) {}
+        None { return "no startup" }
+    }
+    x.send(pt.errorMsg("FATAL", "28000", "no pg_hba.conf entry"))
+    match pt.accept(&ln) {
+        Some(w) {
+            var y = w
+            match firstStartup(mut &y, "S", Some(tt.serverContext("srv"))) {
+                Some(_) {
+                    y.send(pt.loginReply(4242, "KEYK"))
+                    return "plain refused, then TLS"
+                }
+                None { return "second connection had no startup" }
+            }
+        }
+        None { return "no second connection" }
+    }
+}
+
+// NegotiateProtocolVersion: MODE 0 minor 0 and no option, MODE 1 one option.
+fn serveNegotiate(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    let s = match x.startup() { Some(s) { s } None { return "no startup" } }
+    if MODE == 0 {
+        x.send(pt.m(118, pt.be32(0) + pt.be32(0)) + pt.loginReply(4242, "KEYK"))
+    } else {
+        x.send(pt.m(118, pt.be32(0) + pt.be32(1) + "_pq_.unknown\0") + pt.loginReply(4242, "KEYK"))
+    }
+    return "startup " + pt.pairs(s.body)
+}
+
+// ------------------------------------------------------------ clients
+
+fn plainResult(r: &Result[pgwire.Session, pgwire.Error]): str { return show(r, "ok") }
+
+fn cliTrust(): str {
+    let cfg = cfgFor("")
+    var s = pgwire.connect(&cfg).unwrap()
+    let r = "pid " + s.backendPid().toStr() + " | version " + s.serverVersion().toStr() + " | tz " + s.parameter("TimeZone").unwrapOr("?") +
+            " | tx " + s.txStatus().toStr() + " | trips " + s.roundTrips().toStr()
+    s.close()
+    return r
+}
+
+fn cliWith(extra: str): str {
+    var r = connectWith(extra)
+    let t = show(&r, "ok")
+    if r.isOk() {
+        var s = r.unwrap()
+        s.close()
+    }
+    return t
+}
+
+fn cliPlain(): str { return cliWith("") }
+fn cliPlainRequireBinding(): str { return cliWith("channel_binding=require") }
+fn cliRequireScram(): str { return cliWith("require_auth=scram-sha-256") }
+fn cliRequireNotPassword(): str { return cliWith("require_auth=!password") }
+fn cliRequirePassword(): str { return cliWith("require_auth=password") }
+fn cliRequireNone(): str { return cliWith("require_auth=none") }
+fn cliNoPassword(): str {
+    let cfg = pgwire.parseConfig("host=127.0.0.1 port=" + PORT.toStr() + " user=u dbname=d sslmode=disable passfile=nonexistent").unwrap()
+    let r = pgwire.connect(&cfg)
+    return show(&r, "ok")
+}
+fn cliPrefer(): str { return cliWith("sslmode=prefer") + " plain" }
+fn cliRequire(): str { return cliWith("sslmode=require") }
+fn cliPreferTls(): str { return cliWith("sslmode=prefer") }
+fn cliAllow(): str { return cliWith("sslmode=allow") + " tls" }
+fn cliRequireTls(): str { return cliWith("sslmode=require") + (if true { " plus" } else { "" }) }
+
+fn tlsPlus(extra: str): str {
+    var r = connectWith("sslmode=require " + extra)
+    let t = show(&r, "ok")
+    if r.isOk() {
+        var s = r.unwrap()
+        s.close()
+        return t + " plus"
+    }
+    return t
+}
+
+fn cliScramPlain(): str { return cliWith("") }
+fn cliPlusRequire(): str { return tlsPlus("channel_binding=require") }
+fn cliPlus(): str { return tlsPlus("") }
+fn cliBindingDisable(): str { return cliWith("sslmode=require channel_binding=disable") }
+
+fn cliVerifyCa(): str { return cliWith("sslmode=verify-ca sslrootcert=" + tt.path("ca.pem")) + " tls" }
+fn cliVerifyFull(): str {
+    let cfg = pgwire.parseConfig("host=localhost hostaddr=127.0.0.1 port=" + PORT.toStr() + " user=u dbname=d password=secret sslmode=verify-full sslrootcert=" +
+                                 tt.path("ca.pem")).unwrap()
+    var r = pgwire.connect(&cfg)
+    let t = show(&r, "ok")
+    if r.isOk() {
+        var s = r.unwrap()
+        s.close()
+    }
+    return t + " tls"
+}
+fn cliVerifyFullWrong(): str {
+    let cfg = pgwire.parseConfig("host=other.example hostaddr=127.0.0.1 port=" + PORT.toStr() + " user=u dbname=d password=secret sslmode=verify-full sslrootcert=" +
+                                 tt.path("ca.pem")).unwrap()
+    match pgwire.connect(&cfg) {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + ": " + (if contains(e.msg, "SSL error") { "tls handshake failed" } else { e.msg }) }
+    }
+}
+fn cliVerifyMissing(): str {
+    let cfg = pgwire.parseConfig("host=127.0.0.1 port=" + PORT.toStr() + " user=u sslmode=verify-ca sslrootcert=MISSING").unwrap()
+    match pgwire.connect(&cfg) {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + ": " + e.msg[..indexOf(e.msg, "\n", 0)] }
+    }
+}
+fn serveNone(ln: net.Listener): str {
+    let w = pt.accept(&ln)
+    return "none"
+}
+
+fn runScram(name: str, mode: int, cli: fn(): str) {
+    MODE = mode
+    run(name, serveScram, cli)
+}
+
+fn authTests() {
+    run("trust tcp", serveTrust, cliTrust)
+    // a Unix socket in the working directory
+    let dir = if len(os.cwd()) < 60 { os.cwd() + "/pgsock" } else { "/tmp/pgwire-fake-" + os.pid().toStr() }
+    fs.mkdirAll(dir).unwrap()
+    let path = dir + "/.s.PGSQL.5432"
+    let gone = fs.remove(path)
+    task.scope(fn(sc: mut &task.Scope) {
+        let ln = net.listenUnix(path).unwrap()
+        let f = sc.start(serveTrust, ln)
+        let cfg = pgwire.parseConfig("host=" + dir + " user=u dbname=d").unwrap()
+        let line = cliTrustCfg(&cfg)
+        println("trust unix: " + line + " || " + f.wait().unwrap())
+    })
+    let gone2 = fs.remove(path)
+    run("cleartext", serveCleartext, cliPlain)
+    run("no password", serveRefuseOnly, cliNoPassword)
+    run("md5", serveMd5, cliPlain)
+    runScram("scram", 0, cliScramPlain)
+    runScram("scram wrong signature", 1, cliScramPlain)
+    runScram("scram foreign nonce", 2, cliScramPlain)
+    runScram("scram i=0", 3, cliScramPlain)
+    runScram("scram e=", 4, cliScramPlain)
+    runScram("scram-plus", 5, cliPlus)
+    runScram("scram y gs2", 6, cliScramTlsPlain)
+    run("channel_binding=require, trust", serveTrust, cliPlainRequireBinding)
+    MODE = 0
+    run("channel_binding=require, no PLUS", serveScramPlain, cliPlainRequireBinding)
+    runScram("channel_binding=require, tls", 5, cliPlusRequire)
+    runScram("channel_binding=disable, tls", 5, cliBindingDisable)
+    run("require_auth scram vs cleartext", serveCleartextDeny, cliRequireScram)
+    run("require_auth !password vs cleartext", serveCleartextDeny, cliRequireNotPassword)
+    run("require_auth password vs trust", serveTrust, cliRequirePassword)
+    run("require_auth none vs trust", serveTrust, cliRequireNone)
+}
+
+fn cliTrustCfg(cfg: &pgwire.Config): str {
+    var s = pgwire.connect(cfg).unwrap()
+    let r = "pid " + s.backendPid().toStr() + " | version " + s.serverVersion().toStr() + " | tz " + s.parameter("TimeZone").unwrapOr("?") +
+            " | tx " + s.txStatus().toStr() + " | trips " + s.roundTrips().toStr()
+    s.close()
+    return r
+}
+
+fn cliScramTlsPlain(): str { return cliWith("sslmode=require") }
+
+fn tlsTests() {
+    MODE = 0
+    run("sslmode=prefer, server says N", serveSslAnswer, cliPrefer)
+    MODE = 3
+    run("sslmode=require, server says N", serveSslAnswerN, cliRequire)
+    MODE = 4
+    run("sslmode=require, ErrorResponse", serveSslAnswer, cliRequire)
+    MODE = 1
+    run("sslmode=prefer, ErrorResponse", serveSslAnswer, cliPrefer)
+    MODE = 2
+    run("sslmode=require, S and a stray byte", serveSslAnswer, cliRequire)
+    run("sslmode=allow, startup refused", serveAllow, cliAllow)
+    run("sslmode=verify-ca", serveTls, cliVerifyCa)
+    run("sslmode=verify-full, name localhost", serveTls, cliVerifyFull)
+    run("sslmode=verify-full, wrong name", serveTls, cliVerifyFullWrong)
+    run("verify-ca, no root file", serveNone, cliVerifyMissing)
+    MODE = 0
+    run("negotiate minor 0", serveNegotiate, cliPlain)
+    MODE = 1
+    run("negotiate with an option", serveNegotiate, cliPlain)
+}
+
+fn serveSslAnswerN(ln: net.Listener): str {
+    MODE = 3
+    return serveSslAnswer(ln)
+}
+
+// ------------------------------------------------------- query exchanges
+
+fn int32of(s: str, at: int): int {
+    var v = (int(s[at]) << 24) | (int(s[at + 1]) << 16) | (int(s[at + 2]) << 8) | int(s[at + 3])
+    if v >= 2147483648 { v -= 4294967296 }
+    return v
+}
+
+fn cstrAt(s: str, at: int): str {
+    var j = at
+    while j < len(s) && s[j] != 0 { j += 1 }
+    return s[at..j]
+}
+
+fn letter(t: int): str {
+    var b = array(1, byte(t))
+    return strFromBytes(&b)
+}
+
+// A portal of `total` rows of one int8 column, served Execute by Execute.
+fn portalReply(first: int, count: int, last: bool, total: int): str {
+    var out = ""
+    for i in 0..count { out = out + pt.dataRow(&[(first + i).toStr()]) }
+    return out + (if last { pt.cmd("SELECT " + total.toStr()) } else { pt.suspended() })
+}
+
+// Serves the messages after an Execute, one portal: the client's Executes (each
+// followed by Flush), Close, Sync. The tokens it saw.
+fn portalFlow(x: mut &pt.Wire, total: int, limit: int, name: str): str {
+    var sent = 0
+    var executes = 0
+    var syncs = 0
+    var closes = 0
+    var limits = ""
+    var cur = limit
+    var out = ""
+    x.send(pt.parseOk() + pt.bindOk() + pt.rowDesc(&["n"], &[20]))
+    var pendingExecute = true
+    while true {
+        if pendingExecute {
+            executes += 1
+            limits = limits + (if executes == 1 { "" } else { "," }) + cur.toStr()
+            let take = min(cur, total - sent)
+            let last = sent + take >= total && take < cur
+            x.send(portalReply(sent + 1, take, last, total))
+            sent += take
+            pendingExecute = false
+            if last { sent = total }
+        }
+        let m = match x.message() { Some(m) { m } None { break } }
+        if m.t == 72 { continue }                         // Flush
+        if m.t == 69 {
+            cur = int32of(m.body, 1)
+            pendingExecute = true
+        } else if m.t == 67 {
+            closes += 1
+            x.send(pt.closeOk())
+        } else if m.t == 83 {
+            syncs += 1
+            x.send(pt.ready("I"))
+            break
+        } else {
+            return name + " unexpected " + m.t.toStr()
+        }
+    }
+    return name + ":E" + executes.toStr() + " limits " + (if executes <= 3 { limits } else { "7x" + (executes - 1).toStr() }) + " C" + closes.toStr() + " S" + syncs.toStr()
+}
+
+fn serveQueries(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    pt.trust(mut &x, 4242, "KEYK")
+    var log: []str = []
+    while true {
+        let m = match x.message() { Some(m) { m } None { break } }
+        if m.t == 88 {
+            append(mut &log, "X")
+            break
+        }
+        if m.t == 81 {
+            let sql = m.body[..len(m.body) - 1]
+            append(mut &log, "Q:" + sql)
+            if sql == "tz" {
+                x.send(pt.paramStatus("TimeZone", "Asia/Tokyo") + pt.notice("hello") + pt.rowDesc(&["a"], &[23]) + pt.dataRow(&["1"]) +
+                       pt.cmd("SELECT 1") + pt.ready("I"))
+            } else if sql == "two" {
+                x.send(pt.rowDesc(&["x"], &[20]) + pt.dataRow(&["1"]) + pt.cmd("SELECT 1") + pt.rowDesc(&["a", "b"], &[20, 25]) +
+                       pt.dataRow(&["1", "x"]) + pt.dataRow(&["2", pt.NULL]) + pt.cmd("SELECT 2") + pt.ready("I"))
+            } else if sql == "fail" {
+                x.send(pt.rowDesc(&["x"], &[20]) + pt.dataRow(&["1"]) + pt.cmd("SELECT 1") +
+                       pt.errorMsg("ERROR", "22012", "division by zero") + pt.ready("I"))
+            } else if sql == "empty" {
+                x.send(pt.m(73, "") + pt.ready("I"))
+            } else if sql == "fatal" {
+                x.send(pt.errorMsg("FATAL", "57P01", "terminating connection due to administrator command"))
+                break
+            } else {
+                x.send(pt.errorMsg("ERROR", "42601", "unexpected " + sql) + pt.ready("I"))
+            }
+            continue
+        }
+        if m.t == 80 {
+            let name = cstrAt(m.body, 1)
+            let sql = cstrAt(m.body, 2 + 0)
+            var letters = "P"
+            var sync = false
+            var flush = false
+            var exec = ""
+            while !sync && !flush {
+                let n = match x.message() { Some(n) { n } None { return strings.join(&log, " ") + " eof in extended" } }
+                letters = letters + letter(n.t)
+                if n.t == 69 { exec = n.body }
+                if n.t == 83 { sync = true }
+                if n.t == 72 { flush = true }
+            }
+            let query = cstrAt(m.body, 1)
+            if query == "portal" || query == "p5" {
+                let total = 300
+                let first = if query == "portal" { int32of(exec, 1) } else { 5 }
+                append(mut &log, portalFlow(mut &x, total, first, query))
+                continue
+            }
+            append(mut &log, "ext:" + letters)
+            if query == "ext" {
+                x.send(pt.parseOk() + pt.bindOk() + pt.rowDesc(&["a", "b"], &[20, 25]) + pt.dataRow(&["1", "x"]) + pt.dataRow(&["2", pt.NULL]) +
+                       pt.cmd("SELECT 2") + pt.ready("I"))
+            } else if query == "nodata" {
+                x.send(pt.parseOk() + pt.bindOk() + pt.noData() + pt.cmd("INSERT 0 3") + pt.ready("I"))
+            } else {
+                x.send(pt.errorMsg("ERROR", "42601", "unexpected " + query) + pt.ready("I"))
+            }
+            continue
+        }
+        if m.t == 67 || m.t == 83 {
+            // a Close and a Sync outside a portal flow (closePortal after the portal ended)
+            append(mut &log, "stray:" + letter(m.t))
+            continue
+        }
+        append(mut &log, "type" + m.t.toStr())
+    }
+    return strings.join(&log, " ")
+}
+
+fn describeRows(r: &pgwire.Reply): str {
+    var out = ""
+    for i in 0..r.rows.count() {
+        for c in 0..len(r.columns) {
+            out = out + (if c > 0 { "," } else { "" }) + (if r.rows.isNull(i, c) { "NULL" } else { r.rows.bytes(i, c) })
+        }
+        out = out + ";"
+    }
+    return out
+}
+
+fn cell(r: &pgwire.Reply, row: int, col: int): str { return r.rows.bytes(row, col) }
+
+// Reads a 300 row portal in batches of `limit`; rows are checked to be 1..300 in order.
+fn readPortal(s: mut &pgwire.Session, name: str, limit: int): str {
+    let cols = s.openPortal(name, &[], limit).unwrap()
+    var batches = 0
+    var rows = 0
+    var ok = true
+    while true {
+        let b = s.receiveBatch().unwrap()
+        batches += 1
+        for i in 0..len(b.rowChunk) {
+            var st = [0]
+            var ln = [0]
+            let end = pgwire.scanRow(&b.chunks[int(b.rowChunk[i])], int(b.rowAt[i]), 1, mut &st, mut &ln).unwrap()
+            rows += 1
+            if b.chunks[int(b.rowChunk[i])][st[0]..st[0] + ln[0]] != rows.toStr() { ok = false }
+        }
+        if !b.more { break }
+        s.execute(limit).unwrap()
+    }
+    return batches.toStr() + " batches " + rows.toStr() + " rows | rows ok " + ok.toStr() + " | ready " + s.ready().toStr() + " | cols " + len(cols).toStr()
+}
+
+fn cliQueries(): str {
+    var s = connectWith("").unwrap()
+    var out = ""
+    let a = s.script("tz").unwrap()
+    out = out + "tz " + s.parameter("TimeZone").unwrapOr("?") + " | notices " + s.noticeCount().toStr()
+    let b = s.script("two").unwrap()
+    out = out + " | two results: " + b.rows.count().toStr() + " rows tag " + b.tag + " " + describeRows(&b)
+    let c = s.script("fail")
+    out = out + " | script error: " + show(&c, "ok") + " tx " + s.txStatus().toStr() + " ready " + s.ready().toStr() + " state " + s.lastServerError().unwrap().code
+    let p = pgwire.param(&sqldialect.Value.Int(5)).unwrap()
+    let d = s.query("ext", &[p]).unwrap()
+    out = out + " | extended: " + d.rows.count().toStr() + " rows " + describeRows(&d) + " cols " + d.columns[0].name + "/" + d.columns[1].typeOid.toStr()
+    let e = s.query("nodata", &[]).unwrap()
+    out = out + " | nodata: " + pgwire.affectedOf(e.tag).toStr() + " cols " + len(e.columns).toStr()
+    let f = s.script("empty").unwrap()
+    out = out + " | empty: " + f.empty.toStr()
+    out = out + " | portal " + readPortal(mut &s, "portal", 7)
+    // close early
+    s.openPortal("p5", &[], 5).unwrap()
+    let b5 = s.receiveBatch().unwrap()
+    out = out + " | close: more " + b5.more.toStr() + " open " + s.portalOpen().toStr()
+    s.closePortal().unwrap()
+    out = out + " closed ready " + s.ready().toStr() + " idle " + (s.txStatus() == pgwire.TX_IDLE).toStr() + " then " + show(&s.query("ext", &[]), "ok")
+    // an abandoned portal is settled by the next request
+    s.openPortal("p5", &[], 5).unwrap()
+    let b6 = s.receiveBatch().unwrap()
+    out = out + " | settle: " + show(&s.query("ext", &[]), "ok") + " ready " + s.ready().toStr()
+    let g = s.script("fatal")
+    out = out + " | fatal: " + show(&g, "ok") + " broken " + s.broken().toStr() + " next " + show(&s.script("tz"), "ok")
+    return out
+}
+
+fn splitReply(): str {
+    return pt.rowDesc(&["a", "b"], &[20, 25]) + pt.dataRow(&["1", "one"]) + pt.dataRow(&["2", pt.NULL]) + pt.dataRow(&["3", ""]) +
+           pt.cmd("SELECT 3") + pt.ready("I")
+}
+
+fn serveSplit(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    pt.trust(mut &x, 4242, "KEYK")
+    x.noDelay()
+    let reply = splitReply()
+    var n = 0
+    for k in 1..len(reply) {
+        match x.message() {
+            Some(m) { if m.t != 81 { return "type " + m.t.toStr() } }
+            None { return "eof at " + k.toStr() }
+        }
+        x.sendSplit(reply, k)
+        n += 1
+    }
+    return "served " + n.toStr()
+}
+
+fn cliSplit(): str {
+    var s = connectWith("").unwrap()
+    var ok = 0
+    let want = "1,one;2,NULL;3,;"
+    for k in 1..len(splitReply()) {
+        let r = s.script("q")
+        let msg = show(&r, "ok")
+        if msg == "ok" {
+            let rows = describeRows(&r.unwrap())
+            if rows == want { ok += 1 } else { println("split " + k.toStr() + " wrong rows " + rows) }
+        } else {
+            println("split " + k.toStr() + " failed: " + msg)
+        }
+    }
+    return "split replies: " + (len(splitReply()) - 1).toStr() + " positions: " + ok.toStr() + " ok"
+}
+
+// A cancelled wait. MODE 0: pid 4242 and a 4 byte key; 1: pid 77 and a 32 byte key.
+fn cancelSeen(ln: &net.Listener): str {
+    var y = match pt.accept(ln) { Some(w) { w } None { return "no cancel connection" } }
+    match y.startup() {
+        Some(s) {
+            if s.code != 80877102 { return "code " + s.code.toStr() }
+            return "cancel pid=" + int32of(s.body, 0).toStr() + " " + (if len(s.body) == 8 { "key=" + s.body[4..] } else { "keylen=" + (len(s.body) - 4).toStr() })
+        }
+        None { return "empty cancel connection" }
+    }
+}
+
+fn serveCancel(ln: net.Listener): str {
+    var x = match pt.accept(&ln) { Some(w) { w } None { return "no connection" } }
+    let pid = if MODE == 0 { 4242 } else { 77 }
+    pt.trust(mut &x, pid, if MODE == 0 { "KEYK" } else { "0123456789abcdef0123456789abcdef" })
+    var seen = ""
+    while true {
+        let m = match x.message() { Some(m) { m } None { break } }
+        if m.t == 83 {
+            seen = cancelSeen(&ln)
+            x.send(pt.errorMsg("ERROR", "57014", "canceling statement due to user request") + pt.ready("I"))
+        }
+        if m.t == 81 {
+            x.send(pt.rowDesc(&["a"], &[20]) + pt.dataRow(&["9"]) + pt.cmd("SELECT 1") + pt.ready("I"))
+        }
+        if m.t == 88 { break }
+    }
+    return seen
+}
+
+fn cliCancel(): str {
+    var s = connectWith("").unwrap()
+    let r = task.within(100, fn(): Result[pgwire.Reply, pgwire.Error] { return s.query("cancel", &[]) })
+    let after = s.script("q")
+    return show(&r, "ok") + " | ready " + s.ready().toStr() + " | after: " + (if after.isOk() { "ok" } else { "error" })
+}
+
+// ------------------------------------------------------- mutated replies
+
+fn baseParts(): []str {
+    return [pt.parseOk() + pt.bindOk(), pt.rowDesc(&["a", "b"], &[20, 25]), pt.dataRow(&["1", "one"]), pt.dataRow(&["2", pt.NULL]),
+            pt.dataRow(&["3", ""]), pt.cmd("SELECT 3"), pt.ready("I")]
+}
+
+fn mutate(i: int): str {
+    let parts = baseParts()
+    var starts: []int = []
+    var base = ""
+    for p in parts {
+        append(mut &starts, len(base))
+        base = base + p
+    }
+    let nb = len(parts)
+    var r = pt.mix(pt.mix(i + 1))
+    if i < nb + 1 { return base[..starts[min(i, nb - 1)] + (if i == nb { len(parts[nb - 1]) } else { 0 })] }
+    if i < nb + 41 {
+        r = pt.mix(r)
+        return base[..(r >> 8) % len(base)]
+    }
+    var b = strToBytes(base)
+    let kind = (i - nb - 41) % 6
+    r = pt.mix(r)
+    let msg = (r >> 8) % nb
+    let at = starts[msg]
+    if kind == 0 {
+        let n = 1 + (r >> 4) % 3
+        for k in 0..n {
+            r = pt.mix(r)
+            b[(r >> 8) % len(b)] = byte((r >> 16) % 256)
+        }
+    } else if kind == 1 {
+        r = pt.mix(r)
+        let v = (r >> 8) % 40
+        b[at + 1] = 0
+        b[at + 2] = 0
+        b[at + 3] = 0
+        b[at + 4] = byte(v)
+    } else if kind == 2 {
+        b[at + 1] = 0x7f
+        b[at + 2] = 0xff
+        b[at + 3] = 0xff
+        b[at + 4] = 0xff
+    } else if kind == 3 {
+        b[at + 1] = if r % 2 == 0 { 0xff } else { 0x80 }
+        b[at + 2] = 0xff
+        b[at + 3] = 0xff
+        b[at + 4] = 0xff
+    } else if kind == 4 {
+        b[at] = byte('!')
+    } else {
+        // inside a DataRow: its column count or a value length
+        let row = 2 + (r >> 8) % 3
+        r = pt.mix(r)
+        let off = 5 + (r >> 8) % 12
+        r = pt.mix(r)
+        b[starts[row] + off] = byte((r >> 8) % 256)
+    }
+    return strFromBytes(&b)
+}
+
+fn serveMutated(ln: net.Listener): str {
+    var n = 0
+    for i in 0..MUTATIONS {
+        var x = match pt.accept(&ln) { Some(w) { w } None { return "stopped at " + i.toStr() } }
+        pt.trust(mut &x, 4242, "KEYK")
+        let m = match x.message() { Some(m) { m } None { continue } }
+        if m.t == 80 {
+            var more = true
+            while more {
+                match x.message() {
+                    Some(k) { if k.t == 83 || k.t == 72 { more = false } }
+                    None { more = false }
+                }
+            }
+        }
+        x.send(mutate(i))
+        n += 1
+    }
+    return "served " + n.toStr()
+}
+
+fn cliMutated(): str {
+    var ended = 0
+    for i in 0..MUTATIONS {
+        let r = connectWith("")
+        if r.isErr() { continue }
+        var s = r.unwrap()
+        let mode = i % 3
+        if mode == 0 {
+            let q = s.script("x")
+        } else if mode == 1 {
+            let q = s.query("x", &[])
+        } else {
+            match s.openPortal("x", &[], 2) {
+                Ok(_) {
+                    var k = 0
+                    while k < 10 {
+                        match s.receiveBatch() {
+                            Ok(b) {
+                                if !b.more { break }
+                                if s.execute(2).isErr() { break }
+                            }
+                            Err(_) { break }
+                        }
+                        k += 1
+                    }
+                }
+                Err(_) {}
+            }
+        }
+        ended += 1
+    }
+    return "mutated: " + MUTATIONS.toStr() + " replies, " + (if ended == MUTATIONS { "each ended" } else { (MUTATIONS - ended).toStr() + " failed to connect" })
+}
+
+fn queryTests() {
+    run("queries", serveQueries, cliQueries)
+    run("split", serveSplit, cliSplit)
+    MODE = 0
+    run("cancel 4", serveCancel, cliCancel)
+    MODE = 1
+    run("cancel 32", serveCancel, cliCancel)
+    run("mutated", serveMutated, cliMutated)
+}
+
+fn main() {
+    tt.pki()
+    authTests()
+    tlsTests()
+    queryTests()
+    println("tls handles: " + tls.openHandles().toStr())
+}
