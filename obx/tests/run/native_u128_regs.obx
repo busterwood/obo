@@ -1,0 +1,164 @@
+// 128-bit integers in register pairs and records built in place (native backend: u128/i128
+// locals in two callee-saved registers, or rsi and rdi where nothing calls; operands from
+// registers, memory and constants; the checked multiply inline; record literals built behind
+// the hidden result pointer and in the outgoing argument area): both backends the same.
+// expect: loop 12345678901234567890123456789 93
+// expect: mul 340282366920938463463374607431768211455 18446744073709551615 36893488147419103230 340282366920938463444927863358058659838
+// expect: mulovf 0 1 1 1 0
+// expect: cmp 1 0 1 1 0 1 0 1 0 1 0 0 / 1 0 1 1 0 1 0 1 0 0 1 0 / 1 0 1 0 1 1 0 1 1 0 0 1
+// expect: icmp 1 0 0 0 1 0 1 1 / 0 1 0 1 0 1 0 1 / 1 0 1 0 1 0 1 1
+// expect: calls 1267650600228229401496703205376 4 40000000000000000000
+// expect: rec 10 3 7 true 96 -2 1
+// expect: fwd 5 7 12 1 2 3 4
+// expect: params 6 340282366920938463463374607431768211455
+// expect: shifts 170141183460469231731687303715884105728 1 79228162514264337593543950336
+
+type Big = value record { v: u128; e: int; s: int; n: bool }
+type Res = value closed {
+    Good(Big)
+    Bad(int)
+}
+type Quad = value record { a: int; b: int; c: int; d: int }
+
+fn sq(x: u128): u128 { return x * x }
+
+// a u128 accumulator and an index around calls: the pair in callee-saved registers
+fn loop1(): str {
+    var acc: u128 = 0
+    var k = 0
+    var x: u128 = 12345678901234567890123456789
+    for i in 0..93 {
+        acc = acc +% (x >> 64)
+        if (acc & 1) == 1 { k += 1 }
+        acc = acc -% (x >> 64)
+    }
+    acc = x
+    for i in 0..93 { k += 0 }
+    return acc.toStr() + " " + (k + 93 - k).toStr()
+}
+
+fn mulChecked(a: u128, b: u128): u128 { return a * b }
+
+fn tryMul(a: u128, b: u128): int {
+    // 1 when a * b overflows (checked by division, without trapping)
+    if a == 0 || b == 0 { return 0 }
+    let m: u128 = 340282366920938463463374607431768211455
+    if a > m / b { return 1 }
+    let p = mulChecked(a, b)
+    if p / b != a { return 2 }
+    return 0
+}
+
+fn cmps(x: u128): str {
+    var s = ""
+    s += (if x > 18446744073709551615 { "1" } else { "0" })
+    s += " " + (if x <= 18446744073709551615 { "1" } else { "0" })
+    s += " " + (if x >= 18446744073709551616 { "1" } else { "0" })
+    s += " " + (if x < 340282366920938463463374607431768211455 { "1" } else { "0" })
+    s += " " + (if x > 340282366920938463463374607431768211454 { "1" } else { "0" })
+    s += " " + (if x != 0 { "1" } else { "0" })
+    s += " " + (if x == 0 { "1" } else { "0" })
+    s += " " + (if x <= 340282366920938463463374607431768211455 { "1" } else { "0" })
+    s += " " + (if x > 99999999999999999999 { "1" } else { "0" })
+    s += " " + (if x < 99999999999999999999 { "1" } else { "0" })
+    s += " " + (if x == 99999999999999999999 { "1" } else { "0" })
+    s += " " + (if x >= 100000000000000000000 { "1" } else { "0" })
+    return s
+}
+
+fn icmps(x: i128): str {
+    var s = ""
+    s += (if x > -1 { "1" } else { "0" })
+    s += " " + (if x <= -18446744073709551616 { "1" } else { "0" })
+    s += " " + (if x > 170141183460469231731687303715884105726 { "1" } else { "0" })
+    s += " " + (if x < -5 { "1" } else { "0" })
+    s += " " + (if x >= 18446744073709551616 { "1" } else { "0" })
+    s += " " + (if x <= 18446744073709551615 { "1" } else { "0" })
+    s += " " + (if x > 18446744073709551615 { "1" } else { "0" })
+    s += " " + (if x <= 170141183460469231731687303715884105727 { "1" } else { "0" })
+    return s
+}
+
+fn digitsOf(x: u128): int {
+    var n = 0
+    var y = x
+    while y != 0 {
+        y = y / 10
+        n += 1
+    }
+    return n
+}
+
+// u128 locals live across calls and divisions (calls in their ranges)
+fn calls(): str {
+    var a: u128 = 1
+    var b: u128 = 0
+    for i in 0..100 {
+        a = a * 2
+        b = b + u128(digitsOf(a) % 2)
+    }
+    var c: u128 = 40000000000000000000
+    let d = sq(2)
+    return a.toStr() + " " + d.toStr() + " " + c.toStr()
+}
+
+fn mk(v: u128, e: int, s: int, n: bool): Res {
+    if v == 0 { return Res.Bad(-2) }
+    let b = Big{v: v, e: e, s: s, n: n}
+    let r = Res.Good(b)
+    return r
+}
+
+fn mkAgain(v: u128, e: int): Res { return mk(v, e, 7, true) }
+
+fn sumQuad(q: Quad, r: Quad): int { return q.a * 1000 + q.b * 100 + r.c * 10 + r.d }
+
+fn bigStack(a: Big, b: Big, c: int): int { return int(a.v) + int(b.v) + c + a.e + b.s }
+
+fn recs(): str {
+    var out = ""
+    match mkAgain(10, 3) {
+        Res.Good(b) { out = b.v.toStr() + " " + b.e.toStr() + " " + b.s.toStr() + " " + b.n.toStr() }
+        Res.Bad(e) { out = "bad " + e.toStr() }
+    }
+    let x = Big{v: 40, e: 2, s: 3, n: false}
+    let y = bigStack(x, Big{v: 50, e: 1, s: 4, n: true}, 0)
+    out += " " + y.toStr()
+    match mk(0, 1, 1, false) {
+        Res.Good(b) { out += " good" }
+        Res.Bad(e) { out += " " + e.toStr() }
+    }
+    out += " " + (if sumQuad(Quad{a: 0, b: 0, c: 0, d: 1}, Quad{a: 9, b: 9, c: 0, d: 1}) == 1 { "1" } else { "0" })
+    return out
+}
+
+fn fwd(a: int, b: int): str {
+    let q = Quad{a: a, b: b, c: a + b, d: 1}
+    let r = Quad{a: 2, b: 3, c: 4, d: q.d}
+    return q.a.toStr() + " " + q.b.toStr() + " " + q.c.toStr() + " " + r.d.toStr() + " " + r.a.toStr() + " " + r.b.toStr() + " " + r.c.toStr()
+}
+
+fn many(a: u128, b: u128, c: u128, d: int): u128 { return a + b + c + u128(d) }
+
+fn shifts(x: u128, k: int): str {
+    let a = x << 127
+    let b = x << (k - 1)
+    return a.toStr() + " " + (a >> 127).toStr() + " " + b.toStr()
+}
+
+fn main() {
+    println("loop " + loop1())
+    let mx: u128 = 340282366920938463463374607431768211455
+    let m64: u128 = 18446744073709551615
+    println("mul " + mulChecked(mx, 1).toStr() + " " + mulChecked(1, m64).toStr() + " " + mulChecked(2, m64).toStr() +
+        " " + mulChecked(m64 - 1, m64 + 2).toStr())
+    println("mulovf " + tryMul(m64 + 1, m64 - 1).toStr() + " " + tryMul(m64 + 1, m64 + 1).toStr() + " " +
+        tryMul(3, mx / 2).toStr() + " " + tryMul(mx / 2, 3).toStr() + " " + tryMul(m64, m64).toStr())
+    println("cmp " + cmps(m64 + 1) + " / " + cmps(99999999999999999999) + " / " + cmps(mx))
+    println("icmp " + icmps(18446744073709551616) + " / " + icmps(-18446744073709551616) + " / " + icmps(170141183460469231731687303715884105727))
+    println("calls " + calls())
+    println("rec " + recs())
+    println("fwd " + fwd(5, 7))
+    println("params " + many(1, 2, 3, 0).toStr() + " " + many(mx - 5, 2, 3, 0).toStr())
+    println("shifts " + shifts(1, 97))
+}

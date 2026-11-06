@@ -1,0 +1,9 @@
+// exit: 10
+// a checked u128 multiply whose cross product fits but whose sum with the high word of the low
+// product carries out (the native backend's inline sequence)
+fn mul(a: u128, b: u128): u128 { return a * b }
+fn main() {
+    let a = (u128(1) << 64) | (u128(1) << 63)
+    let b = (u128(1) << 64) - 1
+    println(mul(a, b).toStr())
+}
