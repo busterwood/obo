@@ -326,6 +326,34 @@ API, the shape of `sqlserver.call`:
   are dropped) instead of failing on the IO_VECTOR; any cursor such a reply
   returns is closed.
 
+## As built: streams (2026-11-06)
+
+Branch `streaming`; the shared design is design/db-streaming.md.
+
+- `Conn.stream(sql, args, bind, read)` and `streamWith` (typed `Param`
+  binds) give a `Stream[B, T]` holding `mut &Conn`. The execute is sent
+  with no rows asked for (prefetch 0): it describes the columns for bind.
+- Each `fill` whose rows are used up sends one FETCH for the rows still
+  wanted, at least the connection's fetch size (`setFetchSize`, 100 by
+  default); rows beyond the buffer wait in the stream for the next fill.
+  So memory is bounded by the larger of the buffer and the fetch size.
+- Rows are kept raw (`Reply.raw`): each value's bytes appended to one
+  buffer with its start and length, a BIT_VECTOR repeat copied from the
+  row before (the last row of the previous fetch seeds the next). A row
+  cut off at a packet's end is taken back and decoded again. NUMBER is
+  decoded straight from its bytes to `int` or `Decimal` (`numberFixed`;
+  `decodeNumber` beyond 38 digits).
+- Early close, an error, or a dropped stream: the cursor is closed with
+  the next request (piggybacked). `Session.streamCursor` holds the cursor of
+  an open stream, so a dropped stream's cursor is closed by whatever request
+  comes next. `oracle_live_stream` checks "opened cursors current" before
+  and after rounds of early closes, drops, errors and bind failures: equal.
+- An error during a FETCH (ORA-01476 at row 5,000) comes with none of that
+  FETCH's rows: with 100-row fetches the stream gives 4,900 rows, then the
+  error, though the error's row count says 4,999.
+- LOB columns are skipped (their columns read as nothing, so bind refuses
+  them).
+
 Next stages: O4 LOBs (LONG defines, then locators; LOB OUT binds),
 PL/SQL collections and records as binds, array DML (executemany), REF
 CURSOR IN binds, nested cursors (CURSOR(...) columns), intervals, JSON and

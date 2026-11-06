@@ -416,8 +416,39 @@ Branch `tds-t2`. No change to the compiler, time.obx, decimal or sqldialect;
   `DateTime`, `Offset`) and for GUIDs, so that parameters carry their
   type (they go in as text now, which the server converts); and a typed
   NULL (`Value.NullOf(type)` or a `Param` type) for binary columns.
-- **Left for T3:** streamed `Rows` (D3), ATTENTION with deadlines and
-  cancellation, `Pool`/`Lease`, the load test. Later: sql_variant, table
+- **Left for T3:** streamed `Rows` (D3; built, section 10), ATTENTION with
+  deadlines and cancellation, `Pool`/`Lease`, the load test. Later: sql_variant, table
   parameters, UDTs, routing, ALTMETADATA/ALTROW (COMPUTE), DATACLASSIFICATION,
   an RPC to a procedure by name (its RETURNSTATUS and outputs without
   sp_executesql), Encrypt=strict.
+
+## 10. Stage T3, as built: streams (2026-11-06)
+
+Branch `streaming`; the shared design is design/db-streaming.md. This is
+the streaming part of T3 only: `Pool`/`Lease`, ATTENTION on a task's
+deadline or cancellation, and the load test are still to do.
+
+- **Shape (D3):** `Conn.stream(sql, args, bind, read)` gives a `Stream[B,
+  T]` holding `mut &Conn`, the borrow-class design of section 3, not the
+  move: the checker refuses any other use of the connection while the
+  stream is in scope (error test `stream_conn_in_use`). `fill(out)` decodes
+  rows straight into the caller's buffer; `next()`, `close()`.
+- **Reading a reply a token at a time:** the session keeps a `RowReader`:
+  the bytes received and not decoded, and whether the packet with EOM is
+  in. ROW and NBCROW are scanned into value spans (start, length, -1 for
+  NULL) without decoding; the codec decodes a value only when the program's
+  mapper reads it. A row may span packets: the rest of a packet is joined
+  to the next one. Any other token cut off by a packet's end is decoded
+  again once the next packet is in. A token is limited to `maxReply`, not
+  the reply.
+- **ATTENTION:** `settle` sends ATTENTION and reads the reply, skipping
+  rows, up to the DONE with DONE_ATTN (in the same message or the next).
+  It runs on `close()`, after any error in the stream, and before the next
+  request when a stream was dropped (`idle()` is false until then).
+  Nothing is sent when the reply has already ended.
+- **More result sets:** only the first is streamed. At its DONE the rest of
+  the reply is read and skipped; ERRORs anywhere become `fill`'s error,
+  after the rows.
+- **Not done:** a PLP value longer than a packet is rescanned from the
+  start of its row for every packet that brings more of it (quadratic in
+  the value's packets; fine for values of a few packets).

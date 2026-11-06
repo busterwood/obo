@@ -61,6 +61,10 @@
 // codes: E_IO, E_PROTOCOL, E_TIMEOUT, E_CANCELLED, E_INPUT, E_TYPE, E_NULL,
 // E_INEXACT, E_LIMIT. A failure on the wire leaves the connection broken:
 // its later calls are E_IO, and idle() is false.
+//
+// stream (design/db-streaming.md) reads a query a FETCH at a time into the
+// program's own records, decoding the values from their bytes; a stream
+// ended early has its cursor closed with the next request.
 
 import "tns"
 import "sqldialect"

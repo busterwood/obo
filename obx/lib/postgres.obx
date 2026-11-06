@@ -25,6 +25,10 @@
 // Columns report their type OID and typmod; decimal() uses the typmod of a
 // numeric(p, s) column to restore its display scale and check the value.
 //
+// stream (design/db-streaming.md) reads a statement's rows in libpq's
+// single-row mode into the program's own records, a buffer at a time, and
+// cancels (PQcancel) a stream ended early.
+//
 // Errors are sqldialect.DbError. A failed statement is code
 // PGRES_FATAL_ERROR (7) with the server's SQLSTATE in `state` ("23505") and
 // its primary message; a failed connection CONNECTION_BAD (1); a connection

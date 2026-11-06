@@ -22,9 +22,10 @@
 // page is an error naming it, when that cell is read), binary, varbinary,
 // date, time, datetime2, datetimeoffset, datetime, smalldatetime,
 // uniqueidentifier, xml, and their (max) forms. sql_variant, UDTs and table
-// types are an E_TYPE error naming the type for their cells. Rows are read
-// whole (no streaming); ATTENTION (cancelling a running call) and pools come
-// in T3.
+// types are an E_TYPE error naming the type for their cells. query reads
+// rows whole; stream (T3, design/db-streaming.md) reads them a buffer at a
+// time into the program's records, and ends early with ATTENTION. Pools and
+// ATTENTION on a task's deadline come later in T3.
 //
 // Connection strings (design/tds.md, section 4) take the ADO.NET keywords
 // and the ODBC ones that mssql is given, so one string serves both modules:
