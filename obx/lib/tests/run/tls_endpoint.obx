@@ -22,6 +22,7 @@ import "tls"
 import "net"
 import "task"
 import "strings"
+import "os"
 import "../support/tlstest" as tt
 
 type Dial = record {
@@ -117,14 +118,15 @@ fn main() {
         }
         println("readFor and writeFor: " + trim(got))
     }
-    selfSigned("rsa256", "rsa:2048", "sha256")
-    selfSigned("rsa384", "rsa:2048", "sha384")
-    selfSigned("rsa1", "rsa:2048", "sha1")
-    selfSigned("ed", "ed25519", "")
-    println("rsa-sha256: endPoint is the certificate's SHA-256 " + (hex(bound("rsa256").unwrap()) == fingerprint("rsa256.pem", "sha256")).toStr())
-    println("rsa-sha384: endPoint is the certificate's SHA-384 " + (hex(bound("rsa384").unwrap()) == fingerprint("rsa384.pem", "sha384")).toStr())
-    println("rsa-sha1: endPoint is a SHA-256 " + (hex(bound("rsa1").unwrap()) == fingerprint("rsa1.pem", "sha256")).toStr())
-    match bound("ed") {
+    let id = "-" + os.pid().toStr()      // the C and native runs may share the directory
+    selfSigned("rsa256" + id, "rsa:2048", "sha256")
+    selfSigned("rsa384" + id, "rsa:2048", "sha384")
+    selfSigned("rsa1" + id, "rsa:2048", "sha1")
+    selfSigned("ed" + id, "ed25519", "")
+    println("rsa-sha256: endPoint is the certificate's SHA-256 " + (hex(bound("rsa256" + id).unwrap()) == fingerprint("rsa256" + id + ".pem", "sha256")).toStr())
+    println("rsa-sha384: endPoint is the certificate's SHA-384 " + (hex(bound("rsa384" + id).unwrap()) == fingerprint("rsa384" + id + ".pem", "sha384")).toStr())
+    println("rsa-sha1: endPoint is a SHA-256 " + (hex(bound("rsa1" + id).unwrap()) == fingerprint("rsa1" + id + ".pem", "sha256")).toStr())
+    match bound("ed" + id) {
         Ok(x) { println("ed25519: endPoint? " + hex(x)) }
         Err(e) { println("ed25519: " + e.toStr()) }
     }
