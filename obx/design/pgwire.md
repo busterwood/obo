@@ -979,3 +979,115 @@ character (libpq's decoder does not either). HMAC with an empty key works
 extended; they pass on the C and the native backend under `OBX_CHECK=1`.
 `net_unix` is picked up by the gate's `net_*` globs (redteam tasks, TSan).
 No measurements were needed in P0.
+
+## 24. As built (P1)
+
+Branch `pgwire-p1`. `obx/lib/pgwire.obx` (about 2,800 lines with comments)
+and its tests; `postgres.obx` is untouched; no compiler or runtime change.
+Everything in the P1 brief's API list is in, with the names and signatures
+given there. What differs, and what was learned:
+
+**Added to the public API** (small helpers the tests need; none changes a
+brief signature): `Out`, `newOut` and the `put*` encoders for every frontend
+message (`putStartup`, `putSslRequest`, `putCancelRequest`, `putQuery`,
+`putParse`, `putBind`, `putDescribe`, `putExecute`, `putClose`, `putSync`,
+`putFlush`, `putTerminate`, `putPassword`, `putSaslInitial`,
+`putSaslResponse`, `putCopyFail`), `parseServerError` (an ErrorResponse
+body), `newRawRows`, `socketDirFor(port, dirs)` (the default socket
+directory choice, testable with temporary directories),
+`Session.noticeCount()` and `notificationCount()` (the stored notices and
+notifications have no accessors until P5). `Param` is a public type, as the
+brief's `param` and `query` signatures need. `Out` is a buffer that keeps its
+capacity between messages (an array cannot be emptied without freeing it).
+
+**Configuration** (6.1 to 6.6).
+
+- Error texts were checked against `psql` (libpq 16). One row of 6.1's table
+  is wrong: a URI query parameter without `=` (`?x`) is `missing key/value
+  separator "=" in URI query parameter: "x"`; `invalid URI query parameter:
+  "x"` is for an unknown name (`?x=1`). pgwire says what libpq says. The
+  URI errors that quote the string (`unexpected character`, brackets) quote
+  it with the password masked.
+- `connect_timeout=abc` is an error here (`invalid integer value`); libpq
+  accepts it silently until it connects. `keepalives_*` likewise.
+- The key file mode check (0600, or root 0640) happens when the TLS context
+  is made, at connect, not in `parseConfig`.
+- `sslmode=prefer` with a root certificate present verifies the chain (as
+  `verify-ca`), as libpq; `sslrootcert=system` makes `verify-full` the default.
+- Several hosts: a failure at the connection level (refused, closed, no SSL
+  when required) tries the next host; a server's ErrorResponse, a failed
+  login, a cancel or a deadline ends the attempt. One endpoint returns the
+  error itself (its code kept); several return code 1 with one line per host.
+
+**Transport and login.**
+
+- `connect_timeout` bounds each endpoint by `task.within`; a timeout that
+  was the task's own deadline reads `connect: deadline passed`, the other
+  `connect: connect_timeout passed` (both E_TIMEOUT).
+- Terminate and the TLS close_notify never park: a write with a time limit
+  of 0 (`writeFor`), then the socket drops.
+- `prefer`: after a failed handshake, a TLS error or a server refusal on a
+  TLS connection, one new plain connection. `allow`: a server refusal of the
+  plain startup, one TLS connection (as `require`). An `E` answer to the
+  SSLRequest counts as a failed handshake (a new connection), not as `N`.
+- The CVE-2021-23222 check reads the one answer byte alone and then looks for
+  more with `readNow` before the handshake.
+- A FATAL or PANIC ErrorResponse returns that error to the call that was
+  waiting (code 7 with the SQLSTATE) and breaks the session; the next call is
+  `E_IO "the connection is broken: <that error>"`.
+- A write that fails, also one refused because the task was already
+  cancelled, breaks the session (part of a message may be out). A cancelled
+  task that calls `query` therefore loses its connection; a pool closes it.
+- SCRAM-PLUS was proved against the real server: with `channel_binding=require`
+  over TLS the login succeeds, without TLS it fails before anything is sent
+  (the API has no accessor for the mechanism used).
+- SASLprep: ASCII, plus the non-ASCII space mapping and the characters mapped
+  to nothing; no NFKC, as designed.
+
+**Queries.**
+
+- `script` returns the last statement's reply; `query` the single reply.
+  COPY: `G` is answered with CopyFail, `H` and `W` are read and dropped; the
+  error is `E_INPUT "COPY is not supported yet"` and the session stays usable
+  (live test and fake test).
+- Portals: a limit that divides the row count exactly ends with one more,
+  empty batch (10,000 rows by 1,000 is 11 batches: the server sends
+  `PortalSuspended` after the last full batch). `receiveBatch` at
+  CommandComplete or an ErrorResponse sends Sync and reads ReadyForQuery;
+  the batch then has `more` false and, after an error, `err`.
+- `closePortal` with an Execute outstanding waits `CLOSE_WAIT_MS`, then sends
+  a CancelRequest and keeps reading, `ABORT_MS` in all; past that the session
+  is broken (E_TIMEOUT). `cancelRequest` takes the address that worked
+  (socket path, or the peer address of the TCP socket), as designed.
+- The cancel drain and `closePortal` use the `...For` calls; a cancelled
+  wait returns `E_CANCELLED "query cancelled"` or `E_TIMEOUT "query:
+  deadline passed"` and the session is ready (live test: cancelled after
+  100 ms from a task, `pg_sleep(30)`).
+- The reply loop accepts any order of the messages it knows; only a DataRow
+  before a RowDescription, a DataRow whose end is not its message's end, a
+  malformed length, and unknown types are E_PROTOCOL.
+
+**Language frictions met** (no change needed; worth knowing for P2): a match
+on a `let`-bound `Result` cannot move its payload (use `match move(r)` or
+match the call itself); a closure cannot move a captured variable (put it in
+an `Option` and `replace` it); `closed` is a keyword; `try` needs a function
+whose error type is the same (there is no `?`); constant tables are `&[T]`,
+not `&[]T`; a `value record` with `str` fields is a copy type, so
+`Option[ServerError]` copies.
+
+**Tests** (C and native, `OBX_CHECK=1`; the `pgwire_*` files are in the gate's
+redteam tasks step, ASan and UBSan):
+
+| test | result |
+|---|---|
+| `pgwire_config` | 8 groups, 198 checks |
+| `pgwire_codec` | 7 groups, 95 checks: byte vectors, RFC 7677's proof and signature, MD5, tags, parameters |
+| `pgwire_fake` | 39 scripted scenarios, about 3 s with the two timeout cases: see the file's expect lines |
+| `pgwire_live` | the local socket, peer authentication |
+| `pgwire_live_tls` | ran live: SCRAM-SHA-256 over TCP with TLS 1.3 (the DSN from `~/.obo-pg-tls-dsn`) |
+
+No measurements were taken in P1.
+
+**For P2**: `Batch.rowAt` points at the DataRow's column count, which is what
+`scanRow` takes; `Reply.rows` keeps the chunks of the whole reply, so a
+`Rows` can hold the `RawRows` as they are.

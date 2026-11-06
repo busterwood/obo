@@ -1,0 +1,165 @@
+// pgwire against a live server ($OBX_PG_DSN, default the local Unix socket with
+// peer authentication; exits 77, skipped, when it cannot connect): the version
+// and backend pid, scripts and queries, every Value as a parameter, errors with
+// their SQLSTATE and the transaction state after (outside and inside a block), a
+// portal of 10,000 rows in batches of 1,000, closePortal midway, a pg_sleep(30)
+// cancelled from a task and under task.within, a NOTICE, and COPY refused with
+// the session usable after.
+// expect: version: server_version 16 true | serverVersion >= 120000 true | pid matches pg_backend_pid true
+// expect: script: rows 1 | tag SELECT 1 | first 1,x | second 2
+// expect: query: 42 | untyped NULL: NULL | columns n/20
+// expect: params: Int 7 | Float 0.1 | NaN NaN | Inf Infinity | Bool t | Text é | Bytes \x00ff | Dec 12.50 | Null NULL
+// expect: syntax: error 7 (42601) | tx 73 ready true
+// expect: unique: error 7 (23505) | constraint pgwire_live_pk | detail true
+// expect: block: error 7 (22012) | tx 69 | next error 7 (25P02) | after ROLLBACK tx 73
+// expect: portal: 11 batches 10000 rows | ready true | sum 50005000
+// expect: close portal: rows 1000 | closed ready true tx 73 | then 5
+// expect: notice: ok | notices 1
+// expect: copy: out error 1000 | in error 1000 | usable 1
+// expect: round trips counted: true
+// expect: cancel from a task: error 1020: query cancelled | soon true | ready true | after 2
+// expect: deadline: error 1021: query: deadline passed | soon true | ready true | after 3
+import "pgwire"
+import "sqldialect"
+import "task"
+import "time"
+import "os"
+import "math"
+
+type Error = pgwire.Error
+
+fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3") }
+
+fn show[T](r: &Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return "error " + e.code.toStr() + (if len(e.state) > 0 { " (" + e.state + ")" } else { "" }) }
+    }
+}
+
+fn txt(r: &pgwire.Reply, row: int, col: int): str {
+    if r.rows.isNull(row, col) { return "NULL" }
+    return r.rows.bytes(row, col)
+}
+
+fn p(v: sqldialect.Value): pgwire.Param { return pgwire.param(&v).unwrap() }
+
+fn one(s: mut &pgwire.Session, sql: str): str {
+    match s.query(sql, &[]) {
+        Ok(r) { return txt(&r, 0, 0) }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn echo(s: mut &pgwire.Session, cast: str, v: sqldialect.Value): str {
+    match s.query("SELECT $1::" + cast, &[p(v)]) {
+        Ok(r) { return txt(&r, 0, 0) }
+        Err(e) { return e.toStr() }
+    }
+}
+
+type Outcome = record { s: pgwire.Session; r: str; ms: int }
+
+type Job = record { s: pgwire.Session; sql: str; pr: task.Promise[Outcome] }
+
+fn sleeper(j: Job): int {
+    let Job{s: s0, sql: sql, pr: pr} = move(j)
+    var s = s0
+    let t0 = time.monotonicNs()
+    let r = s.query(sql, &[])
+    let ms = (time.monotonicNs() - t0) / 1000000
+    let text = match r {
+        Ok(_) { "ok" }
+        Err(e) { e.toStr() }
+    }
+    pr.complete(Outcome{s: s, r: text, ms: ms})
+    return 0
+}
+
+fn main() {
+    let cfg = match pgwire.parseConfig(dsn()) {
+        Ok(c) { c }
+        Err(_) { exit(77) }
+    }
+    var s = match pgwire.connect(&cfg) {
+        Ok(x) { x }
+        Err(_) { exit(77) }
+    }
+    let ver = s.parameter("server_version").unwrapOr("")
+    println("version: server_version " + ver[..2] + " " + (len(ver) > 2).toStr() + " | serverVersion >= 120000 " + (s.serverVersion() >= 120000).toStr() +
+            " | pid matches pg_backend_pid " + (one(mut &s, "SELECT pg_backend_pid()") == s.backendPid().toStr()).toStr())
+    let multi = s.script("SELECT 1 AS a, 'x' AS b; SELECT 2, NULL").unwrap()
+    let sc1 = s.script("SELECT 1, 'x'").unwrap()
+    println("script: rows " + multi.rows.count().toStr() + " | tag " + sc1.tag + " | first " + txt(&sc1, 0, 0) + "," + txt(&sc1, 0, 1) + " | second " + txt(&multi, 0, 0))
+    let q = s.query("SELECT $1::int8 + 1 AS n, $2::text", &[p(sqldialect.Value.Int(41)), p(sqldialect.Value.Null)]).unwrap()
+    println("query: " + txt(&q, 0, 0) + " | untyped NULL: " + txt(&q, 0, 1) + " | columns " + q.columns[0].name + "/" + q.columns[0].typeOid.toStr())
+    println("params: Int " + echo(mut &s, "int8", sqldialect.Value.Int(7)) + " | Float " + echo(mut &s, "float8", sqldialect.Value.Float(0.1f)) +
+            " | NaN " + echo(mut &s, "float8", sqldialect.Value.Float(math.inf() - math.inf())) + " | Inf " + echo(mut &s, "float8", sqldialect.Value.Float(math.inf())) +
+            " | Bool " + echo(mut &s, "bool", sqldialect.Value.Bool(true)) + " | Text " + echo(mut &s, "text", sqldialect.Value.Text("é")) +
+            " | Bytes " + echo(mut &s, "bytea", sqldialect.Value.Bytes("\0\xff")) + " | Dec " + echo(mut &s, "numeric", sqldialect.Value.Dec(12.50m)) +
+            " | Null " + echo(mut &s, "text", sqldialect.Value.Null))
+    // errors
+    let e1 = s.query("SELEC 1", &[])
+    println("syntax: " + show(&e1) + " | tx " + s.txStatus().toStr() + " ready " + s.ready().toStr())
+    s.script("CREATE TEMP TABLE pl(id int CONSTRAINT pgwire_live_pk PRIMARY KEY, v text); INSERT INTO pl VALUES (1, 'a')").unwrap()
+    let e2 = s.query("INSERT INTO pl VALUES (1, 'b')", &[])
+    let le = s.lastServerError().unwrap()
+    println("unique: " + show(&e2) + " | constraint " + le.constraint + " | detail " + (len(le.detail) > 0).toStr())
+    s.script("BEGIN").unwrap()
+    let e3 = s.query("SELECT 1/0", &[])
+    let t3 = s.txStatus()
+    let e4 = s.query("SELECT 1", &[])
+    s.script("ROLLBACK").unwrap()
+    println("block: " + show(&e3) + " | tx " + t3.toStr() + " | next " + show(&e4) + " | after ROLLBACK tx " + s.txStatus().toStr())
+    // a portal in batches
+    let cols = s.openPortal("SELECT g FROM generate_series(1, 10000) g", &[], 1000).unwrap()
+    var batches = 0
+    var rows = 0
+    var sum = 0
+    while true {
+        let b = s.receiveBatch().unwrap()
+        batches += 1
+        for i in 0..len(b.rowChunk) {
+            var st = [0]
+            var ln = [0]
+            let c = b.chunks[int(b.rowChunk[i])]
+            pgwire.scanRow(&c, int(b.rowAt[i]), 1, mut &st, mut &ln).unwrap()
+            sum += parseInt(c[st[0]..st[0] + ln[0]]).unwrap()
+            rows += 1
+        }
+        if !b.more { break }
+        s.execute(1000).unwrap()
+    }
+    println("portal: " + batches.toStr() + " batches " + rows.toStr() + " rows | ready " + s.ready().toStr() + " | sum " + sum.toStr())
+    s.openPortal("SELECT g FROM generate_series(1, 10000) g", &[], 1000).unwrap()
+    let part = s.receiveBatch().unwrap()
+    s.closePortal().unwrap()
+    println("close portal: rows " + len(part.rowChunk).toStr() + " | closed ready " + s.ready().toStr() + " tx " + s.txStatus().toStr() + " | then " +
+            one(mut &s, "SELECT 5"))
+    // notice
+    let nr = s.script("DO $$ BEGIN RAISE NOTICE 'hi'; END $$")
+    println("notice: " + show(&nr) + " | notices " + s.noticeCount().toStr())
+    // COPY refused
+    let c1 = s.script("COPY (SELECT 1) TO STDOUT")
+    let c2 = s.script("COPY pl FROM STDIN")
+    println("copy: out " + show(&c1) + " | in " + show(&c2) + " | usable " + one(mut &s, "SELECT 1"))
+    println("round trips counted: " + (s.roundTrips() > 20).toStr())
+    // cancel from a task and a deadline
+    var slot: Option[pgwire.Session] = Some(move(s))
+    let o1 = task.scoped(fn(sc: mut &task.Scope): Outcome {
+        let task.Handoff{promise: pr, future: res} = task.promise[Outcome]()
+        let f = sc.start(sleeper, Job{s: replace(mut &slot, None).unwrap(), sql: "SELECT pg_sleep(30)", pr: pr})
+        task.sleep(100).unwrap()
+        cancelIt2(f)
+        return res.wait().unwrap()
+    })
+    let Outcome{s: s2in, r: o1r, ms: o1ms} = move(o1)
+    var s2 = s2in
+    println("cancel from a task: " + o1r + " | soon " + (o1ms < 1500).toStr() + " | ready " + s2.ready().toStr() + " | after " + one(mut &s2, "SELECT 2"))
+    let t0 = time.monotonicNs()
+    let d = task.within(200, fn(): Result[pgwire.Reply, Error] { return s2.query("SELECT pg_sleep(30)", &[]) })
+    let ms = (time.monotonicNs() - t0) / 1000000
+    println("deadline: " + (if d.isErr() { d.unwrapErr().toStr() } else { "ok" }) + " | soon " + (ms < 1500).toStr() + " | ready " + s2.ready().toStr() + " | after " + one(mut &s2, "SELECT 3"))
+}
+
+fn cancelIt2(f: task.Future[int]) {}

@@ -1,0 +1,459 @@
+// pgwire's connection configuration without a server: keyword/value and URI
+// strings (quoting, escapes, percent-decoding, IPv6, socket hosts, multiple hosts
+// and ports), the PG* environment variables, the defaults, ~/.pgpass (matching,
+// escapes, permissions), libpq's error texts, the refused and ignored keywords,
+// masked(), and that no error text holds the password.
+// expect: strings: 27 checks, 0 failed
+// expect: uri: 33 checks, 0 failed
+// expect: hosts: 13 checks, 0 failed
+// expect: env: 45 checks, 0 failed
+// expect: defaults: 15 checks, 0 failed
+// expect: pgpass: 21 checks, 0 failed
+// expect: keywords: 36 checks, 0 failed
+// expect: masked: 8 checks, 0 failed
+// expect: open handles: 0
+import "pgwire"
+import "tls"
+import "os"
+import "fs"
+import "io"
+import "strings"
+
+var CHECKS: int = 0
+var FAILED: int = 0
+
+fn check(name: str, ok: bool) {
+    CHECKS += 1
+    if !ok {
+        FAILED += 1
+        println("FAIL " + name)
+    }
+}
+
+fn section(name: str) {
+    println(name + ": " + CHECKS.toStr() + " checks, " + FAILED.toStr() + " failed")
+    CHECKS = 0
+    FAILED = 0
+}
+
+fn cfg(s: str): pgwire.Config {
+    match pgwire.parseConfig(s) {
+        Ok(c) { return c }
+        Err(e) {
+            println("unexpected error: " + e.msg)
+            return pgwire.parseConfig("host=/x").unwrap()
+        }
+    }
+}
+
+// The error message of a string that must not parse ("" when it does).
+fn err(s: str): str {
+    match pgwire.parseConfig(s) {
+        Ok(_) { return "" }
+        Err(e) { return e.msg }
+    }
+}
+
+fn errCode(s: str): int {
+    match pgwire.parseConfig(s) {
+        Ok(_) { return 0 }
+        Err(e) { return e.code }
+    }
+}
+
+fn nset(s: str): int { return len(cfg(s).startup) }
+
+fn setAt(s: str, i: int): pgwire.Setting { return cfg(s).startup[i] }
+
+fn lastSet(s: str): pgwire.Setting { return cfg(s).startup[nset(s) - 1] }
+
+fn pw(c: &pgwire.Config): str { return c.password.unwrapOr("<none>") }
+
+const PGVARS: []str = ["PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPASSFILE", "PGCONNECT_TIMEOUT",
+    "PGAPPNAME", "PGCLIENTENCODING", "PGOPTIONS", "PGSSLMODE", "PGREQUIRESSL", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY",
+    "PGSSLCRL", "PGSSLCRLDIR", "PGSSLSNI", "PGSSLCERTMODE", "PGSSLMINPROTOCOLVERSION", "PGSSLMAXPROTOCOLVERSION",
+    "PGCHANNELBINDING", "PGREQUIREAUTH", "PGGSSENCMODE", "PGTARGETSESSIONATTRS", "PGLOADBALANCEHOSTS", "PGSERVICE",
+    "PGDATESTYLE", "PGTZ", "PGGEQO"]
+
+fn clearEnv() {
+    for v in PGVARS { os.unsetEnv(v).unwrap() }
+}
+
+fn setEnv(k: str, v: str) { os.setEnv(k, v).unwrap() }
+
+fn stringsTests() {
+    var c = cfg("host=a port=5433 dbname='my db' user=u password='p w\\'x'")
+    check("host", c.endpoints[0].host == "a" && c.endpoints[0].port == 5433)
+    check("quoted dbname", c.dbname == "my db")
+    check("quoted escape", pw(&c) == "p w'x")
+    check("user", c.user == "u")
+    c = cfg("  host = a   port= 1 \n user =u ")
+    check("spaces around =", c.endpoints[0].host == "a" && c.endpoints[0].port == 1 && c.user == "u")
+    c = cfg("host=/tmp password=a\\ b")
+    check("escaped space", pw(&c) == "a b")
+    c = cfg("host=/tmp password=a\\\\b")
+    check("escaped backslash", pw(&c) == "a\\b")
+    c = cfg("host=/tmp password=''")
+    check("empty value", pw(&c) == "")
+    c = cfg("host=/tmp password=a=b")
+    check("equals in a value", pw(&c) == "a=b")
+    c = cfg("host=/tmp\tuser=t\nport=9")
+    check("tab and newline separate", c.user == "t" && c.endpoints[0].port == 9)
+    c = cfg("host=a host=b")
+    check("last wins", c.endpoints[0].host == "b")
+    c = cfg("")
+    check("empty string", len(c.endpoints) == 1 && c.endpoints[0].isUnix())
+    check("bogus", err("bogus=1") == "invalid connection option \"bogus\"")
+    check("bogus code", errCode("bogus=1") == 1000)
+    check("nonsense", err("nonsense") == "missing \"=\" after \"nonsense\" in connection info string")
+    check("missing after keyword", err("host=a user") == "missing \"=\" after \"user\" in connection info string")
+    check("unterminated", err("host='x") == "unterminated quoted string in connection info string")
+    check("unterminated escape", err("host='x\\'") == "unterminated quoted string in connection info string")
+    check("nul", err("host=x\0") == "connection string contains a NUL byte")
+    check("bad port text", err("host=/x port=abc") == "invalid integer value \"abc\" for connection option \"port\"")
+    check("port 0", err("host=/x port=0") == "invalid port number: \"0\"")
+    check("port 99999", err("host=/x port=99999") == "invalid port number: \"99999\"")
+    check("bad sslmode", err("sslmode=bogus") == "invalid sslmode value: \"bogus\"")
+    check("empty sslmode", err("sslmode=''") == "invalid sslmode value: \"\"")
+    check("bad channel_binding", err("channel_binding=bogus") == "invalid channel_binding value: \"bogus\"")
+    check("bad connect_timeout", err("connect_timeout=x") == "invalid integer value \"x\" for connection option \"connect_timeout\"")
+    check("bad gssencmode", err("gssencmode=bogus") == "invalid gssencmode value: \"bogus\"")
+    section("strings")
+}
+
+fn uriTests() {
+    var c = cfg("postgresql://u:p%40ss@h1:5433/db?application_name=x&sslmode=require")
+    check("user", c.user == "u")
+    check("password decoded", pw(&c) == "p@ss")
+    check("host and port", c.endpoints[0].host == "h1" && c.endpoints[0].port == 5433)
+    check("dbname", c.dbname == "db")
+    check("sslmode", c.sslmode == pgwire.SslMode.Require)
+    check("application_name", c.startup[0].name == "application_name" && c.startup[0].value == "x")
+    c = cfg("postgres://[::1]:5433/db")
+    check("ipv6", c.endpoints[0].host == "::1" && c.endpoints[0].port == 5433 && !c.endpoints[0].isUnix())
+    c = cfg("postgresql://[2001:db8::1]/db")
+    check("ipv6 without port", c.endpoints[0].host == "2001:db8::1" && c.endpoints[0].port == 5432)
+    c = cfg("postgresql://%2Fvar%2Frun%2Fpostgresql/db")
+    check("socket host", c.endpoints[0].host == "/var/run/postgresql" && c.endpoints[0].isUnix())
+    check("socket path", c.endpoints[0].socketPath() == "/var/run/postgresql/.s.PGSQL.5432")
+    c = cfg("postgresql:///db?host=/tmp&port=5434")
+    check("host in the query", c.endpoints[0].host == "/tmp" && c.endpoints[0].port == 5434 && c.dbname == "db")
+    c = cfg("postgresql://h?ssl=true")
+    check("ssl=true", c.sslmode == pgwire.SslMode.Require)
+    c = cfg("postgresql://a:1,b:2/db")
+    check("two hosts", len(c.endpoints) == 2 && c.endpoints[0].host == "a" && c.endpoints[0].port == 1 &&
+          c.endpoints[1].host == "b" && c.endpoints[1].port == 2)
+    c = cfg("postgresql://a,b:2/db")
+    check("port list with a blank", c.endpoints[0].port == 5432 && c.endpoints[1].port == 2)
+    c = cfg("postgresql://a:7,b/db")
+    check("blank port at the end", c.endpoints[0].port == 7 && c.endpoints[1].port == 5432)
+    c = cfg("postgresql://@h/db")
+    check("empty userinfo", c.endpoints[0].host == "h")
+    c = cfg("postgresql://:p@h/db")
+    check("password only", pw(&c) == "p")
+    c = cfg("postgresql://h/")
+    check("empty dbname is the user", c.dbname == c.user)
+    c = cfg("postgresql://")
+    check("nothing", c.endpoints[0].isUnix())
+    c = cfg("postgresql://u@h/db?options=-c%20geqo%3Doff")
+    check("options decoded", lastSet("postgresql://u@h/db?options=-c%20geqo%3Doff").value == "-c geqo=off")
+    check("missing =", err("postgresql://localhost/?x") == "missing key/value separator \"=\" in URI query parameter: \"x\"")
+    check("unknown parameter", err("postgresql://localhost/?bogus=1") == "invalid URI query parameter: \"bogus\"")
+    check("percent", err("postgresql://localhost/%zz") == "invalid percent-encoded token: \"%zz\"")
+    check("percent at the end", err("postgresql://localhost/%4") == "invalid percent-encoded token: \"%4\"")
+    check("%00", contains(err("postgresql://localhost/%00"), "forbidden value %00"))
+    check("open bracket", err("postgresql://[::1/x") == "end of string reached when looking for matching \"]\" in IPv6 host address in URI: \"postgresql://[::1/x\"")
+    check("empty brackets", err("postgresql://[]/") == "IPv6 host address may not be empty in URI: \"postgresql://[]/\"")
+    check("after brackets", err("postgresql://[::1]x/") == "unexpected character \"x\" at position 19 in URI (expected \":\" or \"/\"): \"postgresql://[::1]x/\"")
+    check("port with colons", err("postgresql://a:b:c/") == "invalid integer value \"b:c\" for connection option \"port\"")
+    check("port too big", err("postgresql://a:99999999999/") == "invalid integer value \"99999999999\" for connection option \"port\"" ||
+          err("postgresql://a:99999999999/") == "invalid port number: \"99999999999\"")
+    check("bad sslmode in uri", err("postgresql://a/d?sslmode=bogus") == "invalid sslmode value: \"bogus\"")
+    check("uri nul", err("postgresql://a/d\0") == "connection string contains a NUL byte")
+    check("keyword form is not a uri", err("postgresql:/x") != "")
+    section("uri")
+}
+
+fn hostTests() {
+    var c = cfg("host=a,b port=1,2")
+    check("two", len(c.endpoints) == 2 && c.endpoints[1].host == "b" && c.endpoints[1].port == 2 && c.endpoints[0].port == 1)
+    c = cfg("host=a,b,c port=7")
+    check("one port for all", len(c.endpoints) == 3 && c.endpoints[2].port == 7 && c.endpoints[0].port == 7)
+    check("mismatch", err("host=a,b port=1,2,3") == "could not match 3 port numbers to 2 hosts")
+    check("mismatch other way", err("host=a,b,c port=1,2") == "could not match 2 port numbers to 3 hosts")
+    check("hostaddr", cfg("host=db hostaddr=10.0.0.1").endpoints[0].hostaddr == "10.0.0.1" && cfg("host=db hostaddr=10.0.0.1").endpoints[0].host == "db")
+    check("hostaddr alone", cfg("hostaddr=10.0.0.1").endpoints[0].hostaddr == "10.0.0.1" && !cfg("hostaddr=10.0.0.1").endpoints[0].isUnix())
+    check("hosts and hostaddr counts", err("host=a,b hostaddr=1.1.1.1") == "could not match 2 host names to 1 hostaddr values")
+    c = cfg("host=a,b hostaddr=1.1.1.1,2.2.2.2")
+    check("two hostaddr", c.endpoints[1].hostaddr == "2.2.2.2" && c.endpoints[1].host == "b")
+    c = cfg("host=/tmp,x port=1,2")
+    check("socket then tcp", c.endpoints[0].isUnix() && !c.endpoints[1].isUnix())
+    c = cfg("host=@obx/abstract port=9")
+    check("abstract", c.endpoints[0].isUnix() && c.endpoints[0].socketPath() == "@obx/abstract/.s.PGSQL.9")
+    c = cfg("host=a,,b")
+    check("empty host entry is the default socket", len(c.endpoints) == 3 && c.endpoints[1].isUnix())
+    check("hostaddr wins over the socket", !cfg("host=/tmp hostaddr=1.1.1.1").endpoints[0].isUnix())
+    check("bad port in a list", err("host=a,b port=1,x") == "invalid integer value \"x\" for connection option \"port\"")
+    section("hosts")
+}
+
+fn envTests() {
+    clearEnv()
+    setEnv("PGHOST", "/envdir")
+    setEnv("PGPORT", "6000")
+    setEnv("PGDATABASE", "envdb")
+    setEnv("PGUSER", "envuser")
+    setEnv("PGPASSWORD", "envpw")
+    var c = cfg("")
+    check("PGHOST", c.endpoints[0].host == "/envdir")
+    check("PGPORT", c.endpoints[0].port == 6000)
+    check("PGDATABASE", c.dbname == "envdb")
+    check("PGUSER", c.user == "envuser")
+    check("PGPASSWORD", pw(&c) == "envpw")
+    c = cfg("host=/s port=1 dbname=d user=u password=p")
+    check("string beats env", c.endpoints[0].host == "/s" && c.endpoints[0].port == 1 && c.dbname == "d" && c.user == "u" && pw(&c) == "p")
+    c = cfg("password=''")
+    check("empty password beats env", pw(&c) == "")
+    setEnv("PGHOSTADDR", "9.9.9.9")
+    check("PGHOSTADDR", cfg("host=x").endpoints[0].hostaddr == "9.9.9.9")
+    setEnv("PGPASSFILE", "/some/pgpass")
+    check("PGPASSFILE", cfg("").passfile == "/some/pgpass")
+    check("passfile keyword", cfg("passfile=/p2").passfile == "/p2")
+    setEnv("PGCONNECT_TIMEOUT", "10")
+    check("PGCONNECT_TIMEOUT", cfg("").connectTimeoutMs == 10000)
+    check("connect_timeout 1 is 2 s", cfg("connect_timeout=1").connectTimeoutMs == 2000)
+    check("connect_timeout 0 is none", cfg("connect_timeout=0").connectTimeoutMs == -1)
+    check("connect_timeout -5 is none", cfg("connect_timeout=-5").connectTimeoutMs == -1)
+    setEnv("PGAPPNAME", "envapp")
+    check("PGAPPNAME", cfg("").startup[0].name == "application_name" && cfg("").startup[0].value == "envapp")
+    check("fallback_application_name", cfg("fallback_application_name=fb").startup[0].value == "envapp")
+    setEnv("PGAPPNAME", "")
+    check("empty PGAPPNAME is unset", cfg("fallback_application_name=fb").startup[0].value == "fb")
+    check("fallback alone", cfg("fallback_application_name=fb").startup[0].name == "application_name")
+    setEnv("PGCLIENTENCODING", "LATIN1")
+    check("PGCLIENTENCODING", cfg("").startup[0].name == "client_encoding" && cfg("").startup[0].value == "LATIN1")
+    check("client_encoding auto", cfg("client_encoding=auto").startup[0].value == "UTF8")
+    setEnv("PGOPTIONS", "-c x=1")
+    check("PGOPTIONS", lastSet("").name == "options" && lastSet("").value == "-c x=1")
+    setEnv("PGDATESTYLE", "ISO")
+    setEnv("PGTZ", "UTC")
+    setEnv("PGGEQO", "off")
+    check("datestyle timezone geqo order", nset("") == 5 && setAt("", 2).name == "datestyle" && setAt("", 3).name == "timezone" &&
+          setAt("", 4).name == "geqo")
+    setEnv("PGSSLMODE", "verify-ca")
+    check("PGSSLMODE", cfg("").sslmode == pgwire.SslMode.VerifyCa)
+    check("sslmode beats env", cfg("sslmode=disable").sslmode == pgwire.SslMode.Disable)
+    os.unsetEnv("PGSSLMODE").unwrap()
+    setEnv("PGREQUIRESSL", "1")
+    check("PGREQUIRESSL", cfg("").sslmode == pgwire.SslMode.Require)
+    setEnv("PGSSLMODE", "allow")
+    check("PGSSLMODE beats PGREQUIRESSL", cfg("").sslmode == pgwire.SslMode.Allow)
+    os.unsetEnv("PGSSLMODE").unwrap()
+    os.unsetEnv("PGREQUIRESSL").unwrap()
+    setEnv("PGSSLROOTCERT", "/ca.pem")
+    check("PGSSLROOTCERT", cfg("").sslrootcert == "/ca.pem")
+    setEnv("PGSSLCERT", "/c.pem")
+    setEnv("PGSSLKEY", "/k.pem")
+    check("PGSSLCERT and KEY", cfg("").sslcert == "/c.pem" && cfg("").sslkey == "/k.pem")
+    setEnv("PGSSLSNI", "0")
+    check("PGSSLSNI", !cfg("").sslsni && cfg("sslsni=1").sslsni)
+    setEnv("PGSSLMINPROTOCOLVERSION", "TLSv1.3")
+    check("PGSSLMINPROTOCOLVERSION", cfg("").sslMin == tls.Version.Tls13)
+    setEnv("PGSSLMAXPROTOCOLVERSION", "TLSv1.2")
+    check("min above max", err("") == "ssl_min_protocol_version is higher than ssl_max_protocol_version")
+    os.unsetEnv("PGSSLMINPROTOCOLVERSION").unwrap()
+    check("PGSSLMAXPROTOCOLVERSION", cfg("").sslMax == tls.Version.Tls12)
+    check("TLSv1.1 refused", err("ssl_min_protocol_version=TLSv1.1") != "" && errCode("ssl_min_protocol_version=TLSv1.1") == 1000)
+    check("bogus version", err("ssl_max_protocol_version=x") == "invalid ssl_max_protocol_version value: \"x\"")
+    os.unsetEnv("PGSSLMAXPROTOCOLVERSION").unwrap()
+    setEnv("PGCHANNELBINDING", "require")
+    check("PGCHANNELBINDING", cfg("").channelBinding == pgwire.ChannelBinding.Require)
+    check("channel_binding beats env", cfg("channel_binding=disable").channelBinding == pgwire.ChannelBinding.Disable)
+    setEnv("PGREQUIREAUTH", "scram-sha-256")
+    check("PGREQUIREAUTH", cfg("").requireAuth == "scram-sha-256")
+    check("require_auth negated", cfg("require_auth=!password,!md5").requireAuth == "!password,!md5")
+    check("require_auth bad", err("require_auth=bogus") == "invalid require_auth method: \"bogus\"")
+    check("require_auth mixed", err("require_auth=password,!md5") != "")
+    setEnv("PGGSSENCMODE", "disable")
+    check("PGGSSENCMODE", err("") == "")
+    setEnv("PGGSSENCMODE", "require")
+    check("PGGSSENCMODE=require", err("") == "GSSAPI encryption is not supported")
+    setEnv("PGGSSENCMODE", "prefer")
+    setEnv("PGSERVICE", "x")
+    check("PGSERVICE", err("") == "service files are not supported yet")
+    os.unsetEnv("PGSERVICE").unwrap()
+    setEnv("PGTARGETSESSIONATTRS", "primary")
+    check("PGTARGETSESSIONATTRS", err("") == "target_session_attrs=primary is not supported yet")
+    os.unsetEnv("PGTARGETSESSIONATTRS").unwrap()
+    setEnv("PGLOADBALANCEHOSTS", "random")
+    check("PGLOADBALANCEHOSTS", err("") == "load_balance_hosts=random is not supported yet")
+    clearEnv()
+    section("env")
+}
+
+fn defaultTests() {
+    clearEnv()
+    let c = cfg("")
+    let u = os.userName()
+    check("user is the OS user", c.user == u && len(u) > 0)
+    check("dbname is the user", c.dbname == u)
+    check("port", c.endpoints[0].port == 5432)
+    check("a socket", c.endpoints[0].isUnix() && (c.endpoints[0].host == "/var/run/postgresql" || c.endpoints[0].host == "/tmp"))
+    check("sslmode prefer", c.sslmode == pgwire.SslMode.Prefer)
+    check("no timeout", c.connectTimeoutMs == -1)
+    check("keepalive on", c.keepAlive.on && c.keepAlive.idleS == 0)
+    check("client_encoding UTF8", len(c.startup) == 1 && c.startup[0].name == "client_encoding" && c.startup[0].value == "UTF8")
+    check("sni", c.sslsni)
+    check("tls range", c.sslMin == tls.Version.Tls12 && c.sslMax == tls.Version.Tls13)
+    check("channel binding prefer", c.channelBinding == pgwire.ChannelBinding.Prefer)
+    check("no password", c.password.isNone())
+    check("passfile in HOME", c.passfile == os.homeDir() + "/.pgpass")
+    // the socket directory choice, with temporary directories standing in
+    fs.mkdirAll("sock1").unwrap()
+    fs.mkdirAll("sock2").unwrap()
+    io.write("sock2/.s.PGSQL.5432", "").unwrap()
+    let dirs = ["sock1", "sock2"]
+    check("first directory holding the socket", pgwire.socketDirFor(5432, &dirs) == "sock2")
+    check("none holds it: the first", pgwire.socketDirFor(5999, &dirs) == "sock1")
+    section("defaults")
+}
+
+fn writePass(path: str, text: str, mode: int) {
+    io.write(path, text).unwrap()
+    fs.chmod(path, mode).unwrap()
+}
+
+fn pass(c: &pgwire.Config, ep: pgwire.Endpoint): str { return pgwire.passwordFor(c, &ep).unwrapOr("<none>") }
+
+fn pgpassTests() {
+    clearEnv()
+    let body = "# a comment\n\nweb:5432:app:alice:one\nweb:*:app:alice:two\n*:5433:*:bob:th\\:ree\nlocalhost:5432:postgres:chris:four\n" +
+               "db.example:5432:d:u:with\\\\slash\nunix:*:*:*:fi:ve\nstar:*:*:*:last\nstar:*:*:*:never\n"
+    writePass("pgpass_ok", body, 0x180)
+    var c = cfg("host=web dbname=app user=alice passfile=pgpass_ok")
+    let web = pgwire.Endpoint{host: "web", hostaddr: "", port: 5432}
+    check("first match", pass(&c, web) == "one")
+    check("port wildcard", pass(&c, pgwire.Endpoint{host: "web", hostaddr: "", port: 9}) == "two")
+    check("no match", pass(&c, pgwire.Endpoint{host: "nope", hostaddr: "", port: 5432}) == "<none>")
+    c = cfg("host=h dbname=zz user=bob passfile=pgpass_ok")
+    check("wildcards and escaped colon", pass(&c, pgwire.Endpoint{host: "h", hostaddr: "", port: 5433}) == "th:ree")
+    check("port must match", pass(&c, pgwire.Endpoint{host: "h", hostaddr: "", port: 5432}) == "<none>")
+    c = cfg("host=/var/run/postgresql dbname=postgres user=chris passfile=pgpass_ok")
+    check("localhost for the default socket directory", pass(&c, c.endpoints[0]) == "four")
+    c = cfg("host=/tmp dbname=postgres user=chris passfile=pgpass_ok")
+    check("localhost for /tmp too", pass(&c, c.endpoints[0]) == "four")
+    c = cfg("host=/other dbname=postgres user=chris passfile=pgpass_ok")
+    check("another socket directory is not localhost", pass(&c, c.endpoints[0]) == "<none>")
+    c = cfg("host=ignored hostaddr=10.1.1.1 dbname=d user=u passfile=pgpass_ok")
+    check("escaped backslash", pass(&c, pgwire.Endpoint{host: "db.example", hostaddr: "", port: 5432}) == "with\\slash")
+    check("host over hostaddr", pass(&c, c.endpoints[0]) == "<none>")
+    c = cfg("host=unix dbname=a user=b passfile=pgpass_ok")
+    check("password with colons", pass(&c, c.endpoints[0]) == "fi:ve")
+    c = cfg("host=star dbname=a user=b passfile=pgpass_ok")
+    check("the first line wins", pass(&c, c.endpoints[0]) == "last")
+    c = cfg("hostaddr=10.1.1.1 dbname=a user=b passfile=pgpass_ok")
+    check("hostaddr when there is no host", pass(&c, c.endpoints[0]) == "<none>")
+    writePass("pgpass_addr", "10.1.1.1:5432:a:b:viaaddr\n", 0x180)
+    c = cfg("hostaddr=10.1.1.1 dbname=a user=b passfile=pgpass_addr")
+    check("hostaddr matches", pass(&c, c.endpoints[0]) == "viaaddr")
+    writePass("pgpass_open", body, 0x1A4)
+    c = cfg("host=web dbname=app user=alice passfile=pgpass_open")
+    check("0644 is ignored", pass(&c, web) == "<none>")
+    writePass("pgpass_grp", body, 0x1A0)
+    c = cfg("host=web dbname=app user=alice passfile=pgpass_grp")
+    check("0640 is ignored", pass(&c, web) == "<none>")
+    writePass("pgpass_crlf", "web:5432:app:alice:crlf\r\n", 0x180)
+    c = cfg("host=web dbname=app user=alice passfile=pgpass_crlf")
+    check("CRLF line ends", pass(&c, web) == "crlf")
+    fs.mkdirAll("pgpass_dir").unwrap()
+    fs.chmod("pgpass_dir", 0x1C0).unwrap()
+    c = cfg("host=web dbname=app user=alice passfile=pgpass_dir")
+    check("a directory is ignored", pass(&c, web) == "<none>")
+    c = cfg("host=web dbname=app user=alice passfile=pgpass_missing")
+    check("a missing file", pass(&c, web) == "<none>")
+    setEnv("PGPASSFILE", "pgpass_ok")
+    c = cfg("host=web dbname=app user=alice")
+    check("PGPASSFILE", pass(&c, web) == "one" && c.password.isNone())
+    clearEnv()
+    c = cfg("host=web dbname=app user=alice password=given passfile=pgpass_ok")
+    check("a given password stays in the config", pw(&c) == "given")
+    section("pgpass")
+}
+
+fn keywordTests() {
+    clearEnv()
+    check("service", err("service=x") == "service files are not supported yet")
+    check("replication", err("replication=database") == "the keyword replication is not supported")
+    check("requirepeer", err("requirepeer=x") == "the keyword requirepeer is not supported yet")
+    check("sslpassword", err("sslpassword=x") == "encrypted private keys are not supported")
+    check("sslcertmode require", err("sslcertmode=require") == "sslcertmode=require is not supported yet")
+    check("sslcertmode disable", err("sslcertmode=disable") == "")
+    check("sslcertmode bogus", err("sslcertmode=x") == "invalid sslcertmode value: \"x\"")
+    check("sslnegotiation direct", err("sslnegotiation=direct") == "sslnegotiation=direct is not supported yet")
+    check("sslnegotiation postgres", err("sslnegotiation=postgres") == "")
+    check("min_protocol_version 3.2", err("min_protocol_version=3.2") != "")
+    check("max_protocol_version 3.0", err("max_protocol_version=3.0") == "")
+    check("gssencmode require", err("gssencmode=require") == "GSSAPI encryption is not supported")
+    check("gssencmode disable", err("gssencmode=disable") == "")
+    check("target_session_attrs", err("target_session_attrs=read-write") == "target_session_attrs=read-write is not supported yet")
+    check("target_session_attrs any", err("target_session_attrs=any") == "")
+    check("load_balance_hosts", err("load_balance_hosts=random") == "load_balance_hosts=random is not supported yet")
+    check("load_balance_hosts disable", err("load_balance_hosts=disable") == "")
+    check("sslcompression", err("sslcompression=1") == "")
+    check("krbsrvname", err("krbsrvname=x") == "")
+    check("gsslib", err("gsslib=gssapi") == "")
+    check("gssdelegation", err("gssdelegation=1") == "")
+    check("tcp_user_timeout", err("tcp_user_timeout=1000") == "")
+    check("sslcrl", err("sslmode=verify-full sslcrl=x") == "certificate revocation lists are not supported yet")
+    check("sslcrldir", err("sslmode=verify-ca sslcrldir=x") == "certificate revocation lists are not supported yet")
+    check("sslcrl without verification", err("sslmode=require sslcrl=x") == "")
+    check("every sslmode", err("sslmode=disable") == "" && err("sslmode=allow") == "" && err("sslmode=prefer") == "" &&
+          err("sslmode=require") == "" && err("sslmode=verify-ca") == "" && err("sslmode=verify-full") == "")
+    check("sslrootcert=system default", cfg("sslrootcert=system").sslmode == pgwire.SslMode.VerifyFull)
+    check("sslrootcert=system with verify-full", err("sslrootcert=system sslmode=verify-full") == "")
+    check("sslrootcert=system with require", err("sslrootcert=system sslmode=require") ==
+          "weak sslmode \"require\" may not be used with sslrootcert=system (use \"verify-full\")")
+    check("sslsni bogus", err("sslsni=2") == "invalid sslsni value: \"2\"")
+    check("keepalives 0", !cfg("keepalives=0").keepAlive.on)
+    check("keepalive values", cfg("keepalives_idle=30 keepalives_interval=5 keepalives_count=4").keepAlive.count == 4)
+    check("startup order", cfg("application_name=a client_encoding=UTF8 options=o").startup[2].name == "options")
+    check("sslkey and cert", cfg("sslcert=c sslkey=k").sslkey == "k" && cfg("sslcert=c sslkey=k").sslcert == "c")
+    check("require_auth none", err("require_auth=none") == "")
+    check("error code is E_INPUT", errCode("sslpassword=x") == 1000)
+    section("keywords")
+}
+
+fn maskedTests() {
+    clearEnv()
+    check("keyword form", pgwire.masked("host=h password=SECRET user=u") == "host=h password=*** user=u")
+    check("quoted", pgwire.masked("password='SE CRET' host=h") == "password=*** host=h")
+    check("uri userinfo", pgwire.masked("postgresql://u:SECRET@h/db") == "postgresql://u:***@h/db")
+    check("uri query", pgwire.masked("postgresql://h/db?password=SECRET&sslmode=require") == "postgresql://h/db?password=***&sslmode=require")
+    check("no password", pgwire.masked("host=h") == "host=h")
+    check("escaped quote", !contains(pgwire.masked("password='a\\'SECRET' host=h"), "SECRET"))
+    check("unparseable is hidden", !contains(pgwire.masked("password=SECRET junk"), "SECRET"))
+    // no error text holds the password
+    let bads = ["password=SECRET bogus=1", "password=SECRET host='x", "password=SECRET nonsense", "postgresql://u:SECRET@[::1/x",
+                "postgresql://u:SECRET@[]/", "postgresql://u:SECRET@h:99999999999/", "postgresql://u:SECRET@h/?x", "password=SECRET sslmode=zz",
+                "postgresql://u:SECRET@[::1]x/", "postgresql://u:SECRET@h/%zz", "password=SECRET service=SECRET"]
+    var leak = ""
+    for b in bads {
+        let e = err(b)
+        if e == "" { leak = leak + " parses:" + b }
+        if contains(e, "SECRET") { leak = leak + " leaks:" + b }
+    }
+    check("no error holds the password" + leak, leak == "")
+    section("masked")
+}
+
+fn main() {
+    stringsTests()
+    uriTests()
+    hostTests()
+    envTests()
+    defaultTests()
+    pgpassTests()
+    keywordTests()
+    maskedTests()
+    println("open handles: 0")
+}

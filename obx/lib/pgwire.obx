@@ -1,0 +1,2786 @@
+// pgwire: the PostgreSQL frontend/backend protocol 3.0 in obx (design/pgwire.md).
+// Everything on the wire and nothing of a program API: connection strings, the
+// environment and ~/.pgpass; the transport (a Unix socket, TCP, TLS after an
+// SSLRequest); startup and authentication (trust, cleartext, MD5, SCRAM-SHA-256
+// and -PLUS); simple and extended queries; raw rows; errors; portals read in
+// batches; cancel requests; and the text value codecs. `postgres` is built on
+// it (stage P2); `tds` and `tns` are its models.
+//
+//     let cfg = try pgwire.parseConfig("host=/var/run/postgresql dbname=app")
+//     var s = try pgwire.connect(&cfg)
+//     let r = try s.query("SELECT $1::int8 + 1", &[try pgwire.param(&Value.Int(41))])
+//     println(r.rows.bytes(0, 0))          // 42
+//
+// Errors are sqldialect.DbError: a failed connect is code CONNECTION_BAD (1)
+// (with the server's SQLSTATE in `state` when it sent one); a statement the
+// server refuses FATAL_ERROR (7) with its SQLSTATE and message; a lost
+// connection E_IO and a malformed reply E_PROTOCOL, both leaving the session
+// broken; cancellation and deadlines E_CANCELLED and E_TIMEOUT. No error text
+// contains a password. Nothing here prints.
+
+import "net"
+import "tls"
+import "crypto"
+import "sqldialect"
+import "sqlrows"
+import "time"
+import "math"
+import "os"
+import "io"
+import "fs"
+import "strings"
+import "task"
+
+pub type Error = sqldialect.DbError
+pub const PROTOCOL = 196608
+pub const CONNECTION_BAD = 1          // connect failures
+pub const FATAL_ERROR = 7             // server errors (PGRES_FATAL_ERROR)
+
+pub const OID_BOOL = 16
+pub const OID_BYTEA = 17
+pub const OID_INT8 = 20
+pub const OID_INT2 = 21
+pub const OID_INT4 = 23
+pub const OID_TEXT = 25
+pub const OID_FLOAT4 = 700
+pub const OID_FLOAT8 = 701
+pub const OID_NUMERIC = 1700
+pub const OID_CHAR = 18
+pub const OID_NAME = 19
+pub const OID_BPCHAR = 1042
+pub const OID_VARCHAR = 1043
+pub const OID_DATE = 1082
+pub const OID_TIME = 1083
+pub const OID_TIMESTAMP = 1114
+pub const OID_TIMESTAMPTZ = 1184
+pub const OID_OID = 26
+pub const OID_JSON = 114
+pub const OID_JSONB = 3802
+pub const OID_UUID = 2950
+pub const OID_INTERVAL = 1186
+
+pub const TX_IDLE = 73                // 'I'
+pub const TX_BLOCK = 84               // 'T'
+pub const TX_FAILED = 69              // 'E'
+pub const ABORT_MS = 5000             // how long a cancelled request's reply is waited for
+pub const CLOSE_WAIT_MS = 1000        // how long closing a portal waits before it cancels
+
+const MAX_DSCALE = 16383              // numeric's largest display scale
+const MAX_MSG = 1073741824 + 65536    // the largest message length accepted
+const INBOX = 65536
+const SHRINK_OVER = 1048576
+const MAX_NOTICES = 100
+const MAX_NOTIFIES = 10000
+const DEFAULT_PORT = 5432
+
+fn proto(msg: str): Error { return sqldialect.dbError(sqldialect.E_PROTOCOL, "pgwire: " + msg) }
+
+fn ioErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_IO, "pgwire: " + msg) }
+
+fn input(msg: str): Error { return sqldialect.inputError(msg) }
+
+fn bad(msg: str): Error { return sqldialect.dbError(CONNECTION_BAD, msg) }
+
+fn chomp(s: str): str {
+    var n = len(s)
+    while n > 0 && isSpace(s[n - 1]) { n -= 1 }
+    return s[..n]
+}
+
+// ------------------------------------------------------------ configuration
+
+pub type SslMode = value closed { Disable; Allow; Prefer; Require; VerifyCa; VerifyFull }
+pub type ChannelBinding = value closed { Disable; Prefer; Require }
+
+// Where to connect: a host name or address, "/dir" or "@name" (a Unix socket's
+// directory or abstract name), with the port that names the socket file.
+pub type Endpoint = value record {
+    pub host: str          // as given: a name, an address, "/dir" or "@name" (Unix)
+    pub hostaddr: str      // "" when not given
+    pub port: int
+}
+
+pub fn (e: &Endpoint) isUnix(): bool {
+    return len(e.hostaddr) == 0 && len(e.host) > 0 && (e.host[0] == '/' || e.host[0] == '@')
+}
+
+// "<dir>/.s.PGSQL.<port>" for a Unix endpoint ("@name/.s.PGSQL.<port>" abstract).
+pub fn (e: &Endpoint) socketPath(): str { return e.host + "/.s.PGSQL." + e.port.toStr() }
+
+pub type Setting = value record { pub name: str; pub value: str }
+pub type KeepAlive = value record { pub on: bool; pub idleS: int; pub intervalS: int; pub count: int }
+
+pub type Config = record {
+    pub endpoints: []Endpoint
+    pub user: str
+    pub password: Option[str]       // from the string or PGPASSWORD; .pgpass is read at connect
+    pub passfile: str
+    pub dbname: str
+    pub sslmode: SslMode
+    pub sslrootcert: str            // a path, "system", or "" (no file: none exists at the default path)
+    pub sslcert: str                // "" none
+    pub sslkey: str
+    pub sslsni: bool
+    pub sslMin: tls.Version
+    pub sslMax: tls.Version
+    pub channelBinding: ChannelBinding
+    pub requireAuth: str            // as given; "" any
+    pub connectTimeoutMs: int       // -1: none; 1 s counts as 2 s
+    pub keepAlive: KeepAlive
+    pub startup: []Setting          // StartupMessage pairs after user and database, in design/pgwire.md 5.1's order
+}
+
+type KV = value record { k: str; v: str }
+
+// Every keyword libpq 16 knows (and `replication`, `sslnegotiation` of 17).
+const KEYWORDS: []str = ["host", "hostaddr", "port", "dbname", "user", "password", "passfile", "channel_binding",
+    "connect_timeout", "client_encoding", "options", "application_name", "fallback_application_name", "keepalives",
+    "keepalives_idle", "keepalives_interval", "keepalives_count", "tcp_user_timeout", "sslmode", "sslcompression",
+    "sslcert", "sslkey", "sslpassword", "sslcertmode", "sslrootcert", "sslcrl", "sslcrldir", "sslsni", "requirepeer",
+    "require_auth", "ssl_min_protocol_version", "ssl_max_protocol_version", "gssencmode", "krbsrvname", "gsslib",
+    "gssdelegation", "service", "target_session_attrs", "load_balance_hosts", "replication", "sslnegotiation",
+    "min_protocol_version", "max_protocol_version"]
+
+fn knownKey(k: str): bool {
+    for x in KEYWORDS {
+        if x == k { return true }
+    }
+    return false
+}
+
+fn isWs(c: byte): bool { return c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == 11 || c == 12 }
+
+// keyword/value form (libpq's conninfo_parse).
+fn parseKeywords(s: str): Result[[]KV, Error] {
+    var out: []KV = []
+    let n = len(s)
+    var i = 0
+    while i < n {
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n { break }
+        let start = i
+        while i < n && !isWs(s[i]) && s[i] != '=' { i += 1 }
+        let key = s[start..i]
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n || s[i] != '=' { return Err(input("missing \"=\" after \"" + key + "\" in connection info string")) }
+        i += 1
+        while i < n && isWs(s[i]) { i += 1 }
+        var val = newStrBuf()
+        if i < n && s[i] == '\'' {
+            i += 1
+            var shut = false
+            while i < n {
+                let c = s[i]
+                if c == '\\' {
+                    i += 1
+                    if i < n {
+                        val.addByte(s[i])
+                        i += 1
+                    }
+                    continue
+                }
+                if c == '\'' {
+                    shut = true
+                    i += 1
+                    break
+                }
+                val.addByte(c)
+                i += 1
+            }
+            if !shut { return Err(input("unterminated quoted string in connection info string")) }
+        } else {
+            while i < n && !isWs(s[i]) {
+                let c = s[i]
+                if c == '\\' {
+                    i += 1
+                    if i < n {
+                        val.addByte(s[i])
+                        i += 1
+                    }
+                    continue
+                }
+                val.addByte(c)
+                i += 1
+            }
+        }
+        if !knownKey(key) { return Err(input("invalid connection option \"" + key + "\"")) }
+        append(mut &out, KV{k: key, v: val.toStr()})
+    }
+    return Ok(out)
+}
+
+fn hexVal(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// A URI part with %XX decoded.
+fn pctDecode(s: str): Result[str, Error] {
+    var b = newStrBuf()
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c != '%' {
+            b.addByte(c)
+            i += 1
+            continue
+        }
+        let hi = if i + 1 < len(s) { hexVal(s[i + 1]) } else { -1 }
+        let lo = if i + 2 < len(s) { hexVal(s[i + 2]) } else { -1 }
+        if hi < 0 || lo < 0 {
+            let e = if i + 3 <= len(s) { i + 3 } else { len(s) }
+            return Err(input("invalid percent-encoded token: \"" + s[i..e] + "\""))
+        }
+        if hi == 0 && lo == 0 { return Err(input("forbidden value %00 in percent-encoded value: \"" + s[i..i + 3] + "\"")) }
+        b.addByte(byte(hi * 16 + lo))
+        i += 3
+    }
+    return Ok(b.toStr())
+}
+
+fn isUriSep(c: byte): bool { return c == ':' || c == '/' || c == '?' || c == ',' }
+
+// The text after "postgresql://" (libpq's conninfo_uri_parse_options).
+fn parseUri(whole: str, prefix: int): Result[[]KV, Error] {
+    let rest = whole[prefix..]
+    let n = len(rest)
+    var out: []KV = []
+    var p = 0
+    var q = 0
+    while q < n && rest[q] != '@' && rest[q] != '/' { q += 1 }
+    if q < n && rest[q] == '@' {
+        var colon = 0
+        while colon < q && rest[colon] != ':' { colon += 1 }
+        let user = try pctDecode(rest[..colon])
+        if len(user) > 0 { append(mut &out, KV{k: "user", v: user}) }
+        if colon < q {
+            let pw = try pctDecode(rest[colon + 1..q])
+            if len(pw) > 0 { append(mut &out, KV{k: "password", v: pw}) }
+        }
+        p = q + 1
+    }
+    var hosts: []str = []
+    var ports: []str = []
+    var anyHost = false
+    var anyPort = false
+    while true {
+        var host = ""
+        if p < n && rest[p] == '[' {
+            q = p + 1
+            while q < n && rest[q] != ']' { q += 1 }
+            if q >= n {
+                return Err(input("end of string reached when looking for matching \"]\" in IPv6 host address in URI: \"" + maskedUri(whole) + "\""))
+            }
+            if q == p + 1 { return Err(input("IPv6 host address may not be empty in URI: \"" + maskedUri(whole) + "\"")) }
+            host = rest[p + 1..q]
+            p = q + 1
+            if p < n && !isUriSep(rest[p]) {
+                return Err(input("unexpected character \"" + rest[p..p + 1] + "\" at position " + (prefix + p + 1).toStr() +
+                                 " in URI (expected \":\" or \"/\"): \"" + maskedUri(whole) + "\""))
+            }
+        } else {
+            q = p
+            while q < n && !isUriSep(rest[q]) { q += 1 }
+            host = try pctDecode(rest[p..q])
+            p = q
+        }
+        var port = ""
+        if p < n && rest[p] == ':' {
+            p += 1
+            q = p
+            while q < n && rest[q] != '/' && rest[q] != '?' && rest[q] != ',' { q += 1 }
+            port = try pctDecode(rest[p..q])
+            p = q
+        }
+        if len(host) > 0 { anyHost = true }
+        if len(port) > 0 { anyPort = true }
+        append(mut &hosts, host)
+        append(mut &ports, port)
+        if p < n && rest[p] == ',' {
+            p += 1
+            continue
+        }
+        break
+    }
+    if anyHost { append(mut &out, KV{k: "host", v: strings.join(&hosts, ",")}) }
+    if anyPort { append(mut &out, KV{k: "port", v: strings.join(&ports, ",")}) }
+    if p < n && rest[p] == '/' {
+        p += 1
+        q = p
+        while q < n && rest[q] != '?' { q += 1 }
+        let db = try pctDecode(rest[p..q])
+        if len(db) > 0 { append(mut &out, KV{k: "dbname", v: db}) }
+        p = q
+    }
+    if p < n && rest[p] == '?' {
+        p += 1
+        for part in split(rest[p..], '&') {
+            if len(part) == 0 { continue }
+            var eq = 0
+            while eq < len(part) && part[eq] != '=' { eq += 1 }
+            if eq >= len(part) { return Err(input("missing key/value separator \"=\" in URI query parameter: \"" + part + "\"")) }
+            var key = try pctDecode(part[..eq])
+            var val = try pctDecode(part[eq + 1..])
+            if key == "ssl" && val == "true" {
+                key = "sslmode"
+                val = "require"
+            }
+            if !knownKey(key) { return Err(input("invalid URI query parameter: \"" + key + "\"")) }
+            append(mut &out, KV{k: key, v: val})
+        }
+    }
+    return Ok(out)
+}
+
+fn uriPrefix(s: str): int {
+    if startsWith(s, "postgresql://") { return 13 }
+    if startsWith(s, "postgres://") { return 11 }
+    return 0
+}
+
+fn parsePairs(conninfo: str): Result[[]KV, Error] {
+    try sqldialect.noNul(conninfo, "connection string")
+    let u = uriPrefix(conninfo)
+    if u > 0 { return parseUri(conninfo, u) }
+    return parseKeywords(conninfo)
+}
+
+// The string with the password value replaced by ***, for logs. A string that
+// does not parse is not shown at all.
+pub fn masked(conninfo: str): str {
+    let u = uriPrefix(conninfo)
+    if u > 0 { return maskedUri(conninfo) }
+    var b = newStrBuf()
+    let s = conninfo
+    let n = len(s)
+    var i = 0
+    while i < n {
+        let ws = i
+        while i < n && isWs(s[i]) { i += 1 }
+        b.add(s[ws..i])
+        if i >= n { break }
+        let start = i
+        while i < n && !isWs(s[i]) && s[i] != '=' { i += 1 }
+        let key = s[start..i]
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n || s[i] != '=' { return "(connection string does not parse)" }
+        i += 1
+        while i < n && isWs(s[i]) { i += 1 }
+        b.add(s[start..i])
+        let vs = i
+        if i < n && s[i] == '\'' {
+            i += 1
+            var shut = false
+            while i < n {
+                if s[i] == '\\' {
+                    i += 2
+                    continue
+                }
+                if s[i] == '\'' {
+                    shut = true
+                    i += 1
+                    break
+                }
+                i += 1
+            }
+            if !shut { return "(connection string does not parse)" }
+        } else {
+            while i < n && !isWs(s[i]) {
+                if s[i] == '\\' { i += 1 }
+                i += 1
+            }
+        }
+        if i > n { i = n }
+        b.add(if key == "password" { "***" } else { s[vs..i] })
+    }
+    return b.toStr()
+}
+
+fn maskedUri(s: str): str {
+    let u = uriPrefix(s)
+    let n = len(s)
+    var b = newStrBuf()
+    var q = u
+    while q < n && s[q] != '@' && s[q] != '/' { q += 1 }
+    var from = 0
+    if q < n && s[q] == '@' {
+        var colon = u
+        while colon < q && s[colon] != ':' { colon += 1 }
+        if colon < q {
+            b.add(s[..colon + 1])
+            b.add("***")
+            from = q
+        }
+    }
+    // password=... query parameters
+    let rest = s[from..]
+    var i = 0
+    var qpos = -1
+    for k in 0..len(rest) {
+        if rest[k] == '?' {
+            qpos = k
+            break
+        }
+    }
+    if qpos < 0 {
+        b.add(rest)
+        return b.toStr()
+    }
+    b.add(rest[..qpos + 1])
+    var first = true
+    for part in split(rest[qpos + 1..], '&') {
+        if !first { b.add("&") }
+        first = false
+        if startsWith(part, "password=") { b.add("password=***") } else { b.add(part) }
+    }
+    return b.toStr()
+}
+
+fn pick(kv: &[]KV, key: str): Option[str] {
+    var i = len(kv)
+    while i > 0 {
+        i -= 1
+        if kv[i].k == key { return Some(kv[i].v) }
+    }
+    return None
+}
+
+fn envPick(name: str): Option[str] {
+    match os.env(name) {
+        Some(v) {
+            if len(v) > 0 { return Some(v) }
+            return None
+        }
+        None { return None }
+    }
+}
+
+// The keyword's value: the string's (even when empty), else the environment
+// variable's (when not empty), else dflt.
+fn setting(kv: &[]KV, key: str, envName: str, dflt: str): str {
+    match pick(kv, key) {
+        Some(v) { return v }
+        None {}
+    }
+    if len(envName) > 0 {
+        match envPick(envName) {
+            Some(v) { return v }
+            None {}
+        }
+    }
+    return dflt
+}
+
+fn splitList(s: str): []str {
+    if len(s) == 0 { return [] }
+    return split(s, ',')
+}
+
+fn parseIntOpt(v: str, key: str): Result[int, Error] {
+    match parseInt(v) {
+        Some(n) { return Ok(n) }
+        None { return Err(input("invalid integer value \"" + v + "\" for connection option \"" + key + "\"")) }
+    }
+}
+
+fn parsePort(v: str): Result[int, Error] {
+    if len(v) == 0 { return Ok(DEFAULT_PORT) }
+    let n = try parseIntOpt(v, "port")
+    if n < 1 || n > 65535 { return Err(input("invalid port number: \"" + v + "\"")) }
+    return Ok(n)
+}
+
+const SOCKET_DIRS: []str = ["/var/run/postgresql", "/tmp"]
+
+// The default Unix socket directory: the first of dirs that holds the socket
+// file for port; else the first (libpq has one compiled-in directory; Debian's
+// is /var/run/postgresql, upstream's /tmp).
+pub fn socketDirFor(port: int, dirs: &[str]): str {
+    for d in dirs {
+        if fs.exists(d + "/.s.PGSQL." + port.toStr()) { return d }
+    }
+    return dirs[0]
+}
+
+fn sslModeOf(v: str): Result[SslMode, Error] {
+    match v {
+        "disable" { return Ok(SslMode.Disable) }
+        "allow" { return Ok(SslMode.Allow) }
+        "prefer" { return Ok(SslMode.Prefer) }
+        "require" { return Ok(SslMode.Require) }
+        "verify-ca" { return Ok(SslMode.VerifyCa) }
+        "verify-full" { return Ok(SslMode.VerifyFull) }
+        else { return Err(input("invalid sslmode value: \"" + v + "\"")) }
+    }
+}
+
+fn versionOf(key: str, v: str, dflt: tls.Version): Result[tls.Version, Error] {
+    if len(v) == 0 { return Ok(dflt) }
+    if v == "TLSv1.2" { return Ok(tls.Version.Tls12) }
+    if v == "TLSv1.3" { return Ok(tls.Version.Tls13) }
+    if v == "TLSv1" || v == "TLSv1.1" { return Err(input(key + " " + v + " is not supported (TLSv1.2 or TLSv1.3)")) }
+    return Err(input("invalid " + key + " value: \"" + v + "\""))
+}
+
+// require_auth's list, checked: methods separated by commas, all negated with ! or none.
+fn checkRequireAuth(v: str): Result[Unit, Error] {
+    if len(v) == 0 { return Ok(Unit{}) }
+    var neg = 0
+    var pos = 0
+    for m in split(v, ',') {
+        var name = m
+        if startsWith(m, "!") {
+            name = m[1..]
+            neg += 1
+        } else {
+            pos += 1
+        }
+        if name != "password" && name != "md5" && name != "scram-sha-256" && name != "none" && name != "gss" && name != "sspi" {
+            return Err(input("invalid require_auth method: \"" + m + "\""))
+        }
+    }
+    if neg > 0 && pos > 0 { return Err(input("require_auth method cannot mix negated and non-negated methods")) }
+    return Ok(Unit{})
+}
+
+fn startupSetting(out: mut &[]Setting, name: str, v: str) {
+    if len(v) > 0 { append(out, Setting{name: name, value: v}) }
+}
+
+// A connection string (keyword/value or URI), then the environment, then the
+// defaults, as libpq: design/pgwire.md section 6.
+pub fn parseConfig(conninfo: str): Result[Config, Error] {
+    let kv = try parsePairs(conninfo)
+    // refused or unsupported keywords and values
+    if len(setting(&kv, "service", "PGSERVICE", "")) > 0 { return Err(input("service files are not supported yet")) }
+    if pick(&kv, "replication").isSome() { return Err(input("the keyword replication is not supported")) }
+    if len(setting(&kv, "requirepeer", "", "")) > 0 { return Err(input("the keyword requirepeer is not supported yet")) }
+    if len(setting(&kv, "sslpassword", "", "")) > 0 { return Err(input("encrypted private keys are not supported")) }
+    let certmode = setting(&kv, "sslcertmode", "PGSSLCERTMODE", "allow")
+    if certmode == "require" { return Err(input("sslcertmode=require is not supported yet")) }
+    if certmode != "allow" && certmode != "disable" { return Err(input("invalid sslcertmode value: \"" + certmode + "\"")) }
+    let neg = setting(&kv, "sslnegotiation", "", "postgres")
+    if neg == "direct" || neg == "requiredirect" { return Err(input("sslnegotiation=direct is not supported yet")) }
+    if neg != "postgres" { return Err(input("invalid sslnegotiation value: \"" + neg + "\"")) }
+    for key in ["min_protocol_version", "max_protocol_version"] {
+        let v = setting(&kv, key, "", "")
+        if len(v) > 0 && v != "3.0" && !(key == "max_protocol_version" && v == "latest") {
+            return Err(input("the keyword " + key + " is supported only as 3.0"))
+        }
+    }
+    let gss = setting(&kv, "gssencmode", "PGGSSENCMODE", "prefer")
+    if gss == "require" { return Err(input("GSSAPI encryption is not supported")) }
+    if gss != "disable" && gss != "prefer" && gss != "allow" { return Err(input("invalid gssencmode value: \"" + gss + "\"")) }
+    let tsa = setting(&kv, "target_session_attrs", "PGTARGETSESSIONATTRS", "any")
+    if tsa != "any" { return Err(input("target_session_attrs=" + tsa + " is not supported yet")) }
+    let lb = setting(&kv, "load_balance_hosts", "PGLOADBALANCEHOSTS", "disable")
+    if lb != "disable" { return Err(input("load_balance_hosts=" + lb + " is not supported yet")) }
+
+    // the user and the database
+    var user = setting(&kv, "user", "PGUSER", "")
+    if len(user) == 0 { user = os.userName() }
+    if len(user) == 0 { return Err(input("could not look up local user ID")) }
+    var dbname = setting(&kv, "dbname", "PGDATABASE", "")
+    if len(dbname) == 0 { dbname = user }
+
+    // endpoints
+    let hosts = splitList(setting(&kv, "host", "PGHOST", ""))
+    let addrs = splitList(setting(&kv, "hostaddr", "PGHOSTADDR", ""))
+    let ports = splitList(setting(&kv, "port", "PGPORT", ""))
+    var nh = len(hosts)
+    if nh == 0 { nh = len(addrs) }
+    if nh == 0 { nh = 1 }
+    if len(hosts) > 0 && len(addrs) > 0 && len(hosts) != len(addrs) {
+        return Err(input("could not match " + len(hosts).toStr() + " host names to " + len(addrs).toStr() + " hostaddr values"))
+    }
+    if len(ports) > 1 && len(ports) != nh {
+        return Err(input("could not match " + len(ports).toStr() + " port numbers to " + nh.toStr() + " hosts"))
+    }
+    var eps: []Endpoint = []
+    for i in 0..nh {
+        let port = try parsePort(if len(ports) == 0 { "" } else if len(ports) == 1 { ports[0] } else { ports[i] })
+        var host = if i < len(hosts) { hosts[i] } else { "" }
+        let addr = if i < len(addrs) { addrs[i] } else { "" }
+        if len(host) == 0 && len(addr) == 0 { host = socketDirFor(port, SOCKET_DIRS) }
+        append(mut &eps, Endpoint{host: host, hostaddr: addr, port: port})
+    }
+
+    // TLS
+    let home = os.homeDir()
+    var rootcert = setting(&kv, "sslrootcert", "PGSSLROOTCERT", "")
+    var smv = setting(&kv, "sslmode", "PGSSLMODE", "")
+    if len(smv) == 0 && pick(&kv, "sslmode").isNone() {
+        if rootcert == "system" {
+            smv = "verify-full"
+        } else if os.env("PGREQUIRESSL").unwrapOr("") == "1" {
+            smv = "require"
+        } else {
+            smv = "prefer"
+        }
+    }
+    let sslmode = try sslModeOf(smv)
+    if rootcert == "system" && sslmode != SslMode.VerifyFull {
+        return Err(input("weak sslmode \"" + smv + "\" may not be used with sslrootcert=system (use \"verify-full\")"))
+    }
+    if len(rootcert) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/root.crt") { rootcert = home + "/.postgresql/root.crt" }
+    var sslcert = setting(&kv, "sslcert", "PGSSLCERT", "")
+    var sslkey = setting(&kv, "sslkey", "PGSSLKEY", "")
+    if len(sslcert) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/postgresql.crt") {
+        sslcert = home + "/.postgresql/postgresql.crt"
+        if len(sslkey) == 0 { sslkey = home + "/.postgresql/postgresql.key" }
+    }
+    let verifying = sslmode == SslMode.VerifyCa || sslmode == SslMode.VerifyFull || (sslmode == SslMode.Require && len(rootcert) > 0) ||
+                    (sslmode == SslMode.Prefer && len(rootcert) > 0)
+    if verifying {
+        var crl = setting(&kv, "sslcrl", "PGSSLCRL", "")
+        if len(crl) == 0 && len(setting(&kv, "sslcrldir", "PGSSLCRLDIR", "")) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/root.crl") {
+            crl = "x"
+        }
+        if len(crl) > 0 || len(setting(&kv, "sslcrldir", "PGSSLCRLDIR", "")) > 0 {
+            return Err(input("certificate revocation lists are not supported yet"))
+        }
+    }
+    let sni = setting(&kv, "sslsni", "PGSSLSNI", "1")
+    if sni != "0" && sni != "1" { return Err(input("invalid sslsni value: \"" + sni + "\"")) }
+    let sslMin = try versionOf("ssl_min_protocol_version", setting(&kv, "ssl_min_protocol_version", "PGSSLMINPROTOCOLVERSION", ""), tls.Version.Tls12)
+    let sslMax = try versionOf("ssl_max_protocol_version", setting(&kv, "ssl_max_protocol_version", "PGSSLMAXPROTOCOLVERSION", ""), tls.Version.Tls13)
+    if sslMin == tls.Version.Tls13 && sslMax == tls.Version.Tls12 {
+        return Err(input("ssl_min_protocol_version is higher than ssl_max_protocol_version"))
+    }
+    let cbv = setting(&kv, "channel_binding", "PGCHANNELBINDING", "prefer")
+    var cb = ChannelBinding.Prefer
+    if cbv == "disable" {
+        cb = ChannelBinding.Disable
+    } else if cbv == "require" {
+        cb = ChannelBinding.Require
+    } else if cbv != "prefer" {
+        return Err(input("invalid channel_binding value: \"" + cbv + "\""))
+    }
+    let ra = setting(&kv, "require_auth", "PGREQUIREAUTH", "")
+    try checkRequireAuth(ra)
+
+    // timing
+    var ctms = -1
+    let ct = setting(&kv, "connect_timeout", "PGCONNECT_TIMEOUT", "")
+    if len(ct) > 0 {
+        let t = try parseIntOpt(ct, "connect_timeout")
+        if t > 0 { ctms = (if t < 2 { 2 } else { t }) * 1000 }
+    }
+    var ka = KeepAlive{on: true, idleS: 0, intervalS: 0, count: 0}
+    let kas = setting(&kv, "keepalives", "", "1")
+    ka.on = (try parseIntOpt(kas, "keepalives")) != 0
+    let idle = setting(&kv, "keepalives_idle", "", "")
+    if len(idle) > 0 { ka.idleS = try parseIntOpt(idle, "keepalives_idle") }
+    let intvl = setting(&kv, "keepalives_interval", "", "")
+    if len(intvl) > 0 { ka.intervalS = try parseIntOpt(intvl, "keepalives_interval") }
+    let cnt = setting(&kv, "keepalives_count", "", "")
+    if len(cnt) > 0 { ka.count = try parseIntOpt(cnt, "keepalives_count") }
+
+    // the StartupMessage pairs after user and database (5.1)
+    var startup: []Setting = []
+    var app = setting(&kv, "application_name", "PGAPPNAME", "")
+    if len(app) == 0 { app = setting(&kv, "fallback_application_name", "", "") }
+    startupSetting(mut &startup, "application_name", app)
+    var enc = setting(&kv, "client_encoding", "PGCLIENTENCODING", "")
+    if len(enc) == 0 || enc == "auto" { enc = "UTF8" }
+    startupSetting(mut &startup, "client_encoding", enc)
+    startupSetting(mut &startup, "options", setting(&kv, "options", "PGOPTIONS", ""))
+    startupSetting(mut &startup, "datestyle", os.env("PGDATESTYLE").unwrapOr(""))
+    startupSetting(mut &startup, "timezone", os.env("PGTZ").unwrapOr(""))
+    startupSetting(mut &startup, "geqo", os.env("PGGEQO").unwrapOr(""))
+    try sqldialect.noNul(user, "user")
+    try sqldialect.noNul(dbname, "database")
+    for st in startup {
+        try sqldialect.noNul(st.name, "startup parameter")
+        try sqldialect.noNul(st.value, st.name)
+    }
+
+    var pw: Option[str] = None
+    match pick(&kv, "password") {
+        Some(v) { pw = Some(v) }
+        None { pw = envPick("PGPASSWORD") }
+    }
+    var passfile = setting(&kv, "passfile", "PGPASSFILE", "")
+    if len(passfile) == 0 && len(home) > 0 { passfile = home + "/.pgpass" }
+    return Ok(Config{endpoints: eps, user: user, password: pw, passfile: passfile, dbname: dbname, sslmode: sslmode,
+                     sslrootcert: rootcert, sslcert: sslcert, sslkey: sslkey, sslsni: sni == "1", sslMin: sslMin, sslMax: sslMax,
+                     channelBinding: cb, requireAuth: ra, connectTimeoutMs: ctms, keepAlive: ka, startup: startup})
+}
+
+// ----------------------------------------------------------------- .pgpass
+
+// One field of a .pgpass line, from s[at..]: the text up to the next unescaped
+// ':' (\: and \\ unescaped), and the position after the ':'. The last field
+// runs to the end of the line.
+type PwField = value record { text: str; next: int }
+
+fn pwField(s: str, at: int, last: bool): PwField {
+    var b = newStrBuf()
+    var i = at
+    while i < len(s) {
+        let c = s[i]
+        if c == '\\' && i + 1 < len(s) {
+            b.addByte(s[i + 1])
+            i += 2
+            continue
+        }
+        if c == ':' && !last { return PwField{text: b.toStr(), next: i + 1} }
+        b.addByte(c)
+        i += 1
+    }
+    return PwField{text: b.toStr(), next: -1}
+}
+
+fn pwMatch(field: str, v: str): bool { return field == "*" || field == v }
+
+// The password the .pgpass file gives for the endpoint, user and database of
+// the configuration (design/pgwire.md 6.4): the first matching line. None when
+// there is no usable file (not a regular file, or readable by group or other).
+pub fn passwordFor(cfg: &Config, ep: &Endpoint): Option[str] {
+    if len(cfg.passfile) == 0 { return None }
+    match fs.stat(cfg.passfile) {
+        Ok(st) {
+            if !st.isFile() || (st.perm() & 0x3F) != 0 { return None }
+        }
+        Err(_) { return None }
+    }
+    let text = match io.read(cfg.passfile) {
+        Ok(t) { t }
+        Err(_) { return None }
+    }
+    var host = if len(ep.host) > 0 { ep.host } else if len(ep.hostaddr) > 0 { ep.hostaddr } else { "localhost" }
+    if ep.isUnix() && (ep.host == "/var/run/postgresql" || ep.host == "/tmp") { host = "localhost" }
+    let port = ep.port.toStr()
+    for raw in split(text, '\n') {
+        var line = raw
+        if len(line) > 0 && line[len(line) - 1] == '\r' { line = line[..len(line) - 1] }
+        if len(line) == 0 || line[0] == '#' { continue }
+        let f1 = pwField(line, 0, false)
+        if f1.next < 0 { continue }
+        let f2 = pwField(line, f1.next, false)
+        if f2.next < 0 { continue }
+        let f3 = pwField(line, f2.next, false)
+        if f3.next < 0 { continue }
+        let f4 = pwField(line, f3.next, false)
+        if f4.next < 0 { continue }
+        if pwMatch(f1.text, host) && pwMatch(f2.text, port) && pwMatch(f3.text, cfg.dbname) && pwMatch(f4.text, cfg.user) {
+            return Some(pwField(line, f4.next, true).text)
+        }
+    }
+    return None
+}
+
+// ----------------------------------------------------------- messages: writing
+
+// An output buffer that keeps its capacity between messages (an array cannot
+// be emptied without freeing it): bytes [0, n) are the message under construction.
+pub type Out = record { buf: []byte; n: int }
+
+pub fn newOut(): Out { return Out{buf: [], n: 0} }
+
+pub fn (o: mut &Out) reset() { o.n = 0 }
+
+pub fn (o: &Out) size(): int { return o.n }
+
+pub fn (o: &Out) bytes(): &[byte] { return &o.buf[0..o.n] }
+
+pub fn (o: &Out) str(): str { return strFromBytes(&o.buf[0..o.n]) }
+
+fn (o: mut &Out) put8(v: int) {
+    if o.n < len(o.buf) { o.buf[o.n] = byte(v & 0xff) } else { append(mut &o.buf, byte(v & 0xff)) }
+    o.n += 1
+}
+
+fn (o: mut &Out) put16(v: int) {
+    o.put8(v >> 8)
+    o.put8(v)
+}
+
+fn (o: mut &Out) put32(v: int) {
+    o.put8(v >> 24)
+    o.put8(v >> 16)
+    o.put8(v >> 8)
+    o.put8(v)
+}
+
+fn (o: mut &Out) putRaw(s: str) {
+    for i in 0..len(s) { o.put8(int(s[i])) }
+}
+
+fn (o: mut &Out) putC(s: str) {
+    o.putRaw(s)
+    o.put8(0)
+}
+
+// Starts a message of type t (a negative t: one without a type byte, as the
+// startup packet); the position of its length field.
+fn (o: mut &Out) begin(t: int): int {
+    if t >= 0 { o.put8(t) }
+    let at = o.n
+    o.put32(0)
+    return at
+}
+
+// Fills in the length of the message that began at `at`.
+fn (o: mut &Out) finish(at: int) {
+    let l = o.n - at
+    o.buf[at] = byte((l >> 24) & 0xff)
+    o.buf[at + 1] = byte((l >> 16) & 0xff)
+    o.buf[at + 2] = byte((l >> 8) & 0xff)
+    o.buf[at + 3] = byte(l & 0xff)
+}
+
+// A parameter as sent: its type OID, its format (text 0, binary 1) and bytes.
+pub type Param = value record { pub oid: int; pub binary: bool; pub null: bool; pub data: str }
+
+pub fn putStartup(o: mut &Out, user: str, dbname: str, settings: &[]Setting) {
+    let at = o.begin(-1)
+    o.put32(PROTOCOL)
+    o.putC("user")
+    o.putC(user)
+    o.putC("database")
+    o.putC(dbname)
+    for s in settings {
+        o.putC(s.name)
+        o.putC(s.value)
+    }
+    o.put8(0)
+    o.finish(at)
+}
+
+pub fn putSslRequest(o: mut &Out) {
+    o.put32(8)
+    o.put32(80877103)
+}
+
+// A CancelRequest: length, 80877102, the process id and the secret key (4 bytes in 3.0).
+pub fn putCancelRequest(o: mut &Out, pid: int, key: str) {
+    let at = o.begin(-1)
+    o.put32(80877102)
+    o.put32(pid)
+    o.putRaw(key)
+    o.finish(at)
+}
+
+pub fn putQuery(o: mut &Out, sql: str) {
+    let at = o.begin(81)
+    o.putC(sql)
+    o.finish(at)
+}
+
+pub fn putParse(o: mut &Out, name: str, sql: str, oids: &[]Param) {
+    let at = o.begin(80)
+    o.putC(name)
+    o.putC(sql)
+    o.put16(len(oids))
+    for p in oids { o.put32(p.oid) }
+    o.finish(at)
+}
+
+// Bind: one format code per parameter, then the values; all results in text.
+pub fn putBind(o: mut &Out, portal: str, stmt: str, params: &[]Param) {
+    let at = o.begin(66)
+    o.putC(portal)
+    o.putC(stmt)
+    o.put16(len(params))
+    for p in params { o.put16(if p.binary { 1 } else { 0 }) }
+    o.put16(len(params))
+    for p in params {
+        if p.null {
+            o.put32(-1)
+        } else {
+            o.put32(len(p.data))
+            o.putRaw(p.data)
+        }
+    }
+    o.put16(0)
+    o.finish(at)
+}
+
+// Describe: kind 'S' (statement) or 'P' (portal).
+pub fn putDescribe(o: mut &Out, kind: int, name: str) {
+    let at = o.begin(68)
+    o.put8(kind)
+    o.putC(name)
+    o.finish(at)
+}
+
+pub fn putExecute(o: mut &Out, portal: str, rows: int) {
+    let at = o.begin(69)
+    o.putC(portal)
+    o.put32(rows)
+    o.finish(at)
+}
+
+pub fn putClose(o: mut &Out, kind: int, name: str) {
+    let at = o.begin(67)
+    o.put8(kind)
+    o.putC(name)
+    o.finish(at)
+}
+
+pub fn putSync(o: mut &Out) {
+    let at = o.begin(83)
+    o.finish(at)
+}
+
+pub fn putFlush(o: mut &Out) {
+    let at = o.begin(72)
+    o.finish(at)
+}
+
+pub fn putTerminate(o: mut &Out) {
+    let at = o.begin(88)
+    o.finish(at)
+}
+
+pub fn putPassword(o: mut &Out, password: str) {
+    let at = o.begin(112)
+    o.putC(password)
+    o.finish(at)
+}
+
+// SASLInitialResponse: the mechanism, the length of the client-first-message, the message.
+pub fn putSaslInitial(o: mut &Out, mechanism: str, data: str) {
+    let at = o.begin(112)
+    o.putC(mechanism)
+    o.put32(len(data))
+    o.putRaw(data)
+    o.finish(at)
+}
+
+pub fn putSaslResponse(o: mut &Out, data: str) {
+    let at = o.begin(112)
+    o.putRaw(data)
+    o.finish(at)
+}
+
+pub fn putCopyFail(o: mut &Out, msg: str) {
+    let at = o.begin(102)
+    o.putC(msg)
+    o.finish(at)
+}
+
+// ----------------------------------------------------------- messages: reading
+
+// A cursor over a message body: s[pos..end].
+type Rd = value record { s: str; pos: int; end: int }
+
+fn (r: mut &Rd) u8(what: str): Result[int, Error] {
+    if r.pos + 1 > r.end { return Err(proto(what + ": the message is too short")) }
+    let v = int(r.s[r.pos])
+    r.pos += 1
+    return Ok(v)
+}
+
+fn (r: mut &Rd) i16(what: str): Result[int, Error] {
+    if r.pos + 2 > r.end { return Err(proto(what + ": the message is too short")) }
+    var v = (int(r.s[r.pos]) << 8) | int(r.s[r.pos + 1])
+    if v >= 32768 { v -= 65536 }
+    r.pos += 2
+    return Ok(v)
+}
+
+fn (r: mut &Rd) i32(what: str): Result[int, Error] {
+    if r.pos + 4 > r.end { return Err(proto(what + ": the message is too short")) }
+    var v = (int(r.s[r.pos]) << 24) | (int(r.s[r.pos + 1]) << 16) | (int(r.s[r.pos + 2]) << 8) | int(r.s[r.pos + 3])
+    if v >= 2147483648 { v -= 4294967296 }
+    r.pos += 4
+    return Ok(v)
+}
+
+fn (r: mut &Rd) take(n: int, what: str): Result[str, Error] {
+    if n < 0 || r.pos + n > r.end { return Err(proto(what + ": the message is too short")) }
+    let v = r.s[r.pos..r.pos + n]
+    r.pos += n
+    return Ok(v)
+}
+
+// A NUL-terminated string inside the message.
+fn (r: mut &Rd) cstr(what: str): Result[str, Error] {
+    var i = r.pos
+    while i < r.end && r.s[i] != 0 { i += 1 }
+    if i >= r.end { return Err(proto(what + ": a string without its end")) }
+    let v = r.s[r.pos..i]
+    r.pos = i + 1
+    return Ok(v)
+}
+
+pub type ServerError = value record {
+    pub severity: str; pub code: str; pub message: str; pub detail: str; pub hint: str; pub position: str
+    pub internalPosition: str; pub internalQuery: str; pub where: str; pub schema: str; pub table: str
+    pub column: str; pub dataType: str; pub constraint: str; pub file: str; pub line: str; pub routine: str
+}
+
+// The error as the library reports it: code FATAL_ERROR, the SQLSTATE, the primary message.
+pub fn (e: &ServerError) dbError(): Error {
+    return sqldialect.DbError{code: FATAL_ERROR, state: e.code, msg: e.message}
+}
+
+// The fields of an ErrorResponse or NoticeResponse body: (code byte, string)
+// pairs ending in a 0 byte; unknown codes are skipped. E_PROTOCOL for a field
+// that runs past the body.
+pub fn parseServerError(body: str): Result[ServerError, Error] {
+    var e = ServerError{severity: "", code: "", message: "", detail: "", hint: "", position: "", internalPosition: "",
+                        internalQuery: "", where: "", schema: "", table: "", column: "", dataType: "", constraint: "",
+                        file: "", line: "", routine: ""}
+    var r = Rd{s: body, pos: 0, end: len(body)}
+    var sevV = ""
+    var sevS = ""
+    while true {
+        let f = try r.u8("error response")
+        if f == 0 { break }
+        let v = try r.cstr("error response")
+        match f {
+            86 { sevV = v }
+            83 { sevS = v }
+            67 { e.code = v }
+            77 { e.message = v }
+            68 { e.detail = v }
+            72 { e.hint = v }
+            80 { e.position = v }
+            112 { e.internalPosition = v }
+            113 { e.internalQuery = v }
+            87 { e.where = v }
+            115 { e.schema = v }
+            116 { e.table = v }
+            99 { e.column = v }
+            100 { e.dataType = v }
+            110 { e.constraint = v }
+            70 { e.file = v }
+            76 { e.line = v }
+            82 { e.routine = v }
+            else {}
+        }
+    }
+    e.severity = if len(sevV) > 0 { sevV } else { sevS }
+    return Ok(e)
+}
+
+// ---------------------------------------------------------------- results
+
+pub type Column = value record {
+    pub name: str; pub tableOid: int; pub attnum: int; pub typeOid: int; pub typeSize: int; pub typmod: int; pub format: int
+}
+
+// The values of a reply, raw: the chunks of bytes as they came off the wire and,
+// per value, where it lies (design/pgwire.md section 10).
+pub type RawRows = record {
+    pub chunks: []str
+    pub rowChunk: []i32            // per row
+    pub starts: []i32              // per value, row-major: offset in the row's chunk
+    pub lens: []i32                // per value: -1 NULL
+    pub ncols: int
+}
+
+pub fn newRawRows(ncols: int): RawRows {
+    return RawRows{chunks: [], rowChunk: [], starts: [], lens: [], ncols: ncols}
+}
+
+pub fn (r: &RawRows) count(): int { return len(r.rowChunk) }
+
+// Whether a value is NULL; the caller checks the ranges.
+pub fn (r: &RawRows) isNull(row: int, col: int): bool { return r.lens[row * r.ncols + col] < 0 }
+
+// The value's text (not NULL).
+pub fn (r: &RawRows) bytes(row: int, col: int): &str {
+    let k = row * r.ncols + col
+    let st = int(r.starts[k])
+    return &r.chunks[int(r.rowChunk[row])][st..st + int(r.lens[k])]
+}
+
+pub type Reply = record { pub columns: []Column; pub rows: RawRows; pub tag: str; pub empty: bool }
+
+// Rows affected, from a CommandComplete tag, as PQcmdTuples: the last number of
+// INSERT, UPDATE, DELETE, MERGE, SELECT, MOVE, FETCH and COPY tags; 0 for the rest.
+pub fn affectedOf(tag: str): int {
+    var sp = 0
+    while sp < len(tag) && tag[sp] != ' ' { sp += 1 }
+    let verb = tag[..sp]
+    if verb != "INSERT" && verb != "UPDATE" && verb != "DELETE" && verb != "MERGE" && verb != "SELECT" &&
+       verb != "MOVE" && verb != "FETCH" && verb != "COPY" {
+        return 0
+    }
+    var last = len(tag)
+    while last > 0 && tag[last - 1] != ' ' { last -= 1 }
+    return parseInt(tag[last..]).unwrapOr(0)
+}
+
+// The span of each value of the DataRow whose column count starts at d[at]
+// (after the type byte and length), into starts and lens (a NULL: length -1).
+// The position after the row. E_PROTOCOL for a count other than ncols, a
+// negative length other than -1, or a value past the end of d.
+pub fn scanRow(d: &str, at: int, ncols: int, starts: mut &[]int, lens: mut &[]int): Result[int, Error] {
+    let n = len(d)
+    if at < 0 || at + 2 > n { return Err(proto("a DataRow without its column count")) }
+    let count = (int(d[at]) << 8) | int(d[at + 1])
+    if count != ncols {
+        return Err(proto("a DataRow of " + count.toStr() + " columns for a RowDescription of " + ncols.toStr()))
+    }
+    var p = at + 2
+    for i in 0..ncols {
+        if p + 4 > n { return Err(proto("a DataRow cut short")) }
+        var l = (int(d[p]) << 24) | (int(d[p + 1]) << 16) | (int(d[p + 2]) << 8) | int(d[p + 3])
+        if l >= 2147483648 { l -= 4294967296 }
+        p += 4
+        if l == -1 {
+            starts[i] = p
+            lens[i] = -1
+        } else if l < 0 {
+            return Err(proto("a DataRow value of length " + l.toStr()))
+        } else {
+            if p + l > n { return Err(proto("a DataRow value runs past its message")) }
+            starts[i] = p
+            lens[i] = l
+            p += l
+        }
+    }
+    return Ok(p)
+}
+
+// ------------------------------------------------------------- parameters
+
+type Value = sqldialect.Value
+
+fn floatText(f: float): str {
+    if f.isNaN() { return "NaN" }
+    if f.isInf() { return if f > 0.0f { "Infinity" } else { "-Infinity" } }
+    return f.toStr()
+}
+
+// A Value as a parameter (design/pgwire.md 7.3): Null untyped, Int int8, Float
+// float8, Bool bool, Text text (no NUL), Bytes bytea in binary, Dec numeric text.
+pub fn param(v: &Value): Result[Param, Error] {
+    match v {
+        Value.Null { return Ok(Param{oid: 0, binary: false, null: true, data: ""}) }
+        Value.Int(n) { return Ok(Param{oid: OID_INT8, binary: false, null: false, data: n.toStr()}) }
+        Value.Float(f) { return Ok(Param{oid: OID_FLOAT8, binary: false, null: false, data: floatText(f)}) }
+        Value.Bool(b) { return Ok(Param{oid: OID_BOOL, binary: false, null: false, data: if b { "t" } else { "f" }}) }
+        Value.Text(s) {
+            try sqldialect.noNul(s, "text value")
+            return Ok(Param{oid: OID_TEXT, binary: false, null: false, data: s})
+        }
+        Value.Bytes(b) { return Ok(Param{oid: OID_BYTEA, binary: true, null: false, data: b}) }
+        Value.Dec(d) {
+            return Ok(Param{oid: OID_NUMERIC, binary: false, null: false, data: try sqldialect.decimalText(d, MAX_DSCALE)})
+        }
+    }
+}
+
+// ----------------------------------------------------- passwords and SCRAM
+
+fn cryptoFail(e: crypto.Error): Error { return bad(e.toStr()) }
+
+fn hmac(key: str, data: str): Result[str, Error] {
+    return crypto.hmacSha256(key, data).mapErr(cryptoFail)
+}
+
+fn xor(a: str, b: str): str {
+    var out = array(len(a), byte(0))
+    for i in 0..len(a) { out[i] = a[i] ^ b[i] }
+    return strFromBytes(&out)
+}
+
+// "md5" + hex(md5(hex(md5(password + user)) + salt)): the PasswordMessage of AuthenticationMD5Password.
+pub fn md5Password(user: str, password: str, salt: str): Result[str, Error] {
+    let inner = crypto.hex(try crypto.md5(password + user).mapErr(cryptoFail))
+    let outer = try crypto.md5(inner + salt).mapErr(cryptoFail)
+    return Ok("md5" + crypto.hex(outer))
+}
+
+// RFC 4013 as far as it needs no tables: a password of printable ASCII is used
+// as it is; non-ASCII spaces become a space and the characters "mapped to
+// nothing" go; invalid UTF-8 or a control character leaves the password raw
+// (as PostgreSQL does). No NFKC normalization (design/pgwire.md 5.5).
+fn saslprep(p: str): str {
+    var ascii = true
+    for i in 0..len(p) {
+        let c = p[i]
+        if c >= 128 { ascii = false }
+        if c < 32 || c == 127 { return p }
+    }
+    if ascii { return p }
+    if !strings.isValidUtf8(p) { return p }
+    var b = newStrBuf()
+    var i = 0
+    while i < len(p) {
+        let d = strings.decodeAt(p, i)
+        let r = d.rune
+        i += d.size
+        if r == 0xA0 || r == 0x1680 || (r >= 0x2000 && r <= 0x200A) || r == 0x202F || r == 0x205F || r == 0x3000 {
+            b.addByte(' ')
+        } else if r == 0xAD || r == 0x34F || r == 0x1806 || (r >= 0x180B && r <= 0x180D) || (r >= 0x200B && r <= 0x200D) ||
+                  r == 0x2060 || (r >= 0xFE00 && r <= 0xFE0F) || r == 0xFEFF {
+            continue
+        } else {
+            strings.addRune(mut &b, r)
+        }
+    }
+    return b.toStr()
+}
+
+fn salted(password: str, salt: str, iterations: int): Result[str, Error] {
+    return crypto.pbkdf2Sha256(saslprep(password), salt, iterations, 32).mapErr(cryptoFail)
+}
+
+// ClientProof = ClientKey XOR HMAC(SHA-256(ClientKey), AuthMessage), the raw 32 bytes.
+pub fn scramClientProof(password: str, salt: str, iterations: int, authMessage: str): Result[str, Error] {
+    let sp = try salted(password, salt, iterations)
+    let clientKey = try hmac(sp, "Client Key")
+    let stored = try crypto.sha256(clientKey).mapErr(cryptoFail)
+    let sig = try hmac(stored, authMessage)
+    return Ok(xor(clientKey, sig))
+}
+
+// ServerSignature = HMAC(HMAC(SaltedPassword, "Server Key"), AuthMessage), the raw 32 bytes.
+pub fn scramServerSignature(password: str, salt: str, iterations: int, authMessage: str): Result[str, Error] {
+    let sp = try salted(password, salt, iterations)
+    let serverKey = try hmac(sp, "Server Key")
+    return hmac(serverKey, authMessage)
+}
+
+// --------------------------------------------------------- values (text format)
+
+pub type Columns = sqlrows.Columns
+type Kind = sqlrows.Kind
+
+fn pgErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, msg) }
+
+// The result's columns for sqlrows: wire is the type OID, aux the typmod.
+pub fn describe(cols: &[]Column): []sqlrows.Column {
+    var out: []sqlrows.Column = []
+    for c in cols {
+        let oid = c.typeOid
+        let tm = c.typmod
+        let p = if oid == OID_NUMERIC && tm >= 4 { ((tm - 4) >> 16) & 0xffff } else { 0 }
+        let s = if oid == OID_NUMERIC && tm >= 4 { (((tm - 4) & 0x7ff) ^ 1024) - 1024 } else { 0 }
+        append(mut &out, sqlrows.column(c.name, typeText(oid, tm, p, s), kindsOf(oid, tm, p, s),
+                                        sqlrows.NULLABLE_UNKNOWN, oid, 0, p, s, tm))
+    }
+    return out
+}
+
+pub fn typeText(oid: int, tm: int, p: int, s: int): str {
+    match oid {
+        OID_BOOL { return "bool" }
+        OID_BYTEA { return "bytea" }
+        OID_INT8 { return "int8" }
+        OID_INT2 { return "int2" }
+        OID_INT4 { return "int4" }
+        OID_TEXT { return "text" }
+        OID_FLOAT4 { return "float4" }
+        OID_FLOAT8 { return "float8" }
+        OID_NUMERIC { return if tm >= 4 { "numeric(" + p.toStr() + "," + s.toStr() + ")" } else { "numeric" } }
+        OID_CHAR { return "char" }
+        OID_NAME { return "name" }
+        OID_BPCHAR { return "bpchar" }
+        OID_VARCHAR { return "varchar" }
+        OID_DATE { return "date" }
+        OID_TIME { return "time" }
+        OID_TIMESTAMP { return "timestamp" }
+        OID_TIMESTAMPTZ { return "timestamptz" }
+        else { return "type " + oid.toStr() }
+    }
+}
+
+// What a column can be read as (design/db-streaming.md, section 3). An
+// unconstrained numeric reads as int too, each value checked; a type without a
+// case here reads as its text.
+pub fn kindsOf(oid: int, tm: int, p: int, s: int): int {
+    match oid {
+        OID_INT8, OID_INT2, OID_INT4 { return sqlrows.kinds(&[Kind.Int, Kind.Decimal]) }
+        OID_NUMERIC {
+            if tm < 4 || (s == 0 && p <= 18) { return sqlrows.kinds(&[Kind.Decimal, Kind.Int]) }
+            return sqlrows.kinds(&[Kind.Decimal])
+        }
+        OID_FLOAT4, OID_FLOAT8 { return sqlrows.kinds(&[Kind.Float]) }
+        OID_BOOL { return sqlrows.kinds(&[Kind.Bool]) }
+        OID_BYTEA { return sqlrows.kinds(&[Kind.Bytes]) }
+        OID_DATE { return sqlrows.kinds(&[Kind.Date]) }
+        OID_TIME { return sqlrows.kinds(&[Kind.Time]) }
+        OID_TIMESTAMP { return sqlrows.kinds(&[Kind.DateTime]) }
+        OID_TIMESTAMPTZ { return sqlrows.kinds(&[Kind.OffsetDateTime]) }
+        else { return sqlrows.kinds(&[Kind.Text]) }
+    }
+}
+
+// The decimal a numeric's text denotes (sqldialect.parseDecimal; P3 adds the fast path here).
+pub fn decimalOfText(t: &str): Result[Decimal, Error] { return sqldialect.parseDecimal(t) }
+
+fn pInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 {
+        match parseInt(b) {
+            Some(v) { return Ok(v) }
+            None { return Err(pgErr("an integer of " + b)) }
+        }
+    }
+    if col.wire == OID_NUMERIC {
+        let d = try decimalOfText(b)
+        match d.toInt(Rounding.UNNECESSARY) {
+            Ok(v) { return Ok(v) }
+            Err(_) { return Err(pgErr(d.toStr() + " is not an int")) }
+        }
+    }
+    return Err(sqlrows.wrongKind(col, "int"))
+}
+
+fn pDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
+    if col.wire == OID_NUMERIC {
+        let d = try decimalOfText(b)
+        if col.aux >= 4 && col.scale >= 0 { return sqldialect.fitDecimal(d, col.precision, col.scale) }
+        return Ok(d)
+    }
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 { return Ok(decimalOf(try pInt(b, col))) }
+    if col.wire == OID_FLOAT4 || col.wire == OID_FLOAT8 {
+        return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal"))
+    }
+    return Err(sqlrows.wrongKind(col, "Decimal"))
+}
+
+fn pFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
+    if col.wire != OID_FLOAT8 && col.wire != OID_FLOAT4 { return Err(sqlrows.wrongKind(col, "float")) }
+    if b == "Infinity" { return Ok(math.inf()) }
+    if b == "-Infinity" { return Ok(-math.inf()) }
+    match math.parse(b) {
+        Some(f) { return Ok(f) }
+        None { return Err(pgErr("a float of " + b)) }
+    }
+}
+
+fn pText(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire == OID_BYTEA { return Err(sqlrows.wrongKind(col, "text")) }
+    return Ok(b)
+}
+
+fn pBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire != OID_BYTEA { return Err(sqlrows.wrongKind(col, "bytes")) }
+    if len(b) < 2 || b[0] != '\\' || b[1] != 'x' { return Err(pgErr("bytea not in hex format")) }
+    match sqldialect.unhex(b[2..]) {
+        Some(x) { return Ok(x) }
+        None { return Err(pgErr("bytea not in hex format")) }
+    }
+}
+
+fn pBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
+    if col.wire != OID_BOOL { return Err(sqlrows.wrongKind(col, "bool")) }
+    return Ok(b == "t")
+}
+
+fn pDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
+    if col.wire != OID_DATE { return Err(sqlrows.wrongKind(col, "date")) }
+    match time.parseDate(b) {
+        Some(d) { return Ok(d) }
+        None { return Err(pgErr("a date of " + b + " (only years 1 to 9999)")) }
+    }
+}
+
+fn pTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
+    if col.wire != OID_TIME { return Err(sqlrows.wrongKind(col, "time")) }
+    match time.parseTimeOfDay(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a time of " + b)) }
+    }
+}
+
+fn pDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
+    if col.wire != OID_TIMESTAMP { return Err(sqlrows.wrongKind(col, "date-time")) }
+    match time.parseLocalDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamp of " + b)) }
+    }
+}
+
+fn pOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
+    if col.wire != OID_TIMESTAMPTZ { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
+    match time.parseOffsetDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamptz of " + b)) }
+    }
+}
+
+// The text decoders of a PostgreSQL column (RowView reads through them).
+pub fn codec(): sqlrows.Codec {
+    return sqlrows.Codec{int: pInt, decimal: pDecimal, float: pFloat, text: pText, bytes: pBytes, bool: pBool, date: pDate,
+                         time: pTime, dateTime: pDateTime, offsetDateTime: pOffset}
+}
+
+// ---------------------------------------------------------------- transport
+
+fn ioFail(e: io.IoError): Error {
+    if e.isCancelled() { return sqldialect.dbError(sqldialect.E_CANCELLED, "pgwire: cancelled") }
+    if e.isTimeout() { return sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: deadline passed") }
+    return ioErr(e.toStr())
+}
+
+fn tlsFail(e: tls.Error): Error {
+    if e.kind == tls.Kind.Cancelled { return sqldialect.dbError(sqldialect.E_CANCELLED, "pgwire: cancelled") }
+    if e.kind == tls.Kind.Timeout { return sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: deadline passed") }
+    if e.kind == tls.Kind.Io { return ioErr(e.cause.toStr()) }
+    return ioErr("TLS: " + e.msg)
+}
+
+type Stream = value closed {
+    Plain(net.Conn)
+    Tls(tls.Conn)
+    Gone
+}
+
+fn (s: &Stream) isTls(): bool {
+    match s {
+        Stream.Tls(_) { return true }
+        else { return false }
+    }
+}
+
+fn (s: mut &Stream) takeTls(): tls.Conn {
+    match replace(s, Stream.Gone) {
+        Stream.Tls(t) { return t }
+        else { panic("pgwire: not a TLS stream") }
+    }
+}
+
+fn (s: mut &Stream) put(t: tls.Conn) { let old = replace(s, Stream.Tls(t)) }
+
+// Reads into buf: ms < 0 parks like any call (cancellable, with the task's
+// deadline); ms >= 0 ignores both and gives up after ms (cleanup).
+fn (s: mut &Stream) read(buf: mut &[byte], ms: int, w: Where): Result[int, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = if ms < 0 { t.read(buf, w) } else { t.readFor(buf, ms, w) }
+        s.put(t)
+        return match r {
+            Ok(n) { Ok(n) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            let r = if ms < 0 { c.read(buf, w) } else { c.readFor(buf, ms, w) }
+            return match r {
+                Ok(n) { Ok(n) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+fn (s: mut &Stream) write(data: &[byte], ms: int, w: Where): Result[Unit, Error] {
+    if s.isTls() {
+        var t = s.takeTls()
+        let r = if ms < 0 { t.write(data, w) } else { t.writeFor(data, ms, w) }
+        s.put(t)
+        return match r {
+            Ok(_) { Ok(Unit{}) }
+            Err(e) { Err(tlsFail(e)) }
+        }
+    }
+    match s {
+        Stream.Plain(c) {
+            let r = if ms < 0 { c.write(data, w) } else { c.writeFor(data, ms, w) }
+            return match r {
+                Ok(_) { Ok(Unit{}) }
+                Err(e) { Err(ioFail(e)) }
+            }
+        }
+        else { return Err(ioErr("the connection is closed")) }
+    }
+}
+
+// Bytes read from the socket and not yet made into a chunk: buf[pos..end].
+type Inbox = record { buf: []byte; pos: int; end: int }
+
+fn be32(d: &[byte], at: int): int {
+    return (int(d[at]) << 24) | (int(d[at + 1]) << 16) | (int(d[at + 2]) << 8) | int(d[at + 3])
+}
+
+fn be32s(d: &str, at: int): int {
+    return (int(d[at]) << 24) | (int(d[at + 1]) << 16) | (int(d[at + 2]) << 8) | int(d[at + 3])
+}
+
+// Reads from the socket into the inbox until it holds at least one whole
+// message after pos, growing the buffer by doubling when it is full (never to
+// a declared length before the bytes come). The whole messages are then
+// copied once into a chunk: its text and length.
+fn fillInbox(st: mut &Stream, ib: mut &Inbox, ms: int, w: Where): Result[str, Error] {
+    while true {
+        var p = ib.pos
+        while ib.end - p >= 5 {
+            let l = be32(&ib.buf, p + 1)
+            if l < 4 || l > MAX_MSG { return Err(proto("a message of length " + l.toStr())) }
+            if ib.end - p >= 1 + l { p += 1 + l } else { break }
+        }
+        if p > ib.pos {
+            let chunk = strFromBytes(&ib.buf[ib.pos..p])
+            ib.pos = p
+            return Ok(chunk)
+        }
+        if ib.pos == ib.end {
+            ib.pos = 0
+            ib.end = 0
+            if len(ib.buf) > SHRINK_OVER { ib.buf = array(INBOX, byte(0)) }
+        }
+        if ib.end == len(ib.buf) {
+            let k = ib.end - ib.pos
+            if ib.pos > 0 {
+                for i in 0..k { ib.buf[i] = ib.buf[ib.pos + i] }
+            } else {
+                var nb = array(2 * len(ib.buf), byte(0))
+                for i in 0..k { nb[i] = ib.buf[i] }
+                ib.buf = nb
+            }
+            ib.pos = 0
+            ib.end = k
+        }
+        let got = try st.read(mut &ib.buf[ib.end..], ms, w)
+        if got == 0 { return Err(ioErr("the server closed the connection")) }
+        ib.end += got
+    }
+    return Err(proto("unreachable"))
+}
+
+// ------------------------------------------------------------------ session
+
+const S_READY = 0
+const S_BUSY = 1
+const S_PORTAL = 2
+const S_BROKEN = 3
+
+type Notification = value record { pid: int; channel: str; payload: str }
+
+pub type Session = record {
+    st: Stream
+    ib: Inbox
+    chunk: str                  // whole messages, copied once off the inbox
+    cpos: int                   // the next message in chunk
+    seq: int                    // the chunk's number: it changes with every refill
+    out: Out
+    state: int
+    why: str                    // the first cause of S_BROKEN
+    tx: int
+    params: []Setting
+    pid: int
+    key: str
+    unixPath: str               // where a CancelRequest goes: a Unix socket path, else addr
+    addr: str
+    notices: []ServerError
+    notifies: []Notification
+    dropped: int
+    lastErr: Option[ServerError]
+    trips: int
+    pending: bool               // a portal's Execute whose reply is not read
+    portalCols: []Column
+    srvFail: bool               // the failure was a server's ErrorResponse (startup)
+    shut: bool
+}
+
+fn newSession(st: Stream, unixPath: str, addr: str): Session {
+    return Session{st: st, ib: Inbox{buf: array(INBOX, byte(0)), pos: 0, end: 0}, chunk: "", cpos: 0, seq: 0, out: newOut(),
+                   state: S_BUSY, why: "", tx: TX_IDLE, params: [], pid: 0, key: "", unixPath: unixPath, addr: addr,
+                   notices: [], notifies: [], dropped: 0, lastErr: None, trips: 0, pending: false, portalCols: [],
+                   srvFail: false, shut: false}
+}
+
+pub fn (s: &Session) broken(): bool { return s.state == S_BROKEN }
+
+// Ready for a request: after ReadyForQuery and not broken.
+pub fn (s: &Session) ready(): bool { return s.state == S_READY }
+
+pub fn (s: &Session) txStatus(): int { return s.tx }
+
+pub fn (s: &Session) parameter(name: str): Option[str] {
+    for p in s.params {
+        if p.name == name { return Some(p.value) }
+    }
+    return None
+}
+
+// libpq's number from server_version: 160015 for "16.15 (Ubuntu ...)", 90603 for "9.6.3".
+pub fn (s: &Session) serverVersion(): int {
+    match s.parameter("server_version") {
+        Some(v) {
+            var parts: []int = []
+            var i = 0
+            while i < len(v) && len(parts) < 3 {
+                var n = 0
+                var any = false
+                while i < len(v) && isDigit(v[i]) {
+                    n = n * 10 + int(v[i] - '0')
+                    any = true
+                    i += 1
+                }
+                if !any { break }
+                append(mut &parts, n)
+                if i < len(v) && v[i] == '.' { i += 1 } else { break }
+            }
+            if len(parts) == 0 { return 0 }
+            if parts[0] >= 10 { return parts[0] * 10000 + (if len(parts) > 1 { parts[1] } else { 0 }) }
+            let a = if len(parts) > 1 { parts[1] } else { 0 }
+            let b = if len(parts) > 2 { parts[2] } else { 0 }
+            return parts[0] * 10000 + a * 100 + b
+        }
+        None { return 0 }
+    }
+}
+
+pub fn (s: &Session) backendPid(): int { return s.pid }
+
+pub fn (s: &Session) lastServerError(): Option[ServerError] { return s.lastErr }
+
+// Requests that waited for a reply, the login included.
+pub fn (s: &Session) roundTrips(): int { return s.trips }
+
+pub fn (s: &Session) portalOpen(): bool { return s.state == S_PORTAL }
+
+// The last notices the server sent (at most 100), oldest first.
+pub fn (s: &Session) noticeCount(): int { return len(s.notices) }
+
+pub fn (s: &Session) notificationCount(): int { return len(s.notifies) }
+
+// Marks the session broken, keeping the first cause.
+fn (s: mut &Session) breakWith(why: str) {
+    if s.state != S_BROKEN {
+        s.state = S_BROKEN
+        s.why = why
+    }
+}
+
+fn (s: &Session) brokenError(): Error { return ioErr("the connection is broken: " + s.why) }
+
+// Passes e on, after breaking the session for a wire failure or a malformed reply.
+fn (s: mut &Session) wire(e: Error): Error {
+    if e.code == sqldialect.E_IO || e.code == sqldialect.E_PROTOCOL { s.breakWith(e.msg) }
+    return e
+}
+
+// Sends what is in out; a failed write breaks the session (part of a message may be out).
+fn (s: mut &Session) flush(ms: int, w: Where): Result[Unit, Error] {
+    let r = s.st.write(s.out.bytes(), ms, w)
+    s.out.reset()
+    match r {
+        Ok(_) { return Ok(Unit{}) }
+        Err(e) {
+            s.breakWith(e.msg)
+            return Err(e)
+        }
+    }
+}
+
+// A message in the current chunk: s.chunk[at..end] is its body.
+type Msg = value record { t: int; at: int; end: int }
+
+fn (s: mut &Session) addNotice(e: ServerError) {
+    if len(s.notices) >= MAX_NOTICES {
+        for i in 0..len(s.notices) - 1 { swap(mut &s.notices, i, i + 1) }
+        let gone = pop(mut &s.notices)
+    }
+    append(mut &s.notices, e)
+}
+
+fn (s: mut &Session) setParam(name: str, value: str) {
+    for i in 0..len(s.params) {
+        if s.params[i].name == name {
+            s.params[i] = Setting{name: name, value: value}
+            return
+        }
+    }
+    append(mut &s.params, Setting{name: name, value: value})
+}
+
+// The next message: from the chunk, else from the socket (ms as Stream.read).
+// NoticeResponse, ParameterStatus and NotificationResponse are taken here and
+// never returned. A malformed message breaks the session.
+fn (s: mut &Session) next(ms: int, w: Where): Result[Msg, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    while true {
+        if s.cpos >= len(s.chunk) {
+            match fillInbox(mut &s.st, mut &s.ib, ms, w) {
+                Ok(c) {
+                    s.chunk = c
+                    s.cpos = 0
+                    s.seq += 1
+                }
+                Err(e) { return Err(s.wire(e)) }
+            }
+        }
+        let at = s.cpos
+        let l = be32s(&s.chunk, at + 1)
+        let end = at + 1 + l
+        s.cpos = end
+        let t = int(s.chunk[at])
+        var r = Rd{s: s.chunk, pos: at + 5, end: end}
+        if t == 78 {                        // N
+            match parseServerError(s.chunk[at + 5..end]) {
+                Ok(e) { s.addNotice(e) }
+                Err(e) { return Err(s.wire(e)) }
+            }
+            continue
+        }
+        if t == 83 {                        // S
+            let name = match r.cstr("ParameterStatus") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let value = match r.cstr("ParameterStatus") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            s.setParam(name, value)
+            continue
+        }
+        if t == 65 {                        // A
+            let pid = match r.i32("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let ch = match r.cstr("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            let pl = match r.cstr("NotificationResponse") { Ok(x) { x } Err(e) { return Err(s.wire(e)) } }
+            if len(s.notifies) >= MAX_NOTIFIES {
+                for i in 0..len(s.notifies) - 1 { swap(mut &s.notifies, i, i + 1) }
+                let gone = pop(mut &s.notifies)
+                s.dropped += 1
+            }
+            append(mut &s.notifies, Notification{pid: pid, channel: ch, payload: pl})
+            continue
+        }
+        return Ok(Msg{t: t, at: at + 5, end: end})
+    }
+    return Err(proto("unreachable"))
+}
+
+fn (s: &Session) rd(m: &Msg): Rd { return Rd{s: s.chunk, pos: m.at, end: m.end} }
+
+// An ErrorResponse message: remembered as lastServerError; FATAL and PANIC
+// break the session (the server closes the connection after them).
+fn (s: mut &Session) errorOf(m: &Msg): Result[ServerError, Error] {
+    match parseServerError(s.chunk[m.at..m.end]) {
+        Ok(e) {
+            s.lastErr = Some(e)
+            if e.severity == "FATAL" || e.severity == "PANIC" { s.breakWith(e.severity + ": " + e.message) }
+            return Ok(e)
+        }
+        Err(e) { return Err(s.wire(e)) }
+    }
+}
+
+// ReadyForQuery's status byte.
+fn (s: mut &Session) readyFor(m: &Msg): Result[Unit, Error] {
+    if m.end - m.at != 1 { return Err(s.wire(proto("a ReadyForQuery of " + (m.end - m.at).toStr() + " bytes"))) }
+    let b = int(s.chunk[m.at])
+    if b != TX_IDLE && b != TX_BLOCK && b != TX_FAILED { return Err(s.wire(proto("a transaction status of " + b.toStr()))) }
+    s.tx = b
+    if s.state != S_BROKEN { s.state = S_READY }
+    return Ok(Unit{})
+}
+
+// Terminate (never parks: the bytes go if the socket takes them at once), then the socket closes.
+fn (s: mut &Session) terminate() {
+    if s.shut { return }
+    s.shut = true
+    if s.state != S_BROKEN {
+        var o = newOut()
+        putTerminate(mut &o)
+        let r = s.st.write(o.bytes(), 0)
+    }
+    let old = replace(mut &s.st, Stream.Gone)
+}
+
+pub fn (s: mut &Session) close() { s.terminate() }
+
+fn (s: mut &Session) drop() { s.terminate() }
+
+// ------------------------------------------------------------ connecting
+
+// A failed attempt at one endpoint.
+type Failed = value record {
+    e: Error
+    stop: bool        // do not try the other hosts (authentication, a refusal by the server, a cancel)
+    srv: bool         // the server answered the startup with an ErrorResponse
+    hs: bool          // the TLS handshake failed
+    viaTls: bool      // the attempt had TLS on
+}
+
+fn failed(e: Error, stop: bool): Failed { return Failed{e: e, stop: stop, srv: false, hs: false, viaTls: false} }
+
+fn hostLabel(ep: &Endpoint): str {
+    if ep.isUnix() { return "on socket \"" + ep.socketPath() + "\"" }
+    let name = if len(ep.host) > 0 { ep.host } else { ep.hostaddr }
+    if len(ep.hostaddr) > 0 && len(ep.host) > 0 && ep.host != ep.hostaddr {
+        return "at \"" + ep.host + "\" (" + ep.hostaddr + "), port " + ep.port.toStr()
+    }
+    return "at \"" + name + "\", port " + ep.port.toStr()
+}
+
+fn tcpAddr(host: str, port: int): str {
+    var h = host
+    if contains(host, ":") { h = "[" + host + "]" }
+    return h + ":" + port.toStr()
+}
+
+fn connectText(ep: &Endpoint, reason: str): str {
+    return "connection to server " + hostLabel(ep) + " failed: " + reason
+}
+
+fn connectFail(ep: &Endpoint, e: io.IoError): Failed {
+    if e.isCancelled() { return failed(sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled"), true) }
+    if e.isTimeout() { return failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed"), true) }
+    return failed(bad(connectText(ep, io.errorText(e.errno))), false)
+}
+
+// A TLS context for the configuration's sslmode (design/pgwire.md 5.2).
+fn tlsContext(cfg: &Config): Result[tls.Context, Error] {
+    var o = tls.defaults()
+    o.minVersion = cfg.sslMin
+    o.maxVersion = cfg.sslMax
+    o.sni = cfg.sslsni
+    let verify = cfg.sslmode == SslMode.VerifyCa || cfg.sslmode == SslMode.VerifyFull
+    if cfg.sslrootcert == "system" {
+        o.caFile = ""
+    } else if len(cfg.sslrootcert) > 0 && fs.isFile(cfg.sslrootcert) {
+        o.caFile = cfg.sslrootcert
+        o.verifyName = cfg.sslmode == SslMode.VerifyFull
+    } else if verify {
+        let path = if len(cfg.sslrootcert) > 0 { cfg.sslrootcert } else { os.homeDir() + "/.postgresql/root.crt" }
+        return Err(bad("root certificate file \"" + path + "\" does not exist.\nEither provide the file, use the system's trusted roots with sslrootcert=system, or change sslmode to disable server certificate verification."))
+    } else if len(cfg.sslrootcert) > 0 {
+        return Err(bad("could not read root certificate file \"" + cfg.sslrootcert + "\""))
+    } else {
+        o.insecureSkipVerify = true
+    }
+    if len(cfg.sslcert) > 0 {
+        o.certFile = cfg.sslcert
+        if len(cfg.sslkey) > 0 {
+            match fs.stat(cfg.sslkey) {
+                Ok(st) {
+                    let loose = if st.uid == 0 { (st.perm() & 0x17) != 0 } else { (st.perm() & 0x3F) != 0 }
+                    if loose {
+                        return Err(input("private key file \"" + cfg.sslkey + "\" has group or world access; file must have permissions u=rw (0600) or less if owned by the current user, or permissions u=rw,g=r (0640) or less if owned by root"))
+                    }
+                }
+                Err(_) { return Err(bad("could not load private key file \"" + cfg.sslkey + "\"")) }
+            }
+            o.keyFile = cfg.sslkey
+        }
+    }
+    return tls.client(o).mapErr(fn(e: tls.Error): Error { return bad("SSL error: " + e.msg) })
+}
+
+// Connects the socket; the plain Stream, with where a CancelRequest would go.
+type Dialed = record { st: Stream; unixPath: str; addr: str }
+
+fn dial(ep: &Endpoint, cfg: &Config, w: Where): Result[Dialed, Failed] {
+    if ep.isUnix() {
+        let path = ep.socketPath()
+        match net.connectUnix(path, w) {
+            Ok(c) { return Ok(Dialed{st: Stream.Plain(c), unixPath: path, addr: ""}) }
+            Err(e) { return Err(connectFail(ep, e)) }
+        }
+    }
+    let addr = if len(ep.hostaddr) > 0 { tcpAddr(ep.hostaddr, ep.port) } else { tcpAddr(ep.host, ep.port) }
+    let r = if len(ep.hostaddr) > 0 { net.connect(addr, w) } else { net.dial(addr, w) }
+    match move(r) {
+        Ok(c) {
+            let nd = c.setNoDelay(true)
+            if cfg.keepAlive.on {
+                let ka = c.setKeepAlive(true, cfg.keepAlive.idleS, cfg.keepAlive.intervalS, cfg.keepAlive.count)
+            }
+            let peer = c.peerAddr()
+            return Ok(Dialed{st: Stream.Plain(c), unixPath: "", addr: if len(peer) > 0 { peer } else { addr }})
+        }
+        Err(e) { return Err(connectFail(ep, e)) }
+    }
+}
+
+// SSLRequest on a fresh plain socket: 'S' then TLS, 'N' (carry on in the clear
+// when tlsMode is 1), anything else an error. The one answer byte is read
+// alone, and nothing may follow it before the handshake (CVE-2021-23222).
+fn negotiateTls(d: mut &Dialed, ep: &Endpoint, cfg: &Config, tlsMode: int, w: Where): Result[bool, Failed] {
+    var o = newOut()
+    putSslRequest(mut &o)
+    var b = array(1, byte(0))
+    match d.st {
+        Stream.Plain(c) {
+            match c.write(o.bytes(), w) {
+                Ok(_) {}
+                Err(e) { return Err(connectFail(ep, e)) }
+            }
+            let n = match c.read(mut &b, w) {
+                Ok(n) { n }
+                Err(e) { return Err(connectFail(ep, e)) }
+            }
+            if n == 0 { return Err(failed(bad(connectText(ep, "server closed the connection during SSL negotiation")), false)) }
+            let ans = int(b[0])
+            if ans == 78 {                  // N
+                if tlsMode == 2 { return Err(failed(bad(connectText(ep, "server does not support SSL, but SSL was required")), false)) }
+                return Ok(false)
+            }
+            if ans == 69 {                  // E: a server older than 7.0 (or one that refuses the request)
+                var f = failed(bad(connectText(ep, "server rejected the SSL request with an error")), false)
+                f.hs = true
+                return Err(f)
+            }
+            if ans != 83 {
+                return Err(failed(proto("received invalid response to SSL negotiation: " + (if ans >= 32 && ans < 127 { strFromBytes(&b) } else { ans.toStr() })), true))
+            }
+            var extra = array(1, byte(0))
+            match c.readNow(mut &extra) {
+                Ok(k) {
+                    if k > 0 { return Err(failed(proto("received unencrypted data after SSL response"), true)) }
+                }
+                Err(_) {}
+            }
+        }
+        else { return Err(failed(ioErr("the connection is closed"), false)) }
+    }
+    return Ok(true)
+}
+
+// The name a certificate is checked against, and SNI sent for.
+fn tlsName(ep: &Endpoint): str { return if len(ep.host) > 0 { ep.host } else { ep.hostaddr } }
+
+// One connection attempt at an endpoint: tlsMode 0 plain, 1 TLS if the server
+// has it, 2 TLS required. Unix sockets are always plain.
+fn openOnce(cfg: &Config, ep: &Endpoint, tlsMode: int, w: Where): Result[Session, Failed] {
+    var d = try dial(ep, cfg, w)
+    var viaTls = false
+    if !ep.isUnix() && tlsMode > 0 {
+        let ctx = match tlsContext(cfg) {
+            Ok(c) { c }
+            Err(e) { return Err(failed(e, true)) }
+        }
+        let useTls = try negotiateTls(mut &d, ep, cfg, tlsMode, w)
+        if useTls {
+            let sock = match replace(mut &d.st, Stream.Gone) {
+                Stream.Plain(c) { c }
+                else { return Err(failed(ioErr("the connection is closed"), false)) }
+            }
+            match ctx.connect(sock, tlsName(ep), w) {
+                Ok(t) { d.st = Stream.Tls(t) }
+                Err(e) {
+                    var f = failed(tlsFail(e), false)
+                    if f.e.code == sqldialect.E_IO || f.e.code == sqldialect.E_PROTOCOL {
+                        f = failed(bad(connectText(ep, "SSL error: " + e.msg)), false)
+                    } else if f.e.code == sqldialect.E_CANCELLED {
+                        f = failed(sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled"), true)
+                    } else if f.e.code == sqldialect.E_TIMEOUT {
+                        f = failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed"), true)
+                    }
+                    f.hs = true
+                    f.viaTls = true
+                    return Err(f)
+                }
+            }
+            viaTls = true
+        }
+    }
+    var s = newSession(replace(mut &d.st, Stream.Gone), d.unixPath, d.addr)
+    match s.startup(cfg, ep, viaTls, w) {
+        Ok(_) { return Ok(s) }
+        Err(e) {
+            var f = failed(e, true)
+            f.srv = s.srvFail
+            f.viaTls = viaTls
+            if e.code == sqldialect.E_CANCELLED {
+                f.e = sqldialect.dbError(sqldialect.E_CANCELLED, "connect cancelled")
+            } else if e.code == sqldialect.E_TIMEOUT {
+                f.e = sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: deadline passed")
+            } else if e.code == sqldialect.E_IO {
+                f.stop = false
+                f.e = sqldialect.dbError(CONNECTION_BAD, connectText(ep, e.msg))
+            } else if e.code == CONNECTION_BAD {
+                f.e = Error{code: CONNECTION_BAD, state: e.state, msg: connectText(ep, e.msg)}
+            }
+            return Err(f)
+        }
+    }
+}
+
+// The attempt at one endpoint under the configuration's sslmode (5.2).
+fn openEndpoint(cfg: &Config, ep: &Endpoint, w: Where): Result[Session, Failed] {
+    if ep.isUnix() || cfg.sslmode == SslMode.Disable { return openOnce(cfg, ep, 0, w) }
+    if cfg.sslmode == SslMode.Allow {
+        match openOnce(cfg, ep, 0, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.srv { return openOnce(cfg, ep, 2, w) }
+                return Err(f)
+            }
+        }
+    }
+    if cfg.sslmode == SslMode.Prefer {
+        match openOnce(cfg, ep, 1, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.hs || (f.srv && f.viaTls) { return openOnce(cfg, ep, 0, w) }
+                return Err(f)
+            }
+        }
+    }
+    return openOnce(cfg, ep, 2, w)
+}
+
+// One endpoint with connect_timeout bounding it.
+fn attempt(cfg: &Config, ep: &Endpoint, w: Where): Result[Session, Failed] {
+    if cfg.connectTimeoutMs <= 0 { return openEndpoint(cfg, ep, w) }
+    let t0 = time.monotonicNs()
+    let r = task.within(cfg.connectTimeoutMs, fn(): Result[Session, Failed] { return openEndpoint(cfg, ep, w) })
+    match move(r) {
+        Ok(s) { return Ok(s) }
+        Err(f) {
+            if f.e.code == sqldialect.E_TIMEOUT && (time.monotonicNs() - t0) / 1000000 >= cfg.connectTimeoutMs {
+                return Err(failed(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed"), false))
+            }
+            return Err(f)
+        }
+    }
+}
+
+// Connects to the first endpoint that answers and logs in (design/pgwire.md
+// section 5). Every step parks only the task; its cancellation and deadline
+// end the connect. A refusal by the server or a failed login ends it without
+// trying the other hosts, as libpq does.
+pub fn connect(cfg: &Config, w: Where): Result[Session, Error] {
+    var texts: []str = []
+    var last = bad("no endpoints")
+    for ep in cfg.endpoints {
+        match attempt(cfg, &ep, w) {
+            Ok(s) { return Ok(s) }
+            Err(f) {
+                if f.stop { return Err(f.e) }
+                last = f.e
+                append(mut &texts, f.e.msg)
+            }
+        }
+    }
+    if len(cfg.endpoints) <= 1 { return Err(last) }
+    return Err(bad(strings.join(&texts, "\n")))
+}
+
+// ------------------------------------------------------------ authentication
+
+// Whether require_auth lets the server ask for `method` (password, md5,
+// scram-sha-256, none, gss, sspi): a list names the allowed methods, a list of
+// !names the forbidden ones.
+fn authAllowed(ra: str, method: str): bool {
+    if len(ra) == 0 { return true }
+    var negated = false
+    var listed = false
+    for m in split(ra, ',') {
+        if startsWith(m, "!") {
+            negated = true
+            if m[1..] == method { return false }
+        } else if m == method {
+            listed = true
+        }
+    }
+    return negated || listed
+}
+
+fn authDenied(ra: str, what: str): Error {
+    return bad("authentication method requirement \"" + ra + "\" failed: server requested " + what)
+}
+
+type ScramSt = record {
+    nonce: str
+    bare: str
+    gs2: str
+    plus: bool
+    expect: str       // the server signature the exchange must end with
+}
+
+// Both values of one exchange from one PBKDF2 run.
+type ScramKeys = record { proof: str; sig: str }
+
+fn scramBoth(password: str, salt: str, iterations: int, authMessage: str): Result[ScramKeys, Error] {
+    let sp = try salted(password, salt, iterations)
+    let clientKey = try hmac(sp, "Client Key")
+    let stored = try crypto.sha256(clientKey).mapErr(cryptoFail)
+    let proof = xor(clientKey, try hmac(stored, authMessage))
+    let serverKey = try hmac(sp, "Server Key")
+    return Ok(ScramKeys{proof: proof, sig: try hmac(serverKey, authMessage)})
+}
+
+fn allDigits(s: str): bool {
+    if len(s) == 0 || len(s) > 10 { return false }
+    for i in 0..len(s) {
+        if !isDigit(s[i]) { return false }
+    }
+    return true
+}
+
+// Compares two strings in time that depends on their length only.
+fn sameBytes(a: str, b: str): bool {
+    if len(a) != len(b) { return false }
+    var d = 0
+    for i in 0..len(a) { d = d | int(a[i] ^ b[i]) }
+    return d == 0
+}
+
+fn malformed(what: str): Error { return bad("malformed SCRAM message (" + what + ")") }
+
+// SASLContinue: the client-final-message for the server-first-message sf.
+fn (s: mut &Session) scramFinal(sc: mut &ScramSt, sf: str, password: str): Result[str, Error] {
+    let parts = split(sf, ',')
+    if len(parts) < 3 || !startsWith(parts[0], "r=") { return Err(malformed("invalid server-first-message")) }
+    if !startsWith(parts[1], "s=") || !startsWith(parts[2], "i=") { return Err(malformed("invalid server-first-message")) }
+    if len(parts) > 3 { return Err(malformed("garbage at end of server-first-message")) }
+    let combined = parts[0][2..]
+    if !startsWith(combined, sc.nonce) || len(combined) <= len(sc.nonce) {
+        return Err(malformed("invalid nonce"))
+    }
+    let salt = match crypto.unbase64(parts[1][2..]) {
+        Some(x) { x }
+        None { return Err(malformed("invalid salt encoding")) }
+    }
+    if len(salt) == 0 { return Err(malformed("empty salt")) }
+    if !allDigits(parts[2][2..]) { return Err(malformed("invalid iteration count")) }
+    let iters = parseInt(parts[2][2..]).unwrapOr(0)
+    if iters < 1 || iters > 2147483647 { return Err(malformed("invalid iteration count")) }
+    var binding = sc.gs2
+    if sc.plus {
+        let ep = match s.st.endPoint() {
+            Ok(x) { x }
+            Err(e) { return Err(bad(e.msg)) }
+        }
+        binding = binding + ep
+    }
+    let noProof = "c=" + crypto.base64(binding) + ",r=" + combined
+    let am = sc.bare + "," + sf + "," + noProof
+    let keys = try scramBoth(password, salt, iters, am)
+    sc.expect = keys.sig
+    return Ok(noProof + ",p=" + crypto.base64(keys.proof))
+}
+
+fn (s: &Stream) endPoint(): Result[str, tls.Error] {
+    match s {
+        Stream.Tls(t) { return t.endPoint() }
+        else { return Err(tls.Error{kind: tls.Kind.Config, msg: "not a TLS connection", code: 0, peer: "", cause: io.ioError(0, "", "")}) }
+    }
+}
+
+// Sends the StartupMessage and runs the login to the first ReadyForQuery.
+// Server errors are code CONNECTION_BAD with the SQLSTATE; a wire failure E_IO.
+fn (s: mut &Session) startup(cfg: &Config, ep: &Endpoint, viaTls: bool, w: Where): Result[Unit, Error] {
+    putStartup(mut &s.out, cfg.user, cfg.dbname, &cfg.startup)
+    try s.flush(-1, w)
+    s.trips += 1
+    let ra = cfg.requireAuth
+    var exchanged = false
+    var authDone = false
+    var plusDone = false
+    var pw: Option[str] = cfg.password
+    var sc = ScramSt{nonce: "", bare: "", gs2: "", plus: false, expect: ""}
+    var stage = 0                       // 0 none, 1 SASL started, 2 server-first answered
+    while true {
+        let m = try s.next(-1, w)
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+            s.srvFail = true
+            return Err(Error{code: CONNECTION_BAD, state: e.code, msg: e.severity + ":  " + e.message})
+        }
+        if m.t == 90 {
+            if !authDone { return Err(proto("ReadyForQuery before the authentication finished")) }
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+        if m.t == 75 {                  // BackendKeyData
+            var r = s.rd(&m)
+            s.pid = try r.i32("BackendKeyData")
+            let n = m.end - r.pos
+            if n < 4 || n > 256 { return Err(proto("a BackendKeyData key of " + n.toStr() + " bytes")) }
+            s.key = try r.take(n, "BackendKeyData")
+            continue
+        }
+        if m.t == 118 {                 // NegotiateProtocolVersion
+            var r = s.rd(&m)
+            let minor = try r.i32("NegotiateProtocolVersion")
+            let count = try r.i32("NegotiateProtocolVersion")
+            if minor != 0 || count != 0 || count < 0 {
+                return Err(bad("the server does not support the protocol options requested"))
+            }
+            continue
+        }
+        if m.t != 82 { return Err(proto("unexpected message of type " + m.t.toStr() + " during login")) }
+        var r = s.rd(&m)
+        let code = try r.i32("authentication request")
+        if code == 0 {
+            if !exchanged && !authAllowed(ra, "none") { return Err(bad("authentication method requirement \"" + ra + "\" failed: server did not complete authentication")) }
+            if cfg.channelBinding == ChannelBinding.Require && !plusDone {
+                return Err(bad("channel binding required, but server authenticated client without channel binding"))
+            }
+            authDone = true
+            continue
+        }
+        if code == 3 || code == 5 {
+            let what = if code == 3 { "a cleartext password" } else { "a hashed password" }
+            if !authAllowed(ra, if code == 3 { "password" } else { "md5" }) { return Err(authDenied(ra, what)) }
+            if cfg.channelBinding == ChannelBinding.Require {
+                return Err(bad("channel binding is required, but server requested password authentication"))
+            }
+            if pw.isNone() { pw = passwordFor(cfg, ep) }
+            let password = match pw {
+                Some(p) { p }
+                None { return Err(bad("fe_sendauth: no password supplied")) }
+            }
+            if code == 3 {
+                putPassword(mut &s.out, password)
+            } else {
+                let salt = try r.take(4, "AuthenticationMD5Password")
+                putPassword(mut &s.out, try md5Password(cfg.user, password, salt))
+            }
+            exchanged = true
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 10 {
+            if !authAllowed(ra, "scram-sha-256") { return Err(authDenied(ra, "SCRAM-SHA-256 authentication")) }
+            var hasPlus = false
+            var hasPlain = false
+            while true {
+                let name = try r.cstr("SASL mechanisms")
+                if len(name) == 0 { break }
+                if name == "SCRAM-SHA-256-PLUS" { hasPlus = true }
+                if name == "SCRAM-SHA-256" { hasPlain = true }
+            }
+            let usePlus = viaTls && hasPlus && cfg.channelBinding != ChannelBinding.Disable
+            if cfg.channelBinding == ChannelBinding.Require && !usePlus {
+                return Err(bad("channel binding is required, but server did not offer an authentication method that supports channel binding"))
+            }
+            if !usePlus && !hasPlain { return Err(bad("none of the server's SASL authentication mechanisms are supported")) }
+            if pw.isNone() { pw = passwordFor(cfg, ep) }
+            if pw.isNone() { return Err(bad("fe_sendauth: no password supplied")) }
+            let nonce = crypto.base64(try crypto.randomBytes(18).mapErr(cryptoFail))
+            sc.nonce = nonce
+            sc.bare = "n=,r=" + nonce
+            sc.plus = usePlus
+            sc.gs2 = if usePlus { "p=tls-server-end-point,," } else if viaTls && cfg.channelBinding != ChannelBinding.Disable { "y,," } else { "n,," }
+            putSaslInitial(mut &s.out, if usePlus { "SCRAM-SHA-256-PLUS" } else { "SCRAM-SHA-256" }, sc.gs2 + sc.bare)
+            exchanged = true
+            stage = 1
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 11 {
+            if stage != 1 { return Err(proto("unexpected SASLContinue")) }
+            let sf = s.chunk[r.pos..m.end]
+            let fin = try s.scramFinal(mut &sc, sf, pw.unwrapOr(""))
+            putSaslResponse(mut &s.out, fin)
+            stage = 2
+            try s.flush(-1, w)
+            s.trips += 1
+            continue
+        }
+        if code == 12 {
+            if stage != 2 { return Err(proto("unexpected SASLFinal")) }
+            let sf = s.chunk[r.pos..m.end]
+            if startsWith(sf, "e=") { return Err(bad("error received from server in SCRAM exchange: " + sf[2..])) }
+            if !startsWith(sf, "v=") { return Err(malformed("invalid server-final-message")) }
+            let sig = match crypto.unbase64(sf[2..]) {
+                Some(x) { x }
+                None { return Err(malformed("invalid server signature")) }
+            }
+            if !sameBytes(sig, sc.expect) { return Err(bad("SCRAM authentication failed: the server signature does not match")) }
+            plusDone = sc.plus
+            stage = 3
+            continue
+        }
+        if code == 2 || code == 7 || code == 8 || code == 9 { return Err(bad("GSSAPI authentication is not supported")) }
+        return Err(bad("unsupported authentication request " + code.toStr()))
+    }
+    return Err(proto("unreachable"))
+}
+
+// ------------------------------------------------------------------ queries
+
+fn copyCols(c: &[]Column): []Column {
+    var out: []Column = []
+    for x in c { append(mut &out, x) }
+    return out
+}
+
+fn unsignedOid(v: int): int { return if v < 0 { v + 4294967296 } else { v } }
+
+// A RowDescription body.
+fn (s: &Session) rowDescription(m: &Msg): Result[[]Column, Error] {
+    var r = s.rd(m)
+    let n = try r.i16("RowDescription")
+    if n < 0 { return Err(proto("a RowDescription of " + n.toStr() + " columns")) }
+    var cols: []Column = []
+    for i in 0..n {
+        let name = try r.cstr("RowDescription")
+        let tableOid = unsignedOid(try r.i32("RowDescription"))
+        let attnum = try r.i16("RowDescription")
+        let typeOid = unsignedOid(try r.i32("RowDescription"))
+        let typeSize = try r.i16("RowDescription")
+        let typmod = try r.i32("RowDescription")
+        let format = try r.i16("RowDescription")
+        append(mut &cols, Column{name: name, tableOid: tableOid, attnum: attnum, typeOid: typeOid, typeSize: typeSize,
+                                 typmod: typmod, format: format})
+    }
+    return Ok(cols)
+}
+
+fn commandTag(s: &Session, m: &Msg): Result[str, Error] {
+    var r = s.rd(m)
+    return r.cstr("CommandComplete")
+}
+
+// What a reply to one request collects while it is read.
+type Collect = record {
+    cols: []Column
+    rows: RawRows
+    tag: str
+    empty: bool
+    hasT: bool                  // a RowDescription for the statement in progress
+    first: Option[Error]        // the first ErrorResponse
+    refused: Option[Error]      // COPY, refused
+    sS: []int
+    sL: []int
+    lastSeq: int
+}
+
+fn newCollect(): Collect {
+    return Collect{cols: [], rows: newRawRows(0), tag: "", empty: false, hasT: false, first: None, refused: None,
+                   sS: [], sL: [], lastSeq: -1}
+}
+
+// The error that a cancelled or timed-out wait turns into, after the server has been asked to stop.
+fn (s: mut &Session) interrupted(e: Error, w: Where): Error {
+    if e.code != sqldialect.E_CANCELLED && e.code != sqldialect.E_TIMEOUT { return e }
+    s.abort(w)
+    if e.code == sqldialect.E_CANCELLED { return sqldialect.dbError(sqldialect.E_CANCELLED, "query cancelled") }
+    return sqldialect.dbError(sqldialect.E_TIMEOUT, "query: deadline passed")
+}
+
+// Reads one message of the reply to a request, turning an interrupted wait into
+// the cancel-and-drain of section 13.
+fn (s: mut &Session) wait(w: Where): Result[Msg, Error] {
+    match s.next(-1, w) {
+        Ok(m) { return Ok(m) }
+        Err(e) { return Err(s.interrupted(e, w)) }
+    }
+}
+
+// Reads the reply of a simple or extended request to its ReadyForQuery.
+fn (s: mut &Session) collect(w: Where): Result[Reply, Error] {
+    var c = newCollect()
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            84 {                                        // T RowDescription
+                c.cols = try s.rowDescription(&m)
+                c.rows = newRawRows(len(c.cols))
+                c.sS = array(len(c.cols), 0)
+                c.sL = array(len(c.cols), 0)
+                c.hasT = true
+                c.lastSeq = -1
+            }
+            68 {                                        // D DataRow
+                if !c.hasT { return Err(s.wire(proto("a DataRow before a RowDescription"))) }
+                let end = match scanRow(&s.chunk[..m.end], m.at, len(c.cols), mut &c.sS, mut &c.sL) {
+                    Ok(x) { x }
+                    Err(e) { return Err(s.wire(e)) }
+                }
+                if end != m.end { return Err(s.wire(proto("a DataRow with " + (m.end - end).toStr() + " bytes after its values"))) }
+                if c.lastSeq != s.seq {
+                    append(mut &c.rows.chunks, s.chunk)
+                    c.lastSeq = s.seq
+                }
+                append(mut &c.rows.rowChunk, i32(len(c.rows.chunks) - 1))
+                for i in 0..len(c.cols) {
+                    append(mut &c.rows.starts, i32(c.sS[i]))
+                    append(mut &c.rows.lens, i32(c.sL[i]))
+                }
+            }
+            67 {                                        // C CommandComplete
+                c.tag = try commandTag(s, &m)
+                if !c.hasT {
+                    c.cols = []
+                    c.rows = newRawRows(0)
+                }
+                c.hasT = false
+                c.empty = false
+            }
+            73 {                                        // I EmptyQueryResponse
+                c.tag = ""
+                c.empty = true
+                c.cols = []
+                c.rows = newRawRows(0)
+                c.hasT = false
+            }
+            110 {                                       // n NoData
+                c.cols = []
+                c.rows = newRawRows(0)
+                c.hasT = false
+            }
+            69 {                                        // E ErrorResponse
+                let e = try s.errorOf(&m)
+                if c.first.isNone() { c.first = Some(e.dbError()) }
+                if s.state == S_BROKEN {                // FATAL: no ReadyForQuery will come
+                    match c.first {
+                        Some(x) { return Err(x) }
+                        None {}
+                    }
+                }
+            }
+            90 {                                        // Z ReadyForQuery
+                try s.readyFor(&m)
+                match c.refused {
+                    Some(e) { return Err(e) }
+                    None {}
+                }
+                match c.first {
+                    Some(e) { return Err(e) }
+                    None {}
+                }
+                return Ok(Reply{columns: replace(mut &c.cols, []), rows: replace(mut &c.rows, newRawRows(0)), tag: c.tag, empty: c.empty})
+            }
+            71 {                                        // G CopyInResponse: refused
+                if c.refused.isNone() { c.refused = Some(input("COPY is not supported yet")) }
+                putCopyFail(mut &s.out, "COPY is not supported yet")
+                try s.flush(-1, w)
+            }
+            72, 87 {                                    // H CopyOutResponse, W CopyBothResponse: read and dropped
+                if c.refused.isNone() { c.refused = Some(input("COPY is not supported yet")) }
+            }
+            49, 50, 51, 100, 99, 116, 115 {}            // 1 2 3 d c t s: nothing to do
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr()))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// A request may start only on a ready session: a portal left open is closed first.
+fn (s: mut &Session) begin(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state == S_PORTAL { try s.closePortal(w) }
+    if s.state != S_READY { return Err(input("the session is busy")) }
+    return Ok(Unit{})
+}
+
+// Finishes an abandoned portal (a stream dropped before its end); every request calls it first.
+pub fn (s: mut &Session) settle(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state == S_PORTAL { return s.closePortal(w) }
+    return Ok(Unit{})
+}
+
+// Runs a script of any number of statements with the simple protocol; the last
+// statement's reply, or the first error (the server skips the rest).
+pub fn (s: mut &Session) script(sql: str, w: Where): Result[Reply, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    try s.begin(w)
+    putQuery(mut &s.out, sql)
+    s.state = S_BUSY
+    try s.flush(-1, w)
+    s.trips += 1
+    return s.collect(w)
+}
+
+fn (s: mut &Session) putExtended(sql: str, params: &[]Param, rows: int) {
+    putParse(mut &s.out, "", sql, params)
+    putBind(mut &s.out, "", "", params)
+    putDescribe(mut &s.out, 80, "")
+    putExecute(mut &s.out, "", rows)
+}
+
+fn checkRequest(sql: str, params: &[]Param): Result[Unit, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    if len(params) > 65535 { return Err(input("more than 65535 parameters")) }
+    return Ok(Unit{})
+}
+
+// Runs one statement with the extended protocol: Parse, Bind, Describe, Execute
+// (all rows) and Sync in one write; $1, $2, ... are params in order.
+pub fn (s: mut &Session) query(sql: str, params: &[]Param, w: Where): Result[Reply, Error] {
+    try checkRequest(sql, params)
+    try s.begin(w)
+    s.putExtended(sql, params, 0)
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    try s.flush(-1, w)
+    s.trips += 1
+    return s.collect(w)
+}
+
+// --------------------------------------------------------------- cancellation
+
+// Asks the server to cancel what the session is running: a CancelRequest on a
+// new connection to the same endpoint (no SSLRequest), then waits up to 1 s for
+// the server to close it, as libpq 16's PQcancel. The calls ignore the task's
+// cancellation and deadline.
+pub fn (s: &Session) cancelRequest(w: Where): Result[Unit, Error] {
+    if s.pid == 0 || len(s.key) == 0 { return Err(input("the session has no cancel key")) }
+    var o = newOut()
+    putCancelRequest(mut &o, s.pid, s.key)
+    var b = array(1, byte(0))
+    if len(s.unixPath) > 0 {
+        let c = match net.connectUnixFor(s.unixPath, 1000, w) {
+            Ok(c) { c }
+            Err(e) { return Err(ioFail(e)) }
+        }
+        match c.writeFor(o.bytes(), 1000, w) {
+            Ok(_) {}
+            Err(e) { return Err(ioFail(e)) }
+        }
+        let r = c.readFor(mut &b, 1000, w)
+    } else {
+        let c = match net.connectFor(s.addr, 1000, w) {
+            Ok(c) { c }
+            Err(e) { return Err(ioFail(e)) }
+        }
+        match c.writeFor(o.bytes(), 1000, w) {
+            Ok(_) {}
+            Err(e) { return Err(ioFail(e)) }
+        }
+        let r = c.readFor(mut &b, 1000, w)
+    }
+    return Ok(Unit{})
+}
+
+// Reads and drops messages to a ReadyForQuery, at most ms in all, without being
+// cancellable. A failure breaks the session.
+fn (s: mut &Session) drain(ms: int, w: Where): Result[Unit, Error] {
+    let t0 = time.monotonicNs()
+    while true {
+        let left = ms - (time.monotonicNs() - t0) / 1000000
+        if left <= 0 {
+            s.breakWith("the reply did not finish in " + ms.toStr() + " ms")
+            return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: the reply did not finish"))
+        }
+        let r = s.next(left, w)
+        if r.isErr() {
+            let e = r.unwrapErr()
+            s.breakWith(e.msg)
+            return Err(e)
+        }
+        let m = r.unwrap()
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+        } else if m.t == 90 {
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// A request was given up while its reply was outstanding: sync a portal if one
+// is open, cancel, and read what is left (ABORT_MS at most). The session is
+// ready again afterwards, or broken.
+fn (s: mut &Session) abort(w: Where) {
+    if s.state == S_BROKEN { return }
+    if s.state == S_PORTAL {
+        putSync(mut &s.out)
+        s.state = S_BUSY
+        s.pending = false
+        let sent = s.flush(ABORT_MS, w)
+        if sent.isErr() { return }
+    }
+    let c = s.cancelRequest(w)
+    let d = s.drain(ABORT_MS, w)
+}
+
+// ------------------------------------------------------------------- portals
+
+// The DataRows of one Execute's reply: the chunks that hold them, per row its
+// chunk and the offset of its column count.
+pub type Batch = record {
+    pub chunks: []str
+    pub rowChunk: []i32            // per row: chunk index
+    pub rowAt: []i32               // per row: offset of the DataRow's column count in its chunk
+    pub more: bool                 // PortalSuspended: more rows to Execute for
+    pub err: Option[Error]         // an ErrorResponse after these rows (the portal is gone, Sync done)
+    pub bytes: int                 // the DataRows' bytes, for sizing the next Execute
+}
+
+// Sends Sync and reads to ReadyForQuery: the end of an extended exchange that had no Sync yet.
+fn (s: mut &Session) syncUp(w: Where): Result[Unit, Error] {
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    s.pending = false
+    try s.flush(-1, w)
+    while true {
+        let m = try s.wait(w)
+        if m.t == 90 {
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Parse, Bind, Describe portal, Execute `rows`, Flush (no Sync): the statement's
+// columns, with its first rows still on the wire. A portal outside a
+// transaction block lives until the Sync that closePortal or the end of the rows sends.
+pub fn (s: mut &Session) openPortal(sql: str, params: &[]Param, rows: int, w: Where): Result[[]Column, Error] {
+    try checkRequest(sql, params)
+    try s.begin(w)
+    s.putExtended(sql, params, rows)
+    putFlush(mut &s.out)
+    s.state = S_PORTAL
+    s.pending = true
+    try s.flush(-1, w)
+    s.trips += 1
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            49, 50 {}                                   // ParseComplete, BindComplete
+            84 {
+                let cols = try s.rowDescription(&m)
+                s.portalCols = cols
+                return Ok(copyCols(&s.portalCols))
+            }
+            110 {
+                s.portalCols = []
+                return Ok([])
+            }
+            69 {                                        // refused before any row: Sync, ReadyForQuery
+                let e = try s.errorOf(&m)
+                s.pending = false
+                if s.state == S_BROKEN { return Err(e.dbError()) }
+                try s.syncUp(w)
+                return Err(e.dbError())
+            }
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr() + " opening a portal"))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Execute `rows` on the open portal and Flush; the reply is read by receiveBatch.
+pub fn (s: mut &Session) execute(rows: int, w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL || s.pending { return Err(input("no portal is waiting for an Execute")) }
+    putExecute(mut &s.out, "", rows)
+    putFlush(mut &s.out)
+    try s.flush(-1, w)
+    s.pending = true
+    s.trips += 1
+    return Ok(Unit{})
+}
+
+// Reads the outstanding Execute's reply. At the end of the rows (CommandComplete)
+// or an error the portal is done: Sync and ReadyForQuery are read here, and the
+// error, if any, is in Batch.err (the rows before it are in the batch).
+pub fn (s: mut &Session) receiveBatch(w: Where): Result[Batch, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL || !s.pending { return Err(input("no Execute is outstanding")) }
+    var b = Batch{chunks: [], rowChunk: [], rowAt: [], more: false, err: None, bytes: 0}
+    let n = len(s.portalCols)
+    var sS = array(n, 0)
+    var sL = array(n, 0)
+    var lastSeq = -1
+    var refused: Option[Error] = None
+    var ended = false
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            68 {
+                let end = match scanRow(&s.chunk[..m.end], m.at, n, mut &sS, mut &sL) {
+                    Ok(x) { x }
+                    Err(e) { return Err(s.wire(e)) }
+                }
+                if end != m.end { return Err(s.wire(proto("a DataRow with " + (m.end - end).toStr() + " bytes after its values"))) }
+                if lastSeq != s.seq {
+                    append(mut &b.chunks, s.chunk)
+                    lastSeq = s.seq
+                }
+                append(mut &b.rowChunk, i32(len(b.chunks) - 1))
+                append(mut &b.rowAt, i32(m.at))
+                b.bytes += m.end - m.at
+            }
+            115 {                                       // s PortalSuspended
+                s.pending = false
+                b.more = true
+                return Ok(b)
+            }
+            67, 73 {                                    // C, I: the portal ran to its end
+                s.pending = false
+                b.err = refused
+                try s.syncUp(w)
+                return Ok(b)
+            }
+            69 {
+                let e = try s.errorOf(&m)
+                s.pending = false
+                b.err = match refused { Some(r) { Some(r) } None { Some(e.dbError()) } }
+                if s.state == S_BROKEN { return Ok(b) }
+                try s.syncUp(w)
+                return Ok(b)
+            }
+            71 {                                        // CopyInResponse: refused
+                if refused.isNone() { refused = Some(input("COPY is not supported yet")) }
+                putCopyFail(mut &s.out, "COPY is not supported yet")
+                try s.flush(-1, w)
+            }
+            72, 87 { if refused.isNone() { refused = Some(input("COPY is not supported yet")) } }
+            100, 99, 49, 50, 51, 116 {}
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr() + " in a portal"))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Ends the open portal (if any): the outstanding Execute's reply is read and
+// dropped, for CLOSE_WAIT_MS, then the server is asked to cancel, in ABORT_MS
+// all; then Close portal (when it has not run to its end) and Sync, and
+// ReadyForQuery. Past ABORT_MS the session is broken. No-op without a portal.
+pub fn (s: mut &Session) closePortal(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL { return Ok(Unit{}) }
+    var needClose = true
+    if s.pending {
+        let t0 = time.monotonicNs()
+        var cancelled = false
+        var ended = false
+        while !ended {
+            let spent = (time.monotonicNs() - t0) / 1000000
+            let limit = if cancelled { ABORT_MS } else { CLOSE_WAIT_MS }
+            if spent >= limit {
+                if cancelled {
+                    s.breakWith("the stream did not finish in " + ABORT_MS.toStr() + " ms")
+                    return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: an unfinished stream could not be closed"))
+                }
+                let c = s.cancelRequest(w)
+                cancelled = true
+                continue
+            }
+            let r = s.next(limit - spent, w)
+            if r.isErr() {
+                let e = r.unwrapErr()
+                if e.code == sqldialect.E_TIMEOUT && !cancelled {
+                    let c = s.cancelRequest(w)
+                    cancelled = true
+                    continue
+                }
+                s.breakWith(e.msg)
+                return Err(e)
+            }
+            let m = r.unwrap()
+            match m.t {
+                115 { ended = true }                    // suspended: the portal is still there
+                67, 73 {
+                    needClose = false
+                    ended = true
+                }
+                69 {
+                    let e = try s.errorOf(&m)
+                    needClose = false
+                    ended = true
+                }
+                71 {
+                    putCopyFail(mut &s.out, "COPY is not supported yet")
+                    try s.flush(ABORT_MS, w)
+                }
+                else {}
+            }
+        }
+        s.pending = false
+    }
+    if needClose { putClose(mut &s.out, 80, "") }
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    try s.flush(ABORT_MS, w)
+    s.trips += 1
+    try s.drain(ABORT_MS, w)
+    return Ok(Unit{})
+}
