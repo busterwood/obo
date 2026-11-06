@@ -488,21 +488,48 @@ Decimal must pass: 11 operations on 10^6 inputs each, old and new tree,
 native and C, identical text, errors and scales.
 
 Cycles per operation (the difference between 50 rounds and none over the
-4096 inputs, least of 5, pinned):
+4096 inputs, least of 5, pinned to one core; 2026-11-06, branch `nativedec`):
 
 | operation | native | via C |
 |---|---:|---:|
-| add, 6 / 19 digits at 2 places (M2) | 264 / 260 | 103 / 98 |
-| mul, 6 / 19 digits (M3) | 319 / 317 | 137 / 138 |
-| div, 12 by 6 digits at scale 2 (M5:s2) | 609 | 259 |
-| quantize to 2 places from 6 digits (M6) | 247 | 91 |
-| parse, 20 digits (M7) | 312 | 177 |
-| format, 38 digits fixed (M8:f38) | 441 | 355 |
-| cmp, same leading digit position (M10:diff) | 87 | 41 |
+| add, 6 / 19 digits at 2 places (M2) | 117 / 117 | 104 / 98 |
+| mul, 6 / 19 digits (M3) | 144 / 144 | 136 / 137 |
+| div, 12 by 6 digits at scale 2 (M5:s2) | 277 | 264 |
+| quantize to 2 places from 6 digits (M6) | 114 | 91 |
+| parse, 20 digits (M7) | 245 | 177 |
+| format, 38 digits fixed (M8:f38) | 408 | 356 |
+| cmp, same leading digit position (M10:diff) | 54 | 42 |
+| `Decimal.fromUnits(u, 2)` and one add, a row of a 10M-row sum | 191 | 199 |
 
-The C build is about twice as fast as native on the arithmetic: a Decimal is
-a 32-byte value, which gcc keeps in registers through an inlined operation,
-while the native backend keeps u128 values on the stack between operations.
+Before, native took 2 to 2.5 times C's cycles on the arithmetic (add 268,
+mul 317, div 622, quantize 249, cmp 86; the sum 483 to 500 a row). The causes, as
+measured with `perf annotate` on the Zen 4:
+
+- store-forwarding stalls: a 16-byte `movdqu` load of a record that two
+  8-byte stores had just written (a call's result, a parameter, a record
+  literal), and an 8-byte load of a word whose zeroing and byte store (the
+  sign) were both in flight, about 12 cycles each, a fifth of add's cycles;
+- copies: a record literal built in a temporary and copied into a `Result`,
+  the result copied out through the hidden pointer, the argument copied
+  again into the outgoing area, the Ok value of `orStop` copied twice;
+- u128 values in stack slots between operations, every operand loaded and
+  stored again, and the checked u128 multiply a call;
+- u128 division always `__udivti3`/`__umodti3`, twice for one quotient and
+  remainder (quantize spent 40% there);
+- int.cmp's `cmpOf(a < b, a > b)` built as two 0/1 values and tested again
+  in min, max and the parse loop.
+
+The native backend now builds records in place, copies 16 bytes at a time
+only from memory written long before, keeps u128 locals in register pairs,
+divides by 64-bit divisors with `div`, and folds the selects (design/native.md
+section 4). The C builds are byte-identical; their numbers above vary by up
+to 5% between runs on a loaded machine. What is left: parse (the digit loop's
+checks and 128-bit accumulation through a pointer), format (`rt_digits`,
+an allocation and a copy per call: half of its time is the runtime's, the
+same as C's), cmp (half of its branch misses are in `digits`' compare
+tree), and the records passed by value on the stack, which the ABI requires
+of both builds.
+
 The digit count is a compare tree, trailing zeros are stripped by exact
 division, long division is Knuth's algorithm D in base 2^64, text is written
 in 10^19 chunks two digits at a time, and parse reads eight digits at a time

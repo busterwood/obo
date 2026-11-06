@@ -968,6 +968,44 @@ to 45, atan 35 to 18, tan 33 to 19. The C builds are byte-identical. perfsuite
 of `7d519d1`): compile suite +0.22% instructions, -1.5% cycles; run suite
 -0.22% instructions (trees -3.3%, from rule (3)), cycles within noise.
 
+### Native Decimal (2026-11-06)
+
+Native Decimal took 2 to 2.5 times the cycles of the C build (add 268
+against 104 a call, div 622 against 259, cmp 86 against 43), and a sum of
+`Decimal.fromUnits(u, 2)` over 10M rows 483 cycles a row against C's 193.
+The page's explanation, that gcc keeps the 32-byte value in registers, was
+again only part of it. Measured with `perf annotate` on the Zen 4, the native
+code lost its time to: 16-byte loads of records that two 8-byte stores had
+just written (a stall of about 12 cycles each, a fifth of add); records
+built in temporaries and copied two or three times on the way out of a
+function (`Ok(Decimal{...})`, `orStop`'s Ok value, the outgoing arguments);
+u128 values in stack slots and the checked u128 multiply as a call; every
+u128 division a `__udivti3`/`__umodti3` call, twice for one quotient and
+remainder; int.cmp's two compares built as 0/1 values and tested again in
+min and max.
+
+The fixes are in the native backend only (design/native.md section 4):
+records built in place and returned through the caller's own pointer;
+copies 16 bytes at a time only from memory written long before; u128 locals
+in register pairs and their operands used in place; the checked multiply and
+the division by a 64-bit divisor inline, a quotient and its remainder from
+one division; opt.obx's selects and lazy compares, folded to branches where
+compared and made with setcc and cmov as values. Branches for those values
+had cost Decimal cmp 16 cycles an operation in mispredictions.
+
+Native cycles per operation, before and after: add 268 to 117 (C 104), mul
+317 to 144 (C 136), div 622 to 277 (C 264), quantize 249 to 114 (C 91), parse
+314 to 245 (C 177), format 443 to 408 (C 356), cmp 86 to 54 (C 42); the
+fromUnits sum 483 to 191 cycles a row (C 193 to 199). The C builds are
+byte-identical, the results too (`diff.py`: 11 operations on 10^6 inputs,
+4 builds). perfsuite against main: compile suite +0.59% instructions after
+the branch's own cost was cut (x64gen tested the name of every runtime call
+for 128-bit inlining: +1.47% before), run suite -0.32%. Tried and left out:
+16-byte copies everywhere (the compiler 1.6% fewer instructions, but Decimal
+div 357 cycles against 266 and mul 180 against 149: the stalls come back);
+16-byte copies for assignments (div +70 cycles) and for stack arguments (the
+fromUnits sum +7%).
+
 ## The performance record, 2026-11-03 to 2026-11-06
 
 PERFORMANCE.md as it stood at `05cdac6`, before it became a report of the
