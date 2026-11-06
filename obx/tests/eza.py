@@ -428,6 +428,37 @@ def _long_cases():
     _g('long', 'aa_selflink', '-aa', *LONG, 'selflink/d/self')
     _r('long', 'deep_operand', fixtures.DEEP_OPERAND,
        note='joined path near but under 4095 bytes')
+    # The long view as eza 0.23.3 shows it: decimal sizes, -b, -B, -h, colours,
+    # local dates. -n keeps the user column the same on every host; the fixture
+    # times are in 2020, so the year is always shown (the current-year form is
+    # live-only, see _r below).
+    _g('long', 'plain_numeric', '-l', '-n', 'mixed',
+       note='decimal sizes and the default date style')
+    _g('long', 'plain_numeric_sizes', '-l', '-n', 'sizes')
+    _g('long', 'binary_numeric', '-l', '-n', '-b', 'sizes')
+    _g('long', 'bytes_numeric', '-l', '-n', '-B', 'sizes')
+    _g('long', 'header_numeric', '-l', '-n', '-h', 'mixed')
+    _g('long', 'header_long_option', '-l', '-n', '--header', 'mixed')
+    _g('long', 'header_binary', '-l', '-n', '-h', '-b', 'sizes')
+    _g('long', 'header_no_user', '-l', '-h', '--no-user', 'mixed')
+    _g('long', 'header_empty_dir', '-l', '-n', '-h', 'empty',
+       note='no header row without entries')
+    _g('long', 'header_one_file', '-l', '-n', '-h', 'one')
+    _g('long', 'header_tree', '-T', '-l', '-n', '-h', 'tree',
+       note='the header and widths in the tree view')
+    _g('long', 'header_colour', '-l', '-n', '-h', '--color=always', 'mixed')
+    _g('long', 'colour_numeric', '-l', '-n', '--color=always', 'modes')
+    _g('long', 'colour_sizes', '-l', '-n', '--color=always', 'sizes')
+    _g('long', 'modes_numeric', '-l', '-n', 'modes')
+    _g('long', 'long_iso_numeric', '-l', '-n', '--time-style=long-iso', 'times')
+    _g('long', 'default_style_times', '-l', '-n', 'times')
+    _g('long', 'tz_london', '-l', '-n', 'times', env={'TZ': 'Europe/London'})
+    _g('long', 'tz_new_york', '-l', '-n', 'times', env={'TZ': 'America/New_York'})
+    _g('long', 'tz_sydney', '-l', '-n', 'times', env={'TZ': 'Australia/Sydney'})
+    _g('long', 'tz_kolkata_iso', '-l', '-n', '--time-style=long-iso', 'times',
+       env={'TZ': 'Asia/Kolkata'})
+    _r('long', 'user_names', '-l', '-h', 'mixed',
+       note='user names are the owner of the fixture on this host: live only')
 
 
 def _quoting_cases():
@@ -1034,9 +1065,9 @@ def _error_cases():
        note='stdout read end closed before the first write')
     _r('errors', 'path_over_limit', 'a/' * 2100 + 'f',
        note='expected-error/limitation case, not a reference golden')
-    _o('errors', 'own_long_restricted', '-l', 'mixed',
-       note='our restricted long mode needs --no-user --bytes '
-            '--time-style=long-iso')
+    _o('errors', 'own_time_style_iso', '-l', '--time-style=iso', 'mixed',
+       note='this build rejects iso (and full-iso, relative, +FORMAT); the '
+            'reference accepts them')
     _o('errors', 'own_sort_none', '--sort=none', 'mixed',
        note='this build does not implement --sort=none')
     _o('errors', 'own_unsupported_flag', '--git', 'mixed',
@@ -1351,7 +1382,26 @@ def reference_version(path, tmp):
     return p.stdout
 
 
-def resolve_reference(mode, tmp):
+def resolve_reference(mode, tmp, exe=None):
+    if exe:
+        # --reference-exe: another build of the pinned version (e.g. cargo's eza
+        # 0.23.3). Its --version output must match VERSION; its sha256 need not,
+        # and the run says so. The goldens recorded from it carry its sha256.
+        path = os.path.abspath(exe)
+        try:
+            digest = sha256_file(path)
+            version = reference_version(path, tmp)
+        except OSError as e:
+            raise SetupError('cannot read --reference-exe %s: %s' % (path, e))
+        pin = load_version()
+        if pin is None:
+            raise SetupError('--reference-exe: %s is missing' % VERSION)
+        if version != pin['version']:
+            raise SetupError('--reference-exe: --version %r differs from VERSION %r'
+                             % (version, pin['version']))
+        return RefInfo(path, 'pinned', version, digest,
+                       '--reference-exe: sha256 %s differs from the VERSION pin %s; '
+                       'version output matches' % (digest, pin.get('binary-sha256')))
     if mode == 'none':
         return RefInfo(kind='none', reason='reference disabled by '
                                           '--reference=none')
@@ -1593,7 +1643,8 @@ class Harness:
 
     # -- setup
     def resolve_reference(self):
-        self.ref = resolve_reference(self.args.reference, self.tmp)
+        self.ref = resolve_reference(self.args.reference, self.tmp,
+                                     getattr(self.args, 'reference_exe', None))
         return self.ref
 
     def check_require_reference(self):
@@ -2076,6 +2127,9 @@ def main(argv=None):
     ap.add_argument('--c', action='store_true',
                     help='build eza through C instead of --native')
     ap.add_argument('--exe', metavar='PATH', help='test this eza binary')
+    ap.add_argument('--reference-exe', metavar='PATH', dest='reference_exe',
+                    help='use this build of the pinned eza version as the reference '
+                         '(its --version must match VERSION; its sha256 need not)')
     ap.add_argument('--keep', action='store_true')
     a = ap.parse_args(argv)
 
@@ -2129,7 +2183,9 @@ def main(argv=None):
     for skip in h.skips:
         print('skip ' + skip)
     r = h.ref
-    if r.kind == 'pinned':
+    if r.kind == 'pinned' and r.reason.startswith('--reference-exe'):
+        ref_line = 'reference: eza sha256 %s (%s)' % (r.sha256, r.reason)
+    elif r.kind == 'pinned':
         ref_line = 'reference: eza sha256 %s (matches VERSION)' % r.sha256
     elif r.kind == 'none':
         ref_line = 'reference: none; goldens are the oracle'

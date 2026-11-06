@@ -1,0 +1,14 @@
+d--------- - 1000 13 Sep  2020 d000
+drwx------ - 1000 13 Sep  2020 d700
+drwxr-xr-x - 1000 13 Sep  2020 d755
+drwxrwxrwt - 1000 13 Sep  2020 d1777
+.--------- 2 1000 13 Sep  2020 m000
+.rw------- 2 1000 13 Sep  2020 m600
+.rw-r--r-- 2 1000 13 Sep  2020 m644
+.rwx------ 2 1000 13 Sep  2020 m700
+.rwxr-xr-x 2 1000 13 Sep  2020 m755
+.rwxrwxrwt 2 1000 13 Sep  2020 m1777
+.rwxr-sr-x 2 1000 13 Sep  2020 m2755
+.rwsr-xr-x 2 1000 13 Sep  2020 m4755
+|rw-r--r-- - 1000 13 Sep  2020 pipe
+srw-r--r-- - 1000 13 Sep  2020 sock

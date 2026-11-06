@@ -1,0 +1,17 @@
+Permissions Size Date Modified Name
+.rw-r--r--     5 13 Sep  2020  -
+.rw-r--r--     9 13 Sep  2020  --x
+.rw-r--r--     6 13 Sep  2020  alpha
+.rw-r--r--     5 13 Sep  2020  Beta
+lrwxrwxrwx     - 13 Sep  2020  broken -> missing
+drwxr-xr-x     - 13 Sep  2020  dir
+lrwxrwxrwx     - 13 Sep  2020  dirlink -> dir
+.rw-r--r--     6 13 Sep  2020  gamma.txt
+lrwxrwxrwx     - 13 Sep  2020  link -> alpha
+.rw-r--r--     3 13 Sep  2020  noexec
+|rw-r--r--     - 13 Sep  2020  pipe
+.rwxr-xr-x    17 13 Sep  2020  prog
+srw-r--r--     - 13 Sep  2020  sock
+lrwxrwxrwx     - 13 Sep  2020  spaced -> 'tar get'
+drwxr-xr-x     - 13 Sep  2020  sub.dir
+.rw-r--r--     7 13 Sep  2020  'tar get'

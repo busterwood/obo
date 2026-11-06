@@ -1,6 +1,5 @@
 Usage:
   eza [options] [--] [PATH]
-  eza -l --bytes --time-style=long-iso (-n | --no-user) [options] [--] [PATH]
 
 obo eza is a partial behavioural reimplementation of eza 0.23.3,
 not a drop-in replacement. It lists one PATH (default ".") and
@@ -12,7 +11,7 @@ META OPTIONS
 
 DISPLAY OPTIONS
   -1, --oneline              display one entry per line
-  -l, --long                 restricted long view (see LONG VIEW)
+  -l, --long                 long view (see LONG VIEW)
   -G, --grid                 display entries as a grid
   -x, --across               fill grid rows left to right
   -T, --tree                 recurse into directories as a tree
@@ -39,21 +38,20 @@ FILTERING AND SORTING OPTIONS
   --group-directories-last   list directories after other entries
 
 LONG VIEW OPTIONS
-  The working long form in this build is:
-    eza -l --bytes --time-style=long-iso -n PATH
-    eza -l --bytes --time-style=long-iso --no-user PATH
-  It prints permissions, a raw decimal byte size, user or numeric uid,
-  a long-iso date, and the name. Plain "eza -l" is not supported.
-  Human-readable sizes are NOT implemented: eza's default 1.0k/1.0M
-  format and -b/--binary are unsupported. -h/--header is also
-  unsupported. Those options are rejected, not silently accepted.
-  -B, --bytes                show raw byte sizes (required with -l)
+  -l prints permissions, size, user, date and name as eza 0.23.3 does,
+  with its default colours. Sizes are decimal (1.0k, 1.2M) by default,
+  binary with -b, and plain bytes with -B. Dates are in the local zone
+  (the zone of TZ, else the system's): "%e %b %H:%M" in the current year, else
+  "%e %b  %Y"; --time-style=long-iso gives "2020-09-13 12:26".
+  -h, --header               a header row with the column labels
+  -b, --binary               sizes with binary prefixes (1.0Ki, 1.2Mi)
+  -B, --bytes                sizes in bytes, without prefixes
   -n, --numeric              show numeric user ids
   --no-user                  omit the user column
   --no-permissions           omit the permissions column
   --no-filesize              omit the size column
   --no-time                  omit the date column
-  --time-style STYLE         long-iso with -l; default/long-iso otherwise
+  --time-style STYLE         default or long-iso (iso and others are rejected)
 
 EXAMPLES
   eza                        list the current directory
