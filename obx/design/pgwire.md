@@ -1253,3 +1253,63 @@ not skipped). Expected lines unchanged in every test.
 **Open** (for the user): the batch size at high latency (note 8 of section
 21); the buffered native target (1,526 against 1,450), which is text
 decoding (db-streaming section 7).
+
+## 27. As built (P4, benchmark only)
+
+P4 measures the native client against the old libpq one, with no code
+change. Both runs use the same `httpd.obx`; the old copy changes only its
+import, to `import "postgres_libpq" as postgres`, in a scratch directory.
+The runs were `http_gate.py --servers native,c --db 4,16` (10,000 idle
+connections, GET /db with 1, 10 and 100 clients, 5 s each) and
+`http_gate.py --workers 1,2,4,8 --db 4` (256 connections in 8 load
+processes, GET / and GET /db). Each pair ran new, old, new, old, with
+`uptime` checked before each run: the one-minute load at the start of every
+run was 0.35 to 1.16 (limit 1.5). Every run exited 0 and every row passed.
+Each figure is one 5 s run, so differences of a few per cent are noise.
+This answers the "not measured" note in section 18: `http_gate --db` was run.
+
+GET /db, 10,000 idle connections: requests/s, and latency in us as p50/p99.
+
+    server  pool  clients   new                old
+    native  4     1         2,843   336/551    2,943   331/531
+    native  4     10        22,064  444/645    21,881  448/643
+    native  4     100       22,014  4442/6144  22,121  4422/6232
+    c       4     1         2,831   342/543    2,946   327/537
+    c       4     10        22,681  432/627    22,054  445/630
+    c       4     100       21,856  4494/6165  22,497  4356/5900
+    native  16    1         2,858   336/534    2,891   333/542
+    native  16    10        21,301  463/660    19,789  505/669
+    native  16    100       23,484  4159/6028  24,270  4059/5642
+    c       16    1         2,834   341/553    2,993   322/525
+    c       16    10        21,740  453/645    20,247  492/664
+    c       16    100       23,341  4210/5959  23,867  4122/5633
+
+The idle connections cost the same with both clients: 14,855 to 15,331 bytes
+each in every run (new and old).
+
+Workers, 256 connections: requests/s at 1, 2, 4 and 8 workers (pool 4 each).
+
+    GET /db   native new  20,896  33,758  49,259  61,147
+              native old  19,858  33,307  46,046  59,957
+              c new       20,357  34,550  48,614  64,335
+              c old       19,885  33,011  46,461  62,480
+    GET /     native new  65,480  97,876 126,285 128,158
+              native old  60,687  98,535 126,291 125,308
+              c new       63,045  96,641 127,058 126,878
+              c old       60,054  96,948 126,183 124,895
+
+The kill test (4 workers, GET /, SIGKILL one worker, the load reconnecting)
+passed in all four runs: 62, 64, 67 and 81 requests lost (the connections
+of the killed worker), restart in 105 to 107 ms, every worker drained with
+exit 0.
+
+CPU and time, from the gate's `time` (the server, the load and the gate
+itself): new /db 1:18.6 elapsed, 19.7 s user and 48.1 s system; old /db
+1:15.4, 16.7 s and 46.8 s; new workers 1:35.9, 85.9 s and 387.0 s; old
+workers 1:33.3, 83.9 s and 377.0 s. The workers runs used about 490 % of the
+16 CPUs (8 cores, SMT).
+
+At this scale the two clients serve GET /db at the same rate: about 22,000
+requests/s at 10 or more clients and about 2,900 at one client, and about
+20,000 requests/s with one worker in each pool. Nothing in these runs
+favours either client.
