@@ -1,0 +1,265 @@
+// oracle's round-trip sizes and fetching ahead against a live Oracle
+// Database ($ORACLE_TEST_DSN or ~/.obo-oracle-dsn; never printed; exits 77,
+// skipped, without one). A FETCH asks for the rows of 256 KB at the widest
+// row (tns.rowWidth), or Fetch Size when set; a stream sends its next FETCH
+// when a FETCH's rows arrive, before they are used. Checked: the rows per
+// round trip of a narrow and a wide row (three full VARCHAR2(4000)), a
+// stream through a buffer of 7, the same rows with Fetch Size 100 and with
+// fetching ahead off, buffered queries, an early close and a drop while a
+// FETCH is on the wire (the connection is used after), an error in the
+// FETCH sent ahead (the rows before it first), and no cursor left open
+// over repeated early closes (V$MYSTAT, as oracle_live_out).
+// needs: ssl
+// expect: narrow: width 119 rows 2202 | wide: width 12051 rows 21
+// expect: buffer 7: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
+// expect: fetch size 100: 200000 rows in 28572 fills, 2002 round trips, sum 20000100000 names 1888895
+// expect: ahead off: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
+// expect: buffered: 200000 rows, 92 round trips, sum 20000100000 | fetch size 100: 2001 round trips
+// expect: wide stream: 100 rows, 6 round trips, 1200000 bytes | buffered: 100 rows, 5 round trips
+// expect: early close in flight: 7 rows | after: 2 | again: 7 rows | after: 2
+// expect: dropped in flight: 3 rows | after: 2
+// expect: error ahead: 3449 rows then error 1476 | after: 2 | ahead off: 3449 rows then error 1476 | after: 2
+// expect: cursor leak: none
+// expect: open handles: 0
+
+import "oracle"
+import "tns"
+import "io"
+import "os"
+
+type Kind = oracle.Kind
+type Error = oracle.Error
+type Columns = oracle.Columns
+type RowView = oracle.RowView
+
+fn dsn(): Option[str] {
+    match os.env("ORACLE_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-oracle-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+type Order = value record { id: int; name: str }
+type OrderCols = value record { id: int; name: int }
+
+fn bindOrder(c: &Columns): Result[OrderCols, Error] {
+    return Ok(OrderCols{id: try c.index("id", Kind.Int), name: try c.index("customer_name", Kind.Text)})
+}
+
+fn readOrder(b: &OrderCols, r: &RowView): Result[Order, Error] { return Ok(Order{id: try r.int(b.id), name: try r.text(b.name)}) }
+
+fn empty(): Order { return Order{id: 0, name: ""} }
+
+const MANY = "SELECT level AS id, MOD(level, 1000) AS customer_id, 'name' || level AS customer_name, " +
+             "CAST(level / 100 AS NUMBER(12,2)) AS amount FROM dual CONNECT BY level <= 200000"
+
+type Wide = value record { a: str; b: str; c: str }
+type WideCols = value record { a: int; b: int; c: int }
+fn bindWide(c: &Columns): Result[WideCols, Error] {
+    return Ok(WideCols{a: try c.index("a", Kind.Text), b: try c.index("b", Kind.Text), c: try c.index("c", Kind.Text)})
+}
+fn readWide(b: &WideCols, r: &RowView): Result[Wide, Error] { return Ok(Wide{a: try r.text(b.a), b: try r.text(b.b), c: try r.text(b.c)}) }
+
+fn after(c: mut &oracle.Conn): str {
+    match c.query("SELECT 1 + 1 FROM dual", &[]) {
+        Ok(r) { return r.int(0, 0).unwrap().toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn openCursors(c: mut &oracle.Conn): int {
+    let r = c.query("SELECT m.value FROM v$mystat m JOIN v$statname n ON n.statistic# = m.statistic# " +
+                    "WHERE n.name = 'opened cursors current'", &[]).unwrap()
+    return r.int(0, 0).unwrap()
+}
+
+// The row widths and rows per round trip of the bench's narrow row and of
+// the wide table, from their describes.
+fn widths(c: mut &oracle.Conn): Result[Unit, Error] {
+    var s = try c.stream(MANY, [], bindOrder, readOrder)
+    let narrow = s.columns()
+    try s.close()
+    var t = try c.stream("SELECT id, a, b, c FROM obx_fetch_w ORDER BY id", [], bindWide, readWide)
+    let wide = t.columns()
+    try t.close()
+    let a = c.query("SELECT * FROM (" + MANY + ") WHERE 1 = 0", &[]).unwrap()
+    let b = c.query("SELECT id, a, b, c FROM obx_fetch_w WHERE 1 = 0", &[]).unwrap()
+    var na: []tns.Column = []
+    for i in 0..a.columnCount() { append(mut &na, a.column(i).unwrap()) }
+    var wa: []tns.Column = []
+    for i in 0..b.columnCount() { append(mut &wa, b.column(i).unwrap()) }
+    println("narrow: width " + tns.rowWidth(&na).toStr() + " rows " + c.rowsFor(&na).toStr() + " | wide: width " +
+            tns.rowWidth(&wa).toStr() + " rows " + c.rowsFor(&wa).toStr())
+    let x = narrow.count() + wide.count()
+    return Ok(Unit{})
+}
+
+fn many(c: mut &oracle.Conn, label: str): Result[Unit, Error] {
+    let t0 = c.roundTrips()
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(7, empty())
+    var rows = 0
+    var fills = 0
+    var sum = 0
+    var chars = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            chars += len(o.name)
+        }
+    }
+    let trips = c.roundTrips() - t0
+    println(label + ": " + rows.toStr() + " rows in " + fills.toStr() + " fills, " + trips.toStr() + " round trips, sum " +
+            sum.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn buffered(c: mut &oracle.Conn): Result[Unit, Error] {
+    let t0 = c.roundTrips()
+    let r = try c.query(MANY, &[])
+    let trips = c.roundTrips() - t0
+    var sum = 0
+    for i in 0..r.rowCount() { sum += try r.int(i, 0) }
+    c.setFetchSize(100)
+    let t1 = c.roundTrips()
+    let q = try c.query(MANY, &[])
+    let trips100 = c.roundTrips() - t1
+    c.setFetchSize(0)
+    println("buffered: " + r.rowCount().toStr() + " rows, " + trips.toStr() + " round trips, sum " + sum.toStr() +
+            " | fetch size 100: " + trips100.toStr() + " round trips")
+    return Ok(Unit{})
+}
+
+fn wide(c: mut &oracle.Conn): Result[Unit, Error] {
+    let t0 = c.roundTrips()
+    var src = try c.stream("SELECT id, a, b, c FROM obx_fetch_w ORDER BY id", [], bindWide, readWide)
+    var buf = array(7, Wide{a: "", b: "", c: ""})
+    var rows = 0
+    var bytes = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for w in buf[0..n] {
+            rows += 1
+            bytes += len(w.a) + len(w.b) + len(w.c)
+        }
+    }
+    let trips = c.roundTrips() - t0
+    let t1 = c.roundTrips()
+    let r = try c.query("SELECT id, a, b, c FROM obx_fetch_w ORDER BY id", &[])
+    let trips2 = c.roundTrips() - t1
+    println("wide stream: " + rows.toStr() + " rows, " + trips.toStr() + " round trips, " + bytes.toStr() + " bytes | buffered: " +
+            r.rowCount().toStr() + " rows, " + trips2.toStr() + " round trips")
+    return Ok(Unit{})
+}
+
+// Closed after its first fill: the FETCH sent ahead is on the wire.
+fn early(c: mut &oracle.Conn, quiet: bool): Result[str, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(7, empty())
+    let n = try src.fill(mut &buf)
+    try src.close()
+    let a = after(c)
+    return Ok(n.toStr() + " rows | after: " + a)
+}
+
+fn dropped(c: mut &oracle.Conn): Result[str, Error] {
+    var n = 0
+    if true {
+        var src = try c.stream(MANY, [], bindOrder, readOrder)
+        for i in 0..3 { if (try src.next()).isSome() { n += 1 } }
+    }
+    let a = after(c)
+    return Ok(n.toStr() + " rows | after: " + a)
+}
+
+// An error at row 5,000: the FETCH sent ahead brings it.
+fn later(c: mut &oracle.Conn): Result[str, Error] {
+    let sql = "SELECT TRUNC(100 / (level - 5000)) AS id, 'n' AS customer_name, 1 AS customer_id, " +
+              "CAST(1 AS NUMBER(12,2)) AS amount FROM dual CONNECT BY level <= 10000"
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(64, empty())
+    var rows = 0
+    var e = ""
+    while true {
+        match src.fill(mut &buf) {
+            Ok(n) {
+                if n == 0 { break }
+                rows += n
+            }
+            Err(x) {
+                e = "error " + x.code.toStr()
+                break
+            }
+        }
+    }
+    let a = after(c)
+    return Ok(rows.toStr() + " rows then " + e + " | after: " + a)
+}
+
+fn run(c: mut &oracle.Conn): Result[Unit, Error] {
+    let x = c.exec("DROP TABLE obx_fetch_w PURGE")
+    try c.exec("CREATE TABLE obx_fetch_w (id NUMBER(10), a VARCHAR2(4000), b VARCHAR2(4000), c VARCHAR2(4000))")
+    try c.run("INSERT INTO obx_fetch_w SELECT level, RPAD('a', 4000, 'a'), RPAD('b', 4000, 'b'), RPAD('c', 4000, 'c') " +
+              "FROM dual CONNECT BY level <= 100", &[])
+    try widths(c)
+    try many(c, "buffer 7")
+    c.setFetchSize(100)
+    try many(c, "fetch size 100")
+    c.setFetchSize(0)
+    c.setFetchAhead(false)
+    try many(c, "ahead off")
+    c.setFetchAhead(true)
+    try buffered(c)
+    try wide(c)
+    let e1 = try early(c, false)
+    let e2 = try early(c, false)
+    println("early close in flight: " + e1 + " | again: " + e2)
+    println("dropped in flight: " + (try dropped(c)))
+    let l1 = try later(c)
+    c.setFetchAhead(false)
+    let l2 = try later(c)
+    c.setFetchAhead(true)
+    println("error ahead: " + l1 + " | ahead off: " + l2)
+    var before = 0
+    for i in 0..11 {
+        if i == 1 { before = openCursors(c) }
+        let a = try early(c, true)
+        let b = try dropped(c)
+        let d = try later(c)
+    }
+    let afterCount = openCursors(c)
+    println("cursor leak: " + if afterCount <= before { "none" } else { (afterCount - before).toStr() + " cursors" })
+    try c.exec("DROP TABLE obx_fetch_w PURGE")
+    return Ok(Unit{})
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(x) { x }
+        None { exit(77) }
+    }
+    if true {
+        let r = oracle.connect(d)
+        if r.isErr() {
+            println("connect failed: " + r.unwrapErr().code.toStr())
+            exit(1)
+        }
+        var c = r.unwrap()
+        match run(mut &c) {
+            Ok(_) {}
+            Err(e) { println("FAIL " + e.toStr()) }
+        }
+        c.logoff()
+    }
+    println("open handles: " + oracle.openHandles().toStr())
+}

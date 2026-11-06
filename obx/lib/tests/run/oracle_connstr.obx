@@ -1,7 +1,7 @@
 // oracle's connection strings (no server): the ODP.NET keywords, Easy
 // Connect and connect descriptors, defaults, errors that name an entry by
 // position and never echo a value, and masked().
-// expect: easy: app db.example.com 1521 FREEPDB1 tls false program obx timeout 15000 fetch 100
+// expect: easy: app db.example.com 1521 FREEPDB1 tls false program obx timeout 15000 fetch 0
 // expect: port and tcps: h 2484 svc tls true trust true name cert.example.com ca /etc/ca.pem
 // expect: ipv6: ::1 1522 orcl
 // expect: descriptor: dbhost 1600 sales.example.com tls true
