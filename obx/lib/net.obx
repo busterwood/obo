@@ -45,6 +45,11 @@ extern "c" fn rtShutdown(fd: int, how: int): int as "obxlib_net_shutdown"
 extern "c" fn rtClose(fd: int) as "obxlib_net_close"
 extern "c" fn rtWait(fd: int, dir: int, w: ptr): int as "obxlib_net_wait"
 extern "c" fn rtCheck(w: ptr): int as "obxlib_task_check"
+extern "c" fn rtConnectUnix(path: &[byte], n: int, pending: mut &int): int as "obxlib_net_connect_unix"
+extern "c" fn rtListenUnix(path: &[byte], n: int, backlog: int): int as "obxlib_net_listen_unix"
+extern "c" fn rtKeepAlive(fd: int, on: int, idle: int, intvl: int, cnt: int): int as "obxlib_net_keepalive"
+extern "c" fn rtWaitFor(fd: int, dir: int, ms: int, cancellable: bool, w: ptr): int as "obxlib_net_wait_for"
+extern "c" fn rtNowNs(which: int): int as "obx_clock_ns"
 
 const EINTR = 4
 const EAGAIN = 11
@@ -299,6 +304,7 @@ pub fn canonicalAddr(addr: str): Option[str] {
 fn sockText(fd: int, peer: int): str {
     var b = array(19, byte(0))
     if rtAddr(fd, peer, mut &b) != 0 { return "" }
+    if b[0] == byte(1) { return if peer != 0 { "unix:" } else { "" } }   // a Unix socket
     return addrText(&b)
 }
 
@@ -335,7 +341,10 @@ fn listenHow(addr: str, reuseport: int): Result[Listener, io.IoError] {
 
 // The address the listener is bound to, e.g. "127.0.0.1:43127" ("" if the
 // system cannot tell).
-pub fn (l: &Listener) localAddr(): str { return sockText(l.fd, 0) }
+pub fn (l: &Listener) localAddr(): str {
+    if len(l.addr) >= 5 && strSlice(l.addr, 0, 5) == "unix:" { return l.addr }
+    return sockText(l.fd, 0)
+}
 
 // Parks until a connection arrives, and gives it.
 pub fn (l: &Listener) accept(w: Where): Result[Conn, io.IoError] {
@@ -432,6 +441,149 @@ pub fn (c: &Conn) writeStr(s: str, w: Where): Result[Unit, io.IoError] {
     return c.write(&b, w)
 }
 
+// ---- Unix-domain sockets
+
+// A listener on the Unix socket path; a path starting with "@" is in the
+// Linux abstract namespace (the "@" stands for the leading NUL byte). At
+// most 107 bytes (ENAMETOOLONG). A file path is created by the bind and
+// stays after the listener is closed: removing it is the caller's job. The
+// listener's address, and localAddr, is "unix:" + path; accept gives Conns
+// whose peerAddr is "unix:".
+pub fn listenUnix(path: str): Result[Listener, io.IoError] {
+    let b = strToBytes(path)
+    let fd = rtListenUnix(&b, len(b), BACKLOG)
+    if fd < 0 { return Err(io.ioError(-fd, "listen", "unix:" + path)) }
+    return Ok(Listener{fd: fd, addr: "unix:" + path})
+}
+
+// Connects to a Unix socket path (as listenUnix), parking until it is made.
+// A listener whose backlog is full is retried every few milliseconds until
+// the task is cancelled or its deadline passes.
+pub fn connectUnix(path: str, w: Where): Result[Conn, io.IoError] {
+    return connectUnixHow(path, -1, true, w)
+}
+
+// connectUnix that ignores the task's cancellation and deadline and gives up
+// after ms milliseconds (ETIMEDOUT): for cleanup (design/pgwire.md section 13).
+pub fn connectUnixFor(path: str, ms: int, w: Where): Result[Conn, io.IoError] {
+    return connectUnixHow(path, ms, false, w)
+}
+
+// The time left until dl (a CLOCK_MONOTONIC ns, NO_DEADLINE: none), in
+// milliseconds rounded up; 0 when it has passed; -1 for no limit.
+fn leftMs(dl: int): int {
+    if dl == NO_DEADLINE { return -1 }
+    let d = dl - rtNowNs(1)
+    if d <= 0 { return 0 }
+    return (d + 999999) / 1000000
+}
+
+fn limitNs(ms: int): int {
+    if ms < 0 || ms > 4000000000000 { return NO_DEADLINE }
+    return rtNowNs(1) + ms * 1000000
+}
+
+fn connectUnixHow(path: str, ms: int, cancellable: bool, w: Where): Result[Conn, io.IoError] {
+    let addr = "unix:" + path
+    let dl = limitNs(ms)
+    let b = strToBytes(path)
+    var delay = 2
+    while true {
+        if cancellable {
+            let k = rtCheck(w.cstr())
+            if k != 0 { return Err(stopped(k, "connect", addr)) }
+        }
+        var pending = 0
+        let fd = rtConnectUnix(&b, len(b), mut &pending)
+        if fd < 0 { return Err(io.ioError(-fd, "connect", addr)) }
+        let c = Conn{fd: fd, addr: addr}   // closed by its drop when not returned
+        if pending == 0 { return Ok(c) }
+        // the listener's backlog is full (a Unix connect takes no time otherwise): try again
+        var left = leftMs(dl)
+        if left == 0 { return Err(io.ioError(io.ETIMEDOUT, "connect", addr)) }
+        if left < 0 || left > delay { left = delay }
+        let r = rtWaitFor(-1, 0, left, cancellable, w.cstr())
+        if r < 0 { return Err(io.ioError(-r, "connect", addr)) }
+        if r == 1 { return Err(stopped(r, "connect", addr)) }
+        if delay < 50 { delay = delay * 2 }
+    }
+    return Err(io.ioError(EINVAL, "connect", addr))
+}
+
+// connect that ignores the task's cancellation and deadline and gives up
+// after ms milliseconds (ETIMEDOUT), for cleanup. addr is an IP address and
+// port, as for connect.
+pub fn connectFor(addr: str, ms: int, w: Where): Result[Conn, io.IoError] {
+    let dl = limitNs(ms)
+    match parseAddr(addr, false) {
+        Some(ip) {
+            var pending = 0
+            let fd = rtConnect(ip.fam, &ip.b, ip.port, mut &pending)
+            if fd < 0 { return Err(io.ioError(-fd, "connect", addr)) }
+            let c = Conn{fd: fd, addr: addr}
+            if pending != 0 {
+                var b = array(19, byte(0))
+                while rtAddr(fd, 1, mut &b) != 0 {
+                    let r = rtWaitFor(fd, 1, leftMs(dl), false, w.cstr())
+                    if r != 0 { return Err(stopped(r, "connect", addr)) }
+                    let e = rtSoError(fd)
+                    if e != 0 { return Err(io.ioError(e, "connect", addr)) }
+                }
+            }
+            return Ok(c)
+        }
+        None { return Err(io.ioError(EINVAL, "connect", addr)) }
+    }
+}
+
+// read that ignores the task's cancellation and deadline and gives up after
+// ms milliseconds without data (ETIMEDOUT): for cleanup. Data that has
+// arrived is read even in a cancelled task.
+pub fn (c: &Conn) readFor(buf: mut &[byte], ms: int, w: Where): Result[int, io.IoError] {
+    let dl = limitNs(ms)
+    while true {
+        let n = rtRead(c.fd, buf, len(buf))
+        if n >= 0 { return Ok(n) }
+        if n == -EAGAIN {
+            let r = rtWaitFor(c.fd, 0, leftMs(dl), false, w.cstr())
+            if r != 0 { return Err(stopped(r, "read", c.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "read", c.addr))
+        }
+    }
+    return Err(io.ioError(EINVAL, "read", c.addr))
+}
+
+// write that ignores the task's cancellation and deadline and gives up after
+// ms milliseconds in all (ETIMEDOUT): for cleanup. On an error part of data
+// may have been sent.
+pub fn (c: &Conn) writeFor(data: &[byte], ms: int, w: Where): Result[Unit, io.IoError] {
+    let dl = limitNs(ms)
+    var off = 0
+    while off < len(data) {
+        let n = rtWrite(c.fd, data[off..], len(data) - off)
+        if n >= 0 {
+            off += n
+        } else if n == -EAGAIN {
+            let r = rtWaitFor(c.fd, 1, leftMs(dl), false, w.cstr())
+            if r != 0 { return Err(stopped(r, "write", c.addr)) }
+        } else if n != -EINTR {
+            return Err(io.ioError(-n, "write", c.addr))
+        }
+    }
+    return Ok(Unit{})
+}
+
+// SO_KEEPALIVE on or off; with on, the idle time before the first probe, the
+// interval between probes (seconds) and the number of lost probes before the
+// connection is dropped, each only when above 0 (else the system's). For a
+// TCP socket; a Unix socket answers with the errno of the first TCP option.
+pub fn (c: &Conn) setKeepAlive(on: bool, idleS: int, intervalS: int, count: int): Result[Unit, io.IoError] {
+    let r = rtKeepAlive(c.fd, if on { 1 } else { 0 }, idleS, intervalS, count)
+    if r != 0 { return Err(io.ioError(-r, "setsockopt", c.addr)) }
+    return Ok(Unit{})
+}
+
 // Shuts down the sending side: the peer reads the end of the stream, and
 // this side can still read.
 pub fn (c: &Conn) closeWrite(): Result[Unit, io.IoError] {
@@ -452,7 +604,13 @@ pub fn (c: &Conn) setNoDelay(on: bool): Result[Unit, io.IoError] {
 pub fn (c: &Conn) localAddr(): str { return sockText(c.fd, 0) }
 
 // The peer's address ("" once it is gone).
-pub fn (c: &Conn) peerAddr(): str { return sockText(c.fd, 1) }
+pub fn (c: &Conn) peerAddr(): str {
+    if c.isUnix() { return c.addr }   // "unix:" + the path it connected to; "unix:" when accepted
+    return sockText(c.fd, 1)
+}
+
+// Whether this is a Unix-domain socket.
+pub fn (c: &Conn) isUnix(): bool { return len(c.addr) >= 5 && strSlice(c.addr, 0, 5) == "unix:" }
 
 // Closes the socket (as dropping it does).
 pub fn (var c: Conn) close() {}
