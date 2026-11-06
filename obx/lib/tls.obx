@@ -104,6 +104,10 @@ extern "crypto" fn X509_get0_notAfter(x: ptr): ptr
 extern "crypto" fn ASN1_TIME_to_tm(t: ptr, tm: mut &[]i32): i32
 extern "crypto" fn X509_digest(x: ptr, md: ptr, out: mut &[]byte, n: mut &int): i32
 extern "crypto" fn EVP_sha256(): ptr
+extern "crypto" fn EVP_get_digestbyname(name: str): ptr     // EVP_get_digestbynid(n) is EVP_get_digestbyname(OBJ_nid2sn(n))
+extern "crypto" fn OBJ_nid2sn(n: i32): str
+extern "crypto" fn OBJ_find_sigid_algs(sig: i32, dig: mut &[]i32, pk: mut &[]i32): i32
+extern "crypto" fn X509_get_signature_nid(x: ptr): i32
 extern "crypto" fn OpenSSL_version(t: i32): str
 
 // OpenSSL's constants (ssl.h, bio.h, prov_ssl.h of 3.0). Several "functions"
@@ -289,13 +293,17 @@ pub type Options = value record {
     pub minVersion: Version
     pub maxVersion: Version
     pub alpn: str                  // client: protocols offered (ALPN), separated by commas: "h2,http/1.1"
+    pub verifyName: bool           // client: check the name (SSL_set1_host); false: the chain only (verify-ca),
+                                   // SNI is still sent for a name, and engine("") is allowed with verification on
+    pub sni: bool                  // client: send SNI for a name; false: never
 }
 
 // Verification on against the system's trust store, TLS 1.2 to 1.3, no
 // client certificate, no pins, no ALPN.
 pub fn defaults(): Options {
     return Options{caFile: "", caDir: "", insecureSkipVerify: false, pins: "", certFile: "", keyFile: "",
-                   clientCaFile: "", minVersion: Version.Tls12, maxVersion: Version.Tls13, alpn: ""}
+                   clientCaFile: "", minVersion: Version.Tls12, maxVersion: Version.Tls13, alpn: "",
+                   verifyName: true, sni: true}
 }
 
 // "AB:cd:..." fingerprints as lowercase hex without colons, joined by ",".
@@ -344,6 +352,8 @@ pub type Context = record {
     server: bool
     verify: bool       // the peer's certificate is checked (client: always unless insecureSkipVerify)
     pins: str          // normalized
+    names: bool        // client: the name is checked (Options.verifyName)
+    sni: bool          // client: SNI is sent for a name
 }
 
 fn (c: mut &Context) drop() {
@@ -371,7 +381,7 @@ fn newContext(o: &Options, server: bool): Result[Context, Error] {
     let h = SSL_CTX_new(if server { TLS_server_method() } else { TLS_client_method() })
     if isNull(h) { return Err(queueFail(Kind.Config, "SSL_CTX_new failed", "")) }
     OPEN += 1
-    var c = Context{ctx: h, server: server, verify: false, pins: pins}   // freed by its drop on an error below
+    var c = Context{ctx: h, server: server, verify: false, pins: pins, names: o.verifyName, sni: o.sni}   // freed by its drop on an error below
     if SSL_CTX_ctrl(h, i32(SSL_CTRL_SET_MIN_PROTO_VERSION), versionCode(o.minVersion), nullPtr()) != 1 ||
        SSL_CTX_ctrl(h, i32(SSL_CTRL_SET_MAX_PROTO_VERSION), versionCode(o.maxVersion), nullPtr()) != 1 {
         return Err(queueFail(Kind.Config, "cannot set the protocol versions", ""))
@@ -436,7 +446,7 @@ fn loadCas(h: ptr, file: str, dir: str): Result[Unit, Error] {
 pub fn (c: &Context) share(): Context {
     let r = SSL_CTX_up_ref(c.ctx)
     OPEN += 1
-    return Context{ctx: c.ctx, server: c.server, verify: c.verify, pins: c.pins}
+    return Context{ctx: c.ctx, server: c.server, verify: c.verify, pins: c.pins, names: c.names, sni: c.sni}
 }
 
 pub fn (c: &Context) isServer(): bool { return c.server }
@@ -459,7 +469,7 @@ fn isIpLiteral(h: str): bool {
 pub fn (c: &Context) engine(serverName: str): Result[Engine, Error] {
     var host = serverName
     if len(host) > 1 && host[0] == '[' && host[len(host) - 1] == ']' { host = host[1..len(host) - 1] }
-    if !c.server && c.verify && len(host) == 0 {
+    if !c.server && c.verify && c.names && len(host) == 0 {
         return Err(fail(Kind.Config, "a server name is needed to verify the server's certificate", 0, ""))
     }
     ERR_clear_error()
@@ -477,11 +487,11 @@ pub fn (c: &Context) engine(serverName: str): Result[Engine, Error] {
     } else {
         SSL_set_connect_state(ssl)
         if len(host) > 0 {
-            if !isIpLiteral(host) &&
+            if c.sni && !isIpLiteral(host) &&
                SSL_ctrl(ssl, i32(SSL_CTRL_SET_TLSEXT_HOSTNAME), TLSEXT_NAMETYPE_host_name, host) != 1 {
                 return Err(queueFail(Kind.Config, "cannot set the server name (SNI)", host))
             }
-            if c.verify && SSL_set1_host(ssl, host) != 1 {
+            if c.verify && c.names && SSL_set1_host(ssl, host) != 1 {
                 return Err(queueFail(Kind.Config, "cannot set the name to verify", host))
             }
         }
@@ -727,6 +737,38 @@ pub fn (e: &Engine) peer(): Option[Cert] {
     return Some(c)
 }
 
+const NID_md5 = 4
+const NID_sha1 = 64
+
+// The channel binding data of RFC 5929, tls-server-end-point: the hash of
+// the peer's certificate (DER) with the hash of the certificate's own
+// signature, SHA-256 when that is MD5 or SHA-1. Raw bytes, not hex. Verify
+// error when there is no certificate yet or the signature has no hash of its
+// own (Ed25519), as libpq: "could not determine server certificate
+// signature algorithm".
+pub fn (e: &Engine) endPoint(): Result[str, Error] {
+    let x = SSL_get1_peer_certificate(e.ssl)
+    if isNull(x) { return Err(fail(Kind.Verify, "no server certificate to take the channel binding data from", 0, e.host)) }
+    var dig = array(1, i32(0))
+    var pk = array(1, i32(0))
+    var md = nullPtr()
+    let sig = X509_get_signature_nid(x)
+    if sig != i32(0) && OBJ_find_sigid_algs(sig, mut &dig, mut &pk) == 1 && dig[0] != i32(0) {
+        md = if int(dig[0]) == NID_md5 || int(dig[0]) == NID_sha1 { EVP_sha256() } else { EVP_get_digestbyname(OBJ_nid2sn(dig[0])) }
+    }
+    if isNull(md) {
+        X509_free(x)
+        return Err(fail(Kind.Verify, "could not determine server certificate signature algorithm", 0, e.host))
+    }
+    var out = array(64, byte(0))
+    var n = 0
+    let ok = X509_digest(x, md, mut &out, mut &n) == 1
+    X509_free(x)
+    ERR_clear_error()
+    if !ok { return Err(fail(Kind.Verify, "could not hash the server certificate", 0, e.host)) }
+    return Ok(strFromBytes(&out[0..(n & 255)]))
+}
+
 fn nameText(n: ptr): str {
     if isNull(n) { return "" }
     var buf = array(1024, byte(0))
@@ -795,12 +837,24 @@ fn (c: mut &Conn) drop() {
     }
 }
 
+// The deadline (CLOCK_MONOTONIC ns) ms milliseconds from now; a ...For call's
+// time limit across all the socket calls it makes. -1 is none.
+fn limitNs(ms: int): int { return time.monotonicNs() + max(ms, 0) * 1000000 }
+
+// The time left until dl, in milliseconds rounded up; 0 when it has passed.
+fn leftMs(dl: int): int {
+    let d = dl - time.monotonicNs()
+    if d <= 0 { return 0 }
+    return (d + 999999) / 1000000
+}
+
 // Sends the engine's output, parking while the socket's buffer is full.
-fn (c: mut &Conn) flush(w: Where): Result[Unit, Error] {
+fn (c: mut &Conn) flush(w: Where, dl: int): Result[Unit, Error] {
     while true {
         let n = c.e.output(mut &c.buf)
         if n == 0 { return Ok(Unit{}) }
-        match c.sock.write(&c.buf[0..n], w) {
+        let sent = if dl < 0 { c.sock.write(&c.buf[0..n], w) } else { c.sock.writeFor(&c.buf[0..n], leftMs(dl), w) }
+        match sent {
             Ok(_) {}
             Err(x) { return Err(ioFail(x, c.e.host)) }
         }
@@ -810,9 +864,10 @@ fn (c: mut &Conn) flush(w: Where): Result[Unit, Error] {
 
 // Reads ciphertext from the socket into the engine, parking until some
 // arrives: false at the socket's end.
-fn (c: mut &Conn) fill(w: Where): Result[bool, Error] {
+fn (c: mut &Conn) fill(w: Where, dl: int): Result[bool, Error] {
     if c.eof { return Ok(false) }
-    let n = match c.sock.read(mut &c.buf, w) {
+    let got = if dl < 0 { c.sock.read(mut &c.buf, w) } else { c.sock.readFor(mut &c.buf, leftMs(dl), w) }
+    let n = match got {
         Ok(k) { k }
         Err(x) { return Err(ioFail(x, c.e.host)) }
     }
@@ -826,10 +881,12 @@ fn (c: mut &Conn) fill(w: Where): Result[bool, Error] {
 
 // Finishes the handshake (connect and accept have; a Conn made by over
 // may not have).
-pub fn (c: mut &Conn) handshake(w: Where): Result[Unit, Error] {
+pub fn (c: mut &Conn) handshake(w: Where): Result[Unit, Error] { return c.handshakeD(w, -1) }
+
+fn (c: mut &Conn) handshakeD(w: Where, dl: int): Result[Unit, Error] {
     while true {
         let r = c.e.handshake()
-        let sent = c.flush(w)          // the next flight, or the alert of a failure
+        let sent = c.flush(w, dl)          // the next flight, or the alert of a failure
         match r {
             Ok(done) {
                 if sent.isErr() { return Err(sent.unwrapErr()) }
@@ -837,7 +894,7 @@ pub fn (c: mut &Conn) handshake(w: Where): Result[Unit, Error] {
             }
             Err(x) { return Err(x) }
         }
-        let more = try c.fill(w)
+        let more = try c.fill(w, dl)
         if !more {
             c.e.state = ST_FAILED
             return Err(c.e.err(Kind.Handshake, "the peer closed the connection during the handshake"))
@@ -852,12 +909,21 @@ pub fn (c: mut &Conn) handshake(w: Where): Result[Unit, Error] {
 // one ends it too (a truncation, which the protocol above must detect, as
 // HTTP's framing does); the socket's end inside a record is a Protocol
 // error.
-pub fn (c: mut &Conn) read(buf: mut &[byte], w: Where): Result[int, Error] {
+pub fn (c: mut &Conn) read(buf: mut &[byte], w: Where): Result[int, Error] { return c.readD(buf, w, -1) }
+
+// read that ignores the task's cancellation and deadline and gives up after
+// ms milliseconds in all (a Timeout error): for cleanup after a cancellation
+// (design/pgwire.md section 13). It uses net's readFor and writeFor.
+pub fn (c: mut &Conn) readFor(buf: mut &[byte], ms: int, w: Where): Result[int, Error] {
+    return c.readD(buf, w, limitNs(ms))
+}
+
+fn (c: mut &Conn) readD(buf: mut &[byte], w: Where, dl: int): Result[int, Error] {
     while true {
         let n = try c.e.read(buf)
         if n != WANT_INPUT { return Ok(n) }
-        try c.flush(w)
-        let more = try c.fill(w)
+        try c.flush(w, dl)
+        let more = try c.fill(w, dl)
         if !more {
             if c.e.partial() {
                 c.e.state = ST_FAILED
@@ -896,14 +962,22 @@ pub fn (c: mut &Conn) readNow(buf: mut &[byte]): Result[int, Error] {
 
 // Writes all of data, a record at a time, parking while the socket's buffer
 // is full.
-pub fn (c: mut &Conn) write(data: &[byte], w: Where): Result[Unit, Error] {
-    if c.e.state == ST_HANDSHAKE { try c.handshake(w) }
+pub fn (c: mut &Conn) write(data: &[byte], w: Where): Result[Unit, Error] { return c.writeD(data, w, -1) }
+
+// write that ignores the task's cancellation and deadline and gives up after
+// ms milliseconds in all (a Timeout error); see readFor.
+pub fn (c: mut &Conn) writeFor(data: &[byte], ms: int, w: Where): Result[Unit, Error] {
+    return c.writeD(data, w, limitNs(ms))
+}
+
+fn (c: mut &Conn) writeD(data: &[byte], w: Where, dl: int): Result[Unit, Error] {
+    if c.e.state == ST_HANDSHAKE { try c.handshakeD(w, dl) }
     var off = 0
     while off < len(data) {
         let n = min(len(data) - off, CHUNK)
         try c.e.write(data[off..off + n])
         off += n
-        try c.flush(w)
+        try c.flush(w, dl)
     }
     return Ok(Unit{})
 }
@@ -918,7 +992,7 @@ pub fn (c: mut &Conn) writeStr(s: str, w: Where): Result[Unit, Error] {
 // until the peer's close_notify reads as 0.
 pub fn (c: mut &Conn) shutdown(w: Where): Result[Unit, Error] {
     c.e.shutdown()
-    return c.flush(w)
+    return c.flush(w, -1)
 }
 
 // Sends close_notify and closes the socket. It does not wait for the
@@ -950,6 +1024,7 @@ pub fn (c: &Conn) cipher(): str { return c.e.cipher() }
 pub fn (c: &Conn) alpn(): str { return c.e.alpn() }
 pub fn (c: &Conn) peer(): Option[Cert] { return c.e.peer() }
 pub fn (c: &Conn) closeNotified(): bool { return c.e.closeNotified() }
+pub fn (c: &Conn) endPoint(): Result[str, Error] { return c.e.endPoint() }
 pub fn (c: &Conn) peerAddr(): str { return c.sock.peerAddr() }
 pub fn (c: &Conn) localAddr(): str { return c.sock.localAddr() }
 
