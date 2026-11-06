@@ -1,6 +1,8 @@
 // os: the program's arguments and environment, the process, the working
 // directory, and stopping.
 
+import "ffi"
+
 extern "c" fn setenv(name: str, value: str, overwrite: i32): i32
 extern "c" fn unsetenv(name: str): i32
 extern "c" fn getpid(): i32
@@ -57,3 +59,36 @@ pub fn setCwd(path: str): Result[Unit, int] {
 // Stops the program with code after flushing standard output. Nothing is
 // dropped (and OBX_CHECK does not look for leaks).
 pub fn quit(code: int): never { exit(code) }
+
+// ---- the user
+
+extern "c" fn geteuid(): u32
+extern "c" fn getpwuid(uid: u32): ptr
+extern "c" fn strlen(p: ptr): int
+
+// The C string at p, copied ("" for NULL).
+fn cText(p: ptr): str {
+    if isNull(p) { return "" }
+    return ffi.bytes(p, strlen(p))
+}
+
+// A field of the passwd entry of the effective user: the C string in word i
+// of struct passwd (pw_name 0, pw_dir 4 on x86-64 glibc). "" when there is no
+// entry. getpwuid's result is static: copied at once.
+fn passwdField(i: int): str {
+    let pw = getpwuid(geteuid())
+    if isNull(pw) { return "" }
+    return cText(ffi.peekPtr(pw, i))
+}
+
+// The effective user's name (getpwuid(geteuid())->pw_name); "" when there is
+// no passwd entry.
+pub fn userName(): str { return passwdField(0) }
+
+// The home directory: $HOME when it is set and not empty, else the passwd
+// entry's pw_dir, else "".
+pub fn homeDir(): str {
+    let h = envOr("HOME", "")
+    if len(h) > 0 { return h }
+    return passwdField(4)
+}
