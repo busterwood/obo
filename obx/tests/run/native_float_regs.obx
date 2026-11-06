@@ -1,0 +1,169 @@
+// Doubles in xmm registers (native backend: locals in xmm8-xmm14 where no call but of the libm
+// can change them, constants in rodata, operands straight from registers and memory): the
+// paths that move them, both backends the same.
+// expect: ten 48.5
+// expect: inl 6.5 12.25 2.5
+// expect: calls 499.5 4.800000000000001
+// expect: math 7169.120355181817 1.4714587409919666
+// expect: bump 3.5 4.5
+// expect: cond 2.5 -1 1
+// expect: many -71 34.5
+// expect: rec 3.75 1.5
+// expect: loop 10 4.5
+// expect: special -0 inf true NaN
+// expect: closure 7.5 12.5
+// expect: swap 2 1
+// expect: leaf -1.25
+// expect: stack 42
+import "math"
+
+fn ten(a: float, b: float, c: float, d: float, e: float, f: float, g: float, h: float, i: float, j: float): float {
+    var s = a + b * 2.0f + c
+    if s > 1000.0f { return ten(a, b, c, d, e, f, g, h, i, s) }
+    s = s + d + e + f + g + h + i + j
+    return s + 0.5f
+}
+
+// a leaf: its parameters (three on the stack) in registers
+fn leaf11(a: float, b: float, c: float, d: float, e: float, f: float, g: float, h: float, i: float, j: float, k: float): float {
+    var s = a - b
+    var t = c * d
+    var n = 0
+    while n < 3 {
+        s = s + e / f + g
+        t = t - h + i * j - k
+        n = n + 1
+    }
+    return s * 2.0f + t
+}
+
+fn add(x: float, y: float): float { return x + y }
+fn mul(x: float, y: float): float { return x * y }
+
+fn noisy(x: float): float {
+    var t = 0.0f
+    var i = 0
+    while i < 3 {
+        t = t + x
+        i = i + 1
+    }
+    return t
+}
+
+fn bump(x: mut &float) { x += 1.0f }
+
+type P = value record {
+    x: float
+    y: float
+}
+
+fn main() {
+    println("ten " + ten(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 1.0f).toStr())
+    // functions generated in place, nested in their own arguments
+    let a = 1.5f
+    let b = 2.0f
+    println("inl " + add(a, add(b, 3.0f)).toStr() + " " + mul(add(a, b), add(b, 1.5f)).toStr() + " " + add(mul(a, 1.0f), 1.0f).toStr())
+    // a double live across calls that change xmm registers (a function of the program, println)
+    var s = 0.0f
+    var x = 0.0f
+    var k = 0
+    while k < 1000 {
+        s = s + x * 0.001f
+        x = x + 1.0f
+        k = k + 1
+        if k == 999 { s = s + noisy(0.0f) }
+    }
+    var y = 1.6f
+    let z = noisy(y)
+    println("calls " + s.toStr() + " " + z.toStr())
+    // across calls of the libm
+    var e = 0.0f
+    var l = 0.0f
+    var u = 0.1f
+    var m = 0
+    while m < 5000 {
+        e = e + u.exp()
+        l = l + (u + 1.0f).ln()
+        u = u + 0.0001f
+        m = m + 1
+    }
+    println("math " + e.toStr() + " " + (l / 1000.0f).toStr())
+    // a double passed by reference
+    var r = 2.5f
+    bump(mut &r)
+    let r2 = r
+    bump(mut &r)
+    println("bump " + r2.toStr() + " " + r.toStr())
+    // conditions and conditional values
+    let c1 = if a < b { a + 1.0f } else { b }
+    let c2 = if a > b { 1.0f } else { -1.0f }
+    var c3 = 0.0f
+    if c1 >= 2.5f && c2 != 0.0f { c3 = 1.0f }
+    println("cond " + c1.toStr() + " " + c2.toStr() + " " + c3.toStr())
+    // more doubles live at once than there are registers
+    var v1 = 1.0f
+    var v2 = 2.0f
+    var v3 = 3.0f
+    var v4 = 4.0f
+    var v5 = 5.0f
+    var v6 = 6.0f
+    var v7 = 7.0f
+    var v8 = 8.0f
+    var v9 = 9.0f
+    var v10 = 10.0f
+    var w = 0
+    while w < 2 {
+        v1 = v1 + v2
+        v2 = v2 + v3
+        v3 = v3 + v4
+        v4 = v4 + v5
+        v5 = v5 + v6
+        v6 = v6 + v7
+        v7 = v7 + v8
+        v8 = v8 + v9
+        v9 = v9 + v10
+        v10 = v10 + v1
+        w = w + 1
+    }
+    let tot = v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10
+    println("many " + (tot - 300.0f).toStr() + " " + (v10 * 2.0f + 0.5f - v1).toStr())
+    // members of value records
+    var p = P{x: 1.25f, y: 2.5f}
+    p.x = p.x + p.y
+    let q = p.x - p.y + 0.25f
+    println("rec " + p.x.toStr() + " " + q.toStr())
+    // declared in a loop
+    var acc = 0.0f
+    var t = 0.0f
+    var i = 0
+    while i < 4 {
+        var d = 0.0f
+        if i > 0 { d = float(i) }
+        let h = d * 0.5f
+        acc = acc + d
+        t = t + h
+        i = i + 1
+    }
+    acc = acc + 4.0f
+    println("loop " + acc.toStr() + " " + (t + 1.5f).toStr())
+    // constants that are no plain bits
+    let nz = -0.0f
+    let big = 1.0e308f * 10.0f
+    let nan = big - big
+    println("special " + nz.toStr() + " " + big.toStr() + " " + (nan != nan).toStr() + " " + nan.toStr())
+    // closures over doubles
+    let base = 2.5f
+    let f1 = fn(v: float): float { return v + base }
+    let f2 = fn(v: float): float { return v * base }
+    println("closure " + f1(5.0f).toStr() + " " + f2(5.0f).toStr())
+    // a swap through a third local
+    var sa = 1.0f
+    var sb = 2.0f
+    let tmp = sa
+    sa = sb
+    sb = tmp
+    println("swap " + sa.toStr() + " " + sb.toStr())
+    // eleven arguments: three on the stack
+    println("leaf " + leaf11(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 8.0f, 0.25f, 0.5f, 1.5f, 3.0f, 9.5f).toStr())
+    println("stack " + (ten(0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 4.5f, 5.0f) + 6.0f + 7.0f).toStr())
+}

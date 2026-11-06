@@ -1674,19 +1674,7 @@ void* obx_getcwd(void) {
 }
 
 /* ------------------------------------------------------------ libm
-   The libm of obx programs: obxprim.inc (the single instructions) and obxmath.inc (musl's
-   src/math, MIT; see its header), the text the C backend compiles too, so that both give the
-   same bits. The functions of std's libm externs are these wrappers; a program that calls
-   them links no libm and no libc. */
-#include "../obxprim.inc"
-#include "../obxmath.inc"
-#define M1(n) double n(double x) { return obx_##n(x); }
-#define M2(n) double n(double x, double y) { return obx_##n(x, y); }
-M1(sqrt) M1(fabs) M1(floor) M1(ceil) M1(trunc) M1(rint) M1(round)
-M1(exp) M1(exp2) M1(log) M1(log2) M1(log10) M1(log1p) M1(expm1) M1(cbrt)
-M1(sin) M1(cos) M1(tan) M1(asin) M1(acos) M1(atan) M1(sinh) M1(cosh) M1(tanh)
-M2(pow) M2(atan2) M2(hypot) M2(fmod) M2(copysign)
-double fma(double x, double y, double z) { return obx_fma(x, y, z); }
+   The libm of obx programs is native/math.c, an object of its own (gen_rtx.py). */
 
 /* ------------------------------------------------------------ more of libc
    C functions that programs declare with `extern "c"` and that need no dynamic linking. */

@@ -440,25 +440,39 @@ trunc, round, rint, fabs, copysign and fma are single instructions (sqrtsd,
 roundsd, masks, vfmadd213sd). The polynomials of exp, exp2, log, log2, pow,
 sin and cos use explicit fma; everything else is compiled with
 `-ffp-contract=off`, so a result's bits do not depend on the gcc version or
-the backend.
+the backend. The native runtime compiles the text apart (`native/math.c`,
+with `-ffixed-xmm8` to `-ffixed-xmm15`), so that a native program keeps its
+doubles in `xmm8`-`xmm14` across the calls.
 
 5M calls of one function in a loop, the argument varying
-(`obx/bench/math/calls.obx`), ms, best of 7, pinned; both builds print the
-same checksum:
+(`obx/bench/math/calls.obx`), ms, best of 7, pinned, both builds interleaved;
+both print the same checksum. Cycles per call in brackets (user cycles, least
+of 7, divided by 5M):
 
 | function | via C | native |
 |---|---:|---:|
-| exp | 10 | 39 |
-| ln | 14 | 43 |
-| sin | 8 | 38 |
-| pow | 46 | 79 |
-| atan | 19 | 37 |
-| tan | 22 | 33 |
+| exp | 10 (8.2) | 11 (9.5) |
+| ln | 14 (11.7) | 15 (12.7) |
+| sin | 8 (6.2) | 9 (7.1) |
+| pow | 44 (40.1) | 45 (41.8) |
+| atan | 19 (16.6) | 18 (16.0) |
+| tan | 21 (18.6) | 19 (16.9) |
 
-gcc inlines the musl kernels into the loop and schedules them; the native
-backend calls them, with the arguments and results in xmm registers. Explicit
-fma in more kernels (atan, tan, expm1) is the deterministic way to get more
-of the speed that contraction would give.
+What is left on exp and sin is the call. gcc inlines the kernel into the
+loop and keeps its polynomial constants in registers (exp: 36 operations an
+iteration); the native loop calls it, and the kernel loads its constants on
+every call (49 operations). The native loop is bound by dispatch, not by a
+latency chain (`perf`: 85% of the dispatch slots used, the rest mostly
+back-end stalls). The loop around the call is seven instructions: the
+argument moved from its register, the call, `addsd` into the sum's register,
+`addsd` of a rodata constant into the argument's, the count and the branch.
+
+Mixing the native code's legacy SSE with the runtime's VEX code costs nothing
+here. In a test loop, legacy SSE around a call of VEX code ran at the speed of
+VEX everywhere (5.0 cycles an iteration). Only dirty upper halves of the
+`ymm` registers slow it (7.2), and gcc's `vzeroupper` keeps them clean.
+Explicit fma in more kernels (atan, tan, expm1) is the deterministic way to
+get more of the speed that contraction would give.
 
 ## Decimal
 

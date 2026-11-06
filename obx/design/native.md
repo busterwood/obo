@@ -103,7 +103,10 @@ end.
 ## 2. Runtime
 
 `compiler/native/rt.c` is `compiler/rt.h` without libc: freestanding C, raw
-Linux syscalls. `gen_rtx.py` compiles it with gcc (`-ffreestanding
+Linux syscalls; `compiler/native/math.c` is the libm (obxprim.inc and
+obxmath.inc, the C backend's text), an object of its own compiled with
+`-ffixed-xmm8` to `-ffixed-xmm15` (section 4, "doubles in `xmm` registers").
+`gen_rtx.py` compiles them with gcc (`-ffreestanding
 -nostdlib -fno-pic`, `-ffunction-sections -fdata-sections`: every function
 and every datum in a section of its own; the top-level asm of `rt_n_restore`
 and `rt_ctx_swap` in sections of their own too), takes the libgcc members it
@@ -421,7 +424,9 @@ the IR; the C is unchanged), repeated on a block while statements drop out:
 - `T t = s;` renames t to s when s is declared earlier in the same block
   (within 16 statements), never address-taken and not named after t's
   statements; for a scalar, also when neither is address-taken and the
-  statements (at most 8) naming t assign neither;
+  statements (at most 8) naming t assign neither, but the last of them may be
+  `s = E` with E assigning no s (E reads t before s changes: `t = s; s = t +
+  f(x)` is `s = s + f(x)`, 2026-11-06);
 - `T t = E; s = t;` and `T t = E; return t;` with t named nowhere else
   become `s = E` and `return E` (scalar T for the return);
 - `T t = E; S` with T a scalar of E's type and t named once more, in S, the
@@ -583,8 +588,31 @@ Then:
   integer entry may be a pure expression, generated first), also through the
   `T r = CLIT; return r` that `fusedReturn` takes (`retLitVals`);
 - a copy of an aggregate (`copyMem`) of 32 bytes or more moves 16 bytes at a
-  time through `xmm15` (`movdqu`; the backend allocates only `xmm0`-`xmm7`),
-  an 8/4/2/1-byte tail as before; smaller copies stay 8 bytes at a time;
+  time through `xmm15` (`movdqu`; never allocated), an 8/4/2/1-byte tail as
+  before; smaller copies stay 8 bytes at a time;
+- **doubles in `xmm` registers** (2026-11-06): a double local whose address is
+  not taken gets one of `xmm8`-`xmm14` when no position of its live range is
+  `fpLoud`: a call that is not generated in place, other than a call of the
+  libm of `native/math.c`, or what else is loud (128-bit values, big copies).
+  The ABI has no callee-saved `xmm` registers, but `gen_rtx.py` compiles
+  `native/math.c` apart, with `-ffixed-xmm8` to `-ffixed-xmm15`, and checks
+  that it calls nothing outside itself; its functions are `rtx.FP_KEEP`
+  (`fpKeepCall`; a dynamically linked program imports libm's, so not there).
+  The generated code keeps values and arguments in `xmm0`-`xmm7`. Ranges,
+  `regFree` and the heaviest-first order are those of the integer locals;
+  there is nothing to save. The prologue moves a double parameter from its
+  argument register (or its stack slot), a function generated in place gets
+  its double parameters from `xmm0` (the last argument evaluated) or their
+  temporaries. Double constants are 8-byte rodata entries (`SK_FLT`, read
+  `[rip + c]`; +0.0 is `xorpd`), and a double operand that needs no code (a
+  constant, a register local, a local or member in the frame: `fSrc`) is the
+  operand of `addsd`/`subsd`/`mulsd`/`divsd`, of a load into an argument
+  register, of the second operand of a pair; `l = l op b` for a register
+  local is `op xmmL, b`. A double argument in a register or a constant is
+  loaded at the call, and the last double argument evaluated stays in `xmm0`.
+  Before, every double lived in its slot and every operation went through
+  temporaries: a float loop was a chain of store-to-load forwards
+  (PERFORMANCE.md, "Math");
 - `str` arguments that are `rt_str_dup(s)` of a local or member whose address
   is never taken and which the later arguments do not assign increment the
   count in order and load the registers from s, without a temporary copy;
@@ -2204,7 +2232,8 @@ Not done, and why:
 - loop-invariant loads of array and `str` fields, borrowed `str`
   parameters and doubles in `xmm` registers: left for later, as asked
   (each is its own analysis: invariance under the loop's writes, the IR's
-  ownership rules, and the absence of callee-saved `xmm` registers);
+  ownership rules, and the absence of callee-saved `xmm` registers; doubles
+  were done on 2026-11-06, section 4);
 - shrink-wrapping (saving only on the paths that need it; the early exits on parameters are done since perf19, see section 8): fib's leaf
   path still saves and restores two registers. It would need the saves
   moved past the first branch, with the probe and the pushes; the copied
@@ -2312,7 +2341,8 @@ Not done, and why:
 
 - doubles in `xmm` registers: no benchmark, eza or compiler path does
   floating point in a loop. The ABI has no callee-saved `xmm` registers, so
-  only call-free ranges could use them;
+  only call-free ranges could use them (done on 2026-11-06 for ranges free of
+  calls but the libm's, section 4);
 - `rt_str_concat` inline: its cost is malloc and the copies, not the call;
 - `str` count elision across statements: every call is passed an owned
   `str`, so the saving needs the callee's side too. That takes an
@@ -2454,7 +2484,9 @@ Next, in order:
      gcc-built compiler (18% and 9% on `--native` of the compiler): cheaper
      passes (one walk for an expression's kills, rewrites and checks in
      `loops`), or a lower limit for large programs;
-   - doubles in `xmm` registers;
+   - doubles in `xmm` registers across calls of the program's own
+     functions (saved around them, or a callee-saved convention of our own;
+     done for ranges free of calls but the libm's);
    - shrink-wrapping: saves only on the paths that need them (fib's leaf
      path);
    - a faster `lower` and `cgen`, to win back the `--emit-c` time lost

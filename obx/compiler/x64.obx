@@ -568,6 +568,15 @@ pub fn (a: mut &Asm) sse66(op: int, dst: int, src: int) { a.rr(0x66, false, 0x0F
 
 pub fn (a: mut &Asm) movsdLoad(x: int, m: Mem) { a.rm(0xF2, false, 0x0F10, x, m, false) }
 
+// op xd, [m]: addsd, mulsd, subsd, divsd, movsd (F2 0F op) with the source in memory.
+pub fn (a: mut &Asm) sseM(op: int, dst: int, m: Mem) { a.rm(0xF2, false, 0x0F00 + op, dst, m, false) }
+
+// The [rip + disp32] operand of the instruction just emitted (one with no immediate) made sym's
+// address.
+pub fn (a: mut &Asm) relocRip(sym: int) {
+    append(mut &a.relocs, Reloc{at: a.pos() - 4, sym: sym, kind: R_REL32, addend: 0})
+}
+
 pub fn (a: mut &Asm) movsdStore(m: Mem, x: int) { a.rm(0xF2, false, 0x0F11, x, m, false) }
 
 // movdqu x, [m] and movdqu [m], x (16 bytes, any alignment: F3 0F 6F / 7F).
