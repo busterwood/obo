@@ -4101,7 +4101,7 @@ fn (g: mut &Gen) genConstSel(e: int) {
     let k1 = g.intConst(n.b, n.ty).v
     if g.u.nk(n.c) == ir.E_INT {
         let k2 = g.intConst(n.c, n.ty).v
-        g.gen(n.a)                                  // 0 or 1
+        g.condBit(n.a)                              // 0 or 1
         if k1 == 1 && k2 == 0 { return }
         let d = k1 -% k2
         g.a.unary(x64.NEG, 8, RAX)                 // 0 or all ones
@@ -4124,11 +4124,25 @@ fn (g: mut &Gen) genConstSel(e: int) {
     g.genConstSel(n.c)
     let t = g.temp(8, 8)
     g.a.store(8, rbp(t), RAX)
-    g.gen(n.a)
+    g.condBit(n.a)
     g.a.movRI(RCX, k1)
     g.a.test(8, RAX, RAX)
     g.a.load(8, RAX, rbp(t))
     g.a.cmov(x64.CC_NE, RAX, RCX)
+}
+
+// The condition c (flagCond) as 0 or 1 in rax: a compare's setcc is; a bool is true when its
+// low byte is not 0 (from C the rest is undefined, and the byte itself may be any value where a
+// C caller passes something else: c11_byte_bool_params), as a branch on it tests.
+fn (g: mut &Gen) condBit(c: int) {
+    g.gen(c)
+    var x = c
+    while g.u.nk(x) == ir.E_CAST { x = g.u.nodes[x].a }
+    if g.u.nk(x) != ir.E_BIN {
+        g.a.test(1, RAX, RAX)
+        g.a.setcc(x64.CC_NE, RAX)
+        g.a.zx(1, RAX, RAX)
+    }
 }
 
 // The branch on `x op k`, x a conditional c ? a : b of type ty (int.cmp's -1/1/0 inlined into
