@@ -165,6 +165,7 @@ type Gen = record {
     curFunc: int
     callDest: x64.Mem           // for the next genCall: where its aggregate result goes (or base -9)
     callFresh: bool             // ... a new local (it may be the hidden result pointer)
+    simpF: int                  // the function simplify is in
     destUsed: bool              // genCall put the result there
     byteDest: int               // the register the next inline rt_str_byte loads its byte into (rax)
     aTaken: []bool              // per local: its address (or a member's) is taken (marked by the counting scan)
@@ -253,7 +254,7 @@ fn newGen(u: ir.Ir): Gen {
         stubOf: newMap(), codeEnd: 0, reg: [], freg: [], preg: [], preg2: [], fpLoud: [], fpKeep: newMap(), uses: [], weight: [], rawW: [], bad: [], touched: [], first: [], last: [],
         noInit: [], inner: [], pts: [], defAt: [], tmpRegs: [], tmpUsed: 0, unused: false, tailEnd: [], pos: 0, scanExpr: 0, loud: [], loud89: [], regions: [], openLoops: [],
         saved: [], seen: [], stamp: 1, counting: false, scanStack: [], inlStack: [], inlEnd: [], inl: [], curFunc: -1,
-        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
+        loops: 0, aTaken: [], emptyS: -1, callDest: NO_MEM, callFresh: false, simpF: -1, destUsed: false, byteDest: 0, posOf: [], posSeen: [],
         inlPos: -1, held: [], nLocalRegs: 0, bareRet: false, rm: newMap(), noCopy: -1, sites: [],
         siteIdx: [], siteStamp: [], noSites: 0, rotBody: 0, ifDepth: 0, loopDepth: 0, posW: [], spill: [], spillSlot: [], nGuards: 0, guardLabels: [], shrink: false}
     g.a.peep = true
@@ -1395,6 +1396,7 @@ fn (g: mut &Gen) simplify() {
     g.emptyS = len(g.u.nodes) - 1
     // aTaken is complete: the first countUses marked it (scan)
     for f in 0..len(g.u.funcs) {
+        g.simpF = f
         if g.u.funcs[f].body >= 0 { g.simpStmt(g.u.funcs[f].body) }
     }
 }
@@ -1527,6 +1529,14 @@ fn (g: mut &Gen) merge(l: int, j: int) {
                 g.rename(l, j, t, s, cnt)
                 return
             }
+        } else if i < 0 && j < 16 && l == g.u.nodes[g.u.funcs[g.simpF].body].a && g.isParam(s) {
+            // a parameter (its memory the function's own), named nowhere after this in the body
+            var named = 0
+            for m in 0..j + 1 { named += g.walk(g.u.listAt(l, m), 0, s, -1) }
+            if named == g.uses[s] {
+                g.rename(l, j, t, s, cnt)
+                return
+            }
         }
     }
     // (3)
@@ -1545,6 +1555,15 @@ fn (g: mut &Gen) merge(l: int, j: int) {
     }
     if need != 0 { return }
     g.rename(l, j, t, s, m)
+}
+
+// Whether local s is a parameter of the function being simplified.
+fn (g: &Gen) isParam(s: int): bool {
+    let ps = &g.u.funcs[g.simpF].params
+    for i in 0..len(ps) {
+        if ps[i] == s { return true }
+    }
+    return false
 }
 
 // Whether statement y is `s = E` with E assigning no s (nor taking its address).
@@ -1994,10 +2013,13 @@ fn (g: &Gen) loud89Node(x: int): bool {
 // (with no call; r8 to r11 changed).
 fn (g: &Gen) inline128(e: int): bool {
     let name = g.rtName(e)
-    if !endsWith(name, "_u128") || !startsWith(name, "rt_") || g.isExternCall(e) { return false }
-    let op = name[3..len(name) - 5]
     let n = g.u.nodes[e]
     let nargs = g.u.listLen(n.b)
+    if (name == "rt_cvs_u128" || name == "rt_cvu_i128") && !g.isExternCall(e) {
+        return nargs == 2 && g.isWhere(g.u.listAt(n.b, 1))
+    }
+    if !endsWith(name, "_u128") || !startsWith(name, "rt_") || g.isExternCall(e) { return false }
+    let op = name[3..len(name) - 5]
     if (op == "wadd" || op == "wsub" || op == "wmul") && nargs == 2 { return true }
     if nargs != 3 || !g.isWhere(g.u.listAt(n.b, 2)) { return false }
     if op == "add" || op == "sub" || op == "mul" { return true }
@@ -3083,7 +3105,8 @@ fn (g: mut &Gen) fusedReturn(d: int, s: int): bool {
     let r = g.u.nodes[s].a
     if r < 0 || g.u.nk(r) != ir.E_LOCAL || g.u.nodes[r].a != dn.a { return false }
     if g.u.nodes[r].ty != g.u.nodes[dn.b].ty { return false }
-    if g.isAggr(g.u.nodes[r].ty) && len(g.retLitVals(dn.b, g.u.nodes[r].ty)) == 0 && !g.retInPlace(dn.b) {
+    if g.isAggr(g.u.nodes[r].ty) && len(g.retLitVals(dn.b, g.u.nodes[r].ty)) == 0 && !g.retInPlace(dn.b) &&
+        !g.placeRead(dn.b) {
         return false
     }
     g.genReturn(dn.b)
@@ -3098,6 +3121,13 @@ fn (g: &Gen) jumpOnly(s: int): int {
     if n.k == ir.S_BREAK && len(g.breakL) > 0 { return g.breakL[len(g.breakL) - 1] }
     if n.k == ir.S_CONTINUE && len(g.contL) > 0 { return g.contL[len(g.contL) - 1] }
     return -1
+}
+
+// Whether x reads a place: a member or dereference (chain) of locals that reading cannot change
+// (`T r = p->u.V_Ok.f_0; return r;` copies from there to the result, without r).
+fn (g: &Gen) placeRead(x: int): bool {
+    let k = g.u.nk(x)
+    return (k == ir.E_MEMBER || k == ir.E_DEREF) && g.pure(x)
 }
 
 // Whether the returned aggregate x is written straight behind the hidden result pointer: a
@@ -4012,6 +4042,70 @@ fn (g: &Gen) selKnown(x: int, op: int, k: int, c: int): int {
     return -1
 }
 
+// Whether e (an int or bool) is a constant or `c ? k : e2` with c a pure compare (or bool
+// local, or their negation), k a constant and e2 such again (3 deep at most): int.cmp's
+// `lt ? -1 : gt ? 1 : 0`, b2i's `b ? 1 : 0`. genConstSel makes it without branches, as gcc
+// does: compares of data are often unpredictable, and each mispredicted branch costs more than
+// the few instructions it saves.
+fn (g: &Gen) constSel(e: int, depth: int): bool {
+    let n = g.u.nodes[e]
+    let tk = g.tk(n.ty)
+    if tk != ir.TY_I64 && tk != ir.TY_BOOL { return false }
+    if n.k == ir.E_INT { return g.intConst(e, n.ty).c == 0 }
+    if n.k != ir.E_COND || depth >= 3 || g.u.nk(n.b) != ir.E_INT || g.intConst(n.b, n.ty).c != 0 { return false }
+    if !g.pure(n.a) || !g.flagCond(n.a) { return false }
+    return g.constSel(n.c, depth + 1)
+}
+
+// Whether the condition c is a compare, a bool local, or the negation of one (made with setcc).
+fn (g: &Gen) flagCond(c: int): bool {
+    var x = c
+    while g.u.nk(x) == ir.E_CAST || g.u.nk(x) == ir.E_LNOT { x = g.u.nodes[x].a }
+    let n = g.u.nodes[x]
+    if n.k == ir.E_LOCAL { return g.tk(n.ty) == ir.TY_BOOL }
+    return n.k == ir.E_BIN && isCmp(n.v) && !g.isF(n.c)
+}
+
+// Generates e (constSel) into rax: the conditions as 0 or 1, then a mask or a cmov.
+fn (g: mut &Gen) genConstSel(e: int) {
+    let n = g.u.nodes[e]
+    if n.k == ir.E_INT {
+        g.a.movRI(RAX, g.intConst(e, n.ty).v)
+        return
+    }
+    let k1 = g.intConst(n.b, n.ty).v
+    if g.u.nk(n.c) == ir.E_INT {
+        let k2 = g.intConst(n.c, n.ty).v
+        g.gen(n.a)                                  // 0 or 1
+        if k1 == 1 && k2 == 0 { return }
+        let d = k1 -% k2
+        g.a.unary(x64.NEG, 8, RAX)                 // 0 or all ones
+        if x64.fits32(d) {
+            g.a.aluI(x64.AND, 8, RAX, d)
+        } else {
+            g.a.movRI(R11, d)
+            g.a.alu(x64.AND, 8, RAX, R11)
+        }
+        if k2 != 0 {
+            if x64.fits32(k2) {
+                g.a.aluI(x64.ADD, 8, RAX, k2)
+            } else {
+                g.a.movRI(R11, k2)
+                g.a.alu(x64.ADD, 8, RAX, R11)
+            }
+        }
+        return
+    }
+    g.genConstSel(n.c)
+    let t = g.temp(8, 8)
+    g.a.store(8, rbp(t), RAX)
+    g.gen(n.a)
+    g.a.movRI(RCX, k1)
+    g.a.test(8, RAX, RAX)
+    g.a.load(8, RAX, rbp(t))
+    g.a.cmov(x64.CC_NE, RAX, RCX)
+}
+
 // The branch on `x op k`, x a conditional c ? a : b of type ty (int.cmp's -1/1/0 inlined into
 // a generic max's `x.cmp(&y) > 0`, opt's select): the condition decides which arm is compared,
 // and an arm that is a constant is no code. Jumps to l when the compare is `when`.
@@ -4480,6 +4574,8 @@ fn (g: mut &Gen) gen(e: int) {
         g.a.bind(other)
         g.a.movRI(RAX, if isAnd { 0 } else { 1 })
         g.a.bind(end)
+    } else if k == ir.E_COND && g.constSel(e, 0) {
+        g.genConstSel(e)
     } else if k == ir.E_COND {
         let elseL = g.a.newLabel()
         let end = g.a.newLabel()
@@ -4712,9 +4808,10 @@ fn (g: mut &Gen) genAssign(e: int) {
     }
     if m.base != -9 && g.isAggr(t) && g.u.nk(lhs) == ir.E_LOCAL && g.u.nk(n.b) == ir.E_CALL && g.u.nodes[n.b].ty == t {
         // a result in registers stored in the local after the call (whole words: its slot is
-        // rounded up to them)
+        // rounded up to them); one in memory written there by the callee when the local's
+        // address is not taken: nothing but the arguments, evaluated before the call, reads it
         g.callDest = m
-        g.callFresh = false
+        g.callFresh = !g.aTaken[g.u.nodes[lhs].a]
         g.destUsed = false
         g.gen(n.b)
         if !g.destUsed { g.storeT(t, m) }
@@ -6591,6 +6688,14 @@ fn (g: mut &Gen) arithInto(e: int, r: int, gen: bool): bool {
 fn (g: mut &Gen) inlineRt(e: int, name: str): bool {
     let n = g.u.nodes[e]
     let nargs = g.u.listLen(n.b)
+    if (name == "rt_cvs_u128" || name == "rt_cvu_i128") && nargs == 2 && g.isWhere(g.u.listAt(n.b, 1)) {
+        // i128 to u128 or back: the value must not have the high bit (a negative i128, a u128
+        // above i128's maximum)
+        g.gen(g.u.listAt(n.b, 0))
+        g.a.test(8, RDX, RDX)
+        g.a.jcc(x64.CC_S, g.stub(10, "conversion out of range", g.u.listAt(n.b, 1)))
+        return true
+    }
     if endsWith(name, "_u128") && g.inlineU128(e, name[3..len(name) - 5], nargs) { return true }
     if name == "rt_cvu_u64" && nargs == 2 && g.isWhere(g.u.listAt(n.b, 1)) &&
         g.is128(g.u.nodes[g.u.listAt(n.b, 0)].ty) {

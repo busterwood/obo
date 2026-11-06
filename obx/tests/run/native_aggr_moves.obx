@@ -1,0 +1,68 @@
+// Records moved without copies (native backend: a parameter's memory holds the local copied
+// from it, a match binding returned straight from the matched value, a call's result written
+// into the local it is assigned to) and compares passed lazily into a small select (opt.obx
+// lazyCmp): both backends the same.
+// expect: 3 1 5 true / 24 4 5 true
+// expect: 18 0 4 false
+// expect: 5 1 1 0 -1 
+
+type Big = value record { a: u128; b: int; c: int; d: bool }
+type Res = value closed {
+    Good(Big)
+    Bad(int)
+}
+
+// the parameter's memory reused for the copy that is changed
+fn bump(x: Big, k: int): Big {
+    var v = x
+    while v.b < k { v.b += 1; v.a = v.a * 2 }
+    return v
+}
+
+fn mk(a: u128, b: int): Res {
+    if b < 0 { return Res.Bad(b) }
+    return Res.Good(Big{a: a, b: b, c: b * 2, d: b % 2 == 1})
+}
+
+fn get(r: Res): Big {
+    match r {
+        Res.Good(v) { return v }
+        Res.Bad(e) { return Big{a: 0, b: e, c: 0, d: false} }
+    }
+}
+
+// the result written straight into acc, whose old value the arguments read
+fn add(x: Big, y: Big): Big { return Big{a: x.a + y.a, b: x.b + y.b, c: y.c - x.c, d: x.d != y.d} }
+
+fn show(x: &Big): str { return x.a.toStr() + " " + x.b.toStr() + " " + x.c.toStr() + " " + x.d.toStr() }
+
+fn sgn2(a: &Big, b: &Big): int {
+    // a compare of members through pointers, lazily in the select
+    return cmp3(a.b < b.b, a.b > b.b)
+}
+fn cmp3(lt: bool, gt: bool): int {
+    if lt { return -1 }
+    if gt { return 1 }
+    return 0
+}
+
+fn main() {
+    let x = Big{a: 3, b: 1, c: 5, d: true}
+    let y = bump(x, 4)
+    println(show(&x) + " / " + show(&y))
+    var acc = Big{a: 1, b: 0, c: 0, d: false}
+    for i in 0..5 {
+        acc = add(acc, get(mk(u128(i), i)))
+        acc = add(get(mk(7, -i)), acc)
+    }
+    println(show(&acc))
+    var s = 0
+    var w = ""
+    for i in 0..4 {
+        let p = Big{a: 0, b: i, c: 0, d: false}
+        let q = Big{a: 0, b: 2, c: 0, d: false}
+        s = s * 3 + sgn2(&p, &q) + 1
+        w += sgn2(&q, &p).toStr() + " "
+    }
+    println(s.toStr() + " " + w)
+}

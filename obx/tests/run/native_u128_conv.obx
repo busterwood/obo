@@ -1,0 +1,10 @@
+// i128 to u128 and back, checked in place (native backend): both backends the same.
+// expect: 5 170141183460469231731687303715884105727 7 170141183460469231731687303715884105727 9
+
+fn a(x: i128): u128 { return u128(x) }
+fn b(x: u128): i128 { return i128(x) }
+fn c(x: int): u128 { return u128(i128(x)) }
+fn main() {
+    println(a(5).toStr() + " " + a(170141183460469231731687303715884105727).toStr() + " " + b(7).toStr() + " " +
+        b(170141183460469231731687303715884105727).toStr() + " " + c(9).toStr())
+}

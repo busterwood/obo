@@ -1130,6 +1130,10 @@ fn (o: mut &Opt) expand(c: int, g: int, out: mut &[]int) {
             o.mk[p] = M_EXPR
             o.mv[p] = x
             o.unrefAll(x)
+        } else if ro && o.lazyCmp(form, p, x, args) {
+            o.mk[p] = M_EXPR
+            o.mv[p] = x
+            o.unrefAll(x)
         } else if ro && o.lends(form, p, x, args, j) {
             // f(rt_str_dup(y)) where f only reads its copy: f reads y
             let y = o.u.listAt(o.u.nodes[x].b, 0)
@@ -1262,6 +1266,32 @@ fn (o: &Opt) calm(x: int, p: int, ok: bool): bool {
 // Whether argument j of a call (in the list args) can stand for its parameter wherever the
 // body names it (which never assigns it): its value cannot change until the body is done, and
 // reading it again has no effect. A local's value: no later argument assigns it.
+// Whether the argument x for parameter p can stand where the body names p: a compare of
+// values read from locals (perhaps through pointers and members: nothing that fails), p named
+// once at most, and neither the body nor any argument with an effect, so nothing can tell when
+// the compare is made (`cmpOf(a < b, a > b)` is `a < b ? -1 : a > b ? 1 : 0`).
+fn (o: mut &Opt) lazyCmp(form: int, p: int, x: int, args: int): bool {
+    if o.u.nodes[x].ty != o.u.locals[p].ty { return false }
+    var c = x
+    while o.u.nk(c) == ir.E_CAST { c = o.u.nodes[c].a }
+    let n = o.u.nodes[c]
+    if n.k != ir.E_BIN || n.v < ir.OP_EQ { return false }
+    if !o.readOnly(n.a) || !o.readOnly(n.b) { return false }
+    if o.walk(form, W_NAMES, p) > 1 || o.walk(form, W_EFFECTS, -1) > 0 { return false }
+    for m in 0..o.u.listLen(args) {
+        if o.walk(o.u.listAt(args, m), W_EFFECTS, -1) > 0 { return false }
+    }
+    return true
+}
+
+// Whether x only reads: a constant, a local, or a cast, dereference or member of such.
+fn (o: &Opt) readOnly(x: int): bool {
+    let k = o.u.nk(x)
+    if k == ir.E_INT || k == ir.E_FLT || k == ir.E_LOCAL { return true }
+    if k == ir.E_CAST || k == ir.E_DEREF || k == ir.E_MEMBER { return o.readOnly(o.u.nodes[x].a) }
+    return false
+}
+
 fn (o: mut &Opt) invariant(x: int, args: int, j: int): bool {
     if !o.stable(x) { return false }
     let r = o.root(x)

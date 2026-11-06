@@ -1,0 +1,6 @@
+// exit: 10
+// a negative i128 converted to u128 traps (the native backend checks in place)
+fn a(x: i128): u128 { return u128(x) }
+fn main() {
+    println(a(-1).toStr())
+}
