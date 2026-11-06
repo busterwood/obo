@@ -49,8 +49,8 @@ fn main() {
     let two: u128 = 2
     line(&[umax.checkedAdd(1).toStr(), umax.checkedMul(1).toStr(), umax.checkedMul(two).toStr(),
         two.checkedSub(umax).toStr(), umax.checkedRem(3).toStr(), two.checkedDiv(1).toStr()])
-    line(&[1.5.subExact(0.25).ok().toStr(), 1.0.remExact(0.0).toStr(), 1.5.remExact(1.0).ok().toStr(),
-        2.0.remExact(0.00).toStr()])
+    line(&[1.5m.subExact(0.25m).ok().toStr(), 1.0m.remExact(0.0m).toStr(), 1.5m.remExact(1.0m).ok().toStr(),
+        2.0m.remExact(0.00m).toStr()])
     var total = 0
     for x in [3, 4] { total = total.checkedAdd(x).unwrap() }
     println(total.toStr())

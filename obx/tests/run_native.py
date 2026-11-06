@@ -154,7 +154,7 @@ PARTS = [
      'fn main() {\n    task.scope(fn(s: mut &task.Scope) { println(intToStr(s.start(inc, 41).wait().unwrap())) })\n}\n',
      65536, ['rt_ctx_swap', 'rt_init'], ['rt_float_to_str'], '42\n'),
     # dynamically linked (libm's tgamma; pow and the others are the runtime's own): libc's entry, so no rt_n_start; rt_n_libc kept
-    ('extern "c" fn tgamma(x: float): float\n\nfn main() {\n    println(floatToStr(tgamma(5.0)))\n}\n',
+    ('extern "c" fn tgamma(x: float): float\n\nfn main() {\n    println(floatToStr(tgamma(5.0f)))\n}\n',
      65536, ['rt_init', 'rt_float_to_str'], ['rt_n_start', 'rt_ctx_swap'], '24\n'),
 ]
 

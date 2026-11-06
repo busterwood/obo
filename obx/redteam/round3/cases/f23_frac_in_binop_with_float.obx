@@ -1,5 +1,5 @@
 // expect: ok
 fn main() {
-    let f: float = 2.0
-    if f * 1e2 == 200.0 { println("ok") }
+    let f: float = 2.0f
+    if f * 1e2f == 200.0f { println("ok") }
 }

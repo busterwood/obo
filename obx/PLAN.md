@@ -22,7 +22,7 @@ All of it is ordinary obx code over a small set of built-in intrinsics.
 - **Decimal.** obo's decimal semantics carried over as library code: 128-bit
   coefficient (38 significant digits), exponent, display scale, finite values
   only. Exact `+ - *`, a `div` with an explicit scale and rounding mode, the
-  eight rounding modes, `cmp`/`eq`/`hash` by value (`1.0 == 1.00`),
+  eight rounding modes, `cmp`/`eq`/`hash` by value (`1.0m == 1.00m`),
   `parse`/`format`/`canonical`. Errors are `Result` values for the operations
   that can fail by value (`div`, `quantize`, `parse`) and a stop for the
   operators (overflow). The 128 × 128 to 256-bit multiply is built from

@@ -1,5 +1,5 @@
 // error: a float constant cannot be int
 // line: 4
-const F: float = 1.5
+const F: float = 1.5f
 const I: int = F
 fn main() {}

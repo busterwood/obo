@@ -607,11 +607,11 @@ fn main() {
     let d38 = sqldialect.parseDecimal("-9999999999999999999999999999.9999999999").unwrap()
     let longText = repeat("é", 5000)
     let longBytes = strings.padLeft("", 9000, 'b')
-    let args: []Value = [Value.Int(0), Value.Int(-9223372036854775807 - 1), Value.Int(9223372036854775807), Value.Float(0.1),
-                         Value.Float(-1.7976931348623157e308), Value.Float(2.2250738585072014e-308), Value.Bool(true), Value.Bool(false),
+    let args: []Value = [Value.Int(0), Value.Int(-9223372036854775807 - 1), Value.Int(9223372036854775807), Value.Float(0.1f),
+                         Value.Float(-1.7976931348623157e308f), Value.Float(2.2250738585072014e-308f), Value.Bool(true), Value.Bool(false),
                          Value.Text(""), Value.Text("café 😀 日本"), Value.Text(longText), Value.Bytes(""), Value.Bytes("\x00\xff"),
-                         Value.Bytes(longBytes), Value.Dec(12.50), Value.Dec(-0.001), Value.Dec(d38), Value.Dec(0.0), Value.Dec(1e3),
-                         Value.Null, Value.Text("2026-11-05"), Value.Text("x'y"), Value.Int(-1), Value.Float(0.0),
+                         Value.Bytes(longBytes), Value.Dec(12.50m), Value.Dec(-0.001m), Value.Dec(d38), Value.Dec(0.0m), Value.Dec(1e3m),
+                         Value.Null, Value.Text("2026-11-05"), Value.Text("x'y"), Value.Int(-1), Value.Float(0.0f),
                          Value.Dec(sqldialect.parseDecimal("0.00000000000000000000000000000000000001").unwrap()), Value.Text("a\x00b")]
     var qs: []str = []
     var ps: []str = []
@@ -620,8 +620,8 @@ fn main() {
         append(mut &ps, "@p" + (i + 1).toStr() + " AS v" + i.toStr())
     }
     compareWith("params select", &o, mut &n, "SELECT " + strings.join(&qs, ", "), "SELECT " + strings.join(&ps, ", "), &args)
-    let os5 = o.query("SELECT ? AS v", &[Value.Float(4.9e-324)])
-    let ns5 = n.query("SELECT @p1 AS v", &[Value.Float(4.9e-324)])
+    let os5 = o.query("SELECT ? AS v", &[Value.Float(4.9e-324f)])
+    let ns5 = n.query("SELECT @p1 AS v", &[Value.Float(4.9e-324f)])
     let ref5 = n.query("SELECT CAST(4.9E-324 AS float)", &[]).unwrap().float(0, 0).unwrap()
     println("subnormal float: odbc " + (if os5.isOk() { "ok" } else { "error " + os5.unwrapErr().state }) + ", tds " +
             (if ns5.isOk() { "ok" } else { "error " + ns5.unwrapErr().code.toStr() }) + ", the server's CAST " + ref5.toStr())
@@ -629,9 +629,9 @@ fn main() {
                "dto datetimeoffset(7), g uniqueidentifier, x xml, m money, s nvarchar(10)"
     o.exec("CREATE TABLE #pt(k int, " + cols + ")").unwrap()
     n.exec("CREATE TABLE #pt(k int, " + cols + ")").unwrap()
-    let row: []Value = [Value.Int(-5), Value.Float(2.5), Value.Bool(true), Value.Text(longText), Value.Bytes(longBytes), Value.Dec(d38),
+    let row: []Value = [Value.Int(-5), Value.Float(2.5f), Value.Bool(true), Value.Text(longText), Value.Bytes(longBytes), Value.Dec(d38),
                         Value.Text("2026-11-05"), Value.Text("2026-11-05 13:45:07.1234567"), Value.Text("2026-11-05 13:45:07.1234567 +01:30"),
-                        Value.Text("6F9619FF-8B86-D011-B42D-00C04FC964FF"), Value.Text("<a>é</a>"), Value.Dec(12.34), Value.Text("naïve")]
+                        Value.Text("6F9619FF-8B86-D011-B42D-00C04FC964FF"), Value.Text("<a>é</a>"), Value.Dec(12.34m), Value.Text("naïve")]
     let nulls: []Value = [Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null, Value.Null,
                           Value.Null, Value.Null, Value.Null]
     let ins1 = c13(&["?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?"])

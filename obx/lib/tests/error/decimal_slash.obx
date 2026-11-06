@@ -1,5 +1,5 @@
 // Decimal division needs a scale and a mode: a / b does not compile.
 // error: div
 fn main() {
-    let x = 1.0 / 3.0
+    let x = 1.0m / 3.0m
 }

@@ -1,6 +1,6 @@
 // expect: 2.5
 fn main() {
-    let f: float = 2.5
+    let f: float = 2.5f
     let c = false
-    println(if c { 1.5 } else { f })
+    println(if c { 1.5f } else { f })
 }

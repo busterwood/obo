@@ -107,14 +107,14 @@ fn run(c: &mssql.Conn): Result[Unit, Error] {
         "small smallint, tiny tinyint, flag bit, ratio float, r real, data varbinary(100), d date, t time(3), dt datetime2(3), " +
         "dto datetimeoffset(0), g uniqueidentifier, m money, sm smallmoney, note varchar(20), big nvarchar(max))")
     let ins = "INSERT INTO #items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    try c.run(ins, &[V.Int(1), V.Text("widget café 😀"), V.Dec(12.34), V.Int(3), V.Int(-32768), V.Int(255), V.Bool(true),
-        V.Float(0.1), V.Float(0.1), V.Bytes("\x00\xff\x10"), V.Text("2024-02-29"), V.Text("23:59:58.123"),
+    try c.run(ins, &[V.Int(1), V.Text("widget café 😀"), V.Dec(12.34m), V.Int(3), V.Int(-32768), V.Int(255), V.Bool(true),
+        V.Float(0.1f), V.Float(0.1f), V.Bytes("\x00\xff\x10"), V.Text("2024-02-29"), V.Text("23:59:58.123"),
         V.Text("2024-02-29 23:59:58.123"), V.Text("2024-02-29 23:59:58 +05:30"), V.Text("6F9619FF-8B86-D011-B42D-00C04FC964FF"),
-        V.Dec(Decimal.parse("922337203685477.5807").unwrap()), V.Dec(214748.3647), V.Text("plain"), V.Text("ab")])
-    try c.run(ins, &[V.Int(2), V.Text(""), V.Dec(-0.5), V.Int(0), V.Int(0), V.Int(0), V.Bool(false), V.Float(-0.0), V.Float(0.0),
+        V.Dec(Decimal.parse("922337203685477.5807").unwrap()), V.Dec(214748.3647m), V.Text("plain"), V.Text("ab")])
+    try c.run(ins, &[V.Int(2), V.Text(""), V.Dec(-0.5m), V.Int(0), V.Int(0), V.Int(0), V.Bool(false), V.Float(-0.0f), V.Float(0.0f),
         V.Bytes(""), V.Text("0001-01-01"), V.Text("00:00:00"), V.Text("0001-01-01"), V.Text("0001-01-01 00:00:00 +00:00"),
         V.Text("00000000-0000-0000-0000-000000000000"), V.Dec(Decimal.parse("-922337203685477.5808").unwrap()),
-        V.Dec(-214748.3648), V.Text(""), V.Text("")])
+        V.Dec(-214748.3648m), V.Text(""), V.Text("")])
     try c.exec("INSERT INTO #items(id, name) VALUES (3, N'third')")
 
     var st = try c.query("SELECT * FROM #items ORDER BY id", &[])
@@ -182,11 +182,11 @@ fn run(c: &mssql.Conn): Result[Unit, Error] {
         try show(c, "SELECT CAST(0.00000000000000000000000000000000000001 AS decimal(38,38))", &[]) + " | " +
         try show(c, "SELECT CAST(1234567890123456789012345678.123456789 AS decimal(38,10))", &[]) + " | " +
         try show(c, "SELECT CAST(.5 AS numeric(5,4))", &[]))
-    let checked = try mssql.decimalParam(12.3, 10, 2)
+    let checked = try mssql.decimalParam(12.3m, 10, 2)
     var bd = try c.prepare("SELECT SQL_VARIANT_PROPERTY(?, 'Precision'), SQL_VARIANT_PROPERTY(?, 'Scale'), ?")
-    try bd.bindDecimal(1, 1.5, 12, 4)
-    try bd.bindDecimal(2, 1.5, 12, 4)
-    try bd.bindDecimal(3, 1.5, 12, 4)
+    try bd.bindDecimal(1, 1.5m, 12, 4)
+    try bd.bindDecimal(2, 1.5m, 12, 4)
+    try bd.bindDecimal(3, 1.5m, 12, 4)
     try bd.execute()
     try bd.step()
     let bdText = "bindDecimal decimal(" + try bd.text(0) + ", " + try bd.text(1) + ") " + (try bd.decimal(2)).toStr()
@@ -197,18 +197,18 @@ fn run(c: &mssql.Conn): Result[Unit, Error] {
     cp.reset()
     println("decimal params: " + try show(c, "SELECT ?", &[V.Dec(Decimal.parse("99999999999999999999999999999999999999").unwrap())]) +
         " | " + try show(c, "SELECT ?", &[V.Dec(Decimal.parse("-0.00000000000000000000000000000000000001").unwrap())]) + " | " +
-        try show(c, "SELECT ?", &[V.Dec(12.50)]) + " | " + try show(c, "SELECT ? + ?", &[V.Dec(0.1), V.Dec(0.2)]) + " | " + cpText + " | " + bdText)
-    println("money: 12.34 + 0.0001 = " + try show(c, "SELECT CAST(? AS money) + CAST(0.0001 AS money)", &[V.Dec(12.34)]) + " | sum " +
+        try show(c, "SELECT ?", &[V.Dec(12.50m)]) + " | " + try show(c, "SELECT ? + ?", &[V.Dec(0.1m), V.Dec(0.2m)]) + " | " + cpText + " | " + bdText)
+    println("money: 12.34 + 0.0001 = " + try show(c, "SELECT CAST(? AS money) + CAST(0.0001 AS money)", &[V.Dec(12.34m)]) + " | sum " +
         try show(c, "SELECT sum(m) FROM #items WHERE id = 1", &[]))
 
     var fl = "floats:"
-    let floats: []float = [0.1, 1e300, -1e300, 2.2250738585072014e-308, 1.7976931348623157e308, 0.1 + 0.2, -0.0]
+    let floats: []float = [0.1f, 1e300f, -1e300f, 2.2250738585072014e-308f, 1.7976931348623157e308f, 0.1f + 0.2f, -0.0f]
     for f in floats {
         var fs = try c.query("SELECT ?", &[V.Float(f)])
         try fs.step()
         fl = fl + " " + (try fs.float(0)).toStr()
     }
-    let zero: float = 0.0
+    let zero: float = 0.0f
     println(fl + " | NaN " + code(c.query("SELECT ?", &[V.Float(zero / zero)])))
 
     var ir = try c.query("SELECT ?, ?, CAST(2147483647 AS int), CAST(-32768 AS smallint), CAST(255 AS tinyint), CAST(1 AS bit)",

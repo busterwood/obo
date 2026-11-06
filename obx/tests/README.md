@@ -167,7 +167,7 @@ Syntax and typing
    assumed to take the other operand's type. Fractional literals are only used
    where the expected type is a declaration, parameter, field or return type
    (plus one deliberate test, `s07_float_literal_in_binary_op`, which assumes
-   `float + 3.0` types the literal as `float`).
+   `float + 3.0f` types the literal as `float`).
 7. **`Some(3)`/`None`/`Ok(v)`/`Err(e)`** are positional constructors with no
    `{}`, as in section 4.4 (the prototype used `Some{value: x}`). `None` needs
    an expected type.
@@ -200,9 +200,9 @@ Library
     `int(...)`; used once to test string index out of range (exit 3).
 20. **`fromFraction`**: a user-defined top-level `fromFraction` is not tested
     (does it shadow std's or clash?). `d.ddd` -> `fromFraction(digits, n)` with
-    `digits` the integer value of the digit string (`0.05` -> `(5, 2)`,
-    `75.00` -> `(7500, 2)`). Decimal's own behaviour is not tested beyond
-    `let d = 1.25` compiling (`s07_fraction_default_decimal`).
+    `digits` the integer value of the digit string (`0.05m` -> `(5, 2)`,
+    `75.00m` -> `(7500, 2)`). Decimal's own behaviour is not tested beyond
+    `let d = 1.25m` compiling (`s07_fraction_default_decimal`).
 
 Semantics
 21. **Receiver must be a place for a borrow** (7.5) versus "temporaries" (7.7):

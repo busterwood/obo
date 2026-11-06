@@ -1,5 +1,5 @@
 // error: overflow|range|fit
 fn main() {
-    let f: float = 1.0e309
+    let f: float = 1.0e309f
     println(f.toStr())
 }

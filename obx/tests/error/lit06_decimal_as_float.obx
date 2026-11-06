@@ -1,0 +1,6 @@
+// SPEC 2: an m literal is a Decimal, never a float.
+// error: is Decimal, not float
+fn main() {
+    let x: float = 1.5m
+    println(x.toStr())
+}

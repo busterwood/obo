@@ -1,6 +1,6 @@
 // SPEC 5.2: a constant float division by zero is a compile error (not inf).
 // error: zero
-const A: float = 1.0
-const Z: float = 0.0
+const A: float = 1.0f
+const Z: float = 0.0f
 const B: float = A / Z
 fn main() { println(B) }

@@ -240,7 +240,7 @@ pub fn (n: &Number) literal(): str { return n.text }
 
 pub fn (n: &Number) toInt(): Option[int] {
     if len(n.text) == 0 {
-        if n.f != n.f || n.f.trunc() != n.f || n.f < -9223372036854775808.0 || n.f >= 9223372036854775808.0 { return None }
+        if n.f != n.f || n.f.trunc() != n.f || n.f < -9223372036854775808.0f || n.f >= 9223372036854775808.0f { return None }
         return Some(int(n.f))
     }
     match n.toDecimal() {
@@ -1126,11 +1126,11 @@ fn strings_lower(s: str): str {
     return b.toStr()
 }
 
-const P10: []float = [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0,
-    100000000.0, 1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0,
-    10000000000000.0, 100000000000000.0, 1000000000000000.0, 10000000000000000.0,
-    100000000000000000.0, 1000000000000000000.0, 10000000000000000000.0,
-    100000000000000000000.0, 1000000000000000000000.0, 10000000000000000000000.0]
+const P10: []float = [1.0f, 10.0f, 100.0f, 1000.0f, 10000.0f, 100000.0f, 1000000.0f, 10000000.0f,
+    100000000.0f, 1000000000.0f, 10000000000.0f, 100000000000.0f, 1000000000000.0f,
+    10000000000000.0f, 100000000000000.0f, 1000000000000000.0f, 10000000000000000.0f,
+    100000000000000000.0f, 1000000000000000000.0f, 10000000000000000000.0f,
+    100000000000000000000.0f, 1000000000000000000000.0f, 10000000000000000000000.0f]
 
 // The nearest double to a number literal (lenient ones included). Exact
 // fast paths for up to 15 digits and powers of ten up to 22 (Clinger), else
@@ -1185,7 +1185,7 @@ pub fn floatOf(t: str): float {
         // m < 10^15 and 10^|p| are exact doubles: one rounding (Clinger)
         let p = e - frac
         if m == 0 {
-            let z: float = 0.0
+            let z: float = 0.0f
             return if neg { -z } else { z }
         }
         if p >= 0 && p <= 22 {
@@ -1197,7 +1197,7 @@ pub fn floatOf(t: str): float {
             return if neg { -f } else { f }
         }
     }
-    var out: float = 0.0
+    var out: float = 0.0f
     if parseFloat(t, mut &out) { return out }
     // lenient forms the runtime does not take
     let low = strings_lower(t)
@@ -1209,22 +1209,22 @@ pub fn floatOf(t: str): float {
     if len(u) > 1 && u[0] == '-' && u[1] == '.' { u = "-0" + u[1..] }
     if endsWith(u, ".") { u = u + "0" }
     if parseFloat(u, mut &out) { return out }
-    return 0.0
+    return 0.0f
 }
 
 fn isNegZero(f: float): bool {
-    let one: float = 1.0
-    return f == 0.0 && one.copySign(f) < 0.0
+    let one: float = 1.0f
+    return f == 0.0f && one.copySign(f) < 0.0f
 }
 
 fn math_inf(): float {
-    let one: float = 1.0
-    let zero: float = 0.0
+    let one: float = 1.0f
+    let zero: float = 0.0f
     return one / zero
 }
 
 fn math_nan(): float {
-    let zero: float = 0.0
+    let zero: float = 0.0f
     return zero / zero
 }
 
@@ -1780,7 +1780,7 @@ pub fn formatNumber(n: &Number, jq: bool): str {
 // A double as text with the fewest digits that read back as it ("0.1",
 // "1e+25" style is jq's; here "1e25", "1.5e-07" is jq's, here "1.5e-7").
 pub fn shortestText(f: float): str {
-    if f == f.trunc() && f.abs() < 1000000000000000.0 {
+    if f == f.trunc() && f.abs() < 1000000000000000.0f {
         if isNegZero(f) { return "-0" }
         return intToStr(int(f))
     }
@@ -1834,8 +1834,8 @@ fn shortestDigits(f: float): Digits {
 pub fn jqFloat(x: float): str {
     var f = x
     if f != f { return "null" }
-    if !f.isFinite() { f = if f > 0.0 { 1.7976931348623157e308 } else { -1.7976931348623157e308 } }
-    if f == f.trunc() && f.abs() < 1000000000000000.0 {
+    if !f.isFinite() { f = if f > 0.0f { 1.7976931348623157e308f } else { -1.7976931348623157e308f } }
+    if f == f.trunc() && f.abs() < 1000000000000000.0f {
         if isNegZero(f) { return "-0" }
         return intToStr(int(f))
     }

@@ -1,5 +1,5 @@
 // error: the initializer of 'x' is Decimal, not int
 // line: 4
 fn main() {
-    let x: int = 1.5
+    let x: int = 1.5m
 }

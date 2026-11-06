@@ -2,6 +2,6 @@
 type Fx = value record { u: i128; s: int }
 fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
 fn main() {
-    let x: Fx = 17014118346046923173168730371588410572.7
+    let x: Fx = 17014118346046923173168730371588410572.7m
     if x.u == 170141183460469231731687303715884105727 && x.s == 1 { println("ok") }
 }

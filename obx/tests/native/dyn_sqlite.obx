@@ -51,7 +51,7 @@ fn main() {
     println("rows " + intToStr(rows) + " done " + rc.toStr())
     sqlite3_finalize(st)
     sqlite3_prepare_v2(db, "SELECT ?1, ?2", -1, mut &st, null)
-    sqlite3_bind_double(st, 1, 2.5)
+    sqlite3_bind_double(st, 1, 2.5f)
     sqlite3_bind_text(st, 2, "x", -1, -1)       // SQLITE_TRANSIENT: sqlite copies the text
     sqlite3_step(st)
     println("bound " + floatToStr(sqlite3_column_double(st, 0)) + " " + sqlite3_column_text(st, 1))

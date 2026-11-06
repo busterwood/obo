@@ -2,5 +2,5 @@
 type Fx = value record { u: i128; s: int }
 fn (Fx) fromFraction(u: i128, s: int): Fx { return Fx{u: u, s: s} }
 fn main() {
-    let x: Fx = 17014118346046923173168730371588410572.8
+    let x: Fx = 17014118346046923173168730371588410572.8m
 }

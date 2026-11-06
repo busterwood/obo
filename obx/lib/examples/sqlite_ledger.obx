@@ -59,9 +59,9 @@ fn run(path: str): Result[Unit, Error] {
     try db.exec("CREATE TABLE IF NOT EXISTS account(name TEXT PRIMARY KEY, balance TEXT NOT NULL); " +
         "CREATE TABLE IF NOT EXISTS entry(id INTEGER PRIMARY KEY, src TEXT, dst TEXT, amount TEXT)")
     try db.run("INSERT OR IGNORE INTO account VALUES ('alice', ?), ('bob', ?), ('carol', ?)",
-        &[V.Dec(100.00), V.Dec(20.50), V.Dec(0.00)])
-    let moves = [Move{from: "alice", to: "bob", amount: 30.25}, Move{from: "bob", to: "carol", amount: 60.00},
-        Move{from: "bob", to: "carol", amount: 50.75}, Move{from: "carol", to: "dave", amount: 1.00}]
+        &[V.Dec(100.00m), V.Dec(20.50m), V.Dec(0.00m)])
+    let moves = [Move{from: "alice", to: "bob", amount: 30.25m}, Move{from: "bob", to: "carol", amount: 60.00m},
+        Move{from: "bob", to: "carol", amount: 50.75m}, Move{from: "carol", to: "dave", amount: 1.00m}]
     for m in moves {
         let what = m.from + " -> " + m.to + " " + m.amount.toStr()
         match transfer(&db, m.from, m.to, m.amount) {

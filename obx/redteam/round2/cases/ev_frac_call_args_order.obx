@@ -5,5 +5,5 @@ fn (Fx) fromFraction(units: i128, scale: int): Fx { println("lit"); return Fx{v:
 fn f(): Fx { println("f"); return Fx{v: 1} }
 fn two(a: Fx, b: Fx) {}
 fn main() {
-    two(0.2, f())
+    two(0.2m, f())
 }

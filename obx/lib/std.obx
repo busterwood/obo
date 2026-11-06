@@ -451,7 +451,7 @@ fn shortestMantissa(a: float, mant: str, x: int): str {
             let r = strFromBytes(&bytes)
             var m = sign + strSlice(r, 0, 1)
             if k > 1 { m += "." + strSlice(r, 1, k) }
-            var back: float = 0.0
+            var back: float = 0.0f
             if parseFloat(m + "e" + intToStr(x), mut &back) && back == a { return m }
         }
     }
@@ -1254,7 +1254,7 @@ pub fn (a: Decimal) toInt(mode: Rounding): Result[int, DecError] {
 
 // The nearest float (lossy: binary floats cannot hold most decimals).
 pub fn (a: Decimal) toFloat(): float {
-    var f: float = 0.0
+    var f: float = 0.0f
     parseFloat(a.canonical(), mut &f)
     return f
 }

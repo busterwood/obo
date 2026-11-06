@@ -2,75 +2,73 @@
 // argument varying; prints a checksum, the same for both builds. PERFORMANCE.md, "Math".
 import "math"
 
-fn f(x: float): float { return x }
-
 fn run_exp(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
         s = s + x.exp()
-        x = x + f(0.0000001)
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
 }
 
 fn run_log(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
-        s = s + (x + f(1.0)).ln()
-        x = x + f(0.0000001)
+        s = s + (x + 1.0f).ln()
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
 }
 
 fn run_sin(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
         s = s + x.sin()
-        x = x + f(0.0000001)
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
 }
 
 fn run_pow(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
-        s = s + (x + f(1.0)).pow(f(1.7))
-        x = x + f(0.0000001)
+        s = s + (x + 1.0f).pow(1.7f)
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
 }
 
 fn run_atan(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
         s = s + x.atan()
-        x = x + f(0.0000001)
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
 }
 
 fn run_tan(): float {
-    var s = f(0.0)
-    var x = f(0.1)
+    var s = 0.0f
+    var x = 0.1f
     var i = 0
     while i < 5000000 {
         s = s + x.tan()
-        x = x + f(0.0000001)
+        x = x + 0.0000001f
         i = i + 1
     }
     return s
@@ -78,7 +76,7 @@ fn run_tan(): float {
 
 fn main() {
     let w = args()[1]
-    var s = f(0.0)
+    var s = 0.0f
     if w == "exp" { s = run_exp() }
     if w == "log" { s = run_log() }
     if w == "sin" { s = run_sin() }

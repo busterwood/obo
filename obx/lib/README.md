@@ -106,7 +106,7 @@ for leaks.
   `endsWith`, `contains`, `split(s, sep: byte)`, `trim`, `isSpace`, `isDigit`,
   `parseInt(s): Option[int]`, `repeat`.
 - **Decimal**: a coefficient below 10^38, an exponent and a
-  display scale; zero is unsigned. Literals `1.25` are Decimals (the
+  display scale; zero is unsigned. Literals `1.25m` are Decimals (the
   `fromFraction` lang item); also `decimalOf(n)`, `Decimal.fromUnits(units,
   scale)`, `Decimal.fromInt`, `Decimal.parse(s): Result[Decimal, DecError]`.
   Operators `+ - * %` and unary `-` are exact and stop the program with exit
@@ -114,7 +114,7 @@ for leaks.
   a Result instead. `div(b, scale, mode)`, `quantize(scale, mode)`,
   `toInt(mode)` return Results, and so do `round(scale)` (HALF_EVEN),
   `roundAway`, `floor`, `ceil`, `trunc` and `withScale(s)`. `cmp`/`eq`/`hash`
-  compare values (`1.0 == 1.00`, equal hashes). `toStr` keeps the display
+  compare values (`1.0m == 1.00m`, equal hashes). `toStr` keeps the display
   scale (`0.50`), `format()` is the same as a Result (an error when the scale
   would drop digits), `canonical()` has no trailing zeros; `scale`, `exponent`,
   `coefficient`, `sign`, `isZero`, `isNeg`, `abs`, `neg`, `toFloat`,
@@ -160,7 +160,7 @@ mode)`, `fromMinor(units)`, `zero()`, `parse[C](s): Result`. Methods:
 
 `PI TAU E SQRT2 LN2 LN10`, `inf()`, `nan()`, `parse(s): Option[float]`
 (decimal, hex `0x1p3`, `inf`, `nan`; no spaces), `fixed(x, places)` (rounds
-the shortest decimal form half to even: `fixed(2.675, 2)` is `"2.68"`),
+the shortest decimal form half to even: `fixed(2.675f, 2)` is `"2.68"`),
 `toDecimal(x): Option[Decimal]` (exact, from the shortest form), `near(a, b,
 tol)`.
 

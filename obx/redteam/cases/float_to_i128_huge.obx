@@ -1,7 +1,7 @@
 // exit: 10
 fn main() {
-    let f: float = 1.0
+    let f: float = 1.0f
     var g = f
-    for i in 0..200 { g = g * 2.0 }
+    for i in 0..200 { g = g * 2.0f }
     if i128(g) > 0 { println(1) } else { println(0) }
 }

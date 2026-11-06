@@ -3,6 +3,6 @@
 // error (the scale does not fit an int).
 // error: exponent|scale
 fn main() {
-    let d = 1e-18446744073709551617
+    let d = 1e-18446744073709551617m
     println(d.toStr())
 }

@@ -1,0 +1,11 @@
+// SPEC 7.3: an f literal too small for a nonzero double is 0 (as strtod reads it); an integer
+// literal still becomes a float where a float is expected, but never a Decimal.
+// expect: 0 -0 2.5 3
+fn half(x: float): float { return x / 2 }
+
+fn main() {
+    let z = 1e-400f
+    let n = -1e-400f
+    let x: float = 2
+    println(z.toStr() + " " + n.toStr() + " " + (half(5) + 0f).toStr() + " " + (x + 1).toStr())
+}

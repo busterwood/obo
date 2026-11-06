@@ -14,7 +14,7 @@ extern "c" fn obxlib_alloc(n: int): ptr
 extern "c" fn obxlib_free(p: ptr)
 fn main() {
     println("obx 1")
-    printf("C %d %ld %s %.2f %u %c %d|%d %p\n", i32(-7), 1 << 40, "str", 2.5, u32(4000000000), byte(65), true, false, nullPtr())
+    printf("C %d %ld %s %.2f %u %c %d|%d %p\n", i32(-7), 1 << 40, "str", 2.5f, u32(4000000000), byte(65), true, false, nullPtr())
     fflush(nullPtr())
     println("obx 2")
     let p = obxlib_alloc(64)

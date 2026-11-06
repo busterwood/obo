@@ -1,0 +1,36 @@
+// SPEC 2: a number with the suffix f is a float, correctly rounded (the nearest double, ties to
+// even) and the same bits on both backends. toStr prints the shortest text that reads back as the bits.
+// expect: 0.1
+// expect: 1e23
+// expect: 2.2250738585072014e-308
+// expect: 9007199254740992
+// expect: 9007199254740992
+// expect: 5e-324
+// expect: 1.7976931348623157e308
+// expect: 5e-324
+// expect: 1
+// expect: 1.0000000000000002
+// expect: 0.3
+// expect: 1.2345678901234568e29
+// expect: 1000.5
+// expect: 0
+// expect: -0
+// expect: 5e-324 true
+fn main() {
+    println(0.1f.toStr())
+    println(1e23f.toStr())
+    println(2.2250738585072014e-308f.toStr())
+    println(9007199254740993f.toStr())            // an integer with f: a tie, to even
+    println(9007199254740993.0f.toStr())
+    println(5e-324f.toStr())                       // the least subnormal
+    println(1.7976931348623157e308f.toStr())       // the greatest double
+    println(2.4703282292062328e-324f.toStr())      // just over half the least subnormal
+    println(1.00000000000000011102230246251565404236316680908203125f.toStr())    // 1 + 2^-53, exactly: a tie
+    println(1.00000000000000011102230246251565404236316680908203126f.toStr())    // just over
+    println(0.3f.toStr())
+    println(123456789012345678901234567890f.toStr())
+    println(1_000.5f.toStr())
+    println(0f.toStr())
+    println((-0.0f).toStr())
+    println(4.9406564584124654e-324f.toStr() + " " + (4.9406564584124654e-324f == 5e-324f).toStr())
+}

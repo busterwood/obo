@@ -2850,7 +2850,7 @@ fn (c: mut &Checker) expr(e: int, exp: int): Val {
         sx.N_STR { c.strLit(c.nd(e).s, exp) }
         sx.N_BOOL { rv(c.nm(if c.flag(e, sx.TRUE) { "true" } else { "false" }), sema.T_BOOL) }
         sx.N_TARG { c.err(c.line(e), "a type is not a value") }
-        sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp) }
+        sx.N_FRAC { c.xFrac(c.nd(e).s, c.line(e), exp, c.nd(e).a) }
         sx.N_NAME { c.xName(e, exp) }
         sx.N_CLOSURE { c.xClosure(e, exp) }
         sx.N_FIELDX { c.xField(e, exp) }
@@ -2922,13 +2922,13 @@ fn (c: mut &Checker) xInt(v: num.Big, line: int, exp: int): Val {
 
 fn (c: mut &Checker) fconst(text: str, line: int): Val {
     let x = num.floatOfText(text)
-    if x != x || x - x != x - x { c.err(line, "float constant out of range (overflow)") }
+    if x != x || x - x != x - x { c.err(line, "float literal " + text + " is out of range (overflow)") }
     return rv(c.x.num(num.pyFloatRepr(x)), sema.T_FLOAT)
 }
 
 // SPEC 7.3: a float when float is expected, else fromFraction(units: i128, scale: int).
-fn (c: mut &Checker) xFrac(text: str, line: int, exp: int): Val {
-    if exp == sema.T_FLOAT { return c.fconst(text, line) }
+fn (c: mut &Checker) xFrac(text: str, line: int, exp: int, suf: int): Val {
+    if suf == 1 { return c.fconst(text, line) }
     let neg = startsWith(text, "-")
     var b = newStrBuf()
     var whole = newStrBuf()
@@ -3277,7 +3277,7 @@ fn (c: mut &Checker) constVal(k: int, exp: int, line: int): Val {
         if ty == sema.T_BYTE { return rv(c.x.pcast(c.ct("uint8_t"), c.x.num(num.bigStr(v.i))), sema.T_BYTE) }
         return c.xInt(v.i, line, exp)
     }
-    if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp) }
+    if kind == sema.CK_FRAC { return c.xFrac(v.s, line, exp, 2) }
     if kind == sema.CK_FLOAT { return rv(c.x.num(num.pyFloatRepr(v.f)), sema.T_FLOAT) }
     if kind == sema.CK_BOOL { return rv(c.nm(if v.b { "true" } else { "false" }), sema.T_BOOL) }
     return c.strLit(v.s, exp)

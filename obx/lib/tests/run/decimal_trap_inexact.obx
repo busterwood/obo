@@ -6,6 +6,6 @@
 fn main() {
     println("before")
     let x = Decimal.parse("99999999999999999999999999999999999999").unwrap()
-    println(x * 2.0)
+    println(x * 2.0m)
     println("not reached")
 }

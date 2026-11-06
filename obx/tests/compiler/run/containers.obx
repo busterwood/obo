@@ -62,7 +62,7 @@ fn main() {
     byName.put("ada", pop(mut &people))       // replaces: the old Person is freed
     println(byName.size().toStr() + " names")
 
-    var prices: []money.Money[USD] = [money.of(10.0), money.of(2.5), money.of(9.99)]
+    var prices: []money.Money[USD] = [money.of(10.0m), money.of(2.5m), money.of(9.99m)]
     sort(mut &prices)
     for p in prices { println(p) }
     println(byName.at("ada").name)

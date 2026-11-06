@@ -919,6 +919,24 @@ a `Shared` value as the built-ins, not channels; several cores through
 several processes; and no threads, a shared-nothing decision taken for
 performance as much as for safety. Not yet built.
 
+### Number literal suffixes (2026-11-06)
+
+The user's decision: every non-integer number says what it is. A literal with a
+fraction or an exponent must end in `f` (a `float`) or `m` (a `Decimal`):
+`0.1f`, `1e23f`, `12.50m`; `1f` and `1m` are allowed, an integer without a
+suffix stays an `int`, and without a suffix `0.1` is a compile error that names
+both fixes. Until then a fractional literal was a `Decimal` unless a `float` was
+expected, so a float had to be written through a helper such as `fn f(x:
+float): float { return x }` and `f(1.0)`. The `f` value is the nearest double
+(ties to even, as `strtod`), computed once by the compiler and the same bits on
+both backends; `1e309f` is an error, not infinity. It went in as two bootstrap
+steps, because the seed builds the compiler: first a compiler that accepted the
+suffixes, then the conversion of every literal in the compiler's own sources
+(the checker reported which of `f` and `m` each unsuffixed literal had become,
+and 800-odd literals in the library, tests, benchmarks and commands were
+rewritten from that report, so no program's output changed) and the rule that
+an unsuffixed one is an error. SPEC 2 and 7.3 have the rules.
+
 ## The performance record, 2026-11-03 to 2026-11-06
 
 PERFORMANCE.md as it stood at `05cdac6`, before it became a report of the

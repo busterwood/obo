@@ -7,29 +7,27 @@
 // expect: 3 0
 import "math"
 
-fn f(x: float): float { return x }
-
 fn main() {
-    let one = f(1.0)
-    let zero = f(0.0)
+    let one = 1.0f
+    let zero = 0.0f
     let inf = math.inf()
     println(
-        f(3.0).exp2().toStr() + " " + f(1.0).expm1().ln().toStr() + " " + f(0.00001).ln1p().toStr() + " " +
-        one.fma(one, 2.220446049250313e-16).toStr() + " " +
-        f(-0.3).round().toStr() + " " + f(-0.4).ceil().toStr() + " " + f(0.4).floor().toStr() + " " +
-        f(-0.5).round().toStr() + " " + f(2.5).round().toStr() + " " + f(-2.5).round().toStr() + " " +
-        f(2.5).roundEven().toStr() + " " + f(1.5).roundEven().toStr() + " " + f(3.5).roundEven().toStr() + " " +
-        f(-3.5).roundEven().toStr())
+        3.0f.exp2().toStr() + " " + 1.0f.expm1().ln().toStr() + " " + 0.00001f.ln1p().toStr() + " " +
+        one.fma(one, 2.220446049250313e-16f).toStr() + " " +
+        (-0.3f).round().toStr() + " " + (-0.4f).ceil().toStr() + " " + 0.4f.floor().toStr() + " " +
+        (-0.5f).round().toStr() + " " + 2.5f.round().toStr() + " " + (-2.5f).round().toStr() + " " +
+        2.5f.roundEven().toStr() + " " + 1.5f.roundEven().toStr() + " " + 3.5f.roundEven().toStr() + " " +
+        (-3.5f).roundEven().toStr())
     println(
         inf.toStr() + " " + (-inf).toStr() + " " + (zero / zero).toStr() + " " + one.copySign(-zero).abs().toStr() + " " +
         one.copySign(-zero).copySign(-one).toStr() + " " + zero.copySign(one).toStr() + " " + zero.copySign(-one).toStr() + " " +
         inf.exp().toStr() + " " + (-one).sqrt().toStr())
     println(
         one.sin().toStr() + " " + one.cos().toStr() + " " + one.tan().toStr() + " " + one.atan().toStr() + " " +
-        one.exp().toStr() + " " + f(2.0).pow(10.0).toStr())
+        one.exp().toStr() + " " + 2.0f.pow(10.0f).toStr())
     println(
-        f(0.5).tanh().toStr() + " " + one.sinh().toStr() + " " + f(3.0).hypot(4.0).toStr() + " " +
-        f(27.0).cbrt().toStr() + " " + f(-8.0).cbrt().toStr() + " " + f(2.0).log10().toStr() + " " +
-        f(8.0).log2().toStr())
-    println(f(7.0).mod(4.0).toStr() + " " + zero.mod(5.0).toStr())
+        0.5f.tanh().toStr() + " " + one.sinh().toStr() + " " + 3.0f.hypot(4.0f).toStr() + " " +
+        27.0f.cbrt().toStr() + " " + (-8.0f).cbrt().toStr() + " " + 2.0f.log10().toStr() + " " +
+        8.0f.log2().toStr())
+    println(7.0f.mod(4.0f).toStr() + " " + zero.mod(5.0f).toStr())
 }

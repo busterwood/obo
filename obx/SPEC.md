@@ -39,9 +39,17 @@ separate decision from the user; they are the ones to revisit first.
   `'a'` is a `byte`; escapes `\n \t \r \0 \\ \' \" \xHH`.
 - A fractional literal has a fraction, an exponent or both: `12.34`,
   `1.5e3`, `2e-7`, `6.02e23` (digits on both sides of a point; the exponent is
-  `e` or `E`, an optional sign and digits). It is typed by context; see
+  `e` or `E`, an optional sign and digits). It must end in a suffix, `f` for a
+  `float` or `m` for a `Decimal` (`12.34m`, `1.5e3f`, `6.02e23f`); without one
+  it is a compile error that names both (`0.1: a fractional literal needs a
+  suffix: 0.1m for a Decimal, 0.1f for a float`). The suffix may also follow an
+  integer literal: `1f` is the float 1 and `1m` the Decimal 1 (scale 0). See
   section 7.3. A point not followed by a digit is not part of a literal:
-  `5.toStr()` calls `toStr` on `5`.
+  `5.toStr()` calls `toStr` on `5`, and `1.0f.sqrt()` and `-1.5f` are a method
+  call on a literal and a negated literal. The suffix must end the number: a
+  letter, digit or `_` after it (`1.0fx`, `1mm`) is a compile error. Hex and
+  binary literals take no suffix (`0x1f` is the integer 31; `0x1m` is an
+  error), and an integer literal without a suffix stays an integer.
 - A number literal longer than 1,000 characters is a compile error.
 - String literals `"..."` use the same escapes and may not span lines.
 - Raw string literals `` `...` `` have no escapes: every byte up to the next
@@ -534,8 +542,8 @@ generic function that instantiates itself with a larger type (`f[T]` calling
 - Both operands of a binary operator must have the same type; there are no
   implicit conversions. An integer literal takes the type its context expects,
   or `int`, and must fit it. In a binary operator, a literal operand takes the
-  type of the other operand (`x + 1` with `x: i32` is `i32`; `f * 2.0` with
-  `f: float` is `float`).
+  type of the other operand (`x + 1` with `x: i32` is `i32`; `f * 2` with
+  `f: float` is `float`; `f * 2.0f` too).
 
 ### 7.2 Conversions
 
@@ -546,17 +554,38 @@ of range. There are no other conversions.
 
 ### 7.3 Fractional literals
 
-A fractional literal whose expected type is `float` is a float (the nearest
-one). Otherwise the literal is written as `units × 10^-scale`, where `units` is
-its digits without the point as an `i128` and `scale` is the number of digits
-after the point minus the exponent (so `1.50` is `(150, 2)`, `1.5e3` is
-`(15, -2)` and `2e-7` is `(2, 7)`). It is then the call
-`T.fromFraction(units, scale)` when the expected type `T` has an associated
-function `fromFraction(i128, int)`, and the call `fromFraction(units, scale)`
-of the function in scope otherwise (std's makes a `Decimal`, so `int(1.5)` is
-an error). A literal whose digits do not fit an `i128`, or whose scale does
-not fit an `int`, is a compile error.
+A fractional literal has a suffix (section 2), and the suffix, not the context,
+says what it is.
+
+An `f` literal is a `float` in every context (using it where another type is
+expected is a type error: `let d: Decimal = 1.5f` does not compile). Its value
+is the nearest double to the decimal text, ties to even, as `strtod` reads it
+(`0.1f` is 0x3FB999999999999A, `9007199254740993f` is 9007199254740992). The
+compiler computes the bits itself, once, and both backends use the same
+double: the C backend writes the shortest decimal text that reads back as
+exactly those bits, and the native backend the bits. A literal too large for a
+double (`1e309f`) is a compile error (`float literal 1e309 is out of range
+(overflow)`), never infinity. One too small to be a nonzero double rounds to
+zero (`1e-400f` is `0`), as it does for `strtod`. There are no infinity or NaN
+literals (use `math.inf()`).
+
+An `m` literal is written as `units × 10^-scale`, where `units` is its digits
+without the point as an `i128` and `scale` is the number of digits after the
+point minus the exponent (so `1.50m` is `(150, 2)`, `1.5e3m` is `(15, -2)`,
+`2e-7m` is `(2, 7)` and `1m` is `(1, 0)`; the trailing zeros of `1.50m` are
+kept, so its scale is 2). It is then the call `T.fromFraction(units, scale)`
+when the expected type `T` has an associated function `fromFraction(i128,
+int)`, and the call `fromFraction(units, scale)` of the function in scope
+otherwise (std's makes a `Decimal`, so `int(1.5m)` is an error, and `let x:
+float = 1.5m` is a type error). A literal whose digits do not fit an `i128`, or
+whose scale does not fit an `int`, is a compile error.
 This is one of the lang items.
+
+An integer literal without a suffix is not affected: `1` is an `int`, or the
+integer type its context expects, and also a `float` where a `float` is
+expected (`let x: float = 1`, `f * 2`), but never a `Decimal`. Constants follow
+the same rules: `const H = 0.5f` is a float constant and `const P = 2.50m` a
+Decimal constant; a Decimal constant is never converted to a float.
 
 ### 7.4 Operators on other types
 
@@ -978,14 +1007,14 @@ with a `drop` method that makes its use safe.
 
 ```obx
 extern "c" fn printf(fmt: str, ...): i32
-printf("%s has %d items, %.2f each\n", name, i32(n), 2.5)
+printf("%s has %d items, %.2f each\n", name, i32(n), 2.5f)
 ```
 
 A call passes the parameters, then any number of extra arguments of
 integer types (not `i128` or `u128`), `float`, `bool`, `ptr` or `str`; a
 borrow passes its value. An extra argument has its own type (an integer
 literal is an `int`, a 64-bit `long` to C, so `%d` needs `i32(n)`; a
-fractional literal is a `float`); C's default argument promotions apply
+fractional literal must be an `f` literal, a `float`: `2.5f`); C's default argument promotions apply
 (`byte`, `bool` and other integers narrower than `int` are passed as `int`,
 `float` is a `double`); a `str` is a NUL-terminated copy as for a parameter.
 The C format string is not checked. `...` is allowed only in an extern

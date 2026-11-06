@@ -56,7 +56,7 @@ fn run(): Result[Unit, Error] {
     println("created: " + n.toStr() + " rows, closed " + db.close().toStr())
 
     var again = try sqlite.open(PATH)
-    try again.run("INSERT INTO t(v) VALUES (?), (?), (?)", &[V.Null, V.Float(2.5), V.Dec(10.50)])
+    try again.run("INSERT INTO t(v) VALUES (?), (?), (?)", &[V.Null, V.Float(2.5f), V.Dec(10.50m)])
     var st = try again.query("SELECT id, typeof(v), v FROM t ORDER BY id", &[])
     var line = "reopened:"
     while try st.step() {

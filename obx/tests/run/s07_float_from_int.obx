@@ -3,8 +3,8 @@
 fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
 fn main() {
     let n = 5
-    let h: float = 2.5
+    let h: float = 2.5f
     println(int(float(n) * h) / 6)
-    let five: float = 5.0
+    let five: float = 5.0f
     check(float(n) == five)
 }

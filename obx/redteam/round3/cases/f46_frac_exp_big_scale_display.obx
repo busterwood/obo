@@ -1,5 +1,5 @@
 // expect: ok
 fn main() {
-    let d = 1e-30
+    let d = 1e-30m
     if d.scale() == 30 { println("ok") }
 }

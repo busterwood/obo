@@ -1,0 +1,24 @@
+// SPEC 2: the suffixes f (float) and m (Decimal) on integers, fractions and exponents; methods,
+// unary minus, constants and arithmetic on suffixed literals; hex literals stay integers.
+// expect: 1.5 3 1 1024 -1.5
+// expect: 0.5 -2.5 1.75 3
+// expect: 1.50 1 0.0015 15000 15000
+// expect: 31 true 10000000000 10000000000
+// expect: 2.50 1.0 0.100
+
+const HALF = 0.5f
+const NEG = -2.5f
+const PRICE = 2.50m
+const BIG = 1e10f
+
+fn main() {
+    let a = 1.5f
+    let b: float = 2f
+    println(a.toStr() + " " + (a * b).toStr() + " " + 1.0f.sqrt().toStr() + " " + 2.0f.pow(10.0f).toStr() + " " + (-1.5f).toStr())
+    println(HALF.toStr() + " " + NEG.toStr() + " " + (HALF * a + 1f).toStr() + " " + (b + 1f).toStr())
+    let d = 1.50m
+    let one = 1m
+    println(d.toStr() + " " + one.toStr() + " " + 1.5e-3m.toStr() + " " + 1.5e4m.toStr() + " " + 15e3f.toStr())
+    println(0x1f.toStr() + " " + (0x1f == 31).toStr() + " " + 1e10m.toStr() + " " + BIG.toStr())
+    println(PRICE.toStr() + " " + 1.0m.toStr() + " " + 0.100m.toStr())
+}

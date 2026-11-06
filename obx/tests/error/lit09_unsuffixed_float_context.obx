@@ -1,0 +1,5 @@
+// SPEC 2: a fractional literal without a suffix is an error even where a float is expected.
+// error: 2.50: a fractional literal needs a suffix: 2.50m for a Decimal, 2.50f for a float
+fn main() {
+    let x: float = 2.50
+}

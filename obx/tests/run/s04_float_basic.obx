@@ -5,16 +5,16 @@
 // expect: ok
 fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
 fn main() {
-    let two: float = 2.0
+    let two: float = 2.0f
     let a = float(7) / two
     println(int(a))
-    let b: float = -2.7
+    let b: float = -2.7f
     println(int(b))
-    let c: float = 3.5
+    let c: float = 3.5f
     println(int(c + c))
-    check(a > c - 0.25)
-    let x: float = 0.1
-    let y: float = 0.2
-    let z: float = 0.3
+    check(a > c - 0.25f)
+    let x: float = 0.1f
+    let y: float = 0.2f
+    let z: float = 0.3f
     check(x + y != z)
 }

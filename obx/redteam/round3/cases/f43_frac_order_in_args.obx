@@ -2,4 +2,4 @@
 // expect: 1.5
 fn f(): int { println("f"); return 1 }
 fn two(a: Decimal, b: int): Decimal { return a }
-fn main() { println(two(1.5, f()).toStr()) }
+fn main() { println(two(1.5m, f()).toStr()) }
