@@ -59,6 +59,7 @@
 
 import "tds"
 import "sqldialect"
+import "sqlrows"
 import "strings"
 import "task"
 import "time"
@@ -350,7 +351,11 @@ pub fn (c: &Conn) inTransaction(): bool { return c.s.inTransaction() }
 
 // Whether the connection can take the next request: not broken, outside a
 // transaction (what a pool keeps).
-pub fn (c: &Conn) idle(): bool { return !c.s.broken && !c.s.inTransaction() }
+pub fn (c: &Conn) idle(): bool { return !c.s.broken && !c.s.inTransaction() && !c.s.streaming() }
+
+// Whether a stream's reply is still being read (a stream not closed: the
+// next call cancels it).
+pub fn (c: &Conn) streaming(): bool { return c.s.streaming() }
 
 // The INFO messages of the last call (connect's "Changed database context
 // to ...", PRINT, RAISERROR with severity 10 or less).
@@ -411,10 +416,8 @@ fn paramOf(v: &Value, name: str, coll: &tds.Collation): Result[tds.Param, Error]
     return Ok(p)
 }
 
-// Sends sql: as a SQL batch without parameters or outputs, else through
-// sp_executesql with args as @p1, @p2, ... and the outputs after them.
-fn (c: mut &Conn) send(sql: str, args: &[Value], outs: &[Out], w: Where): Result[tds.Reply, Error] {
-    if len(args) == 0 && len(outs) == 0 { return checked(try c.s.batch(sql, w)) }
+// The RPC parameters: args as @p1, @p2, ..., then the outputs.
+fn (c: &Conn) params(args: &[Value], outs: &[Out]): Result[[]tds.Param, Error] {
     if len(args) + len(outs) > tds.MAX_PARAMS {
         return Err(sqldialect.inputError("more than " + tds.MAX_PARAMS.toStr() + " parameters"))
     }
@@ -429,6 +432,14 @@ fn (c: mut &Conn) send(sql: str, args: &[Value], outs: &[Out], w: Where): Result
         p.output = true
         append(mut &ps, p)
     }
+    return Ok(ps)
+}
+
+// Sends sql: as a SQL batch without parameters or outputs, else through
+// sp_executesql with args as @p1, @p2, ... and the outputs after them.
+fn (c: mut &Conn) send(sql: str, args: &[Value], outs: &[Out], w: Where): Result[tds.Reply, Error] {
+    if len(args) == 0 && len(outs) == 0 { return checked(try c.s.batch(sql, w)) }
+    let ps = try c.params(args, outs)
     var r = try c.s.executeSql(sql, &ps, w)
     // sp_executesql's own RETURNSTATUS (0) comes last: it is not the SQL's
     if len(r.statuses) > 0 {
@@ -780,4 +791,149 @@ pub fn (r: &Rows) value(row: int, col: int): Result[Value, Error] {
         tds.Cell.Failed(why) { return Err(failed(col, why)) }
         else { return Ok(Value.Text(tds.cellText(&r.cols[col], &c).unwrapOr(""))) }
     }
+}
+
+// ---------------------------------------------------------------- streams
+
+pub type Columns = sqlrows.Columns
+pub type RowView = sqlrows.RowView
+pub type Kind = sqlrows.Kind
+
+// A result read a row at a time into the program's own records
+// (design/db-streaming.md): rows are decoded from the packets as they
+// arrive, a buffer at a time, and never all held. The stream holds the
+// connection (a mut & borrow): the checker refuses any other use of it
+// while the stream is in scope. Provisional, for the user.
+pub type Stream[B, T] = value record {
+    c: mut &Conn
+    cols: sqlrows.Columns
+    codec: sqlrows.Codec
+    bound: B
+    read: fn(&B, &RowView): Result[T, Error]
+    row: int
+    state: int                 // sqlrows.LIVE, ENDED or FAILED
+    held: Option[Error]        // an error to give at the next fill (rows came before it)
+}
+
+// Runs sql (with @p1, @p2, ... bound to args, as query; args are taken, so
+// the stream borrows only the connection) and reads its first result set up
+// to the columns; bind gets them (sqlrows.Columns) and resolves the record's
+// fields to column indexes once, and read makes one record from a row
+// (sqlrows.RowView). A server error before the first row, or bind's error,
+// is the Err (the rest of the reply is cancelled first). Later result sets
+// of the batch are read and skipped when the first ends; their errors come
+// from fill as the first's do.
+//
+// Ending a stream early (close, or just dropping it) cancels the rest of
+// the reply: ATTENTION, then the reply is read up to the DONE that
+// acknowledges it, so the connection is idle again. A dropped stream is
+// cancelled by the connection's next call (or idle() is false until then).
+pub fn (c: mut &Conn) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): Result[B, Error],
+                                   read: fn(&B, &RowView): Result[T, Error], w: Where): Result[Stream[B, T], Error] {
+    var has = false
+    if len(args) == 0 {
+        has = try c.s.streamBatch(sql, w)
+    } else {
+        let ps = try c.params(&args, &[])
+        has = try c.s.streamExecuteSql(sql, &ps, w)
+    }
+    let cols = sqlrows.columns(if has { tds.describe(c.s.streamColumns()) } else { [] })
+    let bound = match bind(&cols) {
+        Ok(b) { b }
+        Err(e) { return Err(c.cancelled(e, w)) }
+    }
+    return Ok(Stream{c: c, cols: cols, codec: tds.codec(), bound: bound, read: read, row: 0,
+                     state: if has { sqlrows.LIVE } else { sqlrows.ENDED }, held: None})
+}
+
+// e, after the stream's reply is cancelled.
+fn (c: mut &Conn) cancelled(e: Error, w: Where): Error {
+    let r = c.s.settle(w)
+    return e
+}
+
+// The result's columns (a copy).
+pub fn (s: &Stream[B, T]) columns(): Columns { return s.cols.clone() }
+
+// The rows read so far.
+pub fn (s: &Stream[B, T]) rowsRead(): int { return s.row }
+
+// Ends the stream after an error: the rest of the reply is cancelled.
+fn (s: mut &Stream[B, T]) failed(e: Error, w: Where): Error {
+    s.state = sqlrows.FAILED
+    let r = s.c.s.settle(w)
+    return e
+}
+
+// To the next row: true, false at the end, or the stream's error (once).
+fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
+    if s.state != sqlrows.LIVE {
+        match replace(mut &s.held, None) {
+            Some(e) { return Err(e) }
+            None { return Ok(false) }
+        }
+    }
+    match s.c.s.nextRow(w) {
+        Ok(more) {
+            if more {
+                s.row += 1
+                return Ok(true)
+            }
+            s.state = sqlrows.ENDED
+            if len(s.c.s.errors) > 0 { return Err(s.failed(tds.serverError(&s.c.s.errors[0]), w)) }
+            return Ok(false)
+        }
+        Err(e) { return Err(s.failed(e, w)) }
+    }
+}
+
+// The record of the current row.
+fn (s: &Stream[B, T]) current(): Result[T, Error] {
+    let rv = sqlrows.rowView(s.cols.list(), &s.codec, s.c.s.rowData(), s.c.s.rowStarts(), s.c.s.rowLens(), s.row)
+    return s.read(&s.bound, &rv)
+}
+
+// Reads up to len(out) rows into out[0..n] and returns n; 0 at the end.
+// An error (the server's, a decoding error, read's) ends the stream; when
+// rows came before it in this call they are returned first and the error
+// comes from the next call. Provisional, for the user.
+pub fn (s: mut &Stream[B, T]) fill(out: mut &[T], w: Where): Result[int, Error] {
+    var n = 0
+    while n < len(out) {
+        let a = s.advance(w)
+        if a.isOk() {
+            if !a.unwrap() { break }
+            let v = s.current()
+            if v.isOk() {
+                out[n] = v.unwrap()
+                n += 1
+                continue
+            }
+            let e = s.failed(v.unwrapErr(), w)
+            if n == 0 { return Err(e) }
+            s.held = Some(e)
+            break
+        }
+        if n == 0 { return Err(a.unwrapErr()) }
+        s.held = Some(a.unwrapErr())
+        break
+    }
+    return Ok(n)
+}
+
+// The next row's record, or None at the end (fill with one row).
+pub fn (s: mut &Stream[B, T]) next(w: Where): Result[Option[T], Error] {
+    if !(try s.advance(w)) { return Ok(None) }
+    match s.current() {
+        Ok(v) { return Ok(Some(v)) }
+        Err(e) { return Err(s.failed(e, w)) }
+    }
+}
+
+// Ends the stream; the rest of the reply is cancelled (ATTENTION), and the
+// connection is idle again.
+pub fn (s: Stream[B, T]) close(w: Where): Result[Unit, Error] {
+    var t = s
+    t.state = sqlrows.ENDED
+    return t.c.s.settle(w)
 }

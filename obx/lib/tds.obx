@@ -61,6 +61,7 @@ import "sqldialect"
 import "math"
 import "codepage"
 import "time"
+import "sqlrows"
 
 pub type Error = sqldialect.DbError
 
@@ -272,7 +273,9 @@ pub fn toUtf16(s: str): Result[[]byte, str] {
 
 // UTF-16LE bytes as UTF-8. Err for an odd number of bytes or a surrogate
 // that is not part of a pair (SQL Server's nvarchar can hold one).
-pub fn fromUtf16(b: str): Result[str, str] {
+pub fn fromUtf16(b: str): Result[str, str] { return utf16Of(&b) }
+
+fn utf16Of(b: &str): Result[str, str] {
     if len(b) % 2 != 0 { return Err("UTF-16 text has an odd number of bytes") }
     var ascii = true
     var k = 0
@@ -1389,17 +1392,17 @@ fn decodeValue(col: &Column, b: str): Cell {
             return Cell.Text(b)
         }
         T_BIGVARBIN, T_BIGBINARY, T_IMAGE, T_VARBINARY, T_BINARY { return Cell.Bytes(b) }
-        T_DECIMAL, T_NUMERIC, T_DECIMALN, T_NUMERICN { return decimalCell(b, col.scale) }
-        T_MONEY, T_MONEY4, T_MONEYN { return moneyCell(b) }
+        T_DECIMAL, T_NUMERIC, T_DECIMALN, T_NUMERICN { return decimalCell(&b, col.scale) }
+        T_MONEY, T_MONEY4, T_MONEYN { return moneyCell(&b) }
         T_DATEN {
             if len(b) != 3 { return Cell.Failed("a date of " + len(b).toStr() + " bytes") }
-            match dateOf3(b, 0) {
+            match dateOf3(&b, 0) {
                 Some(d) { return Cell.Date(d) }
                 None { return Cell.Failed("a date out of range") }
             }
         }
-        T_TIMEN, T_DATETIME2N, T_DATETIMEOFFSETN { return timeCell(t, b, col.scale) }
-        T_DATETIME, T_DATETIM4, T_DATETIMN { return datetimeCell(b) }
+        T_TIMEN, T_DATETIME2N, T_DATETIMEOFFSETN { return timeCell(t, &b, col.scale) }
+        T_DATETIME, T_DATETIM4, T_DATETIMN { return datetimeCell(&b) }
         T_GUID {
             if len(b) != 16 { return Cell.Failed("a uniqueidentifier of " + len(b).toStr() + " bytes") }
             return Cell.Guid(guidText(b))
@@ -1425,7 +1428,7 @@ const DAYS_1900 = -25567
 const MAX_DAY = 3652058          // 9999-12-31, in days since 0001-01-01
 
 // The unsigned little-endian integer of b[at..at + n] (n at most 7).
-fn leOf(b: str, at: int, n: int): int {
+fn leOf(b: &str, at: int, n: int): int {
     var v = 0
     for k in 0..n { v = v | (int(b[at + k]) << (8 * k)) }
     return v
@@ -1441,7 +1444,7 @@ fn pow10i(n: int): int {
 // negative), then the magnitude, 4, 8, 12 or 16 bytes little-endian, the
 // value magnitude * 10^-scale. The magnitude goes straight into a Decimal
 // with the column's scale as its display scale.
-fn decimalCell(b: str, scale: int): Cell {
+fn decimalCell(b: &str, scale: int): Cell {
     let n = len(b) - 1
     if n != 4 && n != 8 && n != 12 && n != 16 { return Cell.Failed("a decimal of " + len(b).toStr() + " bytes") }
     if scale < 0 || scale > 38 { return Cell.Failed("a decimal with scale " + scale.toStr()) }
@@ -1455,7 +1458,7 @@ fn decimalCell(b: str, scale: int): Cell {
 
 // money: the high 32 bits (signed) then the low 32 bits of a count of
 // 1/10,000; smallmoney: a signed 32-bit count. Display scale 4.
-fn moneyCell(b: str): Cell {
+fn moneyCell(b: &str): Cell {
     if len(b) == 4 {
         var v = leOf(b, 0, 4)
         if v >= 0x80000000 { v -= 0x100000000 }
@@ -1468,7 +1471,7 @@ fn moneyCell(b: str): Cell {
 }
 
 // The date of 3 bytes at b[at..]: days since 0001-01-01, at most 9999-12-31.
-fn dateOf3(b: str, at: int): Option[time.Date] {
+fn dateOf3(b: &str, at: int): Option[time.Date] {
     let days = leOf(b, at, 3)
     if days > MAX_DAY { return None }
     return Some(time.dateOfDays(days + DAYS_0001))
@@ -1487,7 +1490,7 @@ pub fn timeBytes(scale: int): int {
 // for datetimeoffset the date and a signed 2-byte offset in minutes. A
 // datetimeoffset's time and date are UTC; the local date-time is UTC plus
 // the offset.
-fn timeCell(t: int, b: str, scale: int): Cell {
+fn timeCell(t: int, b: &str, scale: int): Cell {
     if scale < 0 || scale > 7 { return Cell.Failed("a time with scale " + scale.toStr()) }
     let tn = timeBytes(scale)
     let want = if t == T_TIMEN { tn } else if t == T_DATETIME2N { tn + 3 } else { tn + 5 }
@@ -1520,7 +1523,7 @@ fn timeCell(t: int, b: str, scale: int): Cell {
 // the value (CONVERT style 121, and what ODBC gives), and writing that text
 // back gives the same tick. (CAST to datetime2(7) rounds to 100 ns instead:
 // .0033333 for one tick.)
-fn datetimeCell(b: str): Cell {
+fn datetimeCell(b: &str): Cell {
     if len(b) == 4 {
         let mins = leOf(b, 2, 2)
         if mins >= 1440 { return Cell.Failed("a smalldatetime of " + mins.toStr() + " minutes") }
@@ -1541,7 +1544,9 @@ const HEXU = "0123456789ABCDEF"
 // The canonical text of a uniqueidentifier's 16 bytes: the first three
 // groups are little-endian integers (4, 2 and 2 bytes), the last two the
 // bytes in order.
-pub fn guidText(b: str): str {
+pub fn guidText(b: str): str { return guidOf(&b) }
+
+fn guidOf(b: &str): str {
     let order = [3, 2, 1, 0, -1, 5, 4, -1, 7, 6, -1, 8, 9, -1, 10, 11, 12, 13, 14, 15]
     var out = newStrBuf()
     for k in order {
@@ -2055,6 +2060,18 @@ pub fn (t: mut &Transport) receive(limit: int, w: Where): Result[Received, Error
     return Ok(Received{ptype: ptype, data: strFromBytes(&msg)})
 }
 
+// One packet of a message.
+pub type Packet = value record { pub ptype: int; pub eom: bool; pub data: str }
+
+// Reads one packet (a stream reads its reply a packet at a time).
+pub fn (t: mut &Transport) receivePacket(w: Where): Result[Packet, Error] {
+    try readFull(mut &t.s, mut &t.inbox, mut &t.hdr, w)
+    let h = try parseHeader(&t.hdr)
+    let n = h.length - HEADER
+    try readFull(mut &t.s, mut &t.inbox, mut &t.pkt[0..n], w)
+    return Ok(Packet{ptype: h.ptype, eom: (h.status & STATUS_EOM) != 0, data: strFromBytes(&t.pkt[0..n])})
+}
+
 fn (t: &Transport) buffered(): bool { return t.inbox.pos < t.inbox.end }
 
 // Puts TLS over the socket, with an engine whose handshake is done.
@@ -2152,6 +2169,7 @@ pub type Session = record {
     pub mirrorPartner: str       // ENVCHANGE 13: the database mirroring partner
     pub userInstance: str        // ENVCHANGE 19
     pub resets: int              // ENVCHANGE 18: RESETCONNECTION acknowledged, so many times
+    rr: RowReader                // a reply read a row at a time (stream)
 }
 
 fn addrOf(host: str, port: int): str {
@@ -2219,7 +2237,7 @@ pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
                     serverVersion: ack.version, preloginVersion: pre.version, database: "", collation: noCollation(),
                     utf8: false, maxReply: MAX_REPLY, broken: false, txn: noTransaction(), infos: replace(mut &r.infos, []),
                     errors: [], language: "", charset: "", sortLocale: "", sortFlags: "", mirrorPartner: "",
-                    userInstance: "", resets: 0}
+                    userInstance: "", resets: 0, rr: noReader()}
     for f in r.features {
         if f.id == FEATURE_UTF8 && len(f.data) >= 1 && f.data[0] != 0 { s.utf8 = true }
     }
@@ -2342,6 +2360,7 @@ pub fn (s: mut &Session) transact(kind: int, w: Where): Result[Reply, Error] {
 }
 
 fn (s: mut &Session) request(ptype: int, payload: str, w: Where): Result[Reply, Error] {
+    try s.settle(w)
     let r = s.roundTrip(ptype, payload, w)
     match r {
         Ok(_) {}
@@ -2361,4 +2380,595 @@ fn (s: mut &Session) roundTrip(ptype: int, payload: str, w: Where): Result[Reply
     let m = try s.t.receive(s.maxReply, w)
     if m.ptype != PT_REPLY { return Err(proto("a reply in a packet of type " + m.ptype.toStr())) }
     return decode(m.data, s.maxReply / 8)
+}
+
+// ---------------------------------------------------------------- streamed replies (stage T3)
+
+// A reply read a token at a time, so a result set's rows are decoded as
+// they arrive and never all held: data[pos..] are the bytes received and not
+// yet decoded (a row may span packets: the rest of a packet is joined to the
+// next one); eom: the reply's last packet is in.
+type RowReader = record {
+    active: bool            // a reply is being read: settle ends it before another request
+    data: str
+    pos: int
+    eom: bool
+    cols: []Column          // the columns of the result set being read
+    inRows: bool            // inside the first result set: nextRow gives its rows
+    starts: []int           // the current row's values: data[starts[i]..starts[i] + lens[i]]
+    lens: []int             // -1: NULL
+    attnDone: bool          // the DONE acknowledging an ATTENTION has been read
+}
+
+fn noReader(): RowReader {
+    return RowReader{active: false, data: "", pos: 0, eom: false, cols: [], inRows: false, starts: [], lens: [], attnDone: false}
+}
+
+const EV_ROW = 1        // a ROW or NBCROW: its values are in starts and lens
+const EV_COLS = 2       // a COLMETADATA with columns
+const EV_DONE = 3       // a DONE, DONEPROC or DONEINPROC
+const EV_END = 4        // the end of the reply
+const EV_OTHER = 5      // another token, applied
+const EV_SHORT = -1     // the bytes end inside the token
+
+// Where a ROW (an NBCROW when nbc) at d[at..] has each value, into starts
+// and lens (-1 for NULL), and the position after it; EV_SHORT when d ends
+// first. E_PROTOCOL for a length its column's type cannot have.
+fn scanRow(d: &str, at: int, cols: &[]Column, nbc: bool, starts: mut &[]int, lens: mut &[]int): Result[int, Error] {
+    let n = len(d)
+    let nc = len(cols)
+    var p = at
+    if nbc {
+        p += (nc + 7) / 8
+        if p > n { return Ok(EV_SHORT) }
+    }
+    for i in 0..nc {
+        starts[i] = p
+        lens[i] = -1
+        if nbc && ((int(d[at + i / 8]) >> (i % 8)) & 1) == 1 { continue }
+        let f = cols[i].framing
+        let size = cols[i].size
+        if f == F_FIXED {
+            if p + size > n { return Ok(EV_SHORT) }
+            starts[i] = p
+            lens[i] = size
+            p += size
+        } else if f == F_BYTE {
+            if p + 1 > n { return Ok(EV_SHORT) }
+            let k = int(d[p])
+            p += 1
+            if k > 0 {
+                if k > size { return Err(proto("a value of column " + cols[i].name + ": " + k.toStr() + " bytes for a size of " + size.toStr())) }
+                if p + k > n { return Ok(EV_SHORT) }
+                starts[i] = p
+                lens[i] = k
+                p += k
+            }
+        } else if f == F_USHORT {
+            if p + 2 > n { return Ok(EV_SHORT) }
+            let k = int(d[p]) | (int(d[p + 1]) << 8)
+            p += 2
+            if k != 0xFFFF {
+                if k > size { return Err(proto("a value of column " + cols[i].name + ": " + k.toStr() + " bytes for a size of " + size.toStr())) }
+                if p + k > n { return Ok(EV_SHORT) }
+                starts[i] = p
+                lens[i] = k
+                p += k
+            }
+        } else if f == F_PLP {
+            if p + 8 > n { return Ok(EV_SHORT) }
+            var total: u64 = 0
+            for k in 0..8 { total = total | (u64(d[p + k]) << (8 * k)) }
+            p += 8
+            if total != PLP_NULL {
+                let start = p
+                var sum = 0
+                while true {
+                    if p + 4 > n { return Ok(EV_SHORT) }
+                    let k = leOf(d, p, 4)
+                    p += 4
+                    if k == 0 { break }
+                    if p + k > n { return Ok(EV_SHORT) }
+                    p += k
+                    sum += k
+                }
+                if total != PLP_NULL - 1 && u64(sum) != total {
+                    return Err(proto("a value of column " + cols[i].name + ": PLP chunks of " + sum.toStr() + " bytes for a total of " + total.toStr()))
+                }
+                starts[i] = start
+                lens[i] = p - start
+            }
+        } else if f == F_TEXT {
+            if p + 1 > n { return Ok(EV_SHORT) }
+            let tp = int(d[p])
+            p += 1
+            if tp > 0 {
+                if p + tp + 12 > n { return Ok(EV_SHORT) }
+                p += tp + 8                          // the text pointer and its timestamp
+                let k = leOf(d, p, 4)
+                p += 4
+                if p + k > n { return Ok(EV_SHORT) }
+                starts[i] = p
+                lens[i] = k
+                p += k
+            }
+        } else if f == F_VARIANT {
+            if p + 4 > n { return Ok(EV_SHORT) }
+            let k = leOf(d, p, 4)
+            p += 4
+            if k > 0 {
+                if p + k > n { return Ok(EV_SHORT) }
+                starts[i] = p
+                lens[i] = k
+                p += k
+            }
+        }
+    }
+    return Ok(p)
+}
+
+// Reads the next packet of the reply onto what is left of data.
+fn (s: mut &Session) more(w: Where): Result[Unit, Error] {
+    if s.rr.eom { return Err(proto("the reply ends inside a token")) }
+    let p = try s.t.receivePacket(w)
+    if p.ptype != PT_REPLY { return Err(proto("a reply in a packet of type " + p.ptype.toStr())) }
+    let rest = len(s.rr.data) - s.rr.pos
+    if rest + len(p.data) > s.maxReply {
+        return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tds: a token larger than " + s.maxReply.toStr() + " bytes"))
+    }
+    s.rr.data = if rest == 0 { p.data } else { s.rr.data[s.rr.pos..] + p.data }
+    s.rr.pos = 0
+    s.rr.eom = p.eom
+    return Ok(Unit{})
+}
+
+fn knownToken(t: int): bool {
+    match t {
+        TK_COLMETADATA, TK_ROW, TK_NBCROW, TK_DONE, TK_DONEPROC, TK_DONEINPROC, TK_ERROR, TK_INFO, TK_ENVCHANGE,
+        TK_RETURNSTATUS, TK_RETURNVALUE, TK_ORDER, TK_COLINFO, TK_TABNAME, TK_SSPI, TK_SESSIONSTATE, TK_FEDAUTHINFO,
+        TK_OFFSET { return true }
+        else { return false }
+    }
+}
+
+// Decodes the token at data[pos..] (EV_*), reading packets as it needs
+// them. A token is applied only once it is whole.
+fn (s: mut &Session) step(w: Where): Result[int, Error] {
+    while true {
+        if s.rr.pos >= len(s.rr.data) {
+            if s.rr.eom { return Ok(EV_END) }
+            try s.more(w)
+            continue
+        }
+        let ev = try s.token()
+        if ev != EV_SHORT { return Ok(ev) }
+        try s.more(w)
+    }
+    return Ok(EV_END)
+}
+
+fn (s: mut &Session) token(): Result[int, Error] {
+    let tok = int(s.rr.data[s.rr.pos])
+    if !knownToken(tok) {
+        if tok == TK_ALTMETADATA || tok == TK_ALTROW { return Err(proto("COMPUTE results (ALTMETADATA, ALTROW) are not supported")) }
+        return Err(proto("unknown token 0x" + strings.padLeft(strings.hex(tok), 2, '0')))
+    }
+    if tok == TK_ROW || tok == TK_NBCROW {
+        if len(s.rr.cols) == 0 { return Err(proto("a row before any COLMETADATA")) }
+        let end = try scanRow(&s.rr.data, s.rr.pos + 1, &s.rr.cols, tok == TK_NBCROW, mut &s.rr.starts, mut &s.rr.lens)
+        if end < 0 { return Ok(EV_SHORT) }
+        s.rr.pos = end
+        return Ok(EV_ROW)
+    }
+    var c = Cur{s: s.rr.data, pos: s.rr.pos + 1, end: len(s.rr.data)}
+    match s.other(tok, mut &c) {
+        Ok(ev) {
+            s.rr.pos = c.pos
+            return Ok(ev)
+        }
+        Err(e) {
+            if !s.rr.eom { return Ok(EV_SHORT) }    // cut off: decoded again with the next packet
+            return Err(e)
+        }
+    }
+}
+
+// A token other than a row, from c; applied to the session only when whole.
+fn (s: mut &Session) other(tok: int, c: mut &Cur): Result[int, Error] {
+    match tok {
+        TK_COLMETADATA {
+            let cols = try colMetadata(c)
+            if len(cols) == 0 { return Ok(EV_OTHER) }
+            s.rr.starts = array(len(cols), 0)
+            s.rr.lens = array(len(cols), -1)
+            s.rr.cols = cols
+            return Ok(EV_COLS)
+        }
+        TK_DONE, TK_DONEPROC, TK_DONEINPROC {
+            let status = try c.u16("DONE")
+            try c.skip(10, "DONE")
+            if (status & DONE_ATTN) != 0 { s.rr.attnDone = true }
+            return Ok(EV_DONE)
+        }
+        TK_ERROR, TK_INFO {
+            let m = try message(c)
+            if tok == TK_ERROR { append(mut &s.errors, m) } else { append(mut &s.infos, m) }
+        }
+        TK_ENVCHANGE {
+            let e = try envChange(c)
+            try s.apply(&[e])
+        }
+        TK_RETURNSTATUS { try c.skip(4, "RETURNSTATUS") }
+        TK_RETURNVALUE { let v = try returnValue(c) }
+        TK_ORDER, TK_COLINFO, TK_TABNAME, TK_SSPI {
+            let n = try c.u16("a token's length")
+            try c.skip(n, "token 0x" + strings.hex(tok))
+        }
+        TK_SESSIONSTATE, TK_FEDAUTHINFO {
+            let n = try c.u32("a token's length")
+            try c.skip(n, "token 0x" + strings.hex(tok))
+        }
+        else { try c.skip(4, "OFFSET") }
+    }
+    return Ok(EV_OTHER)
+}
+
+// The session is broken after a failure on the wire; the stream is over.
+fn (s: mut &Session) fail(e: Error): Error {
+    s.broken = true
+    s.rr = noReader()
+    return e
+}
+
+// Sends a request whose reply is read a row at a time, and reads it up to
+// its first result set with columns: Ok(true), its columns streamColumns()
+// and its rows nextRow(); Ok(false) when the reply ended without one. The
+// reply's first ERROR before the result set is the Err (the rest of the
+// reply is read first). A stream left unfinished is ended (ATTENTION) by
+// the next request, or settle.
+fn (s: mut &Session) startStream(ptype: int, payload: str, w: Where): Result[bool, Error] {
+    s.rr = noReader()
+    s.rr.active = true
+    s.infos = []
+    s.errors = []
+    match s.t.send(ptype, payload, w) {
+        Ok(_) {}
+        Err(e) { return Err(s.fail(e)) }
+    }
+    while true {
+        let ev = match s.step(w) {
+            Ok(x) { x }
+            Err(e) { return Err(s.fail(e)) }
+        }
+        if ev == EV_COLS {
+            if len(s.errors) > 0 {
+                let first = serverError(&s.errors[0])
+                try s.settle(w)
+                return Err(first)
+            }
+            s.rr.inRows = true
+            return Ok(true)
+        }
+        if ev == EV_END {
+            s.rr.active = false
+            if len(s.errors) > 0 { return Err(serverError(&s.errors[0])) }
+            return Ok(false)
+        }
+    }
+    return Ok(false)
+}
+
+// batch and executeSql with the reply read a row at a time (startStream).
+pub fn (s: mut &Session) streamBatch(sql: str, w: Where): Result[bool, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    try s.settle(w)
+    let payload = try sqlBatch(sql, s.txn)
+    return s.startStream(PT_SQLBATCH, payload, w)
+}
+
+pub fn (s: mut &Session) streamExecuteSql(sql: str, params: &[Param], w: Where): Result[bool, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    try s.settle(w)
+    let payload = try executeSql(sql, params, s.txn, &s.collation)
+    return s.startStream(PT_RPC, payload, w)
+}
+
+// Whether a streamed reply is still being read.
+pub fn (s: &Session) streaming(): bool { return s.rr.active }
+
+// The columns of the streamed result set.
+pub fn (s: &Session) streamColumns(): &[]Column { return &s.rr.cols }
+
+// The current row of the stream (after nextRow gave true): value i is
+// rowData()[rowStarts()[i]..] for rowLens()[i] bytes, length -1 for NULL.
+pub fn (s: &Session) rowData(): &str { return &s.rr.data }
+pub fn (s: &Session) rowStarts(): &[]int { return &s.rr.starts }
+pub fn (s: &Session) rowLens(): &[]int { return &s.rr.lens }
+
+// Moves to the next row of the first result set: true, or false at its end,
+// when the rest of the reply has been read (later result sets are read and
+// skipped; their ERRORs are kept in errors with the first's).
+pub fn (s: mut &Session) nextRow(w: Where): Result[bool, Error] {
+    if !s.rr.inRows { return Ok(false) }
+    while true {
+        let ev = match s.step(w) {
+            Ok(x) { x }
+            Err(e) { return Err(s.fail(e)) }
+        }
+        if ev == EV_ROW { return Ok(true) }
+        if ev == EV_DONE || ev == EV_COLS || ev == EV_END {
+            s.rr.inRows = false
+            while ev != EV_END {
+                let e2 = match s.step(w) {
+                    Ok(x) { x }
+                    Err(e) { return Err(s.fail(e)) }
+                }
+                if e2 == EV_END { break }
+            }
+            s.rr.active = false
+            s.rr.data = ""
+            s.rr.pos = 0
+            return Ok(false)
+        }
+    }
+    return Ok(false)
+}
+
+// Ends a streamed reply that is still being read: sends ATTENTION and reads
+// up to the DONE that acknowledges it, so the connection is idle again. Its
+// rows and messages are dropped. Nothing to do when no reply is open.
+pub fn (s: mut &Session) settle(w: Where): Result[Unit, Error] {
+    if !s.rr.active { return Ok(Unit{}) }
+    s.rr.inRows = false
+    if s.broken || (s.rr.eom && s.rr.pos >= len(s.rr.data)) {
+        s.rr = noReader()
+        return Ok(Unit{})
+    }
+    s.rr.attnDone = false
+    match s.t.send(PT_ATTENTION, "", w) {
+        Ok(_) {}
+        Err(e) { return Err(s.fail(e)) }
+    }
+    while true {
+        let ev = match s.step(w) {
+            Ok(x) { x }
+            Err(e) { return Err(s.fail(e)) }
+        }
+        if ev == EV_END {
+            if s.rr.attnDone { break }
+            s.rr.eom = false             // the acknowledgement comes in a message of its own
+        }
+    }
+    s.rr = noReader()
+    s.errors = []
+    return Ok(Unit{})
+}
+
+// ---------------------------------------------------------------- streamed values (sqlrows)
+
+// A column for sqlrows: wire is the TDS type, aux its framing and (for text
+// types) its code page << 4 (65001: a UTF-8 collation).
+pub fn describe(cols: &[]Column): []sqlrows.Column {
+    var out: []sqlrows.Column = []
+    for c in cols {
+        let t = c.tdsType
+        let textual = t == T_BIGVARCHR || t == T_BIGCHAR || t == T_TEXT || t == T_VARCHAR || t == T_CHAR
+        let cp = if textual { c.collation.codePage() } else { 0 }
+        let nullable = if (c.flags & 1) != 0 { sqlrows.NULLABLE_YES } else { sqlrows.NULLABLE_NO }
+        append(mut &out, sqlrows.column(c.name, typeText(&c), kindsOf(&c), nullable, t, c.size, c.precision, c.scale,
+                                        c.framing | (cp << 4)))
+    }
+    return out
+}
+
+// "decimal(12,2)", "nvarchar", "datetime2(7)", ...
+fn typeText(c: &Column): str {
+    let t = c.tdsType
+    if t == T_DECIMAL || t == T_DECIMALN || t == T_NUMERIC || t == T_NUMERICN {
+        return c.typeName() + "(" + c.precision.toStr() + "," + c.scale.toStr() + ")"
+    }
+    if t == T_TIMEN || t == T_DATETIME2N || t == T_DATETIMEOFFSETN { return c.typeName() + "(" + c.scale.toStr() + ")" }
+    return c.typeName()
+}
+
+// What a column can be read as (design/db-streaming.md, section 3).
+fn kindsOf(c: &Column): int {
+    let t = c.tdsType
+    match t {
+        T_INT1, T_INT2, T_INT4, T_INT8, T_INTN { return sqlrows.kinds(&[sqlrows.Kind.Int, sqlrows.Kind.Decimal]) }
+        T_BIT, T_BITN { return sqlrows.kinds(&[sqlrows.Kind.Bool, sqlrows.Kind.Int]) }
+        T_FLT4, T_FLT8, T_FLTN { return sqlrows.kinds(&[sqlrows.Kind.Float]) }
+        T_DECIMAL, T_DECIMALN, T_NUMERIC, T_NUMERICN {
+            if c.scale == 0 && c.precision <= 18 { return sqlrows.kinds(&[sqlrows.Kind.Decimal, sqlrows.Kind.Int]) }
+            return sqlrows.kinds(&[sqlrows.Kind.Decimal])
+        }
+        T_MONEY, T_MONEY4, T_MONEYN { return sqlrows.kinds(&[sqlrows.Kind.Decimal]) }
+        T_NVARCHAR, T_NCHAR, T_NTEXT, T_BIGVARCHR, T_BIGCHAR, T_TEXT, T_VARCHAR, T_CHAR, T_XML, T_GUID {
+            return sqlrows.kinds(&[sqlrows.Kind.Text])
+        }
+        T_BIGVARBIN, T_BIGBINARY, T_IMAGE, T_VARBINARY, T_BINARY { return sqlrows.kinds(&[sqlrows.Kind.Bytes]) }
+        T_DATEN { return sqlrows.kinds(&[sqlrows.Kind.Date]) }
+        T_TIMEN { return sqlrows.kinds(&[sqlrows.Kind.Time]) }
+        T_DATETIME2N, T_DATETIME, T_DATETIM4, T_DATETIMN { return sqlrows.kinds(&[sqlrows.Kind.DateTime]) }
+        T_DATETIMEOFFSETN { return sqlrows.kinds(&[sqlrows.Kind.OffsetDateTime]) }
+        else { return 0 }
+    }
+}
+
+// A value's bytes: PLP chunks joined, others as they are.
+fn plain(b: &str, col: &sqlrows.Column): str {
+    if (col.aux & 15) != F_PLP { return b }
+    var out = newStrBuf()
+    var p = 0
+    while p + 4 <= len(b) {
+        let k = leOf(b, p, 4)
+        p += 4
+        if k == 0 { break }
+        out.add(b[p..p + k])
+        p += k
+    }
+    return out.toStr()
+}
+
+fn failure(c: &Cell): Error {
+    match c {
+        Cell.Failed(why) { return sqldialect.dbError(sqldialect.E_TYPE, why) }
+        else { return sqldialect.dbError(sqldialect.E_TYPE, "an unexpected value") }
+    }
+}
+
+fn typeErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, msg) }
+
+fn sInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
+    let t = col.wire
+    let n = len(b)
+    match t {
+        T_INT1, T_INT2, T_INT4, T_INT8, T_INTN, T_BIT, T_BITN {
+            if n != 1 && n != 2 && n != 4 && n != 8 { return Err(typeErr("an integer of " + n.toStr() + " bytes")) }
+            var v = 0
+            for k in 0..n { v = v | (int(b[k]) << (8 * k)) }
+            if t == T_BIT || t == T_BITN { return Ok(if v != 0 { 1 } else { 0 }) }
+            if n > 1 && n < 8 && ((v >> (8 * n - 1)) & 1) == 1 { v = v - (1 << (8 * n)) }
+            return Ok(v)
+        }
+        T_DECIMAL, T_DECIMALN, T_NUMERIC, T_NUMERICN {
+            if col.scale != 0 { return Err(sqlrows.wrongKind(col, "int")) }
+            let c = decimalCell(b, 0)
+            match c {
+                Cell.Dec(d) {
+                    match d.toInt(Rounding.UNNECESSARY) {
+                        Ok(v) { return Ok(v) }
+                        Err(_) { return Err(typeErr(d.toStr() + " does not fit an int")) }
+                    }
+                }
+                else { return Err(failure(&c)) }
+            }
+        }
+        else { return Err(sqlrows.wrongKind(col, "int")) }
+    }
+}
+
+fn sDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
+    let t = col.wire
+    match t {
+        T_DECIMAL, T_DECIMALN, T_NUMERIC, T_NUMERICN, T_MONEY, T_MONEY4, T_MONEYN {
+            let c = if t == T_MONEY || t == T_MONEY4 || t == T_MONEYN { moneyCell(b) } else { decimalCell(b, col.scale) }
+            match c {
+                Cell.Dec(d) { return Ok(d) }
+                else { return Err(failure(&c)) }
+            }
+        }
+        T_INT1, T_INT2, T_INT4, T_INT8, T_INTN { return Ok(decimalOf(try sInt(b, col))) }
+        T_FLT4, T_FLT8, T_FLTN { return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal")) }
+        else { return Err(sqlrows.wrongKind(col, "Decimal")) }
+    }
+}
+
+fn sFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
+    let t = col.wire
+    if t != T_FLT4 && t != T_FLT8 && t != T_FLTN { return Err(sqlrows.wrongKind(col, "float")) }
+    if len(b) == 4 { return Ok(floatOfBits32(leOf(b, 0, 4))) }
+    if len(b) != 8 { return Err(typeErr("a float of " + len(b).toStr() + " bytes")) }
+    var v = 0
+    for k in 0..8 { v = v | (int(b[k]) << (8 * k)) }
+    return Ok(floatOfBits(v))
+}
+
+fn utf16Text(b: &str): Result[str, Error] {
+    match utf16Of(b) {
+        Ok(s) { return Ok(s) }
+        Err(e) { return Err(typeErr(e)) }
+    }
+}
+
+fn sText(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    let t = col.wire
+    match t {
+        T_NVARCHAR, T_NCHAR, T_NTEXT {
+            if (col.aux & 15) != F_PLP { return utf16Text(b) }
+            return utf16Text(&plain(b, col))
+        }
+        T_BIGVARCHR, T_BIGCHAR, T_TEXT, T_VARCHAR, T_CHAR {
+            let cp = col.aux >> 4
+            let v = plain(b, col)
+            if cp != 65001 {
+                if !codepage.supported(cp) {
+                    return Err(typeErr("varchar data in code page " + cp.toStr() +
+                                       ": only UTF-8 collations, code page 1252 and ISO-8859-1 are supported yet"))
+                }
+                match codepage.decode(cp, &v) {
+                    Ok(s) { return Ok(s) }
+                    Err(e) { return Err(typeErr(e)) }
+                }
+            }
+            if !strings.isValidUtf8(v) { return Err(typeErr("invalid UTF-8 in a UTF-8 collation")) }
+            return Ok(v)
+        }
+        T_GUID {
+            if len(b) != 16 { return Err(typeErr("a uniqueidentifier of " + len(b).toStr() + " bytes")) }
+            return Ok(guidOf(b))
+        }
+        T_XML {
+            let v = plain(b, col)
+            return utf16Text(if len(v) >= 2 && v[0] == 0xFF && v[1] == 0xFE { &v[2..] } else { &v })
+        }
+        else { return Err(sqlrows.wrongKind(col, "text")) }
+    }
+}
+
+fn sBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    let t = col.wire
+    if t != T_BIGVARBIN && t != T_BIGBINARY && t != T_IMAGE && t != T_VARBINARY && t != T_BINARY {
+        return Err(sqlrows.wrongKind(col, "bytes"))
+    }
+    return Ok(plain(b, col))
+}
+
+fn sBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
+    if col.wire != T_BIT && col.wire != T_BITN { return Err(sqlrows.wrongKind(col, "bool")) }
+    if len(b) != 1 { return Err(typeErr("a bit of " + len(b).toStr() + " bytes")) }
+    return Ok(b[0] != 0)
+}
+
+fn sDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
+    if col.wire != T_DATEN { return Err(sqlrows.wrongKind(col, "date")) }
+    if len(b) != 3 { return Err(typeErr("a date of " + len(b).toStr() + " bytes")) }
+    match dateOf3(b, 0) {
+        Some(d) { return Ok(d) }
+        None { return Err(typeErr("a date out of range")) }
+    }
+}
+
+fn sTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
+    if col.wire != T_TIMEN { return Err(sqlrows.wrongKind(col, "time")) }
+    let c = timeCell(T_TIMEN, b, col.scale)
+    match c {
+        Cell.Time(t) { return Ok(t) }
+        else { return Err(failure(&c)) }
+    }
+}
+
+fn sDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
+    let t = col.wire
+    if t != T_DATETIME2N && t != T_DATETIME && t != T_DATETIM4 && t != T_DATETIMN { return Err(sqlrows.wrongKind(col, "date-time")) }
+    let c = if t == T_DATETIME2N { timeCell(t, b, col.scale) } else { datetimeCell(b) }
+    match c {
+        Cell.DateTime(l) { return Ok(l) }
+        else { return Err(failure(&c)) }
+    }
+}
+
+fn sOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
+    if col.wire != T_DATETIMEOFFSETN { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
+    let c = timeCell(T_DATETIMEOFFSETN, b, col.scale)
+    match c {
+        Cell.Offset(o) { return Ok(o) }
+        else { return Err(failure(&c)) }
+    }
+}
+
+// How sqlrows.RowView decodes TDS values.
+pub fn codec(): sqlrows.Codec {
+    return sqlrows.Codec{int: sInt, decimal: sDecimal, float: sFloat, text: sText, bytes: sBytes, bool: sBool, date: sDate,
+                         time: sTime, dateTime: sDateTime, offsetDateTime: sOffset}
 }

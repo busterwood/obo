@@ -124,6 +124,7 @@ pub const E_CANCELLED = 1020      // the task was cancelled while it waited for 
 pub const E_TIMEOUT = 1021        // a deadline (task.within, connect_timeout) passed while it waited for the server
 pub const E_PROTOCOL = 1022       // the server's bytes make no sense: a malformed reply (tds)
 pub const E_IO = 1023             // the connection failed: a socket or TLS error, or the server closed it (tds)
+pub const E_COLUMN = 1024         // a streamed result has no column of a name a bind asked for, or more than one (sqlrows)
 
 pub fn dbError(code: int, msg: str): DbError { return DbError{code: code, state: "", msg: msg} }
 
