@@ -40,6 +40,8 @@
 //   Encrypt                            yes: TLS (tcps); no (the default, unless tcps is named)
 //   TrustServerCertificate             yes: the certificate is not verified (tls's insecureSkipVerify)
 //   Server Certificate Name            the name to verify instead of the host
+//   CA File                            a PEM file of the CAs to trust instead of the system's
+//                                      store (a self-signed server certificate; provisional key)
 //   Connect Timeout, Connection Timeout seconds for the whole connect (15; 0 none)
 //   Fetch Size                         rows a round trip fetches (100; 1 to 100000)
 //   Application Name, Program          the program name the server sees ("obx")
@@ -89,7 +91,7 @@ type Entry = value record { key: str; value: str; next: int }
 // string, an unknown keyword, a bad value, or no Data Source or no user.
 pub fn parseConnString(s: str): Result[Settings, Error] {
     var cfg = tns.Config{host: "", port: 1521, service: "", user: "", password: "", program: "obx", tls: false,
-                         trustServerCertificate: false, serverCertName: ""}
+                         trustServerCertificate: false, serverCertName: "", caFile: ""}
     var timeout = 15000
     var fetch = DEFAULT_FETCH
     var source = ""
@@ -119,6 +121,7 @@ pub fn parseConnString(s: str): Result[Settings, Error] {
                 cfg.trustServerCertificate = try yesNo(v, "TrustServerCertificate")
             }
             "server certificate name", "servercertificatename", "hostnameincertificate" { cfg.serverCertName = trim(v) }
+            "ca file" { cfg.caFile = trim(v) }
             "connect timeout", "connection timeout" {
                 let n = try number(v, "Connect Timeout")
                 if n > 2147483 { return Err(bad("Connect Timeout is too large")) }

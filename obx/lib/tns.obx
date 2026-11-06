@@ -54,6 +54,7 @@ pub const PT_REDIRECT = 5
 pub const PT_DATA = 6
 pub const PT_RESEND = 11
 pub const PT_MARKER = 12
+const PACKET_FLAG_TLS_RENEG = 0x08      // on a RESEND over tcps: a fresh TLS handshake first
 pub const PT_CONTROL = 14
 
 const HEADER = 8
@@ -1656,6 +1657,7 @@ pub type Config = value record {
     pub tls: bool                       // tcps
     pub trustServerCertificate: bool    // tls's insecureSkipVerify
     pub serverCertName: str             // "" : host
+    pub caFile: str                     // PEM of the CAs to trust instead of the system store ("" : the system's)
 }
 
 fn addrOf(host: str, port: int): str {
@@ -2130,6 +2132,23 @@ fn versionText(v: int, fv: int): str {
            ((v >> 8) & 0x0f).toStr() + "." + (v & 0x0f).toStr()
 }
 
+// A TLS handshake on sock, verified against the system's store or the
+// Config's CA file, for the Server Certificate Name or else the host.
+fn tlsOver(sock: net.Conn, cfg: &Config, w: Where): Result[Stream, Error] {
+    var o = tls.defaults()
+    o.insecureSkipVerify = cfg.trustServerCertificate
+    o.caFile = cfg.caFile
+    let ctx = match tls.client(o) {
+        Ok(x) { x }
+        Err(e) { return Err(tlsFail(e)) }
+    }
+    let name = if cfg.serverCertName != "" { cfg.serverCertName } else { cfg.host }
+    return match ctx.connect(sock, name, w) {
+        Ok(t) { Ok(Stream.Tls(t)) }
+        Err(e) { Err(tlsFail(e)) }
+    }
+}
+
 // Connects (TCP, TLS for tcps), negotiates the protocol and logs in.
 // Every step parks only the task. A wrong password is the server's
 // ORA-01017.
@@ -2139,24 +2158,7 @@ pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
         Err(e) { return Err(ioFail(e)) }
     }
     let nd = sock.setNoDelay(true)
-    var st = Stream.Plain(sock)
-    if cfg.tls {
-        var o = tls.defaults()
-        o.insecureSkipVerify = cfg.trustServerCertificate
-        let ctx = match tls.client(o) {
-            Ok(x) { x }
-            Err(e) { return Err(tlsFail(e)) }
-        }
-        let plain = match replace(mut &st, Stream.Gone) {
-            Stream.Plain(c) { c }
-            else { return Err(ioErr("no socket")) }
-        }
-        let name = if cfg.serverCertName != "" { cfg.serverCertName } else { cfg.host }
-        match ctx.connect(plain, name, w) {
-            Ok(t) { st = Stream.Tls(t) }
-            Err(e) { return Err(tlsFail(e)) }
-        }
-    }
+    let st = if cfg.tls { try tlsOver(sock, cfg, w) } else { Stream.Plain(sock) }
     var s = Session{t: transport(st), fieldVersion: FV_MAX, seq: 0, broken: false, maxString: 4000, charset: 0,
                     ncharset: 0, banner: "", version: "", sessionId: 0, serial: 0, inTransaction: false, warnings: [],
                     maxReply: 1 << 30, toClose: [], eor: false, fastAuth: false}
@@ -2191,6 +2193,17 @@ fn (s: mut &Session) connect(cfg: &Config, w: Where): Result[Unit, Error] {
         }
         if p.ptype != PT_RESEND || tries > 3 { return Err(proto("a packet of type " + p.ptype.toStr() + " for CONNECT")) }
         tries += 1
+        // Over tcps the listener hands the connection to the database with a
+        // RESEND flagged for TLS renegotiation: the TLS session ends there
+        // (no close_notify) and a fresh handshake runs on the same socket
+        // before CONNECT goes again (python-oracledb's renegotiate_tls).
+        if (p.flags & PACKET_FLAG_TLS_RENEG) != 0 && s.t.s.isTls() {
+            let tls.Detached{sock: sock, rest: rest} = s.t.s.takeTls().detach()
+            if len(rest) > 0 || s.t.inbox.pos < s.t.inbox.end {
+                return Err(proto("data after a RESEND for TLS renegotiation"))
+            }
+            s.t.s = try tlsOver(sock, cfg, w)
+        }
     }
     return Err(proto("unreachable"))
 }

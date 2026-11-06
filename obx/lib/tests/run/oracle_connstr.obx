@@ -2,7 +2,7 @@
 // Connect and connect descriptors, defaults, errors that name an entry by
 // position and never echo a value, and masked().
 // expect: easy: app db.example.com 1521 FREEPDB1 tls false program obx timeout 15000 fetch 100
-// expect: port and tcps: h 2484 svc tls true trust true name cert.example.com
+// expect: port and tcps: h 2484 svc tls true trust true name cert.example.com ca /etc/ca.pem
 // expect: ipv6: ::1 1522 orcl
 // expect: descriptor: dbhost 1600 sales.example.com tls true
 // expect: options: timeout 0 fetch 500 program reports
@@ -35,9 +35,9 @@ fn main() {
     println("easy: " + c.user + " " + c.host + " " + c.port.toStr() + " " + c.service + " tls " + c.tls.toStr() +
             " program " + c.program + " timeout " + a.connectTimeoutMs.toStr() + " fetch " + a.fetchSize.toStr())
     let b = oracle.parseConnString("uid=u; pwd=p; server=tcps://h:2484/svc; TrustServerCertificate=yes; " +
-                                   "Server Certificate Name=cert.example.com").unwrap().config
+                                   "Server Certificate Name=cert.example.com; CA File= /etc/ca.pem ").unwrap().config
     println("port and tcps: " + b.host + " " + b.port.toStr() + " " + b.service + " tls " + b.tls.toStr() + " trust " +
-            b.trustServerCertificate.toStr() + " name " + b.serverCertName)
+            b.trustServerCertificate.toStr() + " name " + b.serverCertName + " ca " + b.caFile)
     let v6 = oracle.parseConnString("User=u;Data Source=[::1]:1522/orcl").unwrap().config
     println("ipv6: " + v6.host + " " + v6.port.toStr() + " " + v6.service)
     let d = oracle.parseConnString("User Id=u;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=dbhost)(PORT=1600))" +
