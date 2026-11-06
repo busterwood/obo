@@ -118,15 +118,15 @@ unconstrained numeric (`sum(int8)`) follows the same rule.
 
 | | SQL Server (`sqlserver` over `tds`) | PostgreSQL (`postgres` over `pgwire`) | Oracle (`oracle` over `tns`) |
 |---|---|---|---|
-| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | portal batches (Execute with a row limit: 256 rows, then 1,024): the DataRows of a batch kept as they came off the wire and scanned in place (`pgwire.scanRow`) into the stream's spans; text format. The first batch is left on the wire until the first `fill`, so a statement that fails before its first row reports it from the first `fill`, not from `stream()` | FETCH round trips; ROW_DATA scanned in place (`tns.scanRaw`) and kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too); a row cut off at a packet's end is scanned again with the next packet joined on |
-| per fill | as many packets as the buffer needs | as many rows as the buffer holds; when a batch is used up, Execute 1,024 and read it (no fetching ahead yet: P3), parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB: at the widest row for the first FETCH (`Conn.rowsFor`), then at the size the last rows took, at most 4 MB at the widest row (`tns.rowsSeen`); `Fetch Size` when set; rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
+| mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | one Execute with no row limit (the fire hose, design/pgwire.md section 12): the DataRows are read off the socket in batches of at most 256 KB (`receiveBatch`), kept as they came off the wire and scanned in place (`pgwire.scanRow`) into the stream's spans; text format. The first batch is left on the wire until the first `fill`, so a statement that fails before its first row reports it from the first `fill`, not from `stream()` | FETCH round trips; ROW_DATA scanned in place (`tns.scanRaw`) and kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too); a row cut off at a packet's end is scanned again with the next packet joined on |
+| per fill | as many packets as the buffer needs | as many rows as the buffer holds: read off the socket as the buffer needs them, a batch at a time, parking on the socket; no further Execute (the server sends the rest of the result without being asked) | one FETCH of the rows still wanted, at least the rows of about 256 KB: at the widest row for the first FETCH (`Conn.rowsFor`), then at the size the last rows took, at most 4 MB at the widest row (`tns.rowsSeen`); `Fetch Size` when set; rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
 | state while open | in the `Session` (`RowReader`) | in the stream (the current batch) and the `Session` (the open portal, `pending`: an Execute whose reply is not read) | in the stream (the last fetch) and the `Session` (`streamCursor`; `pending`: a FETCH sent ahead whose reply is not read) |
-| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | Close portal and Sync (the portal is closed on the server; no cancel unless a running Execute is slow to answer, 1 s, then a CancelRequest, 5 s in all) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
-| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call closes the portal first (the session is in the portal state); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
+| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | the rest of the reply is read and discarded to ReadyForQuery (a drain, no cancel: design/pgwire.md section 12.4) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
+| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call drains the rest of the reply first (the session is in the portal state); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
 | more result sets | the first is streamed; at its end the rest of the reply is read and skipped; their errors come from `fill` | one statement only (as `query`) | one statement |
 | error after some rows | rows then `Err` (8134 at row 5,000: 4,999 rows, then the error) | rows then `Err` (22012: 4,999 rows) | the FETCH that fails brings no rows: with 3,449-row fetches (76-byte rows) 3,449 rows, then ORA-01476, also when that FETCH was sent ahead |
 | using the connection while open | refused by the checker (the stream holds `mut &Conn`) | the same (`mut &Conn`; `&Conn` methods are refused too) | the same |
-| chunked rows | - | not relevant: Execute's row limit does the same on the wire (libpq 17's `PQsetChunkedRowsMode` was never used) | - |
+| chunked rows | - | not relevant: the PostgreSQL stream has no row limit at all, one Execute for the whole result (libpq 17's `PQsetChunkedRowsMode` was never used) | - |
 
 Rows before an error: when an error comes after rows in the same `fill`,
 the rows are returned first and the error comes from the next `fill`
@@ -377,7 +377,10 @@ At 2.5 ms the native stream is round-trip bound: 164 batches, one of them
 ahead, cost about 164 round trips. libpq's stream is not as slow there
 (625 ms), so the batch size or the number of batches in flight should depend
 on the round trip at high latency. That is a design decision (open question
-8 in design/pgwire.md section 21), not built here.
+8 in design/pgwire.md section 21), not built here. (Row limits went after
+this run: the PostgreSQL stream is now one Execute with no row limit,
+design/pgwire.md section 12; its 2.5 ms run is in section 28: native 431 ms,
+libpq 607 ms.)
 
 ## 8. API as built
 
