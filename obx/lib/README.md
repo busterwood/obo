@@ -30,6 +30,7 @@ for leaks.
 | `fs.obx` | 260 | stat/lstat, list, mkdirAll, remove/removeAll, rename, symlink, chmod, paths |
 | `os.obx` | 60 | arguments, environment, pid, working directory, quit |
 | `time.obx` | 160 | wall and monotonic clocks, sleep, UTC dates, ISO 8601 text |
+| `tz.obx` | 421 | time zones from TZif files (version 2+, 64-bit transitions) and their POSIX footer rules, as glibc applies them: utc, local (TZ or /etc/localtime), fromSpec, load, at, localTime; tested against zoneinfo by `tests/gen_tz.py` |
 | `sqldialect.obx` | 260 | Value, DbError and its codes, SQL fragments with placeholders per dialect, exact decimal text and (p, s) checks |
 | `ffi.obx` | 140 | C memory for modules that call C: owned `Mem` (alloc, cstr, copyBytes), unchecked peek/poke/bytes |
 | `sqlite.obx` | 440 | SQLite 3 through libsqlite3: Db, Stmt |
