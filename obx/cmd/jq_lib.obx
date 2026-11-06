@@ -33,7 +33,7 @@ pub fn isStr(j: &J): bool { return j.kind() == json.Kind.String }
 pub fn numVal(j: &J): float {
     match j.asFloat() {
         Some(f) { return f }
-        None { return 0.0 }
+        None { return 0.0f }
     }
 }
 
@@ -119,8 +119,8 @@ pub fn cpOffset(s: &str, i: int): int {
 
 fn clampInt(f: float): int {
     if f != f { return 0 }
-    if f < -2147483648.0 { return -2147483648 }
-    if f > 2147483647.0 { return 2147483647 }
+    if f < -2147483648.0f { return -2147483648 }
+    if f > 2147483647.0f { return 2147483647 }
     return int(f.trunc())
 }
 
@@ -227,14 +227,14 @@ pub fn sliceSpan(n: int, from: &J, to: &J): Result[Span, str] {
     var ds = numVal(&fj)
     var de = numVal(&tj)
     let fl = float(n)
-    if ds != ds { ds = 0.0 }
-    if ds < 0.0 { ds += fl }
-    if ds < 0.0 { ds = 0.0 }
+    if ds != ds { ds = 0.0f }
+    if ds < 0.0f { ds += fl }
+    if ds < 0.0f { ds = 0.0f }
     if ds > fl { ds = fl }
     let start = clampInt(ds)
     if de != de { de = fl }
-    if de < 0.0 { de += fl }
-    if de < 0.0 { de = float(start) }
+    if de < 0.0f { de += fl }
+    if de < 0.0f { de = float(start) }
     var end = clampInt(de)
     if end > n { end = n }
     if end < n && float(end) < de { end += 1 }
@@ -516,7 +516,7 @@ pub fn mul(a: &J, b: &J): Result[J, str] {
     if (isStr(a) && isNum(b)) || (isNum(a) && isStr(b)) {
         let s = if isStr(a) { strVal(a) } else { strVal(b) }
         let d = if isNum(a) { numVal(a) } else { numVal(b) }
-        if d < 0.0 || d != d { return Ok(json.null()) }
+        if d < 0.0f || d != d { return Ok(json.null()) }
         let n = clampInt(d)
         var buf = newStrBuf()
         for i in 0..n { buf.add(s) }
@@ -543,7 +543,7 @@ fn deepMerge(a: &J, b: &J): J {
 
 pub fn div(a: &J, b: &J): Result[J, str] {
     if isNum(a) && isNum(b) {
-        if numVal(b) == 0.0 { return Err(typeErr2(a, b, "cannot be divided because the divisor is zero")) }
+        if numVal(b) == 0.0f { return Err(typeErr2(a, b, "cannot be divided because the divisor is zero")) }
         return Ok(num(numVal(a) / numVal(b)))
     }
     if isStr(a) && isStr(b) { return Ok(splitStr(strVal(a), strVal(b))) }
@@ -551,8 +551,8 @@ pub fn div(a: &J, b: &J): Result[J, str] {
 }
 
 fn dtoi(f: float): int {
-    if f < -9223372036854775808.0 { return -9223372036854775807 - 1 }
-    if f >= 9223372036854775808.0 { return 9223372036854775807 }
+    if f < -9223372036854775808.0f { return -9223372036854775807 - 1 }
+    if f >= 9223372036854775808.0f { return 9223372036854775807 }
     return int(f.trunc())
 }
 
@@ -561,7 +561,7 @@ pub fn modulo(a: &J, b: &J): Result[J, str] {
         let na = numVal(a)
         let nb = numVal(b)
         if na != na || nb != nb {
-            let z: float = 0.0
+            let z: float = 0.0f
             return Ok(num(z / z))
         }
         let bi = dtoi(nb)
@@ -1243,10 +1243,10 @@ pub fn math1(name: str, x: float): float {
     if name == "gamma" || name == "lgamma" { return lgamma(x) }
     if name == "tgamma" { return tgamma(x) }
     if name == "significand" {
-        if x == 0.0 || x != x || !x.isFinite() { return x }
+        if x == 0.0f || x != x || !x.isFinite() { return x }
         var e: i32 = 0
         let m = frexp(x, mut &e)
-        return m * 2.0
+        return m * 2.0f
     }
     if name == "j0" { return j0(x) }
     if name == "j1" { return j1(x) }
@@ -1264,8 +1264,8 @@ pub fn isMath2(name: str): bool {
 
 fn toI32(f: float): i32 {
     if f != f { return i32(0) }
-    if f > 2147483647.0 { return i32(2147483647) }
-    if f < -2147483648.0 { return i32(-2147483648) }
+    if f > 2147483647.0f { return i32(2147483647) }
+    if f < -2147483648.0f { return i32(-2147483648) }
     return i32(int(f.trunc()))
 }
 
@@ -1296,7 +1296,7 @@ pub fn frexpOf(x: float): J {
 }
 
 pub fn modfOf(x: float): J {
-    var ip: float = 0.0
+    var ip: float = 0.0f
     let f = modf(x, mut &ip)
     return json.arrayOf([num(f), num(ip)])
 }
@@ -1354,7 +1354,7 @@ pub fn tmToJson(t: &Tm): J {
 pub fn gmtime(x: &J): Result[J, str] {
     if !isNum(x) { return Err("gmtime() requires numeric inputs") }
     let f = numVal(x)
-    if f != f || f > 1e17 || f < -1e17 { return Err("error converting number of seconds since epoch to datetime") }
+    if f != f || f > 1e17f || f < -1e17f { return Err("error converting number of seconds since epoch to datetime") }
     let secs = int(f.trunc())
     var t = gmtimeOf(secs)
     t.fsec = float(t.sec) + (f - f.floor())
@@ -1428,7 +1428,7 @@ fn isoWeek(t: &Tm): Tm {
             week = 1
         }
     }
-    return Tm{year: year, mon: week, mday: 0, hour: 0, min: 0, sec: 0, wday: 0, yday: 0, fsec: 0.0}
+    return Tm{year: year, mon: week, mday: 0, hour: 0, min: 0, sec: 0, wday: 0, yday: 0, fsec: 0.0f}
 }
 
 pub fn strftime(t: &Tm, fmt: str, zone: str): str {
@@ -1567,8 +1567,8 @@ fn setWday(t: mut &Tm) {
     if t.mon < 2 { year -= 1 }
     var mon = t.mon - 1
     if mon < 1 { mon += 12 }
-    let fm = (2.6 * float(mon) - 0.2).floor()
-    var wday = (t.mday + int(fm) + year + int((float(year) / 4.0).floor()) + int((float(century) / 4.0).floor()) - 2 * century) % 7
+    let fm = (2.6f * float(mon) - 0.2f).floor()
+    var wday = (t.mday + int(fm) + year + int((float(year) / 4.0f).floor()) + int((float(century) / 4.0f).floor()) - 2 * century) % 7
     if wday < 0 { wday += 7 }
     t.wday = wday
 }
@@ -1585,7 +1585,7 @@ fn setYday(t: mut &Tm) {
 
 // strptime for the common conversions (glibc's set).
 pub fn strptime(s: str, fmt: str): Result[J, str] {
-    var t = Tm{year: 0, mon: 0, mday: 0, hour: 0, min: 0, sec: 0, wday: 8, yday: 367, fsec: 0.0}
+    var t = Tm{year: 0, mon: 0, mday: 0, hour: 0, min: 0, sec: 0, wday: 8, yday: 367, fsec: 0.0f}
     var i = 0
     var f = 0
     var ok = true

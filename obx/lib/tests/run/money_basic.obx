@@ -41,38 +41,38 @@ fn line(xs: &[]money.Money[USD]): str {
 }
 
 fn main() {
-    let a: money.Money[USD] = money.of(12.5)
-    let b: money.Money[USD] = money.of(20.00)
+    let a: money.Money[USD] = money.of(12.5m)
+    let b: money.Money[USD] = money.of(20.00m)
     println(a)
     let c = a + b
     println(c)
-    println(c.times(0.0825))
+    println(c.times(0.0825m))
     let y: money.Money[money.JPY] = money.of(decimalOf(1500))
     println(y)
-    println(y.times(1.1))
+    println(y.times(1.1m))
     println(a < b)
     println(-a)
 
     // HALF_EVEN: 0.125 -> 0.12, but 0.1250000250 -> 0.13; HALF_AWAY: 0.125 -> 0.13
-    let e: money.Money[EUR] = money.of(0.25)
-    println(e.times(0.5).toStr() + " " + e.times(0.5000001).toStr() + " " + e.timesWith(0.5, Rounding.HALF_AWAY).toStr())
+    let e: money.Money[EUR] = money.of(0.25m)
+    println(e.times(0.5m).toStr() + " " + e.times(0.5000001m).toStr() + " " + e.timesWith(0.5m, Rounding.HALF_AWAY).toStr())
 
-    let h: money.Money[USD] = money.of(100.00)
+    let h: money.Money[USD] = money.of(100.00m)
     println(line(&h.allocate(3)))
     println(line(&(-h).allocate(3)))
-    let cent: money.Money[USD] = money.of(0.01)
+    let cent: money.Money[USD] = money.of(0.01m)
     println(line(&cent.allocate(3)))
     let yen: money.Money[money.JPY] = money.of(decimalOf(100))
     var ys = ""
     for p in yen.allocate(3) { ys += p.toStr() + " " }
     println(trim(ys))
-    let g: money.Money[money.GBP] = money.of(100.0)
+    let g: money.Money[money.GBP] = money.of(100.0m)
     var gs = ""
     for p in g.allocateBy(&[5, 3, 2]) { gs += p.toStr() + " " }
     println(trim(gs))
     let parts = h.allocateBy(&[1, 1, 0, 1])
     println(line(&parts))
-    let two: money.Money[money.CHF] = money.of(0.02)
+    let two: money.Money[money.CHF] = money.of(0.02m)
     var cs = ""
     for p in two.allocateBy(&[1, 1, 1]) { cs += p.toStr() + " " }
     // equal remainders: the leftover cents go to the earlier parts
@@ -93,11 +93,11 @@ fn main() {
     }
     let minus: money.Money[USD] = money.fromMinor(-300)
     println(a.toMinor().unwrap().toStr() + " " + minus.amount().toInt(Rounding.UNNECESSARY).unwrap().toStr())
-    println(money.round[USD](6.995, Rounding.HALF_EVEN))
-    println(a.code() + " " + money.of[EUR](12.5).toStr())
+    println(money.round[USD](6.995m, Rounding.HALF_EVEN))
+    println(a.code() + " " + money.of[EUR](12.5m).toStr())
     println(a.timesInt(3))
-    let base: money.Money[USD] = money.of(2.25)
-    println(base.times(0.5).toStr() + " " + base.timesWith(0.5, Rounding.FLOOR).toStr())
+    let base: money.Money[USD] = money.of(2.25m)
+    println(base.times(0.5m).toStr() + " " + base.timesWith(0.5m, Rounding.FLOOR).toStr())
     let z: money.Money[USD] = money.zero()
     println(z.toStr() + " " + z.isZero().toStr())
 }

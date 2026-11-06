@@ -1,2 +1,2 @@
 // expect: 5
-fn main() { println((5e0).toStr()) }
+fn main() { println((5e0m).toStr()) }

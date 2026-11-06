@@ -76,7 +76,7 @@ fn count(c: &postgres.Conn): Result[int, Error] {
 fn run(c: &postgres.Conn): Result[Unit, Error] {
     let ty = try c.query("SELECT pg_typeof($1)::text, pg_typeof($2)::text, pg_typeof($3)::text, pg_typeof($4)::text, " +
         "pg_typeof($5)::text, pg_typeof($6)::text, $7::int8 IS NULL",
-        &[V.Int(1), V.Float(1.5), V.Bool(true), V.Text("x"), V.Bytes("x"), V.Dec(1.5), V.Null])
+        &[V.Int(1), V.Float(1.5f), V.Bool(true), V.Text("x"), V.Bytes("x"), V.Dec(1.5m), V.Null])
     var oids = "oids:"
     for k in 0..6 { oids = oids + " " + try ty.text(0, k) }
     println(oids + " | untyped NULL is NULL: " + (try ty.bool(0, 6)).toStr())
@@ -85,8 +85,8 @@ fn run(c: &postgres.Conn): Result[Unit, Error] {
         "ratio float8, data bytea, flag bool, note text)")
     let ins = try c.query("INSERT INTO items VALUES ($1, $2, $3, $4, $5, $6, $7, $8), ($9, $10, $11, $12, $13, $14, $15, $16), " +
         "(3, 'thing', NULL, NULL, NULL, NULL, NULL, NULL)",
-        &[V.Int(1), V.Text("widget"), V.Dec(12.5), V.Int(3), V.Float(0.1), V.Bytes("\x00\xff\n"), V.Bool(true), V.Text("it's"),
-          V.Int(2), V.Text("gadget"), V.Dec(Decimal.zero()), V.Int(0), V.Float(-0.0), V.Bytes(""), V.Bool(false), V.Text("")])
+        &[V.Int(1), V.Text("widget"), V.Dec(12.5m), V.Int(3), V.Float(0.1f), V.Bytes("\x00\xff\n"), V.Bool(true), V.Text("it's"),
+          V.Int(2), V.Text("gadget"), V.Dec(Decimal.zero()), V.Int(0), V.Float(-0.0f), V.Bytes(""), V.Bool(false), V.Text("")])
     let upd = try c.query("UPDATE items SET qty = qty WHERE id <= $1", &[V.Int(2)])
     println("inserted " + ins.affected().toStr() + ", updated " + upd.affected().toStr())
 
@@ -124,18 +124,18 @@ fn run(c: &postgres.Conn): Result[Unit, Error] {
     let tiny = try dec(c, "SELECT 1e-16383::numeric")
     println("exact: " + (try one(c, "SELECT $1", &[V.Dec(big)])).toStr() + " | " + (try one(c, "SELECT $1", &[V.Dec(small)])).toStr() +
         " | " + tiny.canonical() + " has scale " + tiny.scale().toStr())
-    let sum = try c.query("SELECT $1 + $2, sum(price) FROM items", &[V.Dec(0.1), V.Dec(0.2)])
+    let sum = try c.query("SELECT $1 + $2, sum(price) FROM items", &[V.Dec(0.1m), V.Dec(0.2m)])
     println("arithmetic: 0.1 + 0.2 = " + (try sum.decimal(0, 0)).toStr() + " | sum " + (try sum.decimal(0, 1)).toStr())
     println("decimal errors: NaN " + code(dec(c, "SELECT 'NaN'::numeric")) + " | Infinity " +
         code(dec(c, "SELECT 'Infinity'::numeric")) + " | 39 digits " + code(dec(c, "SELECT 999999999999999999999999999999999999999::numeric")) +
         " | text column " + code(dec(c, "SELECT '1.5'::text")))
-    let checked = try postgres.decimalParam(12.3, 10, 2)
-    println("checked param: " + (try one(c, "SELECT $1", &[checked])).toStr() + " | scale " + code(postgres.decimalParam(1.234, 10, 2)) +
+    let checked = try postgres.decimalParam(12.3m, 10, 2)
+    println("checked param: " + (try one(c, "SELECT $1", &[checked])).toStr() + " | scale " + code(postgres.decimalParam(1.234m, 10, 2)) +
         " | range " + code(postgres.decimalParam(decimalOf(123456789), 10, 2)))
 
     var fl = "floats:"
-    let zero: float = 0.0
-    let floats: []float = [0.1, 1e300, 5e-324, -0.0, 1.0 / zero, -1.0 / zero, zero / zero]
+    let zero: float = 0.0f
+    let floats: []float = [0.1f, 1e300f, 5e-324f, -0.0f, 1.0f / zero, -1.0f / zero, zero / zero]
     for f in floats {
         let back = try c.query("SELECT $1", &[V.Float(f)])
         fl = fl + " " + (try back.float(0, 0)).toStr()

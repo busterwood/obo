@@ -5746,24 +5746,24 @@ fn (g: mut &Gen) inlineDiv(dv: ArOp, e: int) {
 
 // The bits of a double (obx has no bit cast: the fields are found arithmetically, exactly).
 pub fn floatBits(f0: float): int {
-    if f0 == 0.0 { return 0 }
+    if f0 == 0.0f { return 0 }
     var f = f0
     var sign = 0
-    if f < 0.0 {
+    if f < 0.0f {
         sign = 1
         f = -f
     }
     var e = 0
-    while f >= 2.0 {
-        f = f / 2.0
+    while f >= 2.0f {
+        f = f / 2.0f
         e += 1
     }
-    while f < 1.0 && e > -1022 {
-        f = f * 2.0
+    while f < 1.0f && e > -1022 {
+        f = f * 2.0f
         e -= 1
     }
-    if f < 1.0 { return (sign << 63) | int(f * 4503599627370496.0) }
-    return (sign << 63) | ((e + 1023) << 52) | int((f - 1.0) * 4503599627370496.0)
+    if f < 1.0f { return (sign << 63) | int(f * 4503599627370496.0f) }
+    return (sign << 63) | ((e + 1023) << 52) | int((f - 1.0f) * 4503599627370496.0f)
 }
 
 // A constant: a 128-bit value (lo, hi), plus the address of sym when sym >= 0.

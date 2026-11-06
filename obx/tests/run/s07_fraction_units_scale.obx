@@ -10,11 +10,11 @@ fn (Fx) fromFraction(units: i128, scale: int): Fx { return Fx{units: units, scal
 fn (f: Fx) neg(): Fx { return Fx{units: -f.units, scale: f.scale} }
 fn show(f: Fx) { println(i128ToStr(f.units) + " " + intToStr(f.scale)) }
 fn main() {
-    show(1.50)
-    show(1.5e3)
-    show(2e-7)
-    show(12.5E+2)
-    show(7.0e1)
-    show(1.70141183460469231731687303715884105727)
-    show(-2.5)
+    show(1.50m)
+    show(1.5e3m)
+    show(2e-7m)
+    show(12.5E+2m)
+    show(7.0e1m)
+    show(1.70141183460469231731687303715884105727m)
+    show(-2.5m)
 }

@@ -329,7 +329,7 @@ fn main() {
     println("collation bytes: " + hexs(tds.collationBytes(&coll)) + " | back " + tds.parseCollation(tds.collationBytes(&coll)).unwrap().describe())
     println("int: " + paramHex(&tds.intParam(-2)))
     println("bit: " + paramHex(&tds.bitParam(true)))
-    println("float: " + paramHex(&tds.floatParam(0.1).unwrap()) + " | nan: " + errText(tds.floatParam(math.nan())) + " | subnormal: " + errText(tds.floatParam(-4.9e-324)) + " | smallest normal " + tds.floatParam(2.2250738585072014e-308).isOk().toStr())
+    println("float: " + paramHex(&tds.floatParam(0.1f).unwrap()) + " | nan: " + errText(tds.floatParam(math.nan())) + " | subnormal: " + errText(tds.floatParam(-4.9e-324f)) + " | smallest normal " + tds.floatParam(2.2250738585072014e-308f).isOk().toStr())
     println("text: " + paramHex(&tds.textParam("é", &coll).unwrap()))
     let longText = tds.textParam(strings.padLeft("", 4001, 'x'), &coll).unwrap()
     println("text 4001: " + longText.declared + " " + hexs(longText.typeInfo) + " | " + hexs(longText.data[0..12]) + " ... " +
@@ -338,9 +338,9 @@ fn main() {
             errText(tds.textParam("a\xff", &coll)))
     println("bytes: " + paramHex(&tds.bytesParam("\x00\xff")) + " | 8001: " + tds.bytesParam(strings.padLeft("", 8001, 'x')).declared +
             " | empty: " + paramHex(&tds.bytesParam("")))
-    println("decimal: " + paramHex(&tds.decimalParam(12.50).unwrap()))
-    println("decimal small: " + paramHex(&tds.decimalParam(-0.001).unwrap()))
-    println("decimal zero: " + paramHex(&tds.decimalParam(0.00).unwrap()) + " | 1e3: " + tds.decimalParam(1.5e3).unwrap().declared)
+    println("decimal: " + paramHex(&tds.decimalParam(12.50m).unwrap()))
+    println("decimal small: " + paramHex(&tds.decimalParam(-0.001m).unwrap()))
+    println("decimal zero: " + paramHex(&tds.decimalParam(0.00m).unwrap()) + " | 1e3: " + tds.decimalParam(1.5e3m).unwrap().declared)
     let d38 = sqldialect.parseDecimal("-9999999999999999999999999999.9999999999").unwrap()
     println("decimal 38: " + paramHex(&tds.decimalParam(d38).unwrap()))
     println("decimal 39 digits: " + errText(tds.decimalParam(sqldialect.parseDecimal("1e38").unwrap())) + " | 1e-39: " +
@@ -375,7 +375,7 @@ fn main() {
 
     // ---- floats to bits, uniqueidentifiers
     var fb: []str = []
-    let fs: []float = [0.0, -0.0, 1.0, -2.5, 0.1, 1.7976931348623157e308, 2.2250738585072014e-308, 4.9e-324, -1.5e-320, 123456789.125]
+    let fs: []float = [0.0f, -0.0f, 1.0f, -2.5f, 0.1f, 1.7976931348623157e308f, 2.2250738585072014e-308f, 4.9e-324f, -1.5e-320f, 123456789.125f]
     for x in fs {
         let b = tds.bitsOfFloat(x)
         append(mut &fb, strings.padLeft(strings.hex((b >> 32) & 0xffffffff), 8, '0') + strings.padLeft(strings.hex(b & 0xffffffff), 8, '0') + (if tds.floatOfBits(b).toStr() == x.toStr() { "" } else { " differs" }))

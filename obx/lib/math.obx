@@ -4,28 +4,28 @@
 //
 // Floats print with x.toStr(), the shortest text that reads back as x.
 
-pub const PI: float = 3.141592653589793
-pub const TAU: float = 6.283185307179586
-pub const E: float = 2.718281828459045
-pub const SQRT2: float = 1.4142135623730951
-pub const LN2: float = 0.6931471805599453
-pub const LN10: float = 2.302585092994046
+pub const PI: float = 3.141592653589793f
+pub const TAU: float = 6.283185307179586f
+pub const E: float = 2.718281828459045f
+pub const SQRT2: float = 1.4142135623730951f
+pub const LN2: float = 0.6931471805599453f
+pub const LN10: float = 2.302585092994046f
 
 pub fn inf(): float {
-    let one: float = 1.0
-    let zero: float = 0.0
+    let one: float = 1.0f
+    let zero: float = 0.0f
     return one / zero
 }
 
 pub fn nan(): float {
-    let zero: float = 0.0
+    let zero: float = 0.0f
     return zero / zero
 }
 
 // The float s denotes: decimal ("2.5", "-1e-7", ".5"), hexadecimal ("0x1p3"),
 // "inf" or "nan" in any case; no spaces. None for anything else.
 pub fn parse(s: str): Option[float] {
-    var f: float = 0.0
+    var f: float = 0.0f
     if len(s) > 0 && !isSpace(strByte(s, 0)) && parseFloat(s, mut &f) { return Some(f) }
     return None
 }
@@ -69,7 +69,7 @@ pub fn fixed(x: float, places: int): str {
     while len(r) <= p { r = "0" + r }
     var out = strSlice(r, 0, len(r) - p)
     if p > 0 { out += "." + strSlice(r, len(r) - p, len(r)) }
-    if x < 0.0 && !allZero(r) { out = "-" + out }
+    if x < 0.0f && !allZero(r) { out = "-" + out }
     return out
 }
 

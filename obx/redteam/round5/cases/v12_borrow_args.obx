@@ -10,5 +10,5 @@ fn show(n: &int, s: &str, f: &float) {
 }
 fn main() {
     let s = "he" + "y"
-    show(&7, &s, &1.5)
+    show(&7, &s, &1.5f)
 }

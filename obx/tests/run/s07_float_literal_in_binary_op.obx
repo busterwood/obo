@@ -1,6 +1,6 @@
 // expect: 5
 fn main() {
-    let a: float = 2.0
-    let b = a + 3.0
+    let a: float = 2.0f
+    let b = a + 3.0f
     println(int(b))
 }

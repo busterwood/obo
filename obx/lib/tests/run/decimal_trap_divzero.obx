@@ -1,5 +1,5 @@
 // The remainder by zero stops the program (decimal division by zero).
 // exit: 10
 fn main() {
-    println(1.0 % 0.0)
+    println(1.0m % 0.0m)
 }

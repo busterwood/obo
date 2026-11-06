@@ -48,7 +48,7 @@ EXTRA = ['&', 'mut &', 'move(', ')', '(', '[', ']', '{', '}', 'try ', '-', '0', 
          '﻿', '"é"', "'é'", '"\\é"',
          # sema: declarations, constraints, constants
          'copy', 'copy, ', 'Self', 'interface ', 'drop', 'alias', 'u8', 'i128', 'u128', 'float', 'bool',
-         '+%', '*%', '>>', '/', '1 << 127', '-9223372036854775808', '0.5', '"s" + ', 'true', '!',
+         '+%', '*%', '>>', '/', '1 << 127', '-9223372036854775808', '0.5m', '"s" + ', 'true', '!',
          'Option[', 'Result[', 'Map[', '[int]', 'std.', 'fs.', '&[', 'fn(int): ', 'T: ', '[T]', ' T',
          'var ', 'once ', 'pub ', 'import "./x" as y', 'import "fs"']
 
@@ -73,7 +73,7 @@ def mutate(src, r):
 WORDS = ['int', 'i32', 'u32', 'u64', 'byte', 'i128', 'u128', 'float', 'bool', 'str', 'ptr', 'never', 'T',
          'U', 'Self', 'Option', 'Result', 'Map', 'StrBuf', 'copy', 'main', 'drop', 'len', 'Some', 'None',
          'fs', 'std', 'x', '0', '1', '2', '127', '128', '255', '256',
-         '9223372036854775807', '0.5', '1e308', '63', '64']
+         '9223372036854775807', '0.5f', '1e308f', '63', '64']
 
 
 KEYWORDS = {'as', 'break', 'closed', 'const', 'continue', 'else', 'extern', 'false', 'fn', 'for', 'if',

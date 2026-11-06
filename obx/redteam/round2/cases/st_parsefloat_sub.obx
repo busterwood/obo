@@ -1,6 +1,6 @@
 // expect: 1.5
 fn main() {
     let s = "x1.5y" + ""
-    var f: float = 0.0
+    var f: float = 0.0f
     if parseFloat(s[1..4], mut &f) { println(f.toStr()) }
 }

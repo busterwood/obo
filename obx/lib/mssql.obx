@@ -194,7 +194,7 @@ fn le8(v: int): str {
 pub fn floatOfBits(b: int): float {
     let e = (b >> 52) & 0x7ff
     let m = b & 0xfffffffffffff
-    var f: float = 0.0
+    var f: float = 0.0f
     if e == 0x7ff {
         f = if m == 0 { math.inf() } else { math.nan() }
     } else {

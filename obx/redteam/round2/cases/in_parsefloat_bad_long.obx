@@ -1,6 +1,6 @@
 // expect: false
 fn main() {
-    var f: float = 0.0
+    var f: float = 0.0f
     var s = "1"
     for i in 0..500 { s = s + "0" }
     println(parseFloat(s, mut &f).toStr())

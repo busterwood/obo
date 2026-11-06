@@ -1,5 +1,5 @@
 // exit: 10
 fn main() {
-    let d = 1e9223372036854775808
+    let d = 1e9223372036854775808m
     println(d.toStr())
 }

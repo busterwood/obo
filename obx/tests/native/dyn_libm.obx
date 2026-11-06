@@ -22,12 +22,12 @@ extern "c" fn sqrt(x: float): float
 fn f(x: float): str { return floatToStr(x) }
 
 fn main() {
-    println("hypot " + f(hypot(3.0, 4.0)) + " " + f(hypot(1.0, 1.0)))
-    println("pow " + f(pow(2.0, 10.0)) + " " + f(pow(10.0, -3.0)) + " " + f(pow(8.0, 1.0 / 3.0)))
-    println("exp " + f(exp(1.0)) + " " + f(exp(0.0)))
-    println("log " + f(log(10.0)) + " " + f(log(1.0)))
-    println("sin " + f(sin(1.0)) + " " + f(sin(0.0)))
-    println("atan2 " + f(atan2(1.0, 1.0)) + " " + f(atan2(-1.0, -1.0)))
-    println("cbrt " + f(cbrt(27.0)) + " tanh " + f(tanh(1.0)))
-    println("floor " + f(floor(-1.5)) + " sqrt " + f(sqrt(2.0)))
+    println("hypot " + f(hypot(3.0f, 4.0f)) + " " + f(hypot(1.0f, 1.0f)))
+    println("pow " + f(pow(2.0f, 10.0f)) + " " + f(pow(10.0f, -3.0f)) + " " + f(pow(8.0f, 1.0f / 3.0f)))
+    println("exp " + f(exp(1.0f)) + " " + f(exp(0.0f)))
+    println("log " + f(log(10.0f)) + " " + f(log(1.0f)))
+    println("sin " + f(sin(1.0f)) + " " + f(sin(0.0f)))
+    println("atan2 " + f(atan2(1.0f, 1.0f)) + " " + f(atan2(-1.0f, -1.0f)))
+    println("cbrt " + f(cbrt(27.0f)) + " tanh " + f(tanh(1.0f)))
+    println("floor " + f(floor(-1.5f)) + " sqrt " + f(sqrt(2.0f)))
 }

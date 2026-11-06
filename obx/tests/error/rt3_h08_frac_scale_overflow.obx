@@ -3,6 +3,6 @@
 // emitted as a C literal and wrapped to 0.1).
 // error: scale
 fn main() {
-    let d = 1e-18446744073709551617
+    let d = 1e-18446744073709551617m
     println(d.toStr())
 }

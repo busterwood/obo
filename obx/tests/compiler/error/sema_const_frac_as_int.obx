@@ -1,4 +1,4 @@
 // error: a frac constant cannot be int
 // line: 3
-const I: int = 1.5
+const I: int = 1.5m
 fn main() {}

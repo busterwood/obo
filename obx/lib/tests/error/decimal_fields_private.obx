@@ -2,6 +2,6 @@
 // fromUnits or parse.
 // error: coef
 fn main() {
-    let d = 1.5
+    let d = 1.5m
     println(d.coef.toStr())
 }

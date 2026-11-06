@@ -6,6 +6,6 @@
 extern "c" fn cexit(code: i32): never as "exit"
 fn main() {
     println(5.toStr())
-    println(1.5.toStr())
+    println(1.5m.toStr())
     if false { cexit(3) }
 }

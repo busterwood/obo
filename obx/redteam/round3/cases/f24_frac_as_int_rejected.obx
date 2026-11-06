@@ -1,2 +1,2 @@
 // error: Decimal|int
-fn main() { let x: int = 1e3 }
+fn main() { let x: int = 1e3m }

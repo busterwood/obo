@@ -95,22 +95,22 @@ fn main() {
     var jq = json.compact()
     jq.jqNumbers = true
     println(json.write(&nums, &jq))
-    let fs: []float = [0.1 + 0.2, 1e17, 1e16, 123456789012345678.0, 1e-5, 0.0001, 1.5e-7, 1e300, -0.0, 3.0, 2.5, 1e15, 1e-4, 0.001234]
+    let fs: []float = [0.1f + 0.2f, 1e17f, 1e16f, 123456789012345678.0f, 1e-5f, 0.0001f, 1.5e-7f, 1e300f, -0.0f, 3.0f, 2.5f, 1e15f, 1e-4f, 0.001234f]
     var arr = json.emptyArray()
     for f in fs { arr.push(json.number(f)) }
     println(arr.toStr())
     println(json.write(&arr, &jq))
-    let zero: float = 0.0
+    let zero: float = 0.0f
     var odd = json.emptyArray()
     odd.push(json.number(zero / zero))
-    odd.push(json.number(1.0 / zero))
-    odd.push(json.number(-1.0 / zero))
+    odd.push(json.number(1.0f / zero))
+    odd.push(json.number(-1.0f / zero))
     println(odd.toStr())
     println(json.write(&odd, &jq))
-    println(json.floatOf("0.1") == 0.1)
-    println(json.floatOf("123456789012345678901234567890") == 123456789012345678901234567890.0)
-    println(json.floatOf("2.2250738585072014e-308") == 2.2250738585072014e-308)
-    println(json.floatOf("9007199254740993") == 9007199254740992.0)
+    println(json.floatOf("0.1") == 0.1f)
+    println(json.floatOf("123456789012345678901234567890") == 123456789012345678901234567890.0f)
+    println(json.floatOf("2.2250738585072014e-308") == 2.2250738585072014e-308f)
+    println(json.floatOf("9007199254740993") == 9007199254740992.0f)
     println(json.isNumberText("-0.5e+10"))
     println(json.isNumberText("1.e3"))
     println(json.numberLiteral("1.50").unwrap().toStr())

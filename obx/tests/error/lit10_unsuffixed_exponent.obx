@@ -1,0 +1,5 @@
+// SPEC 2: an exponent makes a literal fractional: it needs a suffix.
+// error: 1e10: a fractional literal needs a suffix: 1e10m for a Decimal, 1e10f for a float
+fn main() {
+    let x = 1e10
+}

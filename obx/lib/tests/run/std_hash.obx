@@ -128,8 +128,8 @@ fn main() {
     let neg: i128 = -170141183460469231731687303715884105727
     println("wide " + (big.hash() == (big + 0).hash() && big.hash() != (big ^ 1).hash()).toStr() + " " +
         (neg.hash() == (neg + 0).hash() && neg.hash() != (-neg).hash()).toStr() + " " +
-        (1.50.hash() == 1.5.hash() && 1.5.hash() != (-1.5).hash()).toStr() + " " +
-        (0.001.hash() != 1.0.hash()).toStr())
+        (1.50m.hash() == 1.5m.hash() && 1.5m.hash() != (-1.5m).hash()).toStr() + " " +
+        (0.001m.hash() != 1.0m.hash()).toStr())
     // int hashes: a bijection (MIN and 1 used to share one)
     let mn = -9223372036854775807 - 1
     println("ints " + (mn.hash() != 1.hash()).toStr() + " " + ((-1).hash() != 0.hash()).toStr())

@@ -9,6 +9,6 @@ fn main() {
     let u = u32(4294967295)
     let m = -9223372036854775807 - 1
     io.flushStdout()
-    printf("%d %d %d %d %u %ld %f %s\n", a, c, true, false, u, m, 2.5, "x")
+    printf("%d %d %d %d %u %ld %f %s\n", a, c, true, false, u, m, 2.5f, "x")
     fflush(nullPtr())
 }

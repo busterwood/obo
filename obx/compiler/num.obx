@@ -367,7 +367,7 @@ pub fn bigToFloat(a: Big): float { return floatOfText(bigStr(a)) }
 // digits only): the nearest float, inf on overflow. Text longer than strtod's
 // buffer keeps its first 300 significant digits and a sticky digit for the rest.
 pub fn floatOfText(s: str): float {
-    var f: float = 0.0
+    var f: float = 0.0f
     if len(s) <= 400 {
         if parseFloat(s, mut &f) { return f }
         return f

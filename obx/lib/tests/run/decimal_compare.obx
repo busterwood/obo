@@ -22,28 +22,28 @@ fn d(s: str): Decimal { return Decimal.parse(s).unwrap() }
 fn b(x: bool): str { return x.toStr() }
 
 fn main() {
-    println(b(1.0 == 1.00) + " " + b(1.0 != 1.00) + " " + b(1.0 < 1.00) + " " + b(1.0 <= 1.00) + " "
-        + b(2.0 > 1.00) + " " + b(-1.0 < 0.0) + " " + b(0.0 == -0.00) + " " + b(2.0 >= 2.00))
-    println(b(1.0.hash() == 1.00.hash()) + " " + b(d("1e2").hash() == 100.0.hash()) + " "
-        + b(d("-0").hash() == 0.000.hash()) + " " + b(d("-1e-5") < d("-1e-6")) + " "
+    println(b(1.0m == 1.00m) + " " + b(1.0m != 1.00m) + " " + b(1.0m < 1.00m) + " " + b(1.0m <= 1.00m) + " "
+        + b(2.0m > 1.00m) + " " + b(-1.0m < 0.0m) + " " + b(0.0m == -0.00m) + " " + b(2.0m >= 2.00m))
+    println(b(1.0m.hash() == 1.00m.hash()) + " " + b(d("1e2").hash() == 100.0m.hash()) + " "
+        + b(d("-0").hash() == 0.000m.hash()) + " " + b(d("-1e-5") < d("-1e-6")) + " "
         + b(d("99999999999999999999999999999999999999") > d("9999999999999999999999999999999999999.9")))
 
     var m: Map[Decimal, int] = newMap()
-    m.put(1.5, 1)
-    m.put(1.50, 3)
-    m.put(d("15e-1") + 0.0, 3)
-    m.put(-0.0, 7)
+    m.put(1.5m, 1)
+    m.put(1.50m, 3)
+    m.put(d("15e-1") + 0.0m, 3)
+    m.put(-0.0m, 7)
     println(m.size().toStr() + " keys")
-    println(1.50.toStr() + " -> " + m.get(&1.5).unwrap().toStr())
+    println(1.50m.toStr() + " -> " + m.get(&1.5m).unwrap().toStr())
 
-    var xs = [1.5, d("1e39"), -2.5, 0.1, d("0"), d("1e38"), 1.00, -0.25]
+    var xs = [1.5m, d("1e39"), -2.5m, 0.1m, d("0"), d("1e38"), 1.00m, -0.25m]
     sort(mut &xs)
     var line = ""
     for x in xs { line += " " + x.canonical() }
     println(substr(line, 1, len(line)))
 
     // format is exact display text or DecError.Inexact; toStr falls back to canonical
-    match (1.20 * 1.2).format() {
+    match (1.20m * 1.2m).format() {
         Ok(s) { println("ok " + s) }
         Err(e) { println("err") }
     }
@@ -53,24 +53,24 @@ fn main() {
         Err(e) { println("err " + e.code().toStr() + " " + p.toStr()) }
     }
     // a product whose scale is capped below its fraction digits shows canonical text
-    let tiny = d("1e-38") * 0.5
+    let tiny = d("1e-38") * 0.5m
     println(tiny.scale().toStr() + " " + tiny.toStr())
-    println(0.000 * d("1e30"))
-    println(d("1234").exponent().toStr() + " " + (-1.5).sign().toStr() + " " + 0.0.sign().toStr() + " "
-        + 3.0.sign().toStr())
-    println(2.5.toStr() + " " + 2.5.withScale(2).unwrap().toStr())
-    match 2.55.withScale(1) {
+    println(0.000m * d("1e30"))
+    println(d("1234").exponent().toStr() + " " + (-1.5m).sign().toStr() + " " + 0.0m.sign().toStr() + " "
+        + 3.0m.sign().toStr())
+    println(2.5m.toStr() + " " + 2.5m.withScale(2).unwrap().toStr())
+    match 2.55m.withScale(1) {
         Ok(v) { println(v) }
         Err(e) { println("err " + e.code().toStr()) }
     }
-    let w = 12.3
+    let w = 12.3m
     var s = w.withScale(2).unwrap().toStr() + " " + w.withScale(3).unwrap().toStr()
     match w.withScale(-1) {
         Ok(v) { s += " " + v.toStr() }
         Err(e) { s += " err " + e.code().toStr() }
     }
     println(s)
-    println(0.1.toFloat().toStr() + " " + (0.1.toFloat() + 0.2.toFloat()).toStr())
-    println(max(1.5, 1.50).toStr() + " " + min(-2.5, 3.0).toStr())
+    println(0.1m.toFloat().toStr() + " " + (0.1m.toFloat() + 0.2m.toFloat()).toStr())
+    println(max(1.5m, 1.50m).toStr() + " " + min(-2.5m, 3.0m).toStr())
     println(Decimal.fromUnits(1234, 2).toStr() + " " + Decimal.fromInt(21).toStr() + " " + Decimal.zero().toStr())
 }

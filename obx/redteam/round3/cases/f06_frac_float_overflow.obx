@@ -1,2 +1,2 @@
 // error: overflow|range
-fn main() { let f: float = 1e309 }
+fn main() { let f: float = 1e309f }

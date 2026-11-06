@@ -37,7 +37,7 @@ fn readBack(db: &sqlite.Db, text: str): Result[Decimal, Error] {
 fn run(): Result[Unit, Error] {
     var db = try sqlite.open(":memory:")
     try db.exec("CREATE TABLE m(id INTEGER PRIMARY KEY, amount TEXT, n NUMERIC, i INTEGER)")
-    let values = [12.50, 0.000, -0.001, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7]
+    let values = [12.50m, 0.000m, -0.001m, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7m]
     var line = "text:"
     for v in values {
         line = line + " " + v.toStr()
@@ -54,7 +54,7 @@ fn run(): Result[Unit, Error] {
     println(kinds)
 
     try db.run("DELETE FROM m", &[])
-    try db.run("INSERT INTO m(id, n) VALUES (1, ?), (2, ?)", &[V.Dec(1.00), V.Dec(1.50)])
+    try db.run("INSERT INTO m(id, n) VALUES (1, ?), (2, ?)", &[V.Dec(1.00m), V.Dec(1.50m)])
     var aff = try db.query("SELECT n, typeof(n) FROM m ORDER BY id", &[])
     try aff.step()
     let one = try aff.decimal(0)
@@ -62,24 +62,24 @@ fn run(): Result[Unit, Error] {
     try aff.step()
     println("numeric affinity: 1.00 -> " + t1 + " " + one.toStr() + " (scale " + one.scale().toStr() + ") | 1.50 -> " +
         try aff.text(1) + " " + code(aff.decimal(0)))
-    try db.run("INSERT INTO m(id, i, amount) VALUES (3, ?, ?)", &[V.Dec(2.0), V.Dec(2.0)])
+    try db.run("INSERT INTO m(id, i, amount) VALUES (3, ?, ?)", &[V.Dec(2.0m), V.Dec(2.0m)])
     var ia = try db.query("SELECT i, typeof(i), amount FROM m WHERE id = 3", &[])
     try ia.step()
     println("integer affinity: 2.0 -> " + try ia.text(1) + " " + (try ia.decimal(0)).toStr() + " | text column keeps " +
         (try ia.decimal(2)).toStr())
 
-    var nz = try db.query("SELECT NULL, ?", &[V.Dec(0.00)])
+    var nz = try db.query("SELECT NULL, ?", &[V.Dec(0.00m)])
     try nz.step()
     println("null: decimalOrNull " + (try nz.decimalOrNull(0)).toStr() + ", decimal " + code(nz.decimal(0)) +
         " | zero: " + (try nz.decimalOrNull(1)).toStr())
 
     var ck = try db.prepare("SELECT ?")
-    try ck.bindDecimal(1, 12.3, 5, 2)
+    try ck.bindDecimal(1, 12.3m, 5, 2)
     try ck.step()
     let checked = try ck.decimal(0)
     ck.reset()
-    println("checked: " + checked.toStr() + " | scale " + code(ck.bindDecimal(1, 1.234, 5, 2)) + " | range " +
-        code(ck.bindDecimal(1, 1234.5, 5, 2)) + " | metadata " + code(ck.bindDecimal(1, 1.5, 0, 0)))
+    println("checked: " + checked.toStr() + " | scale " + code(ck.bindDecimal(1, 1.234m, 5, 2)) + " | range " +
+        code(ck.bindDecimal(1, 1234.5m, 5, 2)) + " | metadata " + code(ck.bindDecimal(1, 1.5m, 0, 0)))
 
     var bad = "not decimal:"
     for t in ["", "abc", " 1", "NaN", "Infinity"] { bad = bad + " '" + t + "' " + code(readBack(&db, t)) + " |" }
@@ -96,7 +96,7 @@ fn run(): Result[Unit, Error] {
     println("leading zeros: " + len(long).toStr() + " chars -> " + (try readBack(&db, long)).toStr())
 
     try db.exec("DELETE FROM m")
-    try db.run("INSERT INTO m(amount) VALUES (?), (?), (?)", &[V.Dec(10.25), V.Dec(19.99), V.Dec(0.01)])
+    try db.run("INSERT INTO m(amount) VALUES (?), (?), (?)", &[V.Dec(10.25m), V.Dec(19.99m), V.Dec(0.01m)])
     var sum = Decimal.zero()
     var rows = 0
     var all = try db.query("SELECT amount FROM m", &[])

@@ -117,14 +117,14 @@ fn main() {
     showParam(V.Int(-9223372036854775807 - 1), true)
     showParam(V.Int(42), true)
     showParam(V.Bool(true), true)
-    showParam(V.Float(0.1), true)
-    showParam(V.Float(-1e300), true)
+    showParam(V.Float(0.1f), true)
+    showParam(V.Float(-1e300f), true)
     showParam(V.Text("café"), true)
     showParam(V.Text(""), true)
     showParam(V.Bytes("\x00\xff"), true)
     showParam(V.Bytes(""), true)
-    showParam(V.Dec(12.50), true)
-    showParam(V.Dec(-0.001), true)
+    showParam(V.Dec(12.50m), true)
+    showParam(V.Dec(-0.001m), true)
     showParam(V.Dec(Decimal.zero()), true)
     showParam(V.Dec(Decimal.parse("99999999999999999999999999999999999999").unwrap()), false)
     showParam(V.Dec(Decimal.parse("0.00000000000000000000000000000000000001").unwrap()), false)
@@ -134,13 +134,13 @@ fn main() {
     println("long params: text 4000 units size " + mssql.paramOf(V.Text(t4000)).unwrap().size.toStr() + " | 4001 units size " +
         mssql.paramOf(V.Text(t4001)).unwrap().size.toStr() + " | bytes 8000 size " + mssql.paramOf(V.Bytes(b8000)).unwrap().size.toStr() +
         " | 8001 size " + mssql.paramOf(V.Bytes(b8000 + "x")).unwrap().size.toStr())
-    let zero: float = 0.0
-    println("param errors: NaN " + fails(mssql.paramOf(V.Float(zero / zero))) + " | inf " + code(mssql.paramOf(V.Float(1.0 / zero))) +
+    let zero: float = 0.0f
+    println("param errors: NaN " + fails(mssql.paramOf(V.Float(zero / zero))) + " | inf " + code(mssql.paramOf(V.Float(1.0f / zero))) +
         " | bad text " + fails(mssql.paramOf(V.Text("a\xff"))) + " | 1e38 " + code(mssql.paramOf(V.Dec(Decimal.parse("1e38").unwrap()))) +
         " | 1e-39 " + code(mssql.paramOf(V.Dec(Decimal.parse("1e-39").unwrap()))))
-    println("decimalParam: " + mssql.decimalParam(12.3, 10, 2).map(fn(v: V): str { return v.toStr() }).toStr() + " | scale " +
-        code(mssql.decimalParam(1.234, 10, 2)) + " | range " + code(mssql.decimalParam(decimalOf(123456789), 10, 2)) + " | p 39 " +
-        code(mssql.decimalParam(1.5, 39, 2)))
+    println("decimalParam: " + mssql.decimalParam(12.3m, 10, 2).map(fn(v: V): str { return v.toStr() }).toStr() + " | scale " +
+        code(mssql.decimalParam(1.234m, 10, 2)) + " | range " + code(mssql.decimalParam(decimalOf(123456789), 10, 2)) + " | p 39 " +
+        code(mssql.decimalParam(1.5m, 39, 2)))
 
     let recs = [mssql.Diag{state: "01000", native: 5701, msg: "Changed database context"},
                 mssql.Diag{state: "23000", native: 2627, msg: "Violation of PRIMARY KEY constraint"},

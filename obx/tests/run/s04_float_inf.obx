@@ -1,8 +1,8 @@
 // expect: ok
 fn check(c: bool) { if c { println("ok") } else { println("FAIL") } }
 fn main() {
-    let one: float = 1.0
-    let zero: float = 0.0
+    let one: float = 1.0f
+    let zero: float = 0.0f
     let inf = one / zero
     check(inf > float(4611686018427387904))
 }

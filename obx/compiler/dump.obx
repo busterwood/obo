@@ -325,7 +325,7 @@ fn (d: mut &Dumper) node(a: &sx.Ast, depth: int, label: str, n: int) {
         d.flag(a, n, "neg", sx.NEG)
         d.end()
     } else if k == sx.N_FRAC || k == sx.N_NAME {
-        d.scalar("v", a.nodes[n].s)
+        d.scalar("v", a.nodes[n].s + (if k == sx.N_FRAC && na == 1 { "f" } else if k == sx.N_FRAC && na == 2 { "m" } else { "" }))
         d.end()
     } else if k == sx.N_BOOL {
         d.flag(a, n, "v", sx.TRUE)

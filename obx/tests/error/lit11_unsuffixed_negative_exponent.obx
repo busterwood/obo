@@ -1,0 +1,5 @@
+// SPEC 2: an exponent with a sign and a fraction needs a suffix.
+// error: 1.5e-3: a fractional literal needs a suffix
+fn main() {
+    println(1.5e-3)
+}

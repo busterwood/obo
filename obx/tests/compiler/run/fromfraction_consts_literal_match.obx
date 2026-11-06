@@ -29,7 +29,7 @@ var LB: Lbl = Lbl.Pair{a: "x", b: "y"}
 const N: i32 = 5
 const BIG: u128 = 1 << 100
 const NAME = "obx"
-const F: float = 1.5
+const F: float = 1.5f
 
 fn classify(s: str): int {
     match s {
@@ -48,9 +48,9 @@ fn mkOpt(n: int): Option[[]int] {
     return Some(array(n, 7))
 }
 fn main() {
-    let c: Cents = 1.5
+    let c: Cents = 1.5m
     println(c.c)
-    let d: Cents = 0.125
+    let d: Cents = 0.125m
     println(d.c)
     var o = Outer{i: Inner{n: 1, tags: ["t"]}, o: Some(Inner{n: 2, tags: []})}
     bump(mut &o)
@@ -68,7 +68,7 @@ fn main() {
     println(int(n))
     println(BIG.toStr())
     println(NAME + "!")
-    let f: float = F * 2.0
+    let f: float = F * 2.0f
     println(f.toStr())
     println(classify("b") + classify("") * 10 + classify("zz") * 100)
     match mkOpt(3) {

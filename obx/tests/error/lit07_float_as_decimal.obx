@@ -1,0 +1,6 @@
+// SPEC 2: an f literal is a float, never a Decimal.
+// error: is float, not Decimal
+fn main() {
+    let x: Decimal = 1.5f
+    println(x.toStr())
+}

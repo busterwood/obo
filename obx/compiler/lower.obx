@@ -554,7 +554,7 @@ fn (u: mut &Lower) number(s: str): int {
     if strByte(s, 0) == '(' { return u.mk(ir.E_INT, ir.TY_I64, -1, -1, -1, -9223372036854775807 - 1) }
     if strByte(s, 0) == '-' { return u.negate(u.number(s[1..len(s)])) }
     if contains(s, ".") || contains(s, "e") || contains(s, "E") {
-        var f: float = 0.0
+        var f: float = 0.0f
         if !parseFloat(s, mut &f) { fail("a float literal " + s) }
         let fi = u.ir.addFlt(f)
         return u.mk(ir.E_FLT, ir.TY_F64, -1, -1, -1, fi)

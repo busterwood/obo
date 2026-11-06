@@ -418,7 +418,7 @@ fn zoneName(): str {
     }
 }
 
-const MIN_NORMAL: float = 2.2250738585072014e-308
+const MIN_NORMAL: float = 2.2250738585072014e-308f
 
 // ---------------------------------------------------------------- natives
 
@@ -2063,13 +2063,13 @@ fn value1(ip: mut &Interp, code: int, v: &J): Result[J, str] {
 }
 
 fn math_inf(): float {
-    let one: float = 1.0
-    let zero: float = 0.0
+    let one: float = 1.0f
+    let zero: float = 0.0f
     return one / zero
 }
 
 fn math_nan(): float {
-    let zero: float = 0.0
+    let zero: float = 0.0f
     return zero / zero
 }
 

@@ -87,10 +87,10 @@ fn run(): Result[Unit, Error] {
     try db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT NOT NULL, score INTEGER, f REAL, ok INTEGER, " +
         "note TEXT, blob BLOB, price TEXT); CREATE TABLE u(k INTEGER PRIMARY KEY)")
     let sql = "INSERT INTO t(id, name, score, f, ok, note, blob, price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    let a = try db.run(sql, &[V.Int(1), V.Text("alice"), V.Int(-9223372036854775807), V.Float(0.1), V.Bool(true),
-        V.Null, V.Bytes("\x00\xffA"), V.Dec(12.50)])
-    let b = try db.run(sql, &[V.Int(2), V.Text("bob"), V.Int(9223372036854775807), V.Float(1e300), V.Bool(false),
-        V.Text(""), V.Bytes(""), V.Dec(-0.001)])
+    let a = try db.run(sql, &[V.Int(1), V.Text("alice"), V.Int(-9223372036854775807), V.Float(0.1f), V.Bool(true),
+        V.Null, V.Bytes("\x00\xffA"), V.Dec(12.50m)])
+    let b = try db.run(sql, &[V.Int(2), V.Text("bob"), V.Int(9223372036854775807), V.Float(1e300f), V.Bool(false),
+        V.Text(""), V.Bytes(""), V.Dec(-0.001m)])
     println("inserted " + a.toStr() + " " + b.toStr() + ", rowid " + db.lastInsertId().toStr())
 
     var st = try db.query("SELECT id, name, score, f, ok, note, blob, price FROM t ORDER BY id", &[])

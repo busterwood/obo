@@ -56,7 +56,7 @@ fn main() {
         Err(e) { println("of bad: " + e.toStr()) }
     }
 
-    let vals = [V.Null, V.Int(42), V.Float(2.5), V.Bool(true), V.Text("a"), V.Bytes("\x00\xff\x10"), V.Dec(12.50), V.Dec(-0.001)]
+    let vals = [V.Null, V.Int(42), V.Float(2.5f), V.Bool(true), V.Text("a"), V.Bytes("\x00\xff\x10"), V.Dec(12.50m), V.Dec(-0.001m)]
     var line = "values:"
     for v in vals { line = line + " " + v.toStr() }
     println(line)
@@ -68,8 +68,8 @@ fn main() {
         " | bad " + (if sqldialect.unhex("zz").isNone() { "none" } else { "some" }))
 
     let tiny = Decimal.parse("-1.5e-20000").unwrap()
-    println("text " + sqldialect.decimalText(12.50, 16383).unwrap() + " | " + sqldialect.decimalText(Decimal.zero(), 16383).unwrap() +
-        " | " + sqldialect.decimalText(0.000, 16383).unwrap() + " | canonical " +
+    println("text " + sqldialect.decimalText(12.50m, 16383).unwrap() + " | " + sqldialect.decimalText(Decimal.zero(), 16383).unwrap() +
+        " | " + sqldialect.decimalText(0.000m, 16383).unwrap() + " | canonical " +
         sqldialect.decimalText(Decimal.parse("1e-0").unwrap().withScale(20000).unwrap(), 16383).unwrap() +
         " | sqlite " + len(sqldialect.decimalText(tiny, 65535).unwrap()).toStr() + " chars")
     match sqldialect.decimalText(tiny, 16383) {
@@ -77,9 +77,9 @@ fn main() {
         Err(e) { println("pg range: " + e.toStr()) }
     }
 
-    println("fit " + sqldialect.fitDecimal(12.5, 4, 2).unwrap().toStr() + " | " +
-        sqldialect.fitDecimal(99999999.99, 10, 2).unwrap().toStr() + " | scale " +
-        code(sqldialect.fitDecimal(1.255, 10, 2)) + " | range " + code(sqldialect.fitDecimal(decimalOf(100000000), 10, 2)) +
+    println("fit " + sqldialect.fitDecimal(12.5m, 4, 2).unwrap().toStr() + " | " +
+        sqldialect.fitDecimal(99999999.99m, 10, 2).unwrap().toStr() + " | scale " +
+        code(sqldialect.fitDecimal(1.255m, 10, 2)) + " | range " + code(sqldialect.fitDecimal(decimalOf(100000000), 10, 2)) +
         " | meta " + code(sqldialect.fitDecimal(decimalOf(1), 0, 0)) + " | meta " + code(sqldialect.fitDecimal(decimalOf(1), 10, -1)) +
         " | zero " + sqldialect.fitDecimal(Decimal.zero(), 1, 2).unwrap().toStr())
     println("parse " + sqldialect.parseDecimal("1.50").unwrap().toStr() + " | " + code(sqldialect.parseDecimal("NaN")) +

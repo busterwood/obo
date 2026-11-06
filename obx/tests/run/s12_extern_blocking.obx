@@ -27,7 +27,7 @@ fn main() {
     var end = nullPtr()
     let v = bStrtol("0xffxyz", mut &end, i32(0))
     println("strtol " + intToStr(v) + " rest " + intToStr(len(strFromC(end))))
-    println("ldexp " + intToStr(int(bLdexp(1.5, i32(3)))))
+    println("ldexp " + intToStr(int(bLdexp(1.5f, i32(3)))))
     println("toupper " + intToStr(int(bToupper(i32('a')))))
     let bs = strToBytes("abcdef")
     println("memchr found " + (if !isNull(bMemchr(&bs, i32('d'), len(bs))) { "true" } else { "false" }))

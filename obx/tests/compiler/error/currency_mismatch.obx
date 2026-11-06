@@ -8,7 +8,7 @@ type JPY = value record {}
 fn (JPY) code(): str { return "JPY" }
 fn (JPY) scale(): int { return 0 }
 fn main() {
-    let a: money.Money[USD] = money.of(1.00)
+    let a: money.Money[USD] = money.of(1.00m)
     let b: money.Money[JPY] = money.of(decimalOf(100))
     let c = a + b
 }

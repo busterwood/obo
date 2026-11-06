@@ -14,7 +14,7 @@ TOK = re.compile(r'\s+|//[^\n]*|"(?:\\.|[^"\\])*"|\w+|..?')
 EXTRA = ['&', 'mut &', 'move(', ')', '[', ']', '{', '}', 'try ', '-', '0', '..', '.', ',', ';', '\n', 'T', 'int',
          'str', '[]', 'fn ', 'return', 'break', 'None', 'Some(', 'x', 'self', '_', 'match ', 'value ', '<<', '%', '[..]', '[0..1]', '[1..]', '[..0]', '&[int]', 'mut &[int]', 'xs', 's', '""', '"a\\0b"',
          'fn(', 'fn() ', 'fn(x) ', '&fn()', '&fn(int): int', 'never', 'once ', '.get()', '.set(', '.isSet()',
-         '1.5e3', '2e-7', 'let P{', 'var ', 'B.', 'Option.', 'Shape.', ': never', 'f()', 'exit(1)', 'panic("x")',
+         '1.5e3m', '2e-7f', 'let P{', 'var ', 'B.', 'Option.', 'Shape.', ': never', 'f()', 'exit(1)', 'panic("x")',
          'while true ', 'as "abs"', 'n', 'b', 'r', 'reset(s)', 'call(fn() { xs = [] })']
 def mutate(s, r):
     toks = [t for t in TOK.findall(s)]

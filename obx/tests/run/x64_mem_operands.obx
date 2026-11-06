@@ -94,7 +94,7 @@ fn swapXs(w: mut &W) {
 }
 
 fn main() {
-    var w = W{a: -5, b: 65535, c: 4294967295, d: 200, e: true, f: -3000000000, g: 2.5, xs: [1, 2, 3], bs: [2, 3, 4]}
+    var w = W{a: -5, b: 65535, c: 4294967295, d: 200, e: true, f: -3000000000, g: 2.5f, xs: [1, 2, 3], bs: [2, 3, 4]}
     println(widths(&w))
     println(sums(mut &w))
     println(stores(mut &w))

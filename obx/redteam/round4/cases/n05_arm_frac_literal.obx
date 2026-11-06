@@ -1,2 +1,2 @@
 // error: literal|expected|fraction
-fn main() { let k = 1; match k { 1.5 { } else { } } }
+fn main() { let k = 1; match k { 1.5m { } else { } } }

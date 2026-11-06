@@ -1,0 +1,5 @@
+// SPEC 2: an f literal that rounds to infinity is an error, not inf.
+// error: float literal 1e309 is out of range (overflow)
+fn main() {
+    let x = 1e309f
+}

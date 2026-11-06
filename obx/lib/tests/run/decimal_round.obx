@@ -103,7 +103,7 @@ fn showI(r: Result[int, DecError]) {
 fn d(s: str): Decimal { return Decimal.parse(s).unwrap() }
 
 fn main() {
-    let xs = [5.5, 2.5, 1.6, 1.1, 1.0, -1.0, -1.1, -1.6, -2.5, -5.5]
+    let xs = [5.5m, 2.5m, 1.6m, 1.1m, 1.0m, -1.0m, -1.1m, -1.6m, -2.5m, -5.5m]
     let modes = [Rounding.HALF_EVEN, Rounding.HALF_AWAY, Rounding.HALF_TOWARD_ZERO, Rounding.TOWARD_ZERO, Rounding.AWAY, Rounding.FLOOR, Rounding.CEILING, Rounding.UNNECESSARY]
     for m in modes {
         var line = modeName(m)
@@ -118,44 +118,44 @@ fn main() {
         println(line)
     }
 
-    show(1.00.div(2.0, 2, Rounding.HALF_AWAY))
-    show(1.0.div(2.0, 1, Rounding.HALF_AWAY))
-    show(1.0.div(2.0, 0, Rounding.HALF_AWAY))
-    show(1.0.div(3.0, 6, Rounding.HALF_AWAY))
-    show(2.0.div(3.0, 6, Rounding.HALF_EVEN))
-    show(1.0.div(8.0, 3, Rounding.HALF_AWAY))
-    show(1.0.div(0.0, 2, Rounding.HALF_AWAY))
-    show(1.0.div(3.0, 2, Rounding.UNNECESSARY))
-    show(1.0.div(3.0, 32769, Rounding.HALF_AWAY))
-    show(1.0.div(3.0, -1, Rounding.HALF_AWAY))
-    show(1.0.div(3.0, 32768, Rounding.HALF_AWAY))
+    show(1.00m.div(2.0m, 2, Rounding.HALF_AWAY))
+    show(1.0m.div(2.0m, 1, Rounding.HALF_AWAY))
+    show(1.0m.div(2.0m, 0, Rounding.HALF_AWAY))
+    show(1.0m.div(3.0m, 6, Rounding.HALF_AWAY))
+    show(2.0m.div(3.0m, 6, Rounding.HALF_EVEN))
+    show(1.0m.div(8.0m, 3, Rounding.HALF_AWAY))
+    show(1.0m.div(0.0m, 2, Rounding.HALF_AWAY))
+    show(1.0m.div(3.0m, 2, Rounding.UNNECESSARY))
+    show(1.0m.div(3.0m, 32769, Rounding.HALF_AWAY))
+    show(1.0m.div(3.0m, -1, Rounding.HALF_AWAY))
+    show(1.0m.div(3.0m, 32768, Rounding.HALF_AWAY))
     show(d("1e32767").div(d("1e-32768"), 0, Rounding.HALF_AWAY))
 
-    show(1.235.quantize(2, Rounding.HALF_AWAY))
-    show(1.245.quantize(2, Rounding.HALF_EVEN))
-    show((-1.235).quantize(2, Rounding.HALF_AWAY))
-    show((-1.235).quantize(2, Rounding.TOWARD_ZERO))
-    show(1.234.quantize(2, Rounding.UNNECESSARY))
-    show(1.230.quantize(2, Rounding.UNNECESSARY))
-    show(0.00.quantize(4, Rounding.HALF_AWAY))
-    show(1.0.quantize(32768, Rounding.HALF_AWAY))
-    show(1.0.quantize(32769, Rounding.HALF_AWAY))
-    show(1.23.quantize(4, Rounding.UNNECESSARY))
+    show(1.235m.quantize(2, Rounding.HALF_AWAY))
+    show(1.245m.quantize(2, Rounding.HALF_EVEN))
+    show((-1.235m).quantize(2, Rounding.HALF_AWAY))
+    show((-1.235m).quantize(2, Rounding.TOWARD_ZERO))
+    show(1.234m.quantize(2, Rounding.UNNECESSARY))
+    show(1.230m.quantize(2, Rounding.UNNECESSARY))
+    show(0.00m.quantize(4, Rounding.HALF_AWAY))
+    show(1.0m.quantize(32768, Rounding.HALF_AWAY))
+    show(1.0m.quantize(32769, Rounding.HALF_AWAY))
+    show(1.23m.quantize(4, Rounding.UNNECESSARY))
 
-    showI(2.6.toInt(Rounding.HALF_AWAY))
-    showI(2.5.toInt(Rounding.HALF_EVEN))
-    showI(2.5.toInt(Rounding.HALF_AWAY))
-    showI((-2.6).toInt(Rounding.TOWARD_ZERO))
-    showI((-2.6).toInt(Rounding.FLOOR))
-    showI((-2.6).toInt(Rounding.CEILING))
-    showI(2.6.toInt(Rounding.UNNECESSARY))
+    showI(2.6m.toInt(Rounding.HALF_AWAY))
+    showI(2.5m.toInt(Rounding.HALF_EVEN))
+    showI(2.5m.toInt(Rounding.HALF_AWAY))
+    showI((-2.6m).toInt(Rounding.TOWARD_ZERO))
+    showI((-2.6m).toInt(Rounding.FLOOR))
+    showI((-2.6m).toInt(Rounding.CEILING))
+    showI(2.6m.toInt(Rounding.UNNECESSARY))
     showI(d("1e30").toInt(Rounding.HALF_AWAY))
     showI(d("9223372036854775807").toInt(Rounding.UNNECESSARY))
     showI(d("-9223372036854775808").toInt(Rounding.UNNECESSARY))
     showI(d("9223372036854775808").toInt(Rounding.UNNECESSARY))
 
     // round, roundAway, floor, ceil, trunc at a scale
-    let x = 1.23455
+    let x = 1.23455m
     show(x.round(4))
     show(x.roundAway(4))
     show(x.floor(4))
@@ -165,14 +165,14 @@ fn main() {
     show(d("1e-30").quantize(10, Rounding.HALF_EVEN))
     show(d("1e-30").quantize(10, Rounding.CEILING))
     // long quotients
-    show(100.0.div(3.0, 34, Rounding.HALF_EVEN))
-    show(d("1e37").div(3.0, 1, Rounding.HALF_EVEN))
-    show(d("1e37").div(3.0, 2, Rounding.HALF_EVEN))
-    show(1.0.div(7.0, 38, Rounding.HALF_EVEN))
+    show(100.0m.div(3.0m, 34, Rounding.HALF_EVEN))
+    show(d("1e37").div(3.0m, 1, Rounding.HALF_EVEN))
+    show(d("1e37").div(3.0m, 2, Rounding.HALF_EVEN))
+    show(1.0m.div(7.0m, 38, Rounding.HALF_EVEN))
     // quotients next to 10^38
     let nines = d("99999999999999999999999999999999999999")
-    show(nines.div(10.0, 0, Rounding.HALF_EVEN))
+    show(nines.div(10.0m, 0, Rounding.HALF_EVEN))
     show(nines.div(d("0.99999999999999999999999999999999999999"), 0, Rounding.HALF_EVEN))
-    show(nines.div(0.99, 0, Rounding.HALF_EVEN))
+    show(nines.div(0.99m, 0, Rounding.HALF_EVEN))
     show(nines.quantize(0, Rounding.HALF_EVEN))
 }

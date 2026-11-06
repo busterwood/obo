@@ -1,0 +1,5 @@
+// SPEC 2: hex literals take no suffix.
+// error: bad integer literal 0x1m
+fn main() {
+    let x = 0x1m
+}

@@ -86,7 +86,7 @@ later side effect.
   that does not fit is an error, and `~0` as `u32` is `0xffffffff`.
 - F25: the built-ins of section 11 are reserved names; declaring one is an
   error. The std intrinsics are not reserved; a module's own declaration wins.
-- `var g: Decimal = 1.25` stays an error (not a constant initializer); a
+- `var g: Decimal = 1.25m` stays an error (not a constant initializer); a
   `const` fractional literal is substituted where it is used.
 
 ## What held up

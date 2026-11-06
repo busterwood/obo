@@ -1,2 +1,2 @@
 // expect: 0.0000002
-fn main() { println((2e-7).toStr()) }
+fn main() { println((2e-7m).toStr()) }

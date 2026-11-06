@@ -2,6 +2,6 @@
 type M = value record { u: int }
 fn (M) fromFraction(d: i128, s: int): M { return M{u: int(d)} }
 fn main() {
-    let m: M = 1.25
+    let m: M = 1.25m
     println(m.u)
 }

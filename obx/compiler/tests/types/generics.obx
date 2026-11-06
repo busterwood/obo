@@ -22,7 +22,7 @@ fn (b: Box[T: copy]) get(): T { return b.v }
 fn (b: mut &Box[T]) set(x: T) { b.v = x }
 fn (Box[T]) empty(): int { return 0 }
 fn (b: &Box[T: Sized + copy]) inner(): int { return b.v.size() }
-fn (s: &Shape) area(): float { return 0.0 }
+fn (s: &Shape) area(): float { return 0.0f }
 fn first[T](xs: &[T]): &T { return &xs[0] }
 fn firstMut[T](xs: mut &[]T): mut &T { return &xs[0] }
 fn apply[T: copy, U](x: T, f: &fn(T): U): U { return f(x) }

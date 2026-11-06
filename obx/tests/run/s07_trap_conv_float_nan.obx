@@ -1,6 +1,6 @@
 // exit: 10
 fn main() {
-    let z: float = 0.0
+    let z: float = 0.0f
     let nan = z / z
     println(int(nan))
 }

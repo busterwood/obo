@@ -13,8 +13,8 @@ fn (a: Fx) add(b: Fx): Fx { return Fx{v: a.v + b.v} }
 fn (a: &Fx) cmp(b: &Fx): int { return a.v - b.v }
 fn f(): Fx { println("f"); return Fx{v: 1} }
 fn main() {
-    let x: Fx = 0.2 + f()
+    let x: Fx = 0.2m + f()
     println(x.v.toStr())
-    if 0.5 < f() { println(".5 < f") }
-    let y = 1.5 + Fx{v: 0}
+    if 0.5m < f() { println(".5 < f") }
+    let y = 1.5m + Fx{v: 0}
 }

@@ -4,7 +4,7 @@
 extern "c" fn snprintf(buf: mut &[]byte, n: int, fmt: str, ...): i32
 fn main() {
     var buf = array(64, byte(0))
-    let k = snprintf(mut &buf, len(buf), "n=%d s=%s f=%.2f", i32(42), "hi", 0.25)
+    let k = snprintf(mut &buf, len(buf), "n=%d s=%s f=%.2f", i32(42), "hi", 0.25f)
     var out: []byte = []
     for i in 0..int(k) { append(mut &out, buf[i]) }
     println(strFromBytes(&out))
