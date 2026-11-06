@@ -762,6 +762,53 @@ pub type Column = value record {
     pub nullable: bool
 }
 
+// The bytes one round trip of rows aims at: a FETCH asks for the rows the
+// widest row (rowWidth) lets into this many bytes.
+pub const FETCH_TARGET = 262144
+
+// The rows of the first round trip, the execute's prefetch, before the
+// columns are known (the describe comes in the same reply): a result of
+// up to 32 rows takes one round trip, and the first reply stays near
+// FETCH_TARGET for rows up to 8 KB wide.
+pub const FIRST_ROWS = 32
+
+// What an unbounded value (LONG, LONG RAW) counts for in rowWidth.
+pub const UNBOUNDED_WIDTH = 32768
+
+// The most bytes a column's value takes in a ROW_DATA message: its length
+// byte and the describe's buffer size (VARCHAR2(4000): 4000; VARCHAR2(n
+// CHAR) and NVARCHAR2: the bytes the server allows for n characters),
+// plus the chunk headers of a value over 252 bytes; NUMBER 22 (1 + 21
+// digits and exponent); DATE 8, TIMESTAMP 12, WITH TIME ZONE 14, the
+// binary floats 5 and 9, BOOLEAN 5 (each 1 + its size); a ROWID 14; a
+// LOB's locator 128 (the value is not in the row); LONG and LONG RAW
+// UNBOUNDED_WIDTH (the server sends the whole value; it has no maximum).
+pub fn columnWidth(c: &Column): int {
+    let t = c.oraType
+    if t == T_LONG || t == T_LONG_RAW { return UNBOUNDED_WIDTH }
+    if c.bufferSize == 0 && t != T_UROWID { return 1 }
+    if t == T_NUMBER || t == T_BINARY_INTEGER { return 22 }
+    if t == T_ROWID { return 14 }
+    if t == T_CLOB || t == T_BLOB || t == T_BFILE || t == T_JSON || t == T_VECTOR || t == T_OBJECT { return 128 }
+    let n = max(c.bufferSize, 1)
+    if n > 252 { return n + 1 + 5 * ((n + 32766) / 32767) + 1 }
+    return n + 1
+}
+
+// The most bytes a row takes: its columns' widths and 8 for the ROW_DATA
+// message and its row header.
+pub fn rowWidth(cols: &[]Column): int {
+    var w = 8
+    for c in cols { w += columnWidth(&c) }
+    return w
+}
+
+// The rows of one round trip: as many as FETCH_TARGET bytes hold at the
+// widest row, at least 1, at most 100,000.
+pub fn rowsFor(cols: &[]Column, target: int): int {
+    return max(1, min(target / rowWidth(cols), 100000))
+}
+
 // The Oracle name of a column's type: "NUMBER", "VARCHAR2", "NVARCHAR2", ...
 pub fn (c: &Column) typeName(): str { return typeNameOf(c.oraType, c.csfrm) }
 
@@ -2128,6 +2175,9 @@ pub type Session = record {
     pub streamCursor: int       // the cursor of a stream still open: closed by the next request but the stream's own
     eor: bool                   // the server ends every reply with END_OF_RESPONSE (ACCEPT's flag)
     fastAuth: bool              // the server takes the fast authentication (Oracle 23 and up)
+    pub requests: int           // round trips so far (each request and its reply)
+    pending: bool               // a FETCH sent ahead whose reply is not read yet (a stream's overlap)
+    pendingCols: []Column       // its cursor's columns, to read the reply past
 }
 
 fn compileCaps(fv: int, eor: bool): str {
@@ -2305,6 +2355,8 @@ fn (s: mut &Session) nextData(w: Where): Result[Data, Error] {
 // Sends a request and decodes its reply into r.
 pub fn (s: mut &Session) call(msg: &[]byte, r: mut &Reply, w: Where): Result[Unit, Error] {
     if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    try s.settle(w)
+    s.requests += 1
     match s.exchange(msg, r, w) {
         Ok(_) { return Ok(Unit{}) }
         Err(e) {
@@ -2314,8 +2366,87 @@ pub fn (s: mut &Session) call(msg: &[]byte, r: mut &Reply, w: Where): Result[Uni
     }
 }
 
+// Reads past the reply of a FETCH sent ahead (sendFetch) that its stream
+// did not take: the server allows one request at a time, so it is read
+// before the next one is sent. Its rows are dropped; the cursor is closed
+// by the request that follows.
+fn (s: mut &Session) settle(w: Where): Result[Unit, Error] {
+    if !s.pending { return Ok(Unit{}) }
+    s.pending = false
+    let cols = replace(mut &s.pendingCols, [])
+    var r = s.reply(K_EXECUTE, &cols, &[])
+    r.raw = true
+    // a row of NULLs before the first, for BIT_VECTOR repeats
+    for i in 0..len(cols) {
+        append(mut &r.rawStarts, 0)
+        append(mut &r.rawLens, -1)
+    }
+    r.rawFirst = len(cols)
+    match s.receive(mut &r, w) {
+        Ok(_) { return Ok(Unit{}) }
+        Err(e) {
+            s.broken = true
+            return Err(e)
+        }
+    }
+}
+
+// Sends a FETCH of up to n rows of a stream's cursor without reading its
+// reply (receiveFetch reads it), so the server makes the next rows while
+// the program uses the last ones. Until it is read, any other request
+// reads it first and drops it (settle).
+pub fn (s: mut &Session) sendFetch(cursorId: int, n: int, columns: &[]Column, w: Where): Result[Unit, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    try s.settle(w)
+    var m: []byte = []
+    let keep = s.streamCursor
+    s.streamCursor = 0
+    s.header(mut &m, FN_FETCH)
+    s.streamCursor = keep
+    putUb(mut &m, cursorId)
+    putUb(mut &m, n)
+    s.requests += 1
+    match s.t.sendData(&m, w) {
+        Ok(_) {}
+        Err(e) {
+            s.broken = true
+            return Err(e)
+        }
+    }
+    s.pending = true
+    var cols: []Column = []
+    for x in columns { append(mut &cols, x) }
+    s.pendingCols = cols
+    return Ok(Unit{})
+}
+
+// The reply of the FETCH sendFetch sent, its rows kept raw after prev's.
+pub fn (s: mut &Session) receiveFetch(columns: &[]Column, prev: &Reply, w: Where): Result[Reply, Error] {
+    if s.broken { return Err(ioErr("the connection is broken by an earlier error")) }
+    if !s.pending { return Err(proto("no FETCH is outstanding")) }
+    s.pending = false
+    s.pendingCols = []
+    var r = s.reply(K_EXECUTE, columns, &[])
+    seedRaw(mut &r, prev)
+    match s.receive(mut &r, w) {
+        Ok(_) { return Ok(r) }
+        Err(e) {
+            s.broken = true
+            return Err(e)
+        }
+    }
+}
+
+// Whether a FETCH sent ahead has a reply not yet read.
+pub fn (s: &Session) hasPending(): bool { return s.pending }
+
 fn (s: mut &Session) exchange(msg: &[]byte, r: mut &Reply, w: Where): Result[Unit, Error] {
     try s.t.sendData(msg, w)
+    return s.receive(r, w)
+}
+
+// Reads one reply into r.
+fn (s: mut &Session) receive(r: mut &Reply, w: Where): Result[Unit, Error] {
     var data = ""
     var total = 0
     while !r.done {
@@ -2509,7 +2640,8 @@ pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
     let st = if cfg.tls { try tlsOver(sock, cfg, w) } else { Stream.Plain(sock) }
     var s = Session{t: transport(st), fieldVersion: FV_MAX, seq: 0, broken: false, maxString: 4000, charset: 0,
                     ncharset: 0, banner: "", version: "", sessionId: 0, serial: 0, inTransaction: false, warnings: [],
-                    maxReply: 1 << 30, toClose: [], streamCursor: 0, eor: false, fastAuth: false}
+                    maxReply: 1 << 30, toClose: [], streamCursor: 0, eor: false, fastAuth: false,
+                    requests: 0, pending: false, pendingCols: []}
     try s.connect(cfg, w)
     try s.login(cfg, w)
     return Ok(s)

@@ -1470,6 +1470,11 @@ Name`, `CA File`, `Connect Timeout`, `Fetch Size`, `Application Name`),
 `exec`, `query`/`queryWith`, `run`/`runWith`, `transaction[T]`, `close`,
 `logoff`. Outside a transaction every statement commits with its execute
 (provisional). NUMBER is exact (Decimal, or `tns.Num` beyond its range).
+A round trip fetches the rows of about 256 KB at the widest row the
+columns allow (`Fetch Size` or `setFetchSize(n)`: a fixed count instead),
+and a stream sends its next FETCH as soon as a reply's rows arrive
+(`setFetchAhead`), so the server makes the next batch while the program
+reads the last; `roundTrips()` counts the requests.
 
 `call(sql, args, outs)` (and `callWith` with `Param`s) runs PL/SQL blocks,
 procedure and function calls (`begin :r := f(:1); end;`, `CALL p(:x)`) and
@@ -1489,7 +1494,8 @@ never a shortened value (provisional names and sizes: design/oracle.md).
     let total = try r.outputs.decimal(0, 0)
 
 - Tests: `tns_codec` and `oracle_connstr` (no server), and live
-  `oracle_live_basic`, `oracle_live_types`, `oracle_live_out` and `oracle_live_tls`, which read
+  `oracle_live_basic`, `oracle_live_types`, `oracle_live_out`, `oracle_live_stream`,
+  `oracle_live_fetch` and `oracle_live_tls`, which read
   the connection string from `ORACLE_TEST_DSN` or `~/.obo-oracle-dsn` (and
   the TLS entries from `ORACLE_TEST_TLS` or `~/.obo-oracle-tls`) and are
   skipped without them. `obx/tools/oracle_container.sh create` makes the

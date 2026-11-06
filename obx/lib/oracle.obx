@@ -49,7 +49,8 @@
 //   CA File                            a PEM file of the CAs to trust instead of the system's
 //                                      store (a self-signed server certificate; provisional key)
 //   Connect Timeout, Connection Timeout seconds for the whole connect (15; 0 none)
-//   Fetch Size                         rows a round trip fetches (100; 1 to 100000)
+//   Fetch Size                         rows a round trip fetches (1 to 100000); without it, as
+//                                      many as about 256 KB hold at the widest row (provisional)
 //   Application Name, Program          the program name the server sees ("obx")
 //
 // Keys are case-insensitive; a value may be in braces or quotes. Errors name
@@ -82,7 +83,9 @@ var OPEN: int = 0
 // The number of Conn values not yet closed or dropped.
 pub fn openHandles(): int { return OPEN }
 
-pub const DEFAULT_FETCH = 100
+// Fetch Size by default: 0, the rows of a round trip are set by bytes
+// (tns.FETCH_TARGET over the widest row, tns.rowWidth).
+pub const DEFAULT_FETCH = 0
 
 // ---------------------------------------------------------------- connection strings
 
@@ -91,7 +94,7 @@ pub const DEFAULT_FETCH = 100
 pub type Settings = value record {
     pub config: tns.Config
     pub connectTimeoutMs: int     // 0: none
-    pub fetchSize: int
+    pub fetchSize: int            // 0: by bytes
 }
 
 fn bad(msg: str): Error { return sqldialect.inputError("connection string: " + msg) }
@@ -392,7 +395,8 @@ fn bindOf(p: &Param, s: &tns.Session): Result[tns.Bind, Error] {
 // time; every call that waits parks only that task.
 pub type Conn = record {
     s: tns.Session
-    fetchSize: int
+    fetchSize: int              // rows a round trip; 0: by bytes (rowsFor)
+    ahead: bool                 // streams send the next FETCH before using the rows of the last
     inBlock: bool               // inside transaction[T]
     lastErrors: []Error
 }
@@ -416,7 +420,7 @@ pub fn connectWith(st: &Settings, w: Where): Result[Conn, Error] {
     match move(r) {
         Ok(s) {
             OPEN += 1
-            return Ok(Conn{s: s, fetchSize: st.fetchSize, inBlock: false, lastErrors: []})
+            return Ok(Conn{s: s, fetchSize: st.fetchSize, ahead: true, inBlock: false, lastErrors: []})
         }
         Err(e) {
             if e.code == sqldialect.E_TIMEOUT { return Err(sqldialect.dbError(e.code, "connect: the deadline or Connect Timeout passed")) }
@@ -472,7 +476,29 @@ pub fn (c: &Conn) warnings(): []str {
 // E_LIMIT and breaks the connection.
 pub fn (c: mut &Conn) setMaxReply(n: int) { c.s.maxReply = max(n, 65536) }
 
-pub fn (c: mut &Conn) setFetchSize(n: int) { c.fetchSize = max(1, min(n, 100000)) }
+// The rows a round trip fetches (1 to 100,000), as Fetch Size; 0: by
+// bytes, the default (rowsFor).
+pub fn (c: mut &Conn) setFetchSize(n: int) { c.fetchSize = if n <= 0 { 0 } else { min(n, 100000) } }
+
+// Whether a stream sends its next FETCH as soon as a FETCH's rows arrive,
+// before the program uses them (true by default), so the server makes the
+// next rows meanwhile. Provisional, for the user.
+pub fn (c: mut &Conn) setFetchAhead(on: bool) { c.ahead = on }
+
+// The round trips the connection has made (login included).
+pub fn (c: &Conn) roundTrips(): int { return c.s.requests }
+
+// The rows a FETCH of cursor columns cols asks for: Fetch Size when set,
+// else as many as tns.FETCH_TARGET bytes hold at the widest row
+// (tns.rowWidth), at least 1.
+pub fn (c: &Conn) rowsFor(cols: &[]tns.Column): int {
+    if c.fetchSize > 0 { return c.fetchSize }
+    return tns.rowsFor(cols, tns.FETCH_TARGET)
+}
+
+// The execute's prefetch, before the columns are known: Fetch Size when
+// set, else tns.FIRST_ROWS.
+fn (c: &Conn) firstRows(): int { return if c.fetchSize > 0 { c.fetchSize } else { tns.FIRST_ROWS } }
 
 fn (c: mut &Conn) failWith(e: Error): Error {
     c.lastErrors = [e]
@@ -488,7 +514,7 @@ fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, 
     var binds: []tns.Bind = []
     for p in params { append(mut &binds, try bindOf(&p, &c.s)) }
     let kind = tns.statementKind(sql)
-    let e = tns.newExecute(sql, kind, binds, c.fetchSize,
+    let e = tns.newExecute(sql, kind, binds, c.firstRows(),
                            !c.inBlock && kind != tns.S_QUERY)
     var r = try c.s.execute(&e, &[], w)
     c.closeReturned(&r, 0)
@@ -521,7 +547,8 @@ fn (c: mut &Conn) rest(r: mut &tns.Reply, cursor: int, ref: bool, w: Where): Res
     var more = !(r.hasError && r.error.num == 1403)
     var last = r.lastRow()
     while more {
-        let got = if ref { c.s.fetchRef(cursor, c.fetchSize, &cols, &last, w) } else { c.s.fetch(cursor, c.fetchSize, &cols, &last, w) }
+        let ask = c.rowsFor(&cols)
+        let got = if ref { c.s.fetchRef(cursor, ask, &cols, &last, w) } else { c.s.fetch(cursor, ask, &cols, &last, w) }
         if got.isErr() { c.s.closeCursor(cursor) }
         var f = try got
         if f.hasError && f.error.num != 0 && f.error.num != 1403 {
@@ -912,7 +939,7 @@ pub fn (c: mut &Conn) callWith(sql: str, params: &[Param], outs: &[Out], w: Wher
         if !used[i] { return Err(outErr(&outs[i], "the statement has no such placeholder")) }
     }
     if len(binds) > 65535 { return Err(sqldialect.inputError("more than 65535 binds")) }
-    let ex = tns.newExecute(sql, kind, binds, c.fetchSize, !c.inBlock && kind != tns.S_QUERY)
+    let ex = tns.newExecute(sql, kind, binds, c.firstRows(), !c.inBlock && kind != tns.S_QUERY)
     var r = try c.s.execute(&ex, &[], w)
     let cursor = r.error.cursorId
     let query = kind == tns.S_QUERY || r.described
@@ -1315,13 +1342,16 @@ pub type RowView = sqlrows.RowView
 pub type Kind = sqlrows.Kind
 
 // A query read a fetch at a time into the program's own records
-// (design/db-streaming.md): a fill whose rows are used up makes one FETCH
-// round trip of the buffer's size (at least the connection's fetch size,
-// setFetchSize, 100 by default; the rows beyond the buffer wait for the
-// next fill), its rows kept as their values' bytes and decoded straight
-// into the buffer; the whole result is never held. It holds the connection
-// (a mut & borrow): the checker refuses any other use of it while the
-// stream is in scope. Provisional, for the user.
+// (design/db-streaming.md): a FETCH asks for the rows of about 256 KB at
+// the widest row (Conn.rowsFor; Fetch Size when set), and at least the
+// free space of the fill's buffer; the rows beyond the buffer wait for the
+// next fill. The rows are kept as their values' bytes and decoded straight
+// into the buffer; the whole result is never held. When a FETCH's rows
+// arrive and there are more, the next FETCH goes at once, before the rows
+// are used (setFetchAhead), so the server makes batch k+1 while the
+// program reads batch k: at most one batch waits on the wire. It holds the
+// connection (a mut & borrow): the checker refuses any other use of it
+// while the stream is in scope. Provisional, for the user.
 pub type Stream[B, T] = value record {
     c: mut &Conn
     cols: sqlrows.Columns
@@ -1330,6 +1360,9 @@ pub type Stream[B, T] = value record {
     bound: B
     read: fn(&B, &RowView): Result[T, Error]
     cursor: int
+    batch: int                  // rows a FETCH asks for at least (rowsFor)
+    want: int                   // the free space of the last fill's buffer
+    inFlight: bool              // a FETCH sent ahead, its reply not read
     reply: tns.Reply            // the last round trip's rows (raw)
     k: int                      // the next row of reply
     more: bool                  // the server has more rows
@@ -1385,9 +1418,13 @@ pub fn (c: mut &Conn) streamWith[B, T](sql: str, params: []Param, bind: fn(&Colu
     let n = len(tcols)
     let data = strFromBytes(&r.rawData)
     let more = query && !(r.hasError && r.error.num == 1403)
-    return Ok(Stream{c: c, cols: cols, tcols: tcols, codec: tns.codec(), bound: bound, read: read, cursor: if query { cursor } else { 0 },
+    let batch = c.rowsFor(&tcols)
+    var st = Stream{c: c, cols: cols, tcols: tcols, codec: tns.codec(), bound: bound, read: read, cursor: if query { cursor } else { 0 },
+                     batch: batch, want: 0, inFlight: false,
                      reply: r, k: 0, more: more, end: None, data: data, starts: array(n, 0), lens: array(n, -1), row: 0,
-                     state: if query { sqlrows.LIVE } else { sqlrows.ENDED }, held: None})
+                     state: if query { sqlrows.LIVE } else { sqlrows.ENDED }, held: None}
+    st.sendAhead(w)
+    return Ok(st)
 }
 
 // e, after a stream's cursor is queued to be closed.
@@ -1438,7 +1475,13 @@ fn (s: mut &Stream[B, T]) advance(want: int, w: Where): Result[bool, Error] {
             s.finish()
             return Ok(false)
         }
-        let got = s.c.s.fetchRaw(s.cursor, max(s.c.fetchSize, min(want, 100000)), &s.tcols, &s.reply, w)
+        s.want = max(s.want, min(want, 100000))
+        let got = if s.inFlight {
+            s.c.s.receiveFetch(&s.tcols, &s.reply, w)
+        } else {
+            s.c.s.fetchRaw(s.cursor, max(s.batch, s.want), &s.tcols, &s.reply, w)
+        }
+        s.inFlight = false
         if got.isErr() { return Err(s.failed(got.unwrapErr())) }
         let f = got.unwrap()
         if f.hasError && f.error.num != 0 && f.error.num != 1403 {
@@ -1451,6 +1494,7 @@ fn (s: mut &Stream[B, T]) advance(want: int, w: Where): Result[bool, Error] {
         s.data = strFromBytes(&f.rawData)
         s.reply = f
         s.k = 0
+        s.sendAhead(w)
     }
     let base = s.reply.rawFirst + s.k * len(s.lens)
     for i in 0..len(s.lens) {
@@ -1462,6 +1506,22 @@ fn (s: mut &Stream[B, T]) advance(want: int, w: Where): Result[bool, Error] {
     return Ok(true)
 }
 
+// Sends the next FETCH now, when there are more rows and fetching ahead is
+// on: the server makes those rows while the program uses the last ones.
+// Its reply is read by the next advance, or past (dropped) by the
+// connection's next request when the stream ends first, before the
+// cursor's close. A failed send ends the stream after the rows it has.
+fn (s: mut &Stream[B, T]) sendAhead(w: Where) {
+    if !s.more || !s.c.ahead || s.inFlight || s.cursor == 0 || s.state != sqlrows.LIVE { return }
+    match s.c.s.sendFetch(s.cursor, max(s.batch, s.want), &s.tcols, w) {
+        Ok(_) { s.inFlight = true }
+        Err(e) {
+            s.more = false
+            s.end = Some(e)
+        }
+    }
+}
+
 // The record of the current row.
 fn (s: &Stream[B, T]) current(): Result[T, Error] {
     let rv = sqlrows.rowView(s.cols.list(), &s.codec, &s.data, &s.starts, &s.lens, s.row)
@@ -1470,7 +1530,8 @@ fn (s: &Stream[B, T]) current(): Result[T, Error] {
 
 // Reads up to len(out) rows into out[0..n] and returns n; 0 at the end.
 // When the last fetch's rows are used, the next FETCH asks for the rows
-// still wanted (len(out) - n), at least the connection's fetch size. An error (the server's, a decoding error,
+// still wanted (len(out) - n), at least Conn.rowsFor; with fetching ahead it
+// was sent when the last rows arrived. An error (the server's, a decoding error,
 // read's) ends the stream; when rows came before it in this call they are
 // returned first and the error comes from the next call. Provisional, for
 // the user.
@@ -1498,10 +1559,10 @@ pub fn (s: mut &Stream[B, T]) fill(out: mut &[T], w: Where): Result[int, Error] 
     return Ok(n)
 }
 
-// The next row's record, or None at the end; a FETCH asks for the
-// connection's fetch size (setFetchSize) at a time.
+// The next row's record, or None at the end; a FETCH asks for
+// Conn.rowsFor rows at a time.
 pub fn (s: mut &Stream[B, T]) next(w: Where): Result[Option[T], Error] {
-    if !(try s.advance(s.c.fetchSize, w)) { return Ok(None) }
+    if !(try s.advance(s.batch, w)) { return Ok(None) }
     match s.current() {
         Ok(v) { return Ok(Some(v)) }
         Err(e) { return Err(s.failed(e)) }

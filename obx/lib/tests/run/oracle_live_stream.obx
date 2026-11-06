@@ -7,8 +7,9 @@
 // column and the row), every mapped type, 200,000 rows through a buffer of
 // 7 and of 1,024 against the buffered query, rows kept in a list across
 // fills, next(), an early close and a dropped stream, an error on a later
-// row (Oracle sends none of the rows of the FETCH that fails: 100-row fetches
-// give 4,900 rows though the error says 4,999 were made),
+// row (Oracle sends none of the rows of the FETCH that fails: its rows are 76
+// bytes at most, so fetches of 262,144 / 76 = 3,449 rows give 3,449 rows
+// though the error comes at row 5,000),
 // a statement without rows, by position, parameters; no cursor left
 // open (V$MYSTAT, as oracle_live_out).
 // needs: ssl
@@ -26,7 +27,7 @@
 // expect: next: 1 2 3 None
 // expect: early close: 5 rows | idle true | after: 2
 // expect: dropped: 3 rows | after: 2
-// expect: later error: 4900 rows then error 1476 | idle true | after: 2
+// expect: later error: 3449 rows then error 1476 | idle true | after: 2
 // expect: no rows: 0 rows | columns none
 // expect: position: 7 'x'
 // expect: parameters: 3 rows 24 | after: 2

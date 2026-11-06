@@ -1,6 +1,6 @@
 # Streaming query results into the program's records
 
-Status: built on branch `streaming` (2026-11-06), not merged. The design is
+Status: merged into main (2026-11-06); Oracle's round trips sized by bytes and its fetching ahead are on branch `oracle-fetch` (section 7, "Oracle over a slow network"). The design is
 the user's "option A": hand-written mappers, library only, no language
 change. Names and signatures marked **provisional** are for the user to
 confirm (section 9).
@@ -119,12 +119,12 @@ unconstrained numeric (`sum(int8)`) follows the same rule.
 | | SQL Server (`sqlserver` over `tds`) | PostgreSQL (`postgres` over libpq) | Oracle (`oracle` over `tns`) |
 |---|---|---|---|
 | mechanism | the reply read a packet at a time; ROW/NBCROW tokens scanned into value spans; a row may span packets (the rest of a packet is joined to the next) | libpq single-row mode (`PQsetSingleRowMode`): one PGresult per row, its values copied into one row string; text format | FETCH round trips; ROW_DATA kept as the values' bytes (BIT_VECTOR repeats copied from the row before, across fetches too) |
-| per fill | as many packets as the buffer needs | as many rows as the buffer holds, parking on the socket | one FETCH of the rows still wanted, at least the connection's fetch size (`setFetchSize`, 100); rows beyond the buffer wait for the next fill |
-| state while open | in the `Session` (`RowReader`) | in the stream (the pending PGresult) and libpq | in the stream (the last fetch) and the `Session` (`streamCursor`) |
-| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | `PQcancel`, then the results read to the end (at most 5 s, as for a cancelled query) | the server cursor closed with the next request (piggybacked, as every cursor close) |
-| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call cancels first (libpq says a command is active); `idle()` is false until then | the next request closes the cursor; `idle()` stays true (nothing is pending on the wire) |
+| per fill | as many packets as the buffer needs | as many rows as the buffer holds, parking on the socket | one FETCH of the rows still wanted, at least the rows of about 256 KB at the widest row (`Conn.rowsFor`; `Fetch Size` when set); rows beyond the buffer wait for the next fill. The next FETCH is sent as soon as a reply's rows arrive (fetching ahead), so it is usually on the wire before the fill that needs it |
+| state while open | in the `Session` (`RowReader`) | in the stream (the pending PGresult) and libpq | in the stream (the last fetch) and the `Session` (`streamCursor`; `pending`: a FETCH sent ahead whose reply is not read) |
+| early `close()` | ATTENTION, then the reply read up to the DONE with the attention flag | `PQcancel`, then the results read to the end (at most 5 s, as for a cancelled query) | the next request first reads past a FETCH reply still on the wire (`settle`), then closes the server cursor (piggybacked, as every cursor close) |
+| stream dropped without close | the next call on the connection does the ATTENTION first; `idle()` is false until then | the next call cancels first (libpq says a command is active); `idle()` is false until then | the same as close: the next request reads past the outstanding FETCH reply, then closes the cursor; `idle()` stays true |
 | more result sets | the first is streamed; at its end the rest of the reply is read and skipped; their errors come from `fill` | one statement only (as `query`) | one statement |
-| error after some rows | rows then `Err` (8134 at row 5,000: 4,999 rows, then the error) | rows then `Err` (22012: 4,999 rows) | the FETCH that fails brings no rows: with 100-row fetches 4,900 rows, then ORA-01476 |
+| error after some rows | rows then `Err` (8134 at row 5,000: 4,999 rows, then the error) | rows then `Err` (22012: 4,999 rows) | the FETCH that fails brings no rows: with 3,449-row fetches (76-byte rows) 3,449 rows, then ORA-01476, also when that FETCH was sent ahead |
 | using the connection while open | refused by the checker (the stream holds `mut &Conn`) | the same (`mut &Conn`; `&Conn` methods are refused too) | the same |
 | chunked rows | - | libpq 17's `PQsetChunkedRowsMode` is not used: this machine has libpq 16 and the extern would not link; obx cannot call a symbol looked up at run time | - |
 
@@ -164,16 +164,94 @@ times as indicative; the memory numbers do not depend on it.
 | SQL Server | native | 139 ms, 11.7 MB | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB |
 | PostgreSQL | C | 114 ms, 8.0 MB | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB |
 | PostgreSQL | native | 85 ms, 8.4 MB | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB |
-| Oracle | C | 183 ms, 10.5 MB | 1,460 ms, 10.5 MB | 2,114 ms, 378.0 MB |
-| Oracle | native | 171 ms, 11.0 MB | 1,346 ms, 11.1 MB | 2,323 ms, 410.4 MB |
+| Oracle | C | 120 ms, 11.0 MB | 873 ms, 11.0 MB | 1,923 ms, 377.9 MB |
+| Oracle | native | 110 ms, 11.2 MB | 810 ms, 11.2 MB | 1,328 ms, 410.0 MB |
 
 - Peak RSS stays flat while streaming: the same at 100,000 and 1,000,000
   rows (8 to 12 MB, the program and the buffer). Buffered grows with the
   result: 109 MB (libpq's PGresult) to 365 to 410 MB (Cells per value).
 - Streaming is faster everywhere: 2.4x to 2.7x for SQL Server, 1.0x to
   1.8x for PostgreSQL (libpq's per-row PGresult costs about as much as
-  the whole buffered result's parse via C), 1.4x to 1.7x for Oracle.
+  the whole buffered result's parse via C), 1.6x to 2.2x for Oracle (the Oracle rows: measured again on 2026-11-06 at 14:32, load 0.5, with round trips sized by bytes and fetching ahead; with 1,024-row fetches and no fetching ahead they were 1,460 and 1,346 ms streamed, 2,114 and 2,323 ms buffered).
 - The checksums are equal in every row (rows, ids, name lengths, amounts).
+
+### Oracle over a slow network
+
+Oracle reads a result in FETCH round trips, so latency multiplies by
+their number. Two changes (branch `oracle-fetch`, design/oracle.md "As
+built: round trips sized by bytes"): a FETCH asks for the rows of about
+256 KB at the widest row the describe allows (2,202 rows for this
+query, whose widest row is 119 bytes), instead of Fetch Size 100 (the
+buffered query) or the buffer's 1,024 (the stream); and a stream sends its
+next FETCH as soon as a reply's rows arrive, so the server makes batch
+k+1 while the program decodes batch k.
+
+`python3 obx/bench/dbstream/run.py --latency 0,0.12,1.75`: no root for
+tc/netem, so `delayproxy.py` sits in front of the server's port and
+delays every chunk in each direction (one thread per direction, select
+and a short spin; its own cost is about 0.3 ms a round trip, so the
+one-way delays 0.12 and 1.75 ms give the measured 1 and 5 ms round trips:
+the mean of 500 `SELECT 1`). Query time without the login, least of 3
+interleaved runs on CPU 10 (11 idle; the proxy on CPUs 4 to 8, the server
+unpinned), load average 0.5 to 0.7; 2026-11-06 14:20. Old: Fetch Size 100
+and no fetching ahead (a stream still asks for its buffer's 1,024 rows);
+new: the defaults.
+
+| round trip | backend | mode | rows | old: trips, ms | new: trips, ms | new / old |
+|---|---|---|---:|---:|---:|---:|
+| 0.38 ms (direct) | C | buffered | 100,000 | 1,001, 540 | 47, 177 | 0.33 |
+| | C | buffered | 1,000,000 | 10,001, 5,192 | 456, 1,820 | 0.35 |
+| | C | stream | 100,000 | 99, 124 | 47, 84 | 0.68 |
+| | C | stream | 1,000,000 | 978, 1,218 | 456, 818 | 0.67 |
+| | native | buffered | 100,000 | 1,001, 469 | 47, 133 | 0.28 |
+| | native | buffered | 1,000,000 | 10,001, 4,820 | 456, 1,302 | 0.27 |
+| | native | stream | 100,000 | 99, 108 | 47, 77 | 0.71 |
+| | native | stream | 1,000,000 | 978, 1,072 | 456, 745 | 0.69 |
+| 0.98 ms | C | buffered | 100,000 | 1,001, 1,086 | 47, 215 | 0.20 |
+| | C | buffered | 1,000,000 | 10,001, 10,569 | 456, 2,202 | 0.21 |
+| | C | stream | 100,000 | 99, 180 | 47, 117 | 0.65 |
+| | C | stream | 1,000,000 | 978, 1,784 | 456, 1,152 | 0.65 |
+| | native | buffered | 100,000 | 1,001, 988 | 47, 175 | 0.18 |
+| | native | buffered | 1,000,000 | 10,001, 10,089 | 456, 1,779 | 0.18 |
+| | native | stream | 100,000 | 99, 168 | 47, 112 | 0.67 |
+| | native | stream | 1,000,000 | 978, 1,667 | 456, 1,103 | 0.66 |
+| 4.93 ms | C | buffered | 100,000 | 1,001, 4,766 | 47, 394 | 0.08 |
+| | C | buffered | 1,000,000 | 10,001, 48,920 | 456, 3,855 | 0.08 |
+| | C | stream | 100,000 | 99, 568 | 47, 295 | 0.52 |
+| | C | stream | 1,000,000 | 978, 5,633 | 456, 2,879 | 0.51 |
+| | native | buffered | 100,000 | 1,001, 4,595 | 47, 347 | 0.08 |
+| | native | buffered | 1,000,000 | 10,001, 46,725 | 456, 3,368 | 0.07 |
+| | native | stream | 100,000 | 99, 558 | 47, 290 | 0.52 |
+| | native | stream | 1,000,000 | 978, 5,462 | 456, 2,847 | 0.52 |
+
+Peak RSS does not change: 10.5 to 11.2 MB streamed, 46.5 to 50.4 MB
+buffered at 100,000 rows, 378 to 411 MB at 1,000,000 (the cells, not the
+fetches). Rows per round trip: old 100 (buffered) and 1,010 to 1,022
+(stream), new 2,128 to 2,193. The checksums are equal everywhere.
+
+What fetching ahead alone gives (the stream, 1,000,000 rows, rows by
+bytes with and without it, the same run conditions at 14:30):
+
+| round trip | backend | without | with | saved |
+|---|---|---:|---:|---:|
+| 0.40 ms | C | 970 ms | 844 ms | 13 % |
+| 0.40 ms | native | 903 ms | 783 ms | 13 % |
+| 0.99 ms | C | 1,414 ms | 1,136 ms | 20 % |
+| 0.99 ms | native | 1,297 ms | 1,112 ms | 14 % |
+| 4.87 ms | C | 3,106 ms | 2,877 ms | 7 % |
+| 4.87 ms | native | 3,066 ms | 2,880 ms | 6 % |
+
+- The round trips dominate the buffered query: 10,001 at 100 rows. The
+  byte target makes it 12 to 14 times faster at a 5 ms round trip and 5
+  to 6 times at 1 ms.
+- Fetching ahead hides the decoding of a batch behind the next round
+  trip: up to the time the program spends on a batch (about 1.7 ms for
+  2,193 rows). At 5 ms the round trip is the longer of the two, so what
+  is left is about 456 round trips of 4.9 ms (2.2 s of the 2.9 s).
+- The widest row is a bound: the bench's rows are about 30 bytes on the
+  wire against 119 at most, so a 256 KB FETCH carries about 68 KB. A
+  target measured from the rows actually received (after the first
+  FETCH) would cut the round trips by about 4 here; left for later.
 
 ## 8. API as built
 
@@ -215,7 +293,8 @@ binds); `sqlserver.Conn.streaming()`.
 | errors after rows | rows first, the error from the next fill | the error at once, the partial batch lost |
 | `args` | taken: `[]Value` | `&[Value]` with a separate `let` for the arguments |
 | Oracle unconstrained NUMBER | reads as `Int`, each value checked | refused, `CAST` needed |
-| Oracle's smallest FETCH | the connection's fetch size (100) | the buffer's size exactly (28,572 round trips for 200,000 rows with a buffer of 7) |
+| Oracle's smallest FETCH | the rows of 256 KB at the widest row (2,202 for the bench's row, 21 for three full VARCHAR2(4000)), or Fetch Size when set | the buffer's size exactly (28,572 round trips for 200,000 rows with a buffer of 7); a byte key in the connection string |
+| Oracle fetching ahead | on (`setFetchAhead`): the next FETCH goes when a reply's rows arrive | only when the buffer is larger than one FETCH; never |
 | nullable columns | never refused at bind | refuse a non-Option read where the server says nullable (SQL Server, Oracle) |
 | `idle()` after a dropped stream | false (SQL Server, PostgreSQL) until the next call cleans up | clean up in `idle()` |
 
@@ -226,6 +305,7 @@ binds); `sqlserver.Conn.streaming()`.
 | `sqlserver_live_stream` | C, native; OBX_CHECK=1 | 20 checks: names, missing, ambiguous, type, wide int, NULL, every type (incl. nvarchar(max) longer than a packet), 200,000 rows with buffers 7 and 1,024 against the buffered query, rows kept across fills, next, early close, dropped, later error, no result set, by position, parameters, no handle left |
 | `postgres_live_stream` | C, native; OBX_CHECK=1 | the same, and a pool lease |
 | `oracle_live_stream` | C, native; OBX_CHECK=1 | the same, and no cursor left open (V$MYSTAT over repeated early closes, drops, errors and bind failures) |
+| `oracle_live_fetch` | C, native; OBX_CHECK=1 | row widths and rows per round trip (narrow, three full VARCHAR2(4000)), a buffer of 7 with the byte target, Fetch Size 100 and fetching ahead off for the same rows, buffered round trips, an early close and a drop with a FETCH on the wire (the connection used after), an error in the FETCH sent ahead, no cursor left open over repeated early closes |
 | `sqlserver_fake_stream` | C, native; OBX_CHECK=1; no server needed | a scripted server in 512-byte packets: rows spanning packets, NBCROW NULLs, nvarchar(max) chunks longer than a packet, an early close (ATTENTION seen and acknowledged, the connection reused), 300 mutated or cut replies through a buffer of 7: each ends in rows or an Err |
 | `stream_conn_in_use` (error) | checker | the connection used while a stream is open |
 | `stream_keep_row_borrow` (error) | checker | `&buf[0]` kept across the next fill |

@@ -1,14 +1,17 @@
 // Streaming against buffered reads of the same query, for the three
 // database clients (design/db-streaming.md, section 7). Run by run.py:
 //
-//     dbstream CLIENT MODE ROWS [BUFFER]
+//     dbstream CLIENT MODE ROWS [BUFFER [FETCH [PORT]]]
 //
 // CLIENT is mssql, pg or oracle (the DSNs as the live tests find them:
 // MSSQL_TEST_DSN or ~/.obo-mssql-dsn, OBX_PG_DSN, ORACLE_TEST_DSN or
 // ~/.obo-oracle-dsn; never printed); MODE is stream or buffered. Every row
 // is decoded into an Order (bigint, int, text, decimal(12,2)) and folded
 // into a checksum. Prints: client mode rows ms peak-KB checksum. The peak is
-// the process's VmHWM.
+// the process's VmHWM. For oracle, FETCH is new (the default: rows by
+// bytes, fetching ahead) or old (Fetch Size 100, no fetching ahead), PORT
+// a delay proxy's (delayproxy.py), and the query's round trips and
+// milliseconds (without the login) follow the checksum.
 
 import "sqlserver"
 import "postgres"
@@ -116,9 +119,27 @@ fn pg(stream: bool, n: int, size: int): Result[Sum, Error] {
     return Ok(s)
 }
 
+// Oracle's fetching: "new" (the defaults: rows by bytes, fetching ahead)
+// or "old" (Fetch Size 100, no fetching ahead) or "noahead" (rows by
+// bytes, no fetching ahead); PORT 0: the DSN's port,
+// else a delay proxy's (delayproxy.py). TRIPS and QUERY_MS: the query's
+// round trips and time, without the login.
+var FETCH: str = "new"
+var PORT: int = 0
+var TRIPS: int = -1
+var QUERY_MS: int = -1
+
 fn ora(stream: bool, n: int, size: int): Result[Sum, Error] {
-    var c = try oracle.connect(fileOr("ORACLE_TEST_DSN", ".obo-oracle-dsn"))
-    c.setFetchSize(size)
+    var st = try oracle.parseConnString(fileOr("ORACLE_TEST_DSN", ".obo-oracle-dsn"))
+    if PORT > 0 { st.config.port = PORT }
+    var c = try oracle.connectWith(&st)
+    if FETCH == "noahead" { c.setFetchAhead(false) }
+    if FETCH == "old" {
+        c.setFetchSize(100)
+        c.setFetchAhead(false)
+    }
+    let r0 = c.roundTrips()
+    let q0 = time.monotonicNs()
     var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
     if stream {
         var src = try c.stream(oracleSql(n), [], bindOrder, readOrder)
@@ -135,8 +156,23 @@ fn ora(stream: bool, n: int, size: int): Result[Sum, Error] {
             s.add(&o)
         }
     }
+    QUERY_MS = (time.monotonicNs() - q0) / 1000000
+    TRIPS = c.roundTrips() - r0
     c.logoff()
     return Ok(s)
+}
+
+// The mean time of n round trips (SELECT 1 FROM dual) in microseconds.
+fn ping(n: int): Result[int, Error] {
+    var st = try oracle.parseConnString(fileOr("ORACLE_TEST_DSN", ".obo-oracle-dsn"))
+    if PORT > 0 { st.config.port = PORT }
+    var c = try oracle.connectWith(&st)
+    let r = try c.query("SELECT 1 FROM dual", &[])
+    let t0 = time.monotonicNs()
+    for i in 0..n { let x = try c.query("SELECT 1 FROM dual", &[]) }
+    let us = (time.monotonicNs() - t0) / 1000 / max(n, 1)
+    c.logoff()
+    return Ok(us)
 }
 
 // The process's peak resident set (VmHWM), in KB.
@@ -162,13 +198,27 @@ fn main() {
     let stream = a[2] == "stream"
     let n = parseInt(a[3]).unwrapOr(1000)
     let size = if len(a) > 4 { parseInt(a[4]).unwrapOr(1024) } else { 1024 }
+    if len(a) > 5 { FETCH = a[5] }
+    if len(a) > 6 { PORT = parseInt(a[6]).unwrapOr(0) }
+    if client == "oracle" && a[2] == "ping" {
+        // n round trips of SELECT 1: the mean round trip in microseconds
+        let p = ping(n)
+        match p {
+            Ok(us) { println("oracle ping " + n.toStr() + " " + us.toStr()) }
+            Err(e) {
+                println("error " + e.code.toStr())
+                exit(1)
+            }
+        }
+        return
+    }
     let t0 = time.monotonicNs()
     let r = if client == "mssql" { mssql(stream, n, size) } else if client == "pg" { pg(stream, n, size) } else { ora(stream, n, size) }
     let ms = (time.monotonicNs() - t0) / 1000000
     match r {
         Ok(s) {
             println(client + " " + a[2] + " " + s.rows.toStr() + " " + ms.toStr() + " " + peakKb().toStr() + " " +
-                    (s.ids + s.chars + s.units).toStr())
+                    (s.ids + s.chars + s.units).toStr() + if TRIPS >= 0 { " " + TRIPS.toStr() + " " + QUERY_MS.toStr() } else { "" })
         }
         Err(e) {
             println("error " + e.code.toStr())

@@ -160,7 +160,8 @@ like `sqlserver`'s (`keyword=value;`, quotes and braces):
 `User Id`, `Password`, `Data Source` (`host[:port]/service` in EZConnect form,
 or a full `(DESCRIPTION=...)`), `Connect Timeout` (seconds, default 15),
 `Encrypt` / `Protocol=tcps`, `TrustServerCertificate`, `Fetch Size` (rows per
-round trip, default 100). `masked()` hides the password.
+round trip; by default the rows of 256 KB at the widest row, see "As built:
+round trips sized by bytes"). `masked()` hides the password.
 
 ## Testing
 
@@ -334,8 +335,8 @@ Branch `streaming`; the shared design is design/db-streaming.md.
   binds) give a `Stream[B, T]` holding `mut &Conn`. The execute is sent
   with no rows asked for (prefetch 0): it describes the columns for bind.
 - Each `fill` whose rows are used up sends one FETCH for the rows still
-  wanted, at least the connection's fetch size (`setFetchSize`, 100 by
-  default); rows beyond the buffer wait in the stream for the next fill.
+  wanted, at least the connection's fetch size (`setFetchSize`; since
+  `oracle-fetch`, the rows of 256 KB by default: below); rows beyond the buffer wait in the stream for the next fill.
   So memory is bounded by the larger of the buffer and the fetch size.
 - Rows are kept raw (`Reply.raw`): each value's bytes appended to one
   buffer with its start and length, a BIT_VECTOR repeat copied from the
@@ -349,10 +350,84 @@ Branch `streaming`; the shared design is design/db-streaming.md.
   comes next. `oracle_live_stream` checks "opened cursors current" before
   and after rounds of early closes, drops, errors and bind failures: equal.
 - An error during a FETCH (ORA-01476 at row 5,000) comes with none of that
-  FETCH's rows: with 100-row fetches the stream gives 4,900 rows, then the
+  FETCH's rows: with 100-row fetches the stream gave 4,900 rows, then the
   error, though the error's row count says 4,999.
 - LOB columns are skipped (their columns read as nothing, so bind refuses
   them).
+
+## As built: round trips sized by bytes, fetching ahead
+
+Branch `oracle-fetch`. Live on 23.26 Free on the C and the native backend
+under `OBX_CHECK=1` (`oracle_live_fetch`; `oracle_live_stream` and the
+other Oracle tests unchanged but for counts that follow the new sizes).
+
+**Rows per round trip** (provisional, for the user). Without `Fetch Size`
+a FETCH asks for `tns.rowsFor(cols, FETCH_TARGET)` rows: 262,144 bytes
+over the widest row the describe allows, at least 1 and at most 100,000.
+`tns.rowWidth` is 8 bytes a row (the ROW_DATA message and row header)
+plus each column's `columnWidth`:
+
+| column | bytes | why |
+|---|---:|---|
+| VARCHAR2(n), CHAR(n), RAW(n), NVARCHAR2(n), NCHAR(n) | the describe's buffer size + 1, + 5 a 32 KB chunk and 1 over 252 bytes | the buffer size is in bytes: VARCHAR2(4000) 4000; VARCHAR2(n CHAR) and NVARCHAR2 what the server allows for n characters; a value over 252 bytes is sent in chunks |
+| NUMBER, FLOAT, INTEGER, BINARY_INTEGER | 22 | a length byte and at most 21 (exponent and 20 base-100 digits) |
+| DATE, TIMESTAMP, WITH TIME ZONE, BINARY_FLOAT/DOUBLE, BOOLEAN | 1 + size (8, 12, 14, 5, 9, 5) | fixed |
+| ROWID | 14 | |
+| CLOB, BLOB, BFILE, JSON, VECTOR, objects | 128 | a locator or an image, not the value |
+| LONG, LONG RAW | 32,768 | unbounded (the whole value is in the row): counted as 32 KB, so 8 such columns are one row a FETCH |
+| a column that is always NULL (`SELECT NULL`) | 1 | |
+
+So VARCHAR2(4000) counts 4,007 bytes, three of them and a NUMBER(10)
+12,051 (21 rows a FETCH), and the bench's (NUMBER, NUMBER, VARCHAR2(44),
+NUMBER(12,2)) 119 (2,202 rows). A stream's FETCH still asks for at least
+its buffer's free space. The execute's prefetch is sent before the
+describe exists, so it cannot use the rule: it asks for `FIRST_ROWS`
+(32), so a result of up to 32 rows is one round trip and the first
+reply stays near the target for rows up to 8 KB wide. Buffered `query`,
+`call`'s REF CURSORs and implicit results use the same rule.
+`Fetch Size` (connection string) and `setFetchSize(n)` stay a count of
+rows that overrides it; `setFetchSize(0)` and the default (`DEFAULT_FETCH`
+0) are the byte rule. No byte key in the connection string: the target
+has not needed tuning yet (provisional).
+
+**Fetching ahead** (provisional, `setFetchAhead`, on by default). Oracle
+takes one request at a time. When a stream's FETCH reply has been read
+and the cursor has more rows, the stream sends the next FETCH at once
+(`Session.sendFetch`: header and body without the stream's own cursor
+close, then `pending` set with the cursor's columns) and only then hands
+out the rows it has; the next fill that needs rows reads that reply
+(`receiveFetch`, its raw rows seeded with the last row for BIT_VECTOR
+repeats) and sends the next. At most one batch waits on the wire (or in
+the server); the stream holds one batch of raw rows. The stream also
+sends its first FETCH right after the describe.
+
+- **Early close or drop with a FETCH outstanding:** the stream only queues
+  its cursor's close (`streamCursor` or `closeCursor`). Every request goes
+  through `Session.call`, which first `settle`s: it reads the outstanding
+  reply to its end and drops it (a row of NULLs seeded for BIT_VECTOR
+  repeats), then sends its own request with the cursor close piggybacked.
+  So the wire stays in order and nothing leaks: `oracle_live_fetch`
+  closes and drops streams with a FETCH in flight eleven times each, and
+  "opened cursors current" is the same before and after. A reply that
+  cannot be read (the server gone) breaks the connection, as any failed
+  call does.
+- **Errors:** an error in the FETCH sent ahead is read when the rows
+  before it are used up, so it comes after them, as before (3,449 rows,
+  then ORA-01476, with and without fetching ahead). A failed send ends the
+  stream after the rows it has.
+- `Conn.roundTrips()` counts requests (login included): the tests and the
+  bench report rows per round trip with it.
+- Buffered `query` does not fetch ahead: its rows are decoded into cells
+  as the reply is read, so sending the next FETCH after a reply would
+  overlap nothing but moving the rows.
+
+Measured over 1 ms and 5 ms round trips (design/db-streaming.md section
+7, "Oracle over a slow network"): the buffered query of 1,000,000 rows
+from 48.9 s to 3.9 s at 5 ms (10,001 round trips to 456), the stream
+from 5.6 s to 2.9 s; direct, the buffered query 2.9 to 3.7 times faster and
+the stream 1.4 to 1.5 times. Fetching ahead alone saves 13 % direct, 14 to 20 %
+at 1 ms and 6 to 7 % at 5 ms, where the round trip outlasts the
+decoding it hides.
 
 Next stages: O4 LOBs (LONG defines, then locators; LOB OUT binds),
 PL/SQL collections and records as binds, array DML (executemany), REF
