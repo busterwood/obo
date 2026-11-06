@@ -6,6 +6,13 @@
 the same output byte for byte. `eza -?` lists what it does; everything else
 is rejected with an error, never silently ignored.
 
+The long view (`-l`) is the full default form: decimal sizes, `-b` binary
+prefixes, `-B` bytes, user names from /etc/passwd (`-n` for numeric ids),
+dates in the zone of `TZ` (else the system's) with the current-year rule,
+`--time-style=long-iso` (and `default`), `-h` header rows, and eza's default
+colours. `--time-style=iso` and the other styles are rejected. The measured
+rules are in [../tests/eza/E3-PROBES.md](../tests/eza/E3-PROBES.md).
+
 It is one file. The parts (argument parsing, deduction, entries and sorting,
 colour, the three views) share two types, `Opts` and `Entry`, and nothing in
 them is useful to another program yet; a split would only add imports and
@@ -29,6 +36,11 @@ it with `--reference=none`:
     python3 cmd/eza_gate.py -j 8                 # native build, all cases
     python3 cmd/eza_gate.py --c -j 8             # C build
     python3 cmd/eza_gate.py --exe ./eza -k tree  # a given binary, some cases
+
+Recording goldens needs a reference; the pinned binary is not present here, so
+the goldens of this change were recorded with a cargo build of eza 0.23.3 via
+`python3 tests/eza.py --record --force --reference-exe PATH`. Its `--version`
+matches VERSION; its sha256 does not (the harness notes this).
 
 Other options go to the harness (`-k PATTERN`, `-x`, `-v`); the reference
 defaults to `--reference=none`, so the goldens are the oracle. A full run

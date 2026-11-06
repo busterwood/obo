@@ -1,0 +1,13 @@
+Permissions Size User Date Modified Name
+drwxr-xr-x     - 1000 13 Sep  2020  tree
+.rw-r--r--     2 1000 13 Sep  2020  ├── a.txt
+lrwxrwxrwx     - 1000 13 Sep  2020  ├── broken -> missing
+drwxr-xr-x     - 1000 13 Sep  2020  ├── d1
+.rw-r--r--     2 1000 13 Sep  2020  │   ├── b.txt
+drwxr-xr-x     - 1000 13 Sep  2020  │   └── d2
+.rw-r--r--     2 1000 13 Sep  2020  │       ├── c.txt
+drwxr-xr-x     - 1000 13 Sep  2020  │       └── d3
+.rw-r--r--     2 1000 13 Sep  2020  │           └── d.txt
+lrwxrwxrwx     - 1000 13 Sep  2020  ├── dirlink -> d1
+drwxr-xr-x     - 1000 13 Sep  2020  ├── emptydir
+drwxr-xr-x     - 1000 13 Sep  2020  └── hidden
