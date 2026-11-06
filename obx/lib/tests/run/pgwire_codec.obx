@@ -1,0 +1,255 @@
+// pgwire's codecs without a server: the messages the client builds against byte
+// vectors, DataRow scanning (and its E_PROTOCOL cases), command tags, parameters
+// for every Value, SCRAM-SHA-256 against RFC 7677's exchange, the MD5 password,
+// ErrorResponse fields, and the text decoders.
+// expect: messages: 17 checks, 0 failed
+// expect: scanRow: 11 checks, 0 failed
+// expect: tags: 12 checks, 0 failed
+// expect: params: 14 checks, 0 failed
+// expect: scram: 6 checks, 0 failed
+// expect: errors: 21 checks, 0 failed
+// expect: decoders: 14 checks, 0 failed
+import "pgwire"
+import "sqldialect"
+import "crypto"
+import "math"
+
+var CHECKS: int = 0
+var FAILED: int = 0
+
+fn check(name: str, ok: bool) {
+    CHECKS += 1
+    if !ok {
+        FAILED += 1
+        println("FAIL " + name)
+    }
+}
+
+fn section(name: str) {
+    println(name + ": " + CHECKS.toStr() + " checks, " + FAILED.toStr() + " failed")
+    CHECKS = 0
+    FAILED = 0
+}
+
+fn same(name: str, got: str, want: str) {
+    check(name, got == want)
+    if got != want { println("  got  " + sqldialect.hex(got) + "\n  want " + sqldialect.hex(want)) }
+}
+
+fn out(): pgwire.Out { return pgwire.newOut() }
+
+fn params3(): []pgwire.Param {
+    return [pgwire.Param{oid: 20, binary: false, null: false, data: "42"}, pgwire.Param{oid: 0, binary: false, null: true, data: ""},
+            pgwire.Param{oid: 17, binary: true, null: false, data: "ab"}]
+}
+
+fn messages() {
+    var o = out()
+    pgwire.putSslRequest(mut &o)
+    same("SSLRequest", o.str(), "\x00\x00\x00\x08\x04\xd2\x16\x2f")
+    o.reset()
+    pgwire.putCancelRequest(mut &o, 1234, "ABCD")
+    same("CancelRequest", o.str(), "\x00\x00\x00\x10\x04\xd2\x16\x2e\x00\x00\x04\xd2ABCD")
+    o.reset()
+    pgwire.putCancelRequest(mut &o, 1, "0123456789abcdef0123456789abcdef")
+    same("CancelRequest with a 32 byte key", o.str(), "\x00\x00\x00\x2c\x04\xd2\x16\x2e\x00\x00\x00\x01" + "0123456789abcdef0123456789abcdef")
+    o.reset()
+    pgwire.putStartup(mut &o, "u", "d", &[pgwire.Setting{name: "client_encoding", value: "UTF8"}])
+    same("StartupMessage", o.str(), "\x00\x00\x00\x30\x00\x03\x00\x00user\0u\0database\0d\0client_encoding\0UTF8\0\0")
+    o.reset()
+    pgwire.putQuery(mut &o, "SELECT 1")
+    same("Query", o.str(), "Q\x00\x00\x00\x0dSELECT 1\0")
+    o.reset()
+    pgwire.putParse(mut &o, "", "SELECT $1", &[pgwire.Param{oid: 20, binary: false, null: false, data: ""}])
+    same("Parse", o.str(), "P\x00\x00\x00\x15\0SELECT $1\0\x00\x01\x00\x00\x00\x14")
+    o.reset()
+    pgwire.putBind(mut &o, "", "", &params3())
+    same("Bind with mixed formats", o.str(), "B\x00\x00\x00\x22\0\0\x00\x03\x00\x00\x00\x00\x00\x01\x00\x03\x00\x00\x00\x02" + "42" +
+         "\xff\xff\xff\xff\x00\x00\x00\x02" + "ab" + "\x00\x00")
+    o.reset()
+    pgwire.putDescribe(mut &o, 80, "")
+    same("Describe portal", o.str(), "D\x00\x00\x00\x06P\0")
+    o.reset()
+    pgwire.putExecute(mut &o, "", 7)
+    same("Execute", o.str(), "E\x00\x00\x00\x09\0\x00\x00\x00\x07")
+    o.reset()
+    pgwire.putClose(mut &o, 80, "")
+    same("Close portal", o.str(), "C\x00\x00\x00\x06P\0")
+    o.reset()
+    pgwire.putFlush(mut &o)
+    same("Flush", o.str(), "H\x00\x00\x00\x04")
+    o.reset()
+    pgwire.putSync(mut &o)
+    same("Sync", o.str(), "S\x00\x00\x00\x04")
+    o.reset()
+    pgwire.putTerminate(mut &o)
+    same("Terminate", o.str(), "X\x00\x00\x00\x04")
+    o.reset()
+    pgwire.putPassword(mut &o, "pw")
+    same("PasswordMessage", o.str(), "p\x00\x00\x00\x07pw\0")
+    o.reset()
+    pgwire.putSaslInitial(mut &o, "SCRAM-SHA-256", "n,,n=,r=abc")
+    same("SASLInitialResponse", o.str(), "p\x00\x00\x00\x21SCRAM-SHA-256\0\x00\x00\x00\x0bn,,n=,r=abc")
+    o.reset()
+    pgwire.putSaslResponse(mut &o, "xyz")
+    same("SASLResponse", o.str(), "p\x00\x00\x00\x07xyz")
+    o.reset()
+    pgwire.putCopyFail(mut &o, "no")
+    same("CopyFail", o.str(), "f\x00\x00\x00\x07no\0")
+    section("messages")
+}
+
+fn scan(d: str, at: int, n: int): Result[int, pgwire.Error] {
+    var st = array(n, 0)
+    var ln = array(n, 0)
+    return pgwire.scanRow(&d, at, n, mut &st, mut &ln)
+}
+
+fn scanTests() {
+    let row = "\x00\x02\x00\x00\x00\x03abc\xff\xff\xff\xff"
+    var st = array(2, 0)
+    var ln = array(2, 0)
+    let r = pgwire.scanRow(&row, 0, 2, mut &st, mut &ln)
+    check("end", r.isOk() && r.unwrap() == 13)
+    check("spans", st[0] == 6 && ln[0] == 3 && ln[1] == -1)
+    check("empty value", scan("\x00\x01\x00\x00\x00\x00", 0, 1).unwrapOr(-1) == 6)
+    check("zero columns", scan("\x00\x00", 0, 0).unwrapOr(-1) == 2)
+    check("at an offset", scan("XXX\x00\x01\x00\x00\x00\x01z", 3, 1).unwrapOr(-1) == 10)
+    check("count disagrees", scan(row, 0, 3).unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("negative length", scan("\x00\x01\xff\xff\xff\xfe", 0, 1).unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("past the end", scan("\x00\x01\x00\x00\x00\x09abc", 0, 1).unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("cut short", scan("\x00\x02\x00\x00\x00\x01a", 0, 2).unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("no count", scan("\x00", 0, 1).unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("huge length", scan("\x00\x01\x7f\xff\xff\xff", 0, 1).unwrapErr().code == sqldialect.E_PROTOCOL)
+    section("scanRow")
+}
+
+fn tags() {
+    check("INSERT", pgwire.affectedOf("INSERT 0 3") == 3)
+    check("INSERT 0 0", pgwire.affectedOf("INSERT 0 0") == 0)
+    check("UPDATE", pgwire.affectedOf("UPDATE 5") == 5)
+    check("DELETE", pgwire.affectedOf("DELETE 2") == 2)
+    check("SELECT", pgwire.affectedOf("SELECT 7") == 7)
+    check("MERGE", pgwire.affectedOf("MERGE 4") == 4)
+    check("MOVE", pgwire.affectedOf("MOVE 1") == 1)
+    check("FETCH", pgwire.affectedOf("FETCH 9") == 9)
+    check("COPY", pgwire.affectedOf("COPY 6") == 6)
+    check("CREATE TABLE", pgwire.affectedOf("CREATE TABLE") == 0)
+    check("BEGIN", pgwire.affectedOf("BEGIN") == 0)
+    check("empty", pgwire.affectedOf("") == 0)
+    section("tags")
+}
+
+fn p(v: sqldialect.Value): pgwire.Param { return pgwire.param(&v).unwrap() }
+
+fn paramTests() {
+    let n = p(sqldialect.Value.Null)
+    check("Null", n.null && n.oid == 0)
+    let i = p(sqldialect.Value.Int(-5))
+    check("Int", i.oid == 20 && !i.binary && i.data == "-5")
+    check("Float", p(sqldialect.Value.Float(0.1f)).data == "0.1" && p(sqldialect.Value.Float(0.1f)).oid == 701)
+    check("Float NaN", p(sqldialect.Value.Float(math.inf() - math.inf())).data == "NaN")
+    check("Float Infinity", p(sqldialect.Value.Float(math.inf())).data == "Infinity" && p(sqldialect.Value.Float(-math.inf())).data == "-Infinity")
+    check("Bool", p(sqldialect.Value.Bool(true)).data == "t" && p(sqldialect.Value.Bool(false)).data == "f" && p(sqldialect.Value.Bool(true)).oid == 16)
+    check("Text", p(sqldialect.Value.Text("é")).oid == 25 && p(sqldialect.Value.Text("é")).data == "é")
+    let t = sqldialect.Value.Text("a\0b")
+    let r = pgwire.param(&t)
+    check("Text with NUL", r.isErr() && r.unwrapErr().code == sqldialect.E_INPUT && r.unwrapErr().msg == "text value contains a NUL byte")
+    let b = p(sqldialect.Value.Bytes("\0\xff"))
+    check("Bytes binary", b.oid == 17 && b.binary && b.data == "\0\xff")
+    check("Dec", p(sqldialect.Value.Dec(12.50m)).data == "12.50" && p(sqldialect.Value.Dec(12.50m)).oid == 1700)
+    check("Dec exact", p(sqldialect.Value.Dec(0.000000000000000000000000000000000001m)).data == "0.000000000000000000000000000000000001")
+    let tiny = sqldialect.Value.Dec(1e-16384m)
+    let rr = pgwire.param(&tiny)
+    check("Dec below 1e-16383", rr.isErr() && rr.unwrapErr().code == sqldialect.E_DEC_PG_RANGE)
+    check("empty Text", p(sqldialect.Value.Text("")).data == "" && !p(sqldialect.Value.Text("")).null)
+    check("Null is not empty text", p(sqldialect.Value.Text("")).null == false)
+    section("params")
+}
+
+fn scramTests() {
+    let bare = "n=user,r=rOprNGfwEbeRWgbNEkqO"
+    let first = "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
+    let fin = "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0"
+    let am = bare + "," + first + "," + fin
+    let salt = crypto.unbase64("W22ZaJ0SNY7soEsUEjb6gQ==").unwrap()
+    let proof = pgwire.scramClientProof("pencil", salt, 4096, am)
+    check("client proof", proof.isOk() && crypto.base64(proof.unwrap()) == "dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=")
+    let sig = pgwire.scramServerSignature("pencil", salt, 4096, am)
+    check("server signature", sig.isOk() && crypto.base64(sig.unwrap()) == "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=")
+    let wrong = pgwire.scramClientProof("pencil!", salt, 4096, am)
+    check("another password, another proof", wrong.isOk() && crypto.base64(wrong.unwrap()) != "dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=")
+    // md5: "md5" + md5(md5(password + user) hex + salt) hex
+    let inner = crypto.hex(crypto.md5("pencil" + "user").unwrap())
+    let want = "md5" + crypto.hex(crypto.md5(inner + "\x01\x02\x03\x04").unwrap())
+    check("md5Password", pgwire.md5Password("user", "pencil", "\x01\x02\x03\x04").unwrap() == want)
+    check("md5Password length", len(want) == 35)
+    // a password of non-ASCII spaces and invisible characters: prepped to "a b"
+    let pre = pgwire.scramClientProof("a b­", salt, 2, am).unwrap()
+    check("saslprep maps spaces and drops soft hyphens", pre == pgwire.scramClientProof("a b", salt, 2, am).unwrap())
+    section("scram")
+}
+
+fn errorTests() {
+    let body = "SERROR\0VERROR\0C23505\0Mduplicate key\0Ddetail text\0Hhint text\0P15\0p3\0qinternal sql\0Wcontext\0sschema\0t" +
+               "table\0ccolumn\0dtype\0nconstraint\0Ffile.c\0L1234\0Rroutine\0Zunknown\0\0"
+    let r = pgwire.parseServerError(body)
+    check("parses", r.isOk())
+    let e = r.unwrap()
+    check("severity V", e.severity == "ERROR")
+    check("code", e.code == "23505")
+    check("message", e.message == "duplicate key")
+    check("detail", e.detail == "detail text")
+    check("hint", e.hint == "hint text")
+    check("position", e.position == "15" && e.internalPosition == "3" && e.internalQuery == "internal sql")
+    check("where", e.where == "context")
+    check("names", e.schema == "schema" && e.table == "table" && e.column == "column" && e.dataType == "type" && e.constraint == "constraint")
+    check("source", e.file == "file.c" && e.line == "1234" && e.routine == "routine")
+    let d = e.dbError()
+    check("dbError", d.code == 7 && d.state == "23505" && d.msg == "duplicate key")
+    check("severity S when no V", pgwire.parseServerError("SFATAL\0C57P01\0Mgone\0\0").unwrap().severity == "FATAL")
+    check("V wins over S", pgwire.parseServerError("SFATAL\0VERROR\0\0").unwrap().severity == "ERROR")
+    check("empty body", pgwire.parseServerError("\0").unwrap().message == "")
+    check("no terminator", pgwire.parseServerError("Mabc").unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("field cut", pgwire.parseServerError("Mabc\0C").unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("no end byte", pgwire.parseServerError("Mabc\0").unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("empty", pgwire.parseServerError("").unwrapErr().code == sqldialect.E_PROTOCOL)
+    check("toStr", d.toStr() == "error 7 (23505): duplicate key")
+    check("scanned values keep text", pgwire.parseServerError("Mm\0\0").unwrap().message == "m")
+    check("Error alias", d.eq(&sqldialect.DbError{code: 7, state: "23505", msg: "duplicate key"}))
+    section("errors")
+}
+
+fn col(oid: int, tm: int): pgwire.Column {
+    return pgwire.Column{name: "c", tableOid: 0, attnum: 0, typeOid: oid, typeSize: -1, typmod: tm, format: 0}
+}
+
+fn decoderTests() {
+    let cols = pgwire.describe(&[col(1700, 655366), col(20, -1), col(25, -1), col(1700, -1), col(9999, -1)])
+    check("numeric(10,2) type text", cols[0].typeName == "numeric(10,2)" && cols[0].precision == 10 && cols[0].scale == 2 && cols[0].aux == 655366)
+    check("int8", cols[1].typeName == "int8" && cols[1].wire == 20)
+    check("text", cols[2].typeName == "text")
+    check("plain numeric", cols[3].typeName == "numeric")
+    check("unknown type", cols[4].typeName == "type 9999")
+    check("typeText numeric(2,-3)", pgwire.typeText(1700, 4 + ((2 << 16) | (-3 & 0x7ff)), 2, -3) == "numeric(2,-3)")
+    check("kinds differ", pgwire.kindsOf(1700, 655366, 10, 2) != pgwire.kindsOf(25, -1, 0, 0))
+    let cd = pgwire.codec()
+    check("int", cd.int("123", &cols[1]).unwrapOr(0) == 123)
+    check("int bad", cd.int("12x", &cols[1]).unwrapErr().code == sqldialect.E_TYPE)
+    check("decimal keeps scale", cd.decimal("1.5", &cols[0]).unwrap().toStr() == "1.50")
+    check("decimal NaN", cd.decimal("NaN", &cols[3]).unwrapErr().code == sqldialect.E_NONFINITE)
+    check("decimalOfText", pgwire.decimalOfText("12.50").unwrap().toStr() == "12.50")
+    check("text", cd.text("héllo", &cols[2]).unwrap() == "héllo")
+    check("float", true)
+    section("decoders")
+}
+
+fn main() {
+    messages()
+    scanTests()
+    tags()
+    paramTests()
+    scramTests()
+    errorTests()
+    decoderTests()
+}

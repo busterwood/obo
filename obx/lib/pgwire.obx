@@ -770,3 +770,637 @@ pub fn passwordFor(cfg: &Config, ep: &Endpoint): Option[str] {
     }
     return None
 }
+
+// ----------------------------------------------------------- messages: writing
+
+// An output buffer that keeps its capacity between messages (an array cannot
+// be emptied without freeing it): bytes [0, n) are the message under construction.
+pub type Out = record { buf: []byte; n: int }
+
+pub fn newOut(): Out { return Out{buf: [], n: 0} }
+
+pub fn (o: mut &Out) reset() { o.n = 0 }
+
+pub fn (o: &Out) size(): int { return o.n }
+
+pub fn (o: &Out) bytes(): &[byte] { return &o.buf[0..o.n] }
+
+pub fn (o: &Out) str(): str { return strFromBytes(&o.buf[0..o.n]) }
+
+fn (o: mut &Out) put8(v: int) {
+    if o.n < len(o.buf) { o.buf[o.n] = byte(v & 0xff) } else { append(mut &o.buf, byte(v & 0xff)) }
+    o.n += 1
+}
+
+fn (o: mut &Out) put16(v: int) {
+    o.put8(v >> 8)
+    o.put8(v)
+}
+
+fn (o: mut &Out) put32(v: int) {
+    o.put8(v >> 24)
+    o.put8(v >> 16)
+    o.put8(v >> 8)
+    o.put8(v)
+}
+
+fn (o: mut &Out) putRaw(s: str) {
+    for i in 0..len(s) { o.put8(int(s[i])) }
+}
+
+fn (o: mut &Out) putC(s: str) {
+    o.putRaw(s)
+    o.put8(0)
+}
+
+// Starts a message of type t (a negative t: one without a type byte, as the
+// startup packet); the position of its length field.
+fn (o: mut &Out) begin(t: int): int {
+    if t >= 0 { o.put8(t) }
+    let at = o.n
+    o.put32(0)
+    return at
+}
+
+// Fills in the length of the message that began at `at`.
+fn (o: mut &Out) finish(at: int) {
+    let l = o.n - at
+    o.buf[at] = byte((l >> 24) & 0xff)
+    o.buf[at + 1] = byte((l >> 16) & 0xff)
+    o.buf[at + 2] = byte((l >> 8) & 0xff)
+    o.buf[at + 3] = byte(l & 0xff)
+}
+
+// A parameter as sent: its type OID, its format (text 0, binary 1) and bytes.
+pub type Param = value record { pub oid: int; pub binary: bool; pub null: bool; pub data: str }
+
+pub fn putStartup(o: mut &Out, user: str, dbname: str, settings: &[]Setting) {
+    let at = o.begin(-1)
+    o.put32(PROTOCOL)
+    o.putC("user")
+    o.putC(user)
+    o.putC("database")
+    o.putC(dbname)
+    for s in settings {
+        o.putC(s.name)
+        o.putC(s.value)
+    }
+    o.put8(0)
+    o.finish(at)
+}
+
+pub fn putSslRequest(o: mut &Out) {
+    o.put32(8)
+    o.put32(80877103)
+}
+
+// A CancelRequest: length, 80877102, the process id and the secret key (4 bytes in 3.0).
+pub fn putCancelRequest(o: mut &Out, pid: int, key: str) {
+    let at = o.begin(-1)
+    o.put32(80877102)
+    o.put32(pid)
+    o.putRaw(key)
+    o.finish(at)
+}
+
+pub fn putQuery(o: mut &Out, sql: str) {
+    let at = o.begin(81)
+    o.putC(sql)
+    o.finish(at)
+}
+
+pub fn putParse(o: mut &Out, name: str, sql: str, oids: &[]Param) {
+    let at = o.begin(80)
+    o.putC(name)
+    o.putC(sql)
+    o.put16(len(oids))
+    for p in oids { o.put32(p.oid) }
+    o.finish(at)
+}
+
+// Bind: one format code per parameter, then the values; all results in text.
+pub fn putBind(o: mut &Out, portal: str, stmt: str, params: &[]Param) {
+    let at = o.begin(66)
+    o.putC(portal)
+    o.putC(stmt)
+    o.put16(len(params))
+    for p in params { o.put16(if p.binary { 1 } else { 0 }) }
+    o.put16(len(params))
+    for p in params {
+        if p.null {
+            o.put32(-1)
+        } else {
+            o.put32(len(p.data))
+            o.putRaw(p.data)
+        }
+    }
+    o.put16(0)
+    o.finish(at)
+}
+
+// Describe: kind 'S' (statement) or 'P' (portal).
+pub fn putDescribe(o: mut &Out, kind: int, name: str) {
+    let at = o.begin(68)
+    o.put8(kind)
+    o.putC(name)
+    o.finish(at)
+}
+
+pub fn putExecute(o: mut &Out, portal: str, rows: int) {
+    let at = o.begin(69)
+    o.putC(portal)
+    o.put32(rows)
+    o.finish(at)
+}
+
+pub fn putClose(o: mut &Out, kind: int, name: str) {
+    let at = o.begin(67)
+    o.put8(kind)
+    o.putC(name)
+    o.finish(at)
+}
+
+pub fn putSync(o: mut &Out) {
+    let at = o.begin(83)
+    o.finish(at)
+}
+
+pub fn putFlush(o: mut &Out) {
+    let at = o.begin(72)
+    o.finish(at)
+}
+
+pub fn putTerminate(o: mut &Out) {
+    let at = o.begin(88)
+    o.finish(at)
+}
+
+pub fn putPassword(o: mut &Out, password: str) {
+    let at = o.begin(112)
+    o.putC(password)
+    o.finish(at)
+}
+
+// SASLInitialResponse: the mechanism, the length of the client-first-message, the message.
+pub fn putSaslInitial(o: mut &Out, mechanism: str, data: str) {
+    let at = o.begin(112)
+    o.putC(mechanism)
+    o.put32(len(data))
+    o.putRaw(data)
+    o.finish(at)
+}
+
+pub fn putSaslResponse(o: mut &Out, data: str) {
+    let at = o.begin(112)
+    o.putRaw(data)
+    o.finish(at)
+}
+
+pub fn putCopyFail(o: mut &Out, msg: str) {
+    let at = o.begin(102)
+    o.putC(msg)
+    o.finish(at)
+}
+
+// ----------------------------------------------------------- messages: reading
+
+// A cursor over a message body: s[pos..end].
+type Rd = value record { s: str; pos: int; end: int }
+
+fn (r: mut &Rd) u8(what: str): Result[int, Error] {
+    if r.pos + 1 > r.end { return Err(proto(what + ": the message is too short")) }
+    let v = int(r.s[r.pos])
+    r.pos += 1
+    return Ok(v)
+}
+
+fn (r: mut &Rd) i16(what: str): Result[int, Error] {
+    if r.pos + 2 > r.end { return Err(proto(what + ": the message is too short")) }
+    var v = (int(r.s[r.pos]) << 8) | int(r.s[r.pos + 1])
+    if v >= 32768 { v -= 65536 }
+    r.pos += 2
+    return Ok(v)
+}
+
+fn (r: mut &Rd) i32(what: str): Result[int, Error] {
+    if r.pos + 4 > r.end { return Err(proto(what + ": the message is too short")) }
+    var v = (int(r.s[r.pos]) << 24) | (int(r.s[r.pos + 1]) << 16) | (int(r.s[r.pos + 2]) << 8) | int(r.s[r.pos + 3])
+    if v >= 2147483648 { v -= 4294967296 }
+    r.pos += 4
+    return Ok(v)
+}
+
+fn (r: mut &Rd) take(n: int, what: str): Result[str, Error] {
+    if n < 0 || r.pos + n > r.end { return Err(proto(what + ": the message is too short")) }
+    let v = r.s[r.pos..r.pos + n]
+    r.pos += n
+    return Ok(v)
+}
+
+// A NUL-terminated string inside the message.
+fn (r: mut &Rd) cstr(what: str): Result[str, Error] {
+    var i = r.pos
+    while i < r.end && r.s[i] != 0 { i += 1 }
+    if i >= r.end { return Err(proto(what + ": a string without its end")) }
+    let v = r.s[r.pos..i]
+    r.pos = i + 1
+    return Ok(v)
+}
+
+pub type ServerError = value record {
+    pub severity: str; pub code: str; pub message: str; pub detail: str; pub hint: str; pub position: str
+    pub internalPosition: str; pub internalQuery: str; pub where: str; pub schema: str; pub table: str
+    pub column: str; pub dataType: str; pub constraint: str; pub file: str; pub line: str; pub routine: str
+}
+
+// The error as the library reports it: code FATAL_ERROR, the SQLSTATE, the primary message.
+pub fn (e: &ServerError) dbError(): Error {
+    return sqldialect.DbError{code: FATAL_ERROR, state: e.code, msg: e.message}
+}
+
+// The fields of an ErrorResponse or NoticeResponse body: (code byte, string)
+// pairs ending in a 0 byte; unknown codes are skipped. E_PROTOCOL for a field
+// that runs past the body.
+pub fn parseServerError(body: str): Result[ServerError, Error] {
+    var e = ServerError{severity: "", code: "", message: "", detail: "", hint: "", position: "", internalPosition: "",
+                        internalQuery: "", where: "", schema: "", table: "", column: "", dataType: "", constraint: "",
+                        file: "", line: "", routine: ""}
+    var r = Rd{s: body, pos: 0, end: len(body)}
+    var sevV = ""
+    var sevS = ""
+    while true {
+        let f = try r.u8("error response")
+        if f == 0 { break }
+        let v = try r.cstr("error response")
+        match f {
+            86 { sevV = v }
+            83 { sevS = v }
+            67 { e.code = v }
+            77 { e.message = v }
+            68 { e.detail = v }
+            72 { e.hint = v }
+            80 { e.position = v }
+            112 { e.internalPosition = v }
+            113 { e.internalQuery = v }
+            87 { e.where = v }
+            115 { e.schema = v }
+            116 { e.table = v }
+            99 { e.column = v }
+            100 { e.dataType = v }
+            110 { e.constraint = v }
+            70 { e.file = v }
+            76 { e.line = v }
+            82 { e.routine = v }
+            else {}
+        }
+    }
+    e.severity = if len(sevV) > 0 { sevV } else { sevS }
+    return Ok(e)
+}
+
+// ---------------------------------------------------------------- results
+
+pub type Column = value record {
+    pub name: str; pub tableOid: int; pub attnum: int; pub typeOid: int; pub typeSize: int; pub typmod: int; pub format: int
+}
+
+// The values of a reply, raw: the chunks of bytes as they came off the wire and,
+// per value, where it lies (design/pgwire.md section 10).
+pub type RawRows = record {
+    pub chunks: []str
+    pub rowChunk: []i32            // per row
+    pub starts: []i32              // per value, row-major: offset in the row's chunk
+    pub lens: []i32                // per value: -1 NULL
+    pub ncols: int
+}
+
+pub fn newRawRows(ncols: int): RawRows {
+    return RawRows{chunks: [], rowChunk: [], starts: [], lens: [], ncols: ncols}
+}
+
+pub fn (r: &RawRows) count(): int { return len(r.rowChunk) }
+
+// Whether a value is NULL; the caller checks the ranges.
+pub fn (r: &RawRows) isNull(row: int, col: int): bool { return r.lens[row * r.ncols + col] < 0 }
+
+// The value's text (not NULL).
+pub fn (r: &RawRows) bytes(row: int, col: int): &str {
+    let k = row * r.ncols + col
+    let st = int(r.starts[k])
+    return &r.chunks[int(r.rowChunk[row])][st..st + int(r.lens[k])]
+}
+
+pub type Reply = record { pub columns: []Column; pub rows: RawRows; pub tag: str; pub empty: bool }
+
+// Rows affected, from a CommandComplete tag, as PQcmdTuples: the last number of
+// INSERT, UPDATE, DELETE, MERGE, SELECT, MOVE, FETCH and COPY tags; 0 for the rest.
+pub fn affectedOf(tag: str): int {
+    var sp = 0
+    while sp < len(tag) && tag[sp] != ' ' { sp += 1 }
+    let verb = tag[..sp]
+    if verb != "INSERT" && verb != "UPDATE" && verb != "DELETE" && verb != "MERGE" && verb != "SELECT" &&
+       verb != "MOVE" && verb != "FETCH" && verb != "COPY" {
+        return 0
+    }
+    var last = len(tag)
+    while last > 0 && tag[last - 1] != ' ' { last -= 1 }
+    return parseInt(tag[last..]).unwrapOr(0)
+}
+
+// The span of each value of the DataRow whose column count starts at d[at]
+// (after the type byte and length), into starts and lens (a NULL: length -1).
+// The position after the row. E_PROTOCOL for a count other than ncols, a
+// negative length other than -1, or a value past the end of d.
+pub fn scanRow(d: &str, at: int, ncols: int, starts: mut &[]int, lens: mut &[]int): Result[int, Error] {
+    let n = len(d)
+    if at < 0 || at + 2 > n { return Err(proto("a DataRow without its column count")) }
+    let count = (int(d[at]) << 8) | int(d[at + 1])
+    if count != ncols {
+        return Err(proto("a DataRow of " + count.toStr() + " columns for a RowDescription of " + ncols.toStr()))
+    }
+    var p = at + 2
+    for i in 0..ncols {
+        if p + 4 > n { return Err(proto("a DataRow cut short")) }
+        var l = (int(d[p]) << 24) | (int(d[p + 1]) << 16) | (int(d[p + 2]) << 8) | int(d[p + 3])
+        if l >= 2147483648 { l -= 4294967296 }
+        p += 4
+        if l == -1 {
+            starts[i] = p
+            lens[i] = -1
+        } else if l < 0 {
+            return Err(proto("a DataRow value of length " + l.toStr()))
+        } else {
+            if p + l > n { return Err(proto("a DataRow value runs past its message")) }
+            starts[i] = p
+            lens[i] = l
+            p += l
+        }
+    }
+    return Ok(p)
+}
+
+// ------------------------------------------------------------- parameters
+
+type Value = sqldialect.Value
+
+fn floatText(f: float): str {
+    if f.isNaN() { return "NaN" }
+    if f.isInf() { return if f > 0.0f { "Infinity" } else { "-Infinity" } }
+    return f.toStr()
+}
+
+// A Value as a parameter (design/pgwire.md 7.3): Null untyped, Int int8, Float
+// float8, Bool bool, Text text (no NUL), Bytes bytea in binary, Dec numeric text.
+pub fn param(v: &Value): Result[Param, Error] {
+    match v {
+        Value.Null { return Ok(Param{oid: 0, binary: false, null: true, data: ""}) }
+        Value.Int(n) { return Ok(Param{oid: OID_INT8, binary: false, null: false, data: n.toStr()}) }
+        Value.Float(f) { return Ok(Param{oid: OID_FLOAT8, binary: false, null: false, data: floatText(f)}) }
+        Value.Bool(b) { return Ok(Param{oid: OID_BOOL, binary: false, null: false, data: if b { "t" } else { "f" }}) }
+        Value.Text(s) {
+            try sqldialect.noNul(s, "text value")
+            return Ok(Param{oid: OID_TEXT, binary: false, null: false, data: s})
+        }
+        Value.Bytes(b) { return Ok(Param{oid: OID_BYTEA, binary: true, null: false, data: b}) }
+        Value.Dec(d) {
+            return Ok(Param{oid: OID_NUMERIC, binary: false, null: false, data: try sqldialect.decimalText(d, MAX_DSCALE)})
+        }
+    }
+}
+
+// ----------------------------------------------------- passwords and SCRAM
+
+fn cryptoFail(e: crypto.Error): Error { return bad(e.toStr()) }
+
+fn hmac(key: str, data: str): Result[str, Error] {
+    return crypto.hmacSha256(key, data).mapErr(cryptoFail)
+}
+
+fn xor(a: str, b: str): str {
+    var out = array(len(a), byte(0))
+    for i in 0..len(a) { out[i] = a[i] ^ b[i] }
+    return strFromBytes(&out)
+}
+
+// "md5" + hex(md5(hex(md5(password + user)) + salt)): the PasswordMessage of AuthenticationMD5Password.
+pub fn md5Password(user: str, password: str, salt: str): Result[str, Error] {
+    let inner = crypto.hex(try crypto.md5(password + user).mapErr(cryptoFail))
+    let outer = try crypto.md5(inner + salt).mapErr(cryptoFail)
+    return Ok("md5" + crypto.hex(outer))
+}
+
+// RFC 4013 as far as it needs no tables: a password of printable ASCII is used
+// as it is; non-ASCII spaces become a space and the characters "mapped to
+// nothing" go; invalid UTF-8 or a control character leaves the password raw
+// (as PostgreSQL does). No NFKC normalization (design/pgwire.md 5.5).
+fn saslprep(p: str): str {
+    var ascii = true
+    for i in 0..len(p) {
+        let c = p[i]
+        if c >= 128 { ascii = false }
+        if c < 32 || c == 127 { return p }
+    }
+    if ascii { return p }
+    if !strings.isValidUtf8(p) { return p }
+    var b = newStrBuf()
+    var i = 0
+    while i < len(p) {
+        let d = strings.decodeAt(p, i)
+        let r = d.rune
+        i += d.size
+        if r == 0xA0 || r == 0x1680 || (r >= 0x2000 && r <= 0x200A) || r == 0x202F || r == 0x205F || r == 0x3000 {
+            b.addByte(' ')
+        } else if r == 0xAD || r == 0x34F || r == 0x1806 || (r >= 0x180B && r <= 0x180D) || (r >= 0x200B && r <= 0x200D) ||
+                  r == 0x2060 || (r >= 0xFE00 && r <= 0xFE0F) || r == 0xFEFF {
+            continue
+        } else {
+            strings.addRune(mut &b, r)
+        }
+    }
+    return b.toStr()
+}
+
+fn salted(password: str, salt: str, iterations: int): Result[str, Error] {
+    return crypto.pbkdf2Sha256(saslprep(password), salt, iterations, 32).mapErr(cryptoFail)
+}
+
+// ClientProof = ClientKey XOR HMAC(SHA-256(ClientKey), AuthMessage), the raw 32 bytes.
+pub fn scramClientProof(password: str, salt: str, iterations: int, authMessage: str): Result[str, Error] {
+    let sp = try salted(password, salt, iterations)
+    let clientKey = try hmac(sp, "Client Key")
+    let stored = try crypto.sha256(clientKey).mapErr(cryptoFail)
+    let sig = try hmac(stored, authMessage)
+    return Ok(xor(clientKey, sig))
+}
+
+// ServerSignature = HMAC(HMAC(SaltedPassword, "Server Key"), AuthMessage), the raw 32 bytes.
+pub fn scramServerSignature(password: str, salt: str, iterations: int, authMessage: str): Result[str, Error] {
+    let sp = try salted(password, salt, iterations)
+    let serverKey = try hmac(sp, "Server Key")
+    return hmac(serverKey, authMessage)
+}
+
+// --------------------------------------------------------- values (text format)
+
+pub type Columns = sqlrows.Columns
+type Kind = sqlrows.Kind
+
+fn pgErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, msg) }
+
+// The result's columns for sqlrows: wire is the type OID, aux the typmod.
+pub fn describe(cols: &[]Column): []sqlrows.Column {
+    var out: []sqlrows.Column = []
+    for c in cols {
+        let oid = c.typeOid
+        let tm = c.typmod
+        let p = if oid == OID_NUMERIC && tm >= 4 { ((tm - 4) >> 16) & 0xffff } else { 0 }
+        let s = if oid == OID_NUMERIC && tm >= 4 { (((tm - 4) & 0x7ff) ^ 1024) - 1024 } else { 0 }
+        append(mut &out, sqlrows.column(c.name, typeText(oid, tm, p, s), kindsOf(oid, tm, p, s),
+                                        sqlrows.NULLABLE_UNKNOWN, oid, 0, p, s, tm))
+    }
+    return out
+}
+
+pub fn typeText(oid: int, tm: int, p: int, s: int): str {
+    match oid {
+        OID_BOOL { return "bool" }
+        OID_BYTEA { return "bytea" }
+        OID_INT8 { return "int8" }
+        OID_INT2 { return "int2" }
+        OID_INT4 { return "int4" }
+        OID_TEXT { return "text" }
+        OID_FLOAT4 { return "float4" }
+        OID_FLOAT8 { return "float8" }
+        OID_NUMERIC { return if tm >= 4 { "numeric(" + p.toStr() + "," + s.toStr() + ")" } else { "numeric" } }
+        OID_CHAR { return "char" }
+        OID_NAME { return "name" }
+        OID_BPCHAR { return "bpchar" }
+        OID_VARCHAR { return "varchar" }
+        OID_DATE { return "date" }
+        OID_TIME { return "time" }
+        OID_TIMESTAMP { return "timestamp" }
+        OID_TIMESTAMPTZ { return "timestamptz" }
+        else { return "type " + oid.toStr() }
+    }
+}
+
+// What a column can be read as (design/db-streaming.md, section 3). An
+// unconstrained numeric reads as int too, each value checked; a type without a
+// case here reads as its text.
+pub fn kindsOf(oid: int, tm: int, p: int, s: int): int {
+    match oid {
+        OID_INT8, OID_INT2, OID_INT4 { return sqlrows.kinds(&[Kind.Int, Kind.Decimal]) }
+        OID_NUMERIC {
+            if tm < 4 || (s == 0 && p <= 18) { return sqlrows.kinds(&[Kind.Decimal, Kind.Int]) }
+            return sqlrows.kinds(&[Kind.Decimal])
+        }
+        OID_FLOAT4, OID_FLOAT8 { return sqlrows.kinds(&[Kind.Float]) }
+        OID_BOOL { return sqlrows.kinds(&[Kind.Bool]) }
+        OID_BYTEA { return sqlrows.kinds(&[Kind.Bytes]) }
+        OID_DATE { return sqlrows.kinds(&[Kind.Date]) }
+        OID_TIME { return sqlrows.kinds(&[Kind.Time]) }
+        OID_TIMESTAMP { return sqlrows.kinds(&[Kind.DateTime]) }
+        OID_TIMESTAMPTZ { return sqlrows.kinds(&[Kind.OffsetDateTime]) }
+        else { return sqlrows.kinds(&[Kind.Text]) }
+    }
+}
+
+// The decimal a numeric's text denotes (sqldialect.parseDecimal; P3 adds the fast path here).
+pub fn decimalOfText(t: &str): Result[Decimal, Error] { return sqldialect.parseDecimal(t) }
+
+fn pInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 {
+        match parseInt(b) {
+            Some(v) { return Ok(v) }
+            None { return Err(pgErr("an integer of " + b)) }
+        }
+    }
+    if col.wire == OID_NUMERIC {
+        let d = try decimalOfText(b)
+        match d.toInt(Rounding.UNNECESSARY) {
+            Ok(v) { return Ok(v) }
+            Err(_) { return Err(pgErr(d.toStr() + " is not an int")) }
+        }
+    }
+    return Err(sqlrows.wrongKind(col, "int"))
+}
+
+fn pDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
+    if col.wire == OID_NUMERIC {
+        let d = try decimalOfText(b)
+        if col.aux >= 4 && col.scale >= 0 { return sqldialect.fitDecimal(d, col.precision, col.scale) }
+        return Ok(d)
+    }
+    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 { return Ok(decimalOf(try pInt(b, col))) }
+    if col.wire == OID_FLOAT4 || col.wire == OID_FLOAT8 {
+        return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal"))
+    }
+    return Err(sqlrows.wrongKind(col, "Decimal"))
+}
+
+fn pFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
+    if col.wire != OID_FLOAT8 && col.wire != OID_FLOAT4 { return Err(sqlrows.wrongKind(col, "float")) }
+    if b == "Infinity" { return Ok(math.inf()) }
+    if b == "-Infinity" { return Ok(-math.inf()) }
+    match math.parse(b) {
+        Some(f) { return Ok(f) }
+        None { return Err(pgErr("a float of " + b)) }
+    }
+}
+
+fn pText(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire == OID_BYTEA { return Err(sqlrows.wrongKind(col, "text")) }
+    return Ok(b)
+}
+
+fn pBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire != OID_BYTEA { return Err(sqlrows.wrongKind(col, "bytes")) }
+    if len(b) < 2 || b[0] != '\\' || b[1] != 'x' { return Err(pgErr("bytea not in hex format")) }
+    match sqldialect.unhex(b[2..]) {
+        Some(x) { return Ok(x) }
+        None { return Err(pgErr("bytea not in hex format")) }
+    }
+}
+
+fn pBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
+    if col.wire != OID_BOOL { return Err(sqlrows.wrongKind(col, "bool")) }
+    return Ok(b == "t")
+}
+
+fn pDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
+    if col.wire != OID_DATE { return Err(sqlrows.wrongKind(col, "date")) }
+    match time.parseDate(b) {
+        Some(d) { return Ok(d) }
+        None { return Err(pgErr("a date of " + b + " (only years 1 to 9999)")) }
+    }
+}
+
+fn pTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
+    if col.wire != OID_TIME { return Err(sqlrows.wrongKind(col, "time")) }
+    match time.parseTimeOfDay(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a time of " + b)) }
+    }
+}
+
+fn pDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
+    if col.wire != OID_TIMESTAMP { return Err(sqlrows.wrongKind(col, "date-time")) }
+    match time.parseLocalDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamp of " + b)) }
+    }
+}
+
+fn pOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
+    if col.wire != OID_TIMESTAMPTZ { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
+    match time.parseOffsetDateTime(b) {
+        Some(t) { return Ok(t) }
+        None { return Err(pgErr("a timestamptz of " + b)) }
+    }
+}
+
+// The text decoders of a PostgreSQL column (RowView reads through them).
+pub fn codec(): sqlrows.Codec {
+    return sqlrows.Codec{int: pInt, decimal: pDecimal, float: pFloat, text: pText, bytes: pBytes, bool: pBool, date: pDate,
+                         time: pTime, dateTime: pDateTime, offsetDateTime: pOffset}
+}
