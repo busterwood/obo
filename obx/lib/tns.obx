@@ -809,6 +809,28 @@ pub fn rowsFor(cols: &[]Column, target: int): int {
     return max(1, min(target / rowWidth(cols), 100000))
 }
 
+// The most bytes a round trip of rows may take at the widest row once the
+// rows' own size is known (rowsSeen): 16 times FETCH_TARGET.
+pub const FETCH_LIMIT = 4194304
+
+// The rows of the next round trip once rows have arrived: as many as
+// target bytes hold at the size r's raw rows from row `from` on took
+// (their values' bytes, a length byte each and one for the row: what a
+// row without repeats takes in its ROW_DATA), at least rowsFor's count (at
+// the widest row) and at most what FETCH_LIMIT holds at the widest row, or
+// 100,000. rowsFor's count when there are no such rows.
+pub fn rowsSeen(r: &Reply, from: int, target: int): int {
+    let wide = rowsFor(&r.columns, target)
+    let rows = r.rawRows - from
+    if rows <= 0 { return wide }
+    let v0 = r.rawFirst + from * len(r.columns)
+    let b0 = if v0 < len(r.rawStarts) { r.rawStarts[v0] } else { len(r.rawData) }
+    let bytes = len(r.rawData) - b0 + (len(r.rawStarts) - v0) + rows
+    let size = max(1, (bytes + rows - 1) / rows)
+    let cap = max(wide, min(FETCH_LIMIT / rowWidth(&r.columns), 100000))
+    return max(wide, min(target / size, cap))
+}
+
 // The Oracle name of a column's type: "NUMBER", "VARCHAR2", "NVARCHAR2", ...
 pub fn (c: &Column) typeName(): str { return typeNameOf(c.oraType, c.csfrm) }
 

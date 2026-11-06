@@ -1,11 +1,14 @@
 // oracle's round-trip sizes and fetching ahead against a live Oracle
 // Database ($ORACLE_TEST_DSN or ~/.obo-oracle-dsn; never printed; exits 77,
 // skipped, without one). A FETCH asks for the rows of 256 KB at the widest
-// row (tns.rowWidth), or Fetch Size when set; a stream sends its next FETCH
-// when a FETCH's rows arrive, before they are used. Checked: the rows per
-// round trip of a narrow and a wide row (three full VARCHAR2(4000)), a
-// stream through a buffer of 7, the same rows with Fetch Size 100 and with
-// fetching ahead off, buffered queries, an early close and a drop while a
+// row (tns.rowWidth) until rows have arrived, then for the rows of 256 KB
+// at the size they took, at most 4 MB at the widest row (tns.rowsSeen);
+// Fetch Size when set. A stream sends its next FETCH when a FETCH's rows
+// arrive, before they are used. Checked: the rows per round trip of a
+// narrow and a wide row (three full VARCHAR2(4000)), a stream through a
+// buffer of 7, the same rows with Fetch Size 100 and with fetching ahead
+// off, buffered queries, short values in wide columns (the 4 MB bound:
+// 348 rows a FETCH), an early close and a drop while a
 // FETCH is on the wire (the connection is used after), an error in the
 // FETCH sent ahead (the rows before it first), and no cursor left open
 // over repeated early closes (V$MYSTAT, as oracle_live_out). Repeats:
@@ -14,11 +17,12 @@
 // against the values the program computes.
 // needs: ssl
 // expect: narrow: width 119 rows 2202 | wide: width 12051 rows 21
-// expect: buffer 7: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
+// expect: buffer 7: 200000 rows in 28572 fills, 21 round trips, sum 20000100000 names 1888895
 // expect: fetch size 100: 200000 rows in 28572 fills, 2002 round trips, sum 20000100000 names 1888895
-// expect: ahead off: 200000 rows in 28572 fills, 92 round trips, sum 20000100000 names 1888895
-// expect: buffered: 200000 rows, 92 round trips, sum 20000100000 | fetch size 100: 2001 round trips
+// expect: ahead off: 200000 rows in 28572 fills, 21 round trips, sum 20000100000 names 1888895
+// expect: buffered: 200000 rows, 20 round trips, sum 20000100000 | fetch size 100: 2001 round trips
 // expect: wide stream: 100 rows, 6 round trips, 1200000 bytes | buffered: 100 rows, 5 round trips
+// expect: short in wide: stream 3000 rows, 11 round trips | buffered 3000 rows, 10 round trips
 // expect: repeats: buffered 20000 rows, 0 wrong | stream 7: 20000 rows, 0 wrong | stream 1024: 20000 rows, 0 wrong
 // expect: early close in flight: 7 rows | after: 2 | again: 7 rows | after: 2
 // expect: dropped in flight: 3 rows | after: 2
@@ -226,6 +230,30 @@ fn wide(c: mut &oracle.Conn): Result[Unit, Error] {
     return Ok(Unit{})
 }
 
+// Values of 1 byte in three VARCHAR2(4000) columns (widest row 12,051
+// bytes): the rows' own size would ask for about 23,000 rows a FETCH; the
+// bound of 4 MB at the widest row asks for 348.
+fn shortWide(c: mut &oracle.Conn): Result[Unit, Error] {
+    let q = "SELECT level AS id, CAST('a' AS VARCHAR2(4000)) AS a, CAST('b' AS VARCHAR2(4000)) AS b, " +
+            "CAST('c' AS VARCHAR2(4000)) AS c FROM dual CONNECT BY level <= 3000"
+    let t0 = c.roundTrips()
+    var src = try c.stream(q, [], bindWide, readWide)
+    var buf = array(7, Wide{a: "", b: "", c: ""})
+    var rows = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        rows += n
+    }
+    let trips = c.roundTrips() - t0
+    let t1 = c.roundTrips()
+    let r = try c.query(q, &[])
+    let trips2 = c.roundTrips() - t1
+    println("short in wide: stream " + rows.toStr() + " rows, " + trips.toStr() + " round trips | buffered " + r.rowCount().toStr() +
+            " rows, " + trips2.toStr() + " round trips")
+    return Ok(Unit{})
+}
+
 // Closed after its first fill: the FETCH sent ahead is on the wire.
 fn early(c: mut &oracle.Conn, quiet: bool): Result[str, Error] {
     var src = try c.stream(MANY, [], bindOrder, readOrder)
@@ -285,6 +313,7 @@ fn run(c: mut &oracle.Conn): Result[Unit, Error] {
     c.setFetchAhead(true)
     try buffered(c)
     try wide(c)
+    try shortWide(c)
     try repeats(c)
     let e1 = try early(c, false)
     let e2 = try early(c, false)

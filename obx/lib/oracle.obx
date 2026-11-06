@@ -496,6 +496,15 @@ pub fn (c: &Conn) rowsFor(cols: &[]tns.Column): int {
     return tns.rowsFor(cols, tns.FETCH_TARGET)
 }
 
+// The rows the next FETCH asks for once r's rows from row `from` on have
+// arrived: Fetch Size when set, else as many as tns.FETCH_TARGET bytes
+// hold at the size those rows took (tns.rowsSeen: at least rowsFor's
+// count, at most tns.FETCH_LIMIT bytes at the widest row).
+fn (c: &Conn) rowsNext(r: &tns.Reply, from: int): int {
+    if c.fetchSize > 0 { return c.fetchSize }
+    return tns.rowsSeen(r, from, tns.FETCH_TARGET)
+}
+
 // The execute's prefetch, before the columns are known: Fetch Size when
 // set, else tns.FIRST_ROWS.
 fn (c: &Conn) firstRows(): int { return if c.fetchSize > 0 { c.fetchSize } else { tns.FIRST_ROWS } }
@@ -545,9 +554,11 @@ fn (c: mut &Conn) closeReturned(r: &tns.Reply, first: int) {
 // read.
 fn (c: mut &Conn) rest(r: mut &tns.Reply, cursor: int, ref: bool, w: Where): Result[Rows, Error] {
     var more = !(r.hasError && r.error.num == 1403)
+    var from = 0
     while more {
-        let ask = c.rowsFor(&r.columns)
+        let ask = c.rowsNext(r, from)
         let had = r.rawRows
+        from = had
         let got = c.s.fetchInto(cursor, ask, ref, r, w)
         if got.isErr() {
             c.s.closeCursor(cursor)
@@ -1554,6 +1565,7 @@ fn (s: mut &Stream[B, T]) advance(want: int, w: Where): Result[bool, Error] {
         }
         if f.rawRows == 0 && s.more { return Err(s.failed(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: a FETCH without rows or an end"))) }
         s.data = strFromBytes(&f.rawData)
+        s.batch = s.c.rowsNext(&f, 0)
         s.reply = f
         s.k = 0
         s.sendAhead(w)
