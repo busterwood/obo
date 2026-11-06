@@ -908,3 +908,67 @@ Decided here:
   or Apache-2.0) for pipelined connections shared by tasks; libpq's source
   for `PQcmdTuples`'s tags and the SCRAM gs2 header choice
   (`fe-auth-scram.c`).
+
+## 23. As built (P0)
+
+Branch `pgwire-p0`. Everything in the P0 brief is in; no PostgreSQL code.
+What differs from the brief or the design, and what was learned:
+
+**Runtime** (`rt.h`, `native/rt.c`, in a section of their own at the end;
+`rt.obx`, `rtx.obx` regenerated; reseeded).
+
+- `obxlib_net_connect_unix`, `obxlib_net_listen_unix`,
+  `obxlib_net_keepalive`, `obxlib_net_wait_for` as in the brief. A path of
+  0 bytes is `-ENOENT`; 108 bytes or more is `-ENAMETOOLONG`, abstract names
+  included (107 including the `@`).
+- `obxlib_net_wait_for` with `fd < 0` is a pause that only `ms` ends (or,
+  when cancellable, cancellation or the deadline). Not in the brief: `net`
+  needs it to retry a Unix connect while the listener's backlog is full.
+  `fd >= 0` must be a registered socket (`-EINVAL` otherwise; a listener's
+  lazy registration is not done here).
+- `obxlib_net_addr` reports an `AF_UNIX` socket as family 1 (the port and
+  address bytes stay 0); before, it would have reported IPv4 garbage.
+- A Unix `connect` that answers EAGAIN (full backlog) leaves the socket
+  unconnected, and an epoll wait on it does not help (it reports writable at
+  once, and no event follows). So `*pending = 1` means "try again" for a
+  Unix socket, and `connectUnix` closes the socket, pauses (2 ms, doubling
+  to 50) and connects again, until the task is cancelled, its deadline
+  passes, or (`connectUnixFor`) `ms` is up.
+- The compiler imports `os`, so the `os` commit changes the seed too: the
+  seed was regenerated twice (runtime commit, `os` commit); the fixed point
+  holds at the end (`seed_check.py`).
+
+**net**: as the brief. `listenUnix` does not unlink the path on close or
+before bind (a stale file gives EADDRINUSE; removing it is the caller's job:
+`pgwire` never listens). `Listener.localAddr()` of a Unix listener is
+`"unix:" + path` (the brief only says `localAddr()` of a Conn is `""`).
+`setKeepAlive` on a Unix socket fails with the errno of the first TCP option
+(ENOPROTOOPT) after setting `SO_KEEPALIVE`. A `...For` call's `ms` is the
+limit for the whole call (a `writeFor` of many chunks shares it); `ms` 0
+tries the operation once and times out if it would wait.
+
+**tls**: as the brief, including `Conn.endPoint()`; `Context` keeps the two
+new options. `Conn.readFor`/`writeFor` take one time limit across all the
+socket calls of the call (a record needing several reads), by a deadline;
+the handshake in `writeFor` shares it. OpenSSL 3's `EVP_get_digestbynid` is
+a macro, so `endPoint` calls `EVP_get_digestbyname(OBJ_nid2sn(nid))`. The
+tests used RSA (SHA-1, 256, 384), ECDSA (the test CA's certificate) and
+Ed25519 certificates made at test time with the openssl command
+(self-signed, trusted as their own CA): `endPoint()` equals the openssl
+fingerprint with the same hash, SHA-256 for the SHA-1 one, and Ed25519
+gives the Verify error. SNI is checked on the wire: a raw listener reads the
+ClientHello and looks for the name in it.
+
+**os**: `userName`, `homeDir` as the brief. `os` now imports `ffi`.
+
+**crypto**: `pbkdf2Sha256` runs on the helper pool (a second, `blocking`
+declaration of `PKCS5_PBKDF2_HMAC`; a test shows another task running
+meanwhile). `unbase64` requires whole groups of four, `=` only as the last
+one or two characters, and does not check the unused bits of the last
+character (libpq's decoder does not either). HMAC with an empty key works
+(tested).
+
+**Tests**: `net_unix`, `tls_endpoint`, `os_user` are new, `crypto_basic` is
+extended; they pass on the C and the native backend under `OBX_CHECK=1`.
+`net_unix` is picked up by the gate's `net_*` globs (redteam tasks, TSan).
+No measurements were needed in P0.
