@@ -767,6 +767,42 @@ gate's "1,000 https requests over kept-alive connections"
 (design/http-client.md), under no `OBX_CHECK`; the tests run under
 `OBX_CHECK=1` with no leak.
 
+## Database streaming
+
+`conn.stream(sql, args, bind, read)` in the SQL Server, PostgreSQL and
+Oracle clients decodes each row straight into the program's own record,
+a caller-owned buffer at a time, instead of holding the whole result in
+memory ([design/db-streaming.md](obx/design/db-streaming.md): the API,
+the column matching, each client's mechanism and early close). Measured
+by `python3 obx/bench/dbstream/run.py`: 1,000,000 rows of (bigint, int,
+text, decimal(12,2)), every value decoded into a record and folded into
+a checksum, which is equal for both modes; a buffer of 1,024 rows; peak
+RSS of the process; least of 3 interleaved runs, pinned to CPU 10 (11
+idle). The servers run on the same machine, unpinned, and the load
+average was 4 to 13 during the run: the times are indicative, the memory
+figures are not affected.
+
+| client | backend | streamed | buffered | streamed, 100,000 rows |
+|---|---|---:|---:|---:|
+| SQL Server | via C | 668 ms, 11.2 MB | 1,590 ms, 364.5 MB | 137 ms, 11.2 MB |
+| SQL Server | native | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB | 139 ms, 11.7 MB |
+| PostgreSQL | via C | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB | 114 ms, 8.0 MB |
+| PostgreSQL | native | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB | 85 ms, 8.4 MB |
+| Oracle | via C | 1,460 ms, 10.5 MB | 2,114 ms, 378.0 MB | 183 ms, 10.5 MB |
+| Oracle | native | 1,346 ms, 11.1 MB | 2,323 ms, 410.4 MB | 171 ms, 11.0 MB |
+
+- **Memory is flat while streaming:** the same at 100,000 and 1,000,000
+  rows (8 to 12 MB: the program and its buffer). Buffered memory grows
+  with the result: 109 MB for PostgreSQL (libpq's whole result) and 365
+  to 410 MB for SQL Server and Oracle (a decoded cell per value).
+- **Streaming is never slower:** 2.4 to 2.7 times faster for SQL Server,
+  1.4 to 1.7 for Oracle, 1.0 to 1.8 for PostgreSQL. Through C, libpq's
+  single-row mode (a result object per row) costs about as much as
+  parsing the whole buffered result, so PostgreSQL via C is level.
+- **How each client streams:** SQL Server decodes the reply a packet at a
+  time; PostgreSQL uses libpq's single-row mode, batched into the buffer;
+  Oracle fetches per fill, at least 100 rows a round trip.
+
 ## Reproducing
 
 ```sh
@@ -788,4 +824,5 @@ python3 obx/cmd/http_gate.py --servers native,c --db 4,16   # with Postgres ($OB
 python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4  # worker processes (about 3 minutes)
 python3 obx/tests/httpsrvgen.py -n 100000              # the server's parsing against Go and llhttp
 python3 obx/cmd/tls_bench.py                           # TLS handshakes, bulk and https requests (about 2 minutes)
+python3 obx/bench/dbstream/run.py                      # database streaming against buffered (the servers' DSNs; a quiet machine)
 ```
