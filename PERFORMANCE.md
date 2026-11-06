@@ -17,8 +17,8 @@ merged). Three sections were measured later, and say so:
 
 - Math, after `50eade0e` (doubles in xmm registers).
 - Decimal, on branch `nativedec` (merged as `7474e63d`).
-- Database streaming, on branch `streaming` (`deb05bea`), with Oracle
-  measured again after branch `oracle-speed` (merged as `5a6c5272`).
+- Database streaming, all three clients in one run after branch
+  `oracle-speed` (merged as `5a6c5272`).
 
 How the numbers got here, the native backend's passes, the earlier figures and
 the obo record, is in [HISTORY.md](HISTORY.md), "The performance record".
@@ -782,20 +782,21 @@ Oracle clients decodes each row straight into the program's own record,
 a caller-owned buffer at a time, instead of holding the whole result in
 memory ([design/db-streaming.md](obx/design/db-streaming.md): the API,
 the column matching, each client's mechanism and early close). Measured
-by `python3 obx/bench/dbstream/run.py`: 1,000,000 rows of (bigint, int,
-text, decimal(12,2)), every value decoded into a record and folded into
-a checksum, which is equal for both modes; a buffer of 1,024 rows; peak
-RSS of the process; least of 3 interleaved runs, pinned to CPU 10 (11
-idle). The servers run on the same machine, unpinned, and the load
-average was 4 to 13 during the run: the times are indicative, the memory
-figures are not affected.
+by `python3 obx/bench/dbstream/run.py` on 6 November 2026 at 15:09, after
+branch `oracle-speed` (merged as `5a6c5272`), with the load average at
+0.6 to 1.2: 1,000,000 rows of (bigint, int, text, decimal(12,2)), every
+value decoded into a record and folded into a checksum, which is equal in
+every row of the table; a buffer of 1,024 rows; peak RSS of the process;
+least of 3 interleaved runs, pinned to CPU 10 (11 idle). The servers run
+on the same machine, unpinned; Oracle runs in a rootless podman container,
+whose networking adds about 0.38 ms a round trip.
 
 | client | backend | streamed | buffered | streamed, 100,000 rows |
 |---|---|---:|---:|---:|
-| SQL Server | via C | 668 ms, 11.2 MB | 1,590 ms, 364.5 MB | 137 ms, 11.2 MB |
-| SQL Server | native | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB | 139 ms, 11.7 MB |
-| PostgreSQL | via C | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB | 114 ms, 8.0 MB |
-| PostgreSQL | native | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB | 85 ms, 8.4 MB |
+| SQL Server | via C | 449 ms, 11.2 MB | 1,172 ms, 364.6 MB | 104 ms, 11.2 MB |
+| SQL Server | native | 380 ms, 11.6 MB | 999 ms, 365.3 MB | 96 ms, 11.5 MB |
+| PostgreSQL | via C | 626 ms, 8.0 MB | 838 ms, 108.9 MB | 69 ms, 8.1 MB |
+| PostgreSQL | native | 542 ms, 8.4 MB | 797 ms, 109.4 MB | 57 ms, 8.4 MB |
 | Oracle | via C | 420 ms, 13.9 MB | 621 ms, 110.7 MB | 71 ms, 13.5 MB |
 | Oracle | native | 445 ms, 13.3 MB | 576 ms, 111.2 MB | 72 ms, 13.2 MB |
 
@@ -805,27 +806,19 @@ figures are not affected.
   PostgreSQL (libpq's whole result), 111 MB for Oracle (each value's
   bytes, decoded when read) and 365 MB for SQL Server (a decoded cell per
   value).
-- **Streaming is never slower:** 2.4 to 2.7 times faster for SQL Server,
-  1.3 to 1.5 for Oracle, 1.0 to 1.8 for PostgreSQL. Through C, libpq's
-  single-row mode (a result object per row) costs about as much as
-  parsing the whole buffered result, so PostgreSQL via C is level.
+- **Streaming is never slower:** 2.6 times faster for SQL Server, 1.3 to
+  1.5 times for PostgreSQL and Oracle.
 - **How each client streams:** SQL Server decodes the reply a packet at a
   time; PostgreSQL uses libpq's single-row mode, batched into the buffer;
   Oracle fetches about 256 KB a round trip (at the widest row for the
   first FETCH, then at the size the rows took: about 9,900 rows here) and
   sends the next FETCH before the program uses the last rows.
-- **Oracle.** The table's rows are from the 13:53 run on branch `streaming`
-  (`deb05bea`), before `oracle-speed`. Oracle was measured again on
-  2026-11-06 at 15:09 (load 0.6 to 1.2) after branch `oracle-speed` (rows
-  scanned in place, buffered rows kept raw, FETCHes by the rows' size): 430
-  and 450 ms streamed, 615 and 578 ms buffered (via C, native), with 110.7
-  and 111.2 MB. In the same run SQL Server took 449 and 380 ms streamed (via
-  C, native), 1,172 and 999 buffered; PostgreSQL 626 and 542 streamed, 838
-  and 797 buffered. The table's rows for those two are from a busier machine. Its client now takes 1,169 cycles a row streamed and
-  1,010 buffered (native; SQL Server 1,290 and 2,515, PostgreSQL 2,172 and
-  1,456), and its wall time is mostly the server's work and 100 round
-  trips. The breakdown (client CPU, server, network) and the slow-network
-  runs are in design/db-streaming.md, section 7.
+- **Client cost per row** (native, cycles, streamed / buffered): Oracle
+  1,169 / 1,010, SQL Server 1,290 / 2,515, PostgreSQL 2,172 / 1,456. The
+  PostgreSQL client's cost is libpq's: single-row mode builds a result
+  object per row. Oracle's wall time is now mostly the server's work and
+  about 100 round trips. The breakdown (client CPU, server, network) and
+  the slow-network runs are in design/db-streaming.md, section 7.
 
 ## Reproducing
 
