@@ -827,6 +827,24 @@ If text decoding keeps the stream above its target after the in-place work,
 P3 profiles it and writes up binary results (a Describe round trip or a
 statement cache) as a proposal; it does not build them.
 
+P3 results (branch `pgwire-p3`, 2026-11-06, CPU 10 with its sibling idle,
+`perf stat` for cycles and instructions, least of 5 interleaved runs; the
+times from `run.py`, least of 5; design/db-streaming.md section 7 has the
+full tables):
+
+| measure | libpq today | P3 native | target | met |
+|---|---:|---:|---:|---|
+| streamed, cycles a row | 2,223 (pglibpq native, same run) | 1,410 | at most 1,550 | yes |
+| buffered, cycles a row | 1,461 (pglibpq native, same run) | 1,526 | at most 1,450 | no |
+| streamed, peak RSS | 8.8 MB | 9.8 MB | at most 16 MB | yes |
+| buffered, peak RSS | 109.8 MB | 90.8 MB | at most 110 MB | yes |
+| streamed, wall, 1,000,000 rows | 547 ms | 497 ms | below libpq's | yes |
+| `http_gate --db` | not measured in P3 | | | |
+
+The streamed target is met, so no binary-results proposal is written. The
+buffered target is missed by 5 %: the buffered path is not the stream's
+path, and the profile (section 26) puts the cost in the same text decoding.
+
 ## 19. Language changes
 
 None needed. Two known frictions, worked around as `oracle` does: a stream
@@ -897,6 +915,14 @@ Decided here:
    libpq accepts (IP addresses in dNSName SANs).
 7. **The P0 runtime change** (Unix sockets, keepalive) touches both
    runtimes and needs a reseed; the gate's seed fixed point checks it.
+8. **Latency** (P3). At a 2.5 ms one-way delay the native stream takes
+   1,376 ms, against 625 ms for libpq: a stream of 1,000,000 rows is 164
+   batches of about 256 KB, each a round trip (6.4 ms here), and only one
+   batch is ahead. libpq's single-row mode sends one query and reads the
+   rows as they arrive. The batch size (the 256 KB target of 12.3) and the
+   number of batches in flight trade round trips against memory; the choice
+   is open and for the user. At 0 delay the native stream is faster (430 ms
+   against 600 ms).
 
 ## 22. Sources
 
@@ -1170,3 +1196,60 @@ line moved to `postgres_libpq_basic`), `postgres_libpq_basic`, `postgres_live`,
 skipped, expected lines unchanged), `postgres_live_diff` (about 3 s). `httpd`
 serves `/db`; `dbstream pg` stream and buffered agree (checksum 212159094,
 20,000 rows).
+
+## 26. As built (P3)
+
+Branch `pgwire-p3` (from ef18639e). The streaming speed of P2's client, the
+decimal fast path (7.6), the `pglibpq` bench client and the latency mode.
+
+**Differences from the design and the brief.**
+
+- **`Conn` gained fields** (`fetchRows`, `ahead`), and the three methods of
+  12.3 and 12.4 take the receiver the way the other connection methods do:
+  `roundTrips(): int` (`&Conn`), `setFetchRows(n)` and `setFetchAhead(on)`
+  (`mut &Conn`; `n <= 0` restores the byte rule, otherwise `min(n, 100000)`).
+- **The byte rule is in `Stream`**, not in `pgwire`: `rowsNext()` sizes each
+  later Execute from the last batch's average DataRow body and the widest
+  one seen, both kept per stream (`Batch.widest` is added in `pgwire`, the
+  body length `m.end - m.at`). The first Execute asks for 256 rows.
+- **Fetch-ahead** is `sendAhead`: when a batch arrives and more rows follow,
+  the next Execute goes out before the batch's rows are read; at most one is
+  outstanding. A failure to send is kept as the batch's error, so it shows
+  after the rows already read (the `error ahead` line of the live test).
+- **Round trips** count a portal's open, each Execute and its close; the
+  final Sync does not count (it is not a round trip of the query's work).
+- **Decimal fast path**: `pgwire.decimalOfText` reads `[-]digits[.digits]`
+  with at most 38 significant digits and 1000 fraction digits straight into
+  an `i128`, and makes the decimal with `fromFraction`. Any other text (sign
+  of exponent, NaN, a value out of range) goes to `sqldialect.parseDecimal`.
+  The codec test checks 100,000 generated numeric texts against it (50,778
+  decimals, 49,222 errors, 0 differences).
+- **`pglibpq` in `dbstream`**: `dbstream.obx` gained a client on
+  `postgres_libpq` (the old client, kept), so the two clients run in one
+  `run.py` table. `run.py` gained `--latency` for `pg` and `pglibpq` (over a
+  delay proxy, with the TLS DSN read for its host and port only).
+- **Not measured**: `http_gate --db` (section 18's last row). Not run in
+  this stage.
+
+**Measured** (cycles and instructions a row, user space; full table in
+db-streaming section 7): native streamed 1,410 cycles a row (before P3:
+1,401; the change is in time, 816 to 497 ms, not in cycles); buffered 1,526
+(before P3: 1,561). With the decimal fast path switched off in an A/B build,
+streamed 1,377 and buffered 1,536: no measurable gain on this box, kept
+because 7.6 says so. A profile of the native stream (`OBX_NATIVE_MAP`):
+`parseInt` 11.5 %, the fast path and its `i128` multiplies 13 %, the
+numeric check and `quantize` about 10 %. Peak RSS of the stream is 9.8 MB at
+1,000,000 rows, flat in the row count.
+
+**Tests** (C and native, `OBX_CHECK=1`; 14 of 14 on both): `postgres_live_fetch`
+(new: the round trips of narrow and wide rows through a buffer of 7, one row
+and short results, `setFetchRows(100)` with fetching ahead off, early close,
+drop and an error in the batch fetched ahead, all with the connection used
+after), `pgwire_codec` (the numeric differential above), and the existing
+`postgres_*`, `pgwire_*`, `http_server_pg_cancel` and `task_postgres_*`
+tests. `pgwire_live_tls` ran against the DSN file's server (the default CA,
+not skipped). Expected lines unchanged in every test.
+
+**Open** (for the user): the batch size at high latency (note 8 of section
+21); the buffered native target (1,526 against 1,450), which is text
+decoding (db-streaming section 7).

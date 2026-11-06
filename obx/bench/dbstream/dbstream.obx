@@ -1,20 +1,25 @@
-// Streaming against buffered reads of the same query, for the three
-// database clients (design/db-streaming.md, section 7). Run by run.py:
+// Streaming against buffered reads of the same query, for the database
+// clients (design/db-streaming.md, section 7). Run by run.py:
 //
 //     dbstream CLIENT MODE ROWS [BUFFER [FETCH [PORT]]]
 //
-// CLIENT is mssql, pg or oracle (the DSNs as the live tests find them:
-// MSSQL_TEST_DSN or ~/.obo-mssql-dsn, OBX_PG_DSN, ORACLE_TEST_DSN or
-// ~/.obo-oracle-dsn; never printed); MODE is stream or buffered. Every row
-// is decoded into an Order (bigint, int, text, decimal(12,2)) and folded
-// into a checksum. Prints: client mode rows ms peak-KB checksum. The peak is
-// the process's VmHWM. For oracle, FETCH is new (the default: rows by
-// bytes, fetching ahead) or old (Fetch Size 100, no fetching ahead), PORT
-// a delay proxy's (delayproxy.py), and the query's round trips and
-// milliseconds (without the login) follow the checksum.
+// CLIENT is mssql, pg, pglibpq (postgres_libpq, the old client) or oracle
+// (the DSNs as the live tests find them: MSSQL_TEST_DSN or ~/.obo-mssql-dsn,
+// OBX_PG_DSN, ORACLE_TEST_DSN or ~/.obo-oracle-dsn; never printed); MODE is
+// stream or buffered. Every row is decoded into an Order (bigint, int, text,
+// decimal(12,2)) and folded into a checksum. Prints: client mode rows ms
+// peak-KB checksum. The peak is the process's VmHWM. For oracle, FETCH is new
+// (the default: rows by bytes, fetching ahead) or old (Fetch Size 100, no
+// fetching ahead), PORT a delay proxy's (delayproxy.py), and the query's round
+// trips and milliseconds (without the login) follow the checksum. For pg,
+// PORT (> 0) means the TCP DSN with TLS (OBX_PG_TLS_DSN or ~/.obo-pg-tls-dsn)
+// with its port replaced by PORT (a delay proxy's, or the server's own); the
+// round trips are the native client's (-1 for pglibpq, which does not count
+// them). `dbstream pg|pglibpq ping N [PORT]` prints the mean SELECT 1 time.
 
 import "sqlserver"
 import "postgres"
+import "postgres_libpq"
 import "oracle"
 import "sqlrows"
 import "io"
@@ -98,9 +103,17 @@ fn mssql(stream: bool, n: int, size: int): Result[Sum, Error] {
     return Ok(s)
 }
 
+// PORT and the DSN (see the header): the TCP DSN with TLS when PORT > 0.
+fn pgDsn(): str {
+    if PORT > 0 { return fileOr("OBX_PG_TLS_DSN", ".obo-pg-tls-dsn") + " port=" + PORT.toStr() }
+    return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
+}
+
 fn pg(stream: bool, n: int, size: int): Result[Sum, Error] {
-    var c = try postgres.connect(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3"))
+    var c = try postgres.connect(pgDsn())
     var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
+    let r0 = c.roundTrips()
+    let q0 = time.monotonicNs()
     if stream {
         var src = try c.stream(pgSql(n), [], bindOrder, readOrder)
         var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
@@ -116,7 +129,51 @@ fn pg(stream: bool, n: int, size: int): Result[Sum, Error] {
             s.add(&o)
         }
     }
+    QUERY_MS = (time.monotonicNs() - q0) / 1000000
+    TRIPS = c.roundTrips() - r0
     return Ok(s)
+}
+
+// The same query through postgres_libpq (the old client, the oracle of the
+// differential test). Its round trips are not counted: TRIPS stays -1.
+fn pglibpq(stream: bool, n: int, size: int): Result[Sum, Error] {
+    var c = try postgres_libpq.connect(pgDsn())
+    var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
+    let q0 = time.monotonicNs()
+    if stream {
+        var src = try c.stream(pgSql(n), [], bindOrder, readOrder)
+        var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+        while true {
+            let k = try src.fill(mut &buf)
+            if k == 0 { break }
+            for o in buf[0..k] { s.add(&o) }
+        }
+    } else {
+        let r = try c.query(pgSql(n), &[])
+        for i in 0..r.rowCount() {
+            let o = Order{id: try r.int(i, 0), customer: try r.int(i, 1), name: try r.text(i, 2), amount: try r.decimal(i, 3)}
+            s.add(&o)
+        }
+    }
+    QUERY_MS = (time.monotonicNs() - q0) / 1000000
+    return Ok(s)
+}
+
+// The mean time of n round trips (SELECT 1) in microseconds, through pg's
+// client (libpq: postgres_libpq).
+fn pgPing(n: int, libpq: bool): Result[int, Error] {
+    if libpq {
+        var c = try postgres_libpq.connect(pgDsn())
+        let w = try c.query("SELECT 1", &[])
+        let t0 = time.monotonicNs()
+        for i in 0..n { let x = try c.query("SELECT 1", &[]) }
+        return Ok((time.monotonicNs() - t0) / 1000 / max(n, 1))
+    }
+    var c = try postgres.connect(pgDsn())
+    let w = try c.query("SELECT 1", &[])
+    let t0 = time.monotonicNs()
+    for i in 0..n { let x = try c.query("SELECT 1", &[]) }
+    return Ok((time.monotonicNs() - t0) / 1000 / max(n, 1))
 }
 
 // Oracle's fetching: "new" (the defaults: rows by bytes, fetching ahead)
@@ -200,11 +257,11 @@ fn main() {
     let size = if len(a) > 4 { parseInt(a[4]).unwrapOr(1024) } else { 1024 }
     if len(a) > 5 { FETCH = a[5] }
     if len(a) > 6 { PORT = parseInt(a[6]).unwrapOr(0) }
-    if client == "oracle" && a[2] == "ping" {
+    if (client == "oracle" || client == "pg" || client == "pglibpq") && a[2] == "ping" {
         // n round trips of SELECT 1: the mean round trip in microseconds
-        let p = ping(n)
+        let p = if client == "oracle" { ping(n) } else { pgPing(n, client == "pglibpq") }
         match p {
-            Ok(us) { println("oracle ping " + n.toStr() + " " + us.toStr()) }
+            Ok(us) { println(client + " ping " + n.toStr() + " " + us.toStr()) }
             Err(e) {
                 println("error " + e.code.toStr())
                 exit(1)
@@ -213,12 +270,12 @@ fn main() {
         return
     }
     let t0 = time.monotonicNs()
-    let r = if client == "mssql" { mssql(stream, n, size) } else if client == "pg" { pg(stream, n, size) } else { ora(stream, n, size) }
+    let r = if client == "mssql" { mssql(stream, n, size) } else if client == "pg" { pg(stream, n, size) } else if client == "pglibpq" { pglibpq(stream, n, size) } else { ora(stream, n, size) }
     let ms = (time.monotonicNs() - t0) / 1000000
     match r {
         Ok(s) {
             println(client + " " + a[2] + " " + s.rows.toStr() + " " + ms.toStr() + " " + peakKb().toStr() + " " +
-                    (s.ids + s.chars + s.units).toStr() + if TRIPS >= 0 { " " + TRIPS.toStr() + " " + QUERY_MS.toStr() } else { "" })
+                    (s.ids + s.chars + s.units).toStr() + if QUERY_MS >= 0 { " " + TRIPS.toStr() + " " + QUERY_MS.toStr() } else { "" })
         }
         Err(e) {
             println("error " + e.code.toStr())

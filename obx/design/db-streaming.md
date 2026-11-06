@@ -320,6 +320,65 @@ Server (TLS), 2 for PostgreSQL (a Unix socket).
   faults doubled with the larger fetches (9,900 to 21,600; system time 31
   to 70 ms native, 24 to 41 via C).
 
+### PostgreSQL: the native client (P3)
+
+Measured 2026-11-06, branch `pgwire-p3` (P3 on ef18639e), CPU 10 with 11
+idle. Per row, from `perf stat -e cycles:u,instructions:u` on the process
+(user space; a wait for the server is not counted): least of 5 interleaved
+runs, the run with the least time. The times are from `run.py` (least of 5,
+no perf), load 0.4 to 1.0.
+
+| client | backend | streamed: cycles a row, ms, peak MB | buffered: cycles a row, ms, peak MB |
+|---|---|---:|---:|
+| native, before P3 (ef18639e) | native | 1,401, 816 ms, 5.2 | 1,561, 715 ms, 87.1 |
+| native, P3 | native | 1,410, 497 ms, 9.8 | 1,526, 731 ms, 90.8 |
+| native, P3 | C | 1,608, 521 ms, 8.9 | 2,238, 846 ms, 88.7 |
+| pglibpq (`postgres_libpq`) | native | 2,223, 547 ms, 8.8 | 1,461, 800 ms, 109.8 |
+| pglibpq (`postgres_libpq`) | C | 2,547, 625 ms, 8.2 | 1,964, 838 ms, 109.3 |
+
+- The 1,550 cycles-a-row threshold is met (1,410 native streamed). The
+  native client was already at 1,401 before P3: the streamed gain is wall
+  time (816 to 497 ms, 40 percent less), from the byte-sized batches (164
+  round trips for the 1,000,000 rows, against about 977 with P2's fixed
+  1,024-row batches) and fetching ahead, which overlaps the server's work
+  with the decoding. The native stream is faster than libpq's native stream
+  (547 ms); the C backend's 521 ms is also below libpq's C stream (625 ms).
+- Buffered native, 1,526 cycles a row, misses the 1,450 target of
+  design/pgwire.md section 18 (libpq's buffered native is 1,461). The
+  binary-results proposal is not written: it is for the streamed case
+  (above 1,550), which is met.
+- A profile (`OBX_NATIVE_MAP`, 1,440 samples, native stream) puts the user
+  cycles in text decoding: `parseInt` 11.5 %, the decimal fast path 6.6 %
+  and its `i128` multiplies 6.5 %, `gl65_dup` 6.1 % (a generated function
+  whose source is not identified yet), `RowView.text` 5.3 %, `fitDecimal`,
+  `makeDec` and `quantize` about 10 % together (the numeric(12,2) column's
+  check builds the coefficient's string). Nothing else exceeds 5 %.
+- The decimal fast path gave no measured gain: with it switched off (an
+  A/B build, same source otherwise) the streamed native client took 1,377
+  cycles a row and the buffered 1,536, against 1,410 and 1,526 with it. It
+  stays because section 7.6 says it is the path; the `i128` multiply is the
+  first thing to change if it is ever tuned.
+- Peak memory: the streamed client is 9.8 MB at 1,000,000 rows (the batch
+  of about 256 KB, the one ahead, the decoded records); the buffered client
+  91 MB.
+
+Latency (`run.py --latency 0,2.5 --latency-clients pg,pglibpq --small 0
+--modes stream,buffered --runs 3`; a delay proxy in front of the TLS TCP
+port; the round trip through the proxy is 6.4 ms at 2.5 ms one way):
+
+| one-way delay | client | streamed, ms (round trips) | buffered, ms |
+|---:|---|---:|---:|
+| 0 | pg native | 430 (164) | 691 |
+| 0 | pglibpq native | 600 | 749 |
+| 2.5 ms | pg native | 1,376 (164) | 701 |
+| 2.5 ms | pglibpq native | 625 | 818 |
+
+At 2.5 ms the native stream is round-trip bound: 164 batches, one of them
+ahead, cost about 164 round trips. libpq's stream is not as slow there
+(625 ms), so the batch size or the number of batches in flight should depend
+on the round trip at high latency. That is a design decision (open question
+8 in design/pgwire.md section 21), not built here.
+
 ## 8. API as built
 
 All three clients have the same shape (`B`: the binding, `T`: the record):
