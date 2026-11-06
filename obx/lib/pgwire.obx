@@ -2284,3 +2284,495 @@ fn (s: mut &Session) startup(cfg: &Config, ep: &Endpoint, viaTls: bool, w: Where
     }
     return Err(proto("unreachable"))
 }
+
+// ------------------------------------------------------------------ queries
+
+fn copyCols(c: &[]Column): []Column {
+    var out: []Column = []
+    for x in c { append(mut &out, x) }
+    return out
+}
+
+fn unsignedOid(v: int): int { return if v < 0 { v + 4294967296 } else { v } }
+
+// A RowDescription body.
+fn (s: &Session) rowDescription(m: &Msg): Result[[]Column, Error] {
+    var r = s.rd(m)
+    let n = try r.i16("RowDescription")
+    if n < 0 { return Err(proto("a RowDescription of " + n.toStr() + " columns")) }
+    var cols: []Column = []
+    for i in 0..n {
+        let name = try r.cstr("RowDescription")
+        let tableOid = unsignedOid(try r.i32("RowDescription"))
+        let attnum = try r.i16("RowDescription")
+        let typeOid = unsignedOid(try r.i32("RowDescription"))
+        let typeSize = try r.i16("RowDescription")
+        let typmod = try r.i32("RowDescription")
+        let format = try r.i16("RowDescription")
+        append(mut &cols, Column{name: name, tableOid: tableOid, attnum: attnum, typeOid: typeOid, typeSize: typeSize,
+                                 typmod: typmod, format: format})
+    }
+    return Ok(cols)
+}
+
+fn commandTag(s: &Session, m: &Msg): Result[str, Error] {
+    var r = s.rd(m)
+    return r.cstr("CommandComplete")
+}
+
+// What a reply to one request collects while it is read.
+type Collect = record {
+    cols: []Column
+    rows: RawRows
+    tag: str
+    empty: bool
+    hasT: bool                  // a RowDescription for the statement in progress
+    first: Option[Error]        // the first ErrorResponse
+    refused: Option[Error]      // COPY, refused
+    sS: []int
+    sL: []int
+    lastSeq: int
+}
+
+fn newCollect(): Collect {
+    return Collect{cols: [], rows: newRawRows(0), tag: "", empty: false, hasT: false, first: None, refused: None,
+                   sS: [], sL: [], lastSeq: -1}
+}
+
+// The error that a cancelled or timed-out wait turns into, after the server has been asked to stop.
+fn (s: mut &Session) interrupted(e: Error, w: Where): Error {
+    if e.code != sqldialect.E_CANCELLED && e.code != sqldialect.E_TIMEOUT { return e }
+    s.abort(w)
+    if e.code == sqldialect.E_CANCELLED { return sqldialect.dbError(sqldialect.E_CANCELLED, "query cancelled") }
+    return sqldialect.dbError(sqldialect.E_TIMEOUT, "query: deadline passed")
+}
+
+// Reads one message of the reply to a request, turning an interrupted wait into
+// the cancel-and-drain of section 13.
+fn (s: mut &Session) wait(w: Where): Result[Msg, Error] {
+    match s.next(-1, w) {
+        Ok(m) { return Ok(m) }
+        Err(e) { return Err(s.interrupted(e, w)) }
+    }
+}
+
+// Reads the reply of a simple or extended request to its ReadyForQuery.
+fn (s: mut &Session) collect(w: Where): Result[Reply, Error] {
+    var c = newCollect()
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            84 {                                        // T RowDescription
+                c.cols = try s.rowDescription(&m)
+                c.rows = newRawRows(len(c.cols))
+                c.sS = array(len(c.cols), 0)
+                c.sL = array(len(c.cols), 0)
+                c.hasT = true
+                c.lastSeq = -1
+            }
+            68 {                                        // D DataRow
+                if !c.hasT { return Err(s.wire(proto("a DataRow before a RowDescription"))) }
+                let end = match scanRow(&s.chunk[..m.end], m.at, len(c.cols), mut &c.sS, mut &c.sL) {
+                    Ok(x) { x }
+                    Err(e) { return Err(s.wire(e)) }
+                }
+                if end != m.end { return Err(s.wire(proto("a DataRow with " + (m.end - end).toStr() + " bytes after its values"))) }
+                if c.lastSeq != s.seq {
+                    append(mut &c.rows.chunks, s.chunk)
+                    c.lastSeq = s.seq
+                }
+                append(mut &c.rows.rowChunk, i32(len(c.rows.chunks) - 1))
+                for i in 0..len(c.cols) {
+                    append(mut &c.rows.starts, i32(c.sS[i]))
+                    append(mut &c.rows.lens, i32(c.sL[i]))
+                }
+            }
+            67 {                                        // C CommandComplete
+                c.tag = try commandTag(s, &m)
+                if !c.hasT {
+                    c.cols = []
+                    c.rows = newRawRows(0)
+                }
+                c.hasT = false
+                c.empty = false
+            }
+            73 {                                        // I EmptyQueryResponse
+                c.tag = ""
+                c.empty = true
+                c.cols = []
+                c.rows = newRawRows(0)
+                c.hasT = false
+            }
+            110 {                                       // n NoData
+                c.cols = []
+                c.rows = newRawRows(0)
+                c.hasT = false
+            }
+            69 {                                        // E ErrorResponse
+                let e = try s.errorOf(&m)
+                if c.first.isNone() { c.first = Some(e.dbError()) }
+            }
+            90 {                                        // Z ReadyForQuery
+                try s.readyFor(&m)
+                match c.refused {
+                    Some(e) { return Err(e) }
+                    None {}
+                }
+                match c.first {
+                    Some(e) { return Err(e) }
+                    None {}
+                }
+                return Ok(Reply{columns: replace(mut &c.cols, []), rows: replace(mut &c.rows, newRawRows(0)), tag: c.tag, empty: c.empty})
+            }
+            71 {                                        // G CopyInResponse: refused
+                if c.refused.isNone() { c.refused = Some(input("COPY is not supported yet")) }
+                putCopyFail(mut &s.out, "COPY is not supported yet")
+                try s.flush(-1, w)
+            }
+            72, 87 {                                    // H CopyOutResponse, W CopyBothResponse: read and dropped
+                if c.refused.isNone() { c.refused = Some(input("COPY is not supported yet")) }
+            }
+            49, 50, 51, 100, 99, 116, 115 {}            // 1 2 3 d c t s: nothing to do
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr()))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// A request may start only on a ready session: a portal left open is closed first.
+fn (s: mut &Session) begin(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state == S_PORTAL { try s.closePortal(w) }
+    if s.state != S_READY { return Err(input("the session is busy")) }
+    return Ok(Unit{})
+}
+
+// Finishes an abandoned portal (a stream dropped before its end); every request calls it first.
+pub fn (s: mut &Session) settle(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state == S_PORTAL { return s.closePortal(w) }
+    return Ok(Unit{})
+}
+
+// Runs a script of any number of statements with the simple protocol; the last
+// statement's reply, or the first error (the server skips the rest).
+pub fn (s: mut &Session) script(sql: str, w: Where): Result[Reply, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    try s.begin(w)
+    putQuery(mut &s.out, sql)
+    s.state = S_BUSY
+    try s.flush(-1, w)
+    s.trips += 1
+    return s.collect(w)
+}
+
+fn (s: mut &Session) putExtended(sql: str, params: &[]Param, rows: int) {
+    putParse(mut &s.out, "", sql, params)
+    putBind(mut &s.out, "", "", params)
+    putDescribe(mut &s.out, 80, "")
+    putExecute(mut &s.out, "", rows)
+}
+
+fn checkRequest(sql: str, params: &[]Param): Result[Unit, Error] {
+    try sqldialect.noNul(sql, "SQL text")
+    if len(params) > 65535 { return Err(input("more than 65535 parameters")) }
+    return Ok(Unit{})
+}
+
+// Runs one statement with the extended protocol: Parse, Bind, Describe, Execute
+// (all rows) and Sync in one write; $1, $2, ... are params in order.
+pub fn (s: mut &Session) query(sql: str, params: &[]Param, w: Where): Result[Reply, Error] {
+    try checkRequest(sql, params)
+    try s.begin(w)
+    s.putExtended(sql, params, 0)
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    try s.flush(-1, w)
+    s.trips += 1
+    return s.collect(w)
+}
+
+// --------------------------------------------------------------- cancellation
+
+// Asks the server to cancel what the session is running: a CancelRequest on a
+// new connection to the same endpoint (no SSLRequest), then waits up to 1 s for
+// the server to close it, as libpq 16's PQcancel. The calls ignore the task's
+// cancellation and deadline.
+pub fn (s: &Session) cancelRequest(w: Where): Result[Unit, Error] {
+    if s.pid == 0 || len(s.key) == 0 { return Err(input("the session has no cancel key")) }
+    var o = newOut()
+    putCancelRequest(mut &o, s.pid, s.key)
+    var b = array(1, byte(0))
+    if len(s.unixPath) > 0 {
+        let c = match net.connectUnixFor(s.unixPath, 1000, w) {
+            Ok(c) { c }
+            Err(e) { return Err(ioFail(e)) }
+        }
+        match c.writeFor(o.bytes(), 1000, w) {
+            Ok(_) {}
+            Err(e) { return Err(ioFail(e)) }
+        }
+        let r = c.readFor(mut &b, 1000, w)
+    } else {
+        let c = match net.connectFor(s.addr, 1000, w) {
+            Ok(c) { c }
+            Err(e) { return Err(ioFail(e)) }
+        }
+        match c.writeFor(o.bytes(), 1000, w) {
+            Ok(_) {}
+            Err(e) { return Err(ioFail(e)) }
+        }
+        let r = c.readFor(mut &b, 1000, w)
+    }
+    return Ok(Unit{})
+}
+
+// Reads and drops messages to a ReadyForQuery, at most ms in all, without being
+// cancellable. A failure breaks the session.
+fn (s: mut &Session) drain(ms: int, w: Where): Result[Unit, Error] {
+    let t0 = time.monotonicNs()
+    while true {
+        let left = ms - (time.monotonicNs() - t0) / 1000000
+        if left <= 0 {
+            s.breakWith("the reply did not finish in " + ms.toStr() + " ms")
+            return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: the reply did not finish"))
+        }
+        let r = s.next(left, w)
+        if r.isErr() {
+            let e = r.unwrapErr()
+            s.breakWith(e.msg)
+            return Err(e)
+        }
+        let m = r.unwrap()
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+        } else if m.t == 90 {
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// A request was given up while its reply was outstanding: sync a portal if one
+// is open, cancel, and read what is left (ABORT_MS at most). The session is
+// ready again afterwards, or broken.
+fn (s: mut &Session) abort(w: Where) {
+    if s.state == S_BROKEN { return }
+    if s.state == S_PORTAL {
+        putSync(mut &s.out)
+        s.state = S_BUSY
+        s.pending = false
+        let sent = s.flush(ABORT_MS, w)
+        if sent.isErr() { return }
+    }
+    let c = s.cancelRequest(w)
+    let d = s.drain(ABORT_MS, w)
+}
+
+// ------------------------------------------------------------------- portals
+
+// The DataRows of one Execute's reply: the chunks that hold them, per row its
+// chunk and the offset of its column count.
+pub type Batch = record {
+    pub chunks: []str
+    pub rowChunk: []i32            // per row: chunk index
+    pub rowAt: []i32               // per row: offset of the DataRow's column count in its chunk
+    pub more: bool                 // PortalSuspended: more rows to Execute for
+    pub err: Option[Error]         // an ErrorResponse after these rows (the portal is gone, Sync done)
+    pub bytes: int                 // the DataRows' bytes, for sizing the next Execute
+}
+
+// Sends Sync and reads to ReadyForQuery: the end of an extended exchange that had no Sync yet.
+fn (s: mut &Session) syncUp(w: Where): Result[Unit, Error] {
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    s.pending = false
+    try s.flush(-1, w)
+    while true {
+        let m = try s.wait(w)
+        if m.t == 90 {
+            try s.readyFor(&m)
+            return Ok(Unit{})
+        }
+        if m.t == 69 {
+            let e = try s.errorOf(&m)
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Parse, Bind, Describe portal, Execute `rows`, Flush (no Sync): the statement's
+// columns, with its first rows still on the wire. A portal outside a
+// transaction block lives until the Sync that closePortal or the end of the rows sends.
+pub fn (s: mut &Session) openPortal(sql: str, params: &[]Param, rows: int, w: Where): Result[[]Column, Error] {
+    try checkRequest(sql, params)
+    try s.begin(w)
+    s.putExtended(sql, params, rows)
+    putFlush(mut &s.out)
+    s.state = S_PORTAL
+    s.pending = true
+    try s.flush(-1, w)
+    s.trips += 1
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            49, 50 {}                                   // ParseComplete, BindComplete
+            84 {
+                let cols = try s.rowDescription(&m)
+                s.portalCols = cols
+                return Ok(copyCols(&s.portalCols))
+            }
+            110 {
+                s.portalCols = []
+                return Ok([])
+            }
+            69 {                                        // refused before any row: Sync, ReadyForQuery
+                let e = try s.errorOf(&m)
+                s.pending = false
+                try s.syncUp(w)
+                return Err(e.dbError())
+            }
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr() + " opening a portal"))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Execute `rows` on the open portal and Flush; the reply is read by receiveBatch.
+pub fn (s: mut &Session) execute(rows: int, w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL || s.pending { return Err(input("no portal is waiting for an Execute")) }
+    putExecute(mut &s.out, "", rows)
+    putFlush(mut &s.out)
+    try s.flush(-1, w)
+    s.pending = true
+    s.trips += 1
+    return Ok(Unit{})
+}
+
+// Reads the outstanding Execute's reply. At the end of the rows (CommandComplete)
+// or an error the portal is done: Sync and ReadyForQuery are read here, and the
+// error, if any, is in Batch.err (the rows before it are in the batch).
+pub fn (s: mut &Session) receiveBatch(w: Where): Result[Batch, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL || !s.pending { return Err(input("no Execute is outstanding")) }
+    var b = Batch{chunks: [], rowChunk: [], rowAt: [], more: false, err: None, bytes: 0}
+    let n = len(s.portalCols)
+    var sS = array(n, 0)
+    var sL = array(n, 0)
+    var lastSeq = -1
+    var refused: Option[Error] = None
+    var ended = false
+    while true {
+        let m = try s.wait(w)
+        match m.t {
+            68 {
+                let end = match scanRow(&s.chunk[..m.end], m.at, n, mut &sS, mut &sL) {
+                    Ok(x) { x }
+                    Err(e) { return Err(s.wire(e)) }
+                }
+                if end != m.end { return Err(s.wire(proto("a DataRow with " + (m.end - end).toStr() + " bytes after its values"))) }
+                if lastSeq != s.seq {
+                    append(mut &b.chunks, s.chunk)
+                    lastSeq = s.seq
+                }
+                append(mut &b.rowChunk, i32(len(b.chunks) - 1))
+                append(mut &b.rowAt, i32(m.at))
+                b.bytes += m.end - m.at
+            }
+            115 {                                       // s PortalSuspended
+                s.pending = false
+                b.more = true
+                return Ok(b)
+            }
+            67, 73 {                                    // C, I: the portal ran to its end
+                s.pending = false
+                b.err = refused
+                try s.syncUp(w)
+                return Ok(b)
+            }
+            69 {
+                let e = try s.errorOf(&m)
+                s.pending = false
+                b.err = match refused { Some(r) { Some(r) } None { Some(e.dbError()) } }
+                try s.syncUp(w)
+                return Ok(b)
+            }
+            71 {                                        // CopyInResponse: refused
+                if refused.isNone() { refused = Some(input("COPY is not supported yet")) }
+                putCopyFail(mut &s.out, "COPY is not supported yet")
+                try s.flush(-1, w)
+            }
+            72, 87 { if refused.isNone() { refused = Some(input("COPY is not supported yet")) } }
+            100, 99, 49, 50, 51, 116 {}
+            else { return Err(s.wire(proto("unexpected message of type " + m.t.toStr() + " in a portal"))) }
+        }
+    }
+    return Err(proto("unreachable"))
+}
+
+// Ends the open portal (if any): the outstanding Execute's reply is read and
+// dropped, for CLOSE_WAIT_MS, then the server is asked to cancel, in ABORT_MS
+// all; then Close portal (when it has not run to its end) and Sync, and
+// ReadyForQuery. Past ABORT_MS the session is broken. No-op without a portal.
+pub fn (s: mut &Session) closePortal(w: Where): Result[Unit, Error] {
+    if s.state == S_BROKEN { return Err(s.brokenError()) }
+    if s.state != S_PORTAL { return Ok(Unit{}) }
+    var needClose = true
+    if s.pending {
+        let t0 = time.monotonicNs()
+        var cancelled = false
+        var ended = false
+        while !ended {
+            let spent = (time.monotonicNs() - t0) / 1000000
+            let limit = if cancelled { ABORT_MS } else { CLOSE_WAIT_MS }
+            if spent >= limit {
+                if cancelled {
+                    s.breakWith("the stream did not finish in " + ABORT_MS.toStr() + " ms")
+                    return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "pgwire: an unfinished stream could not be closed"))
+                }
+                let c = s.cancelRequest(w)
+                cancelled = true
+                continue
+            }
+            let r = s.next(limit - spent, w)
+            if r.isErr() {
+                let e = r.unwrapErr()
+                if e.code == sqldialect.E_TIMEOUT && !cancelled {
+                    let c = s.cancelRequest(w)
+                    cancelled = true
+                    continue
+                }
+                s.breakWith(e.msg)
+                return Err(e)
+            }
+            let m = r.unwrap()
+            match m.t {
+                115 { ended = true }                    // suspended: the portal is still there
+                67, 73 {
+                    needClose = false
+                    ended = true
+                }
+                69 {
+                    let e = try s.errorOf(&m)
+                    needClose = false
+                    ended = true
+                }
+                71 {
+                    putCopyFail(mut &s.out, "COPY is not supported yet")
+                    try s.flush(ABORT_MS, w)
+                }
+                else {}
+            }
+        }
+        s.pending = false
+    }
+    if needClose { putClose(mut &s.out, 80, "") }
+    putSync(mut &s.out)
+    s.state = S_BUSY
+    try s.flush(ABORT_MS, w)
+    s.trips += 1
+    try s.drain(ABORT_MS, w)
+    return Ok(Unit{})
+}
