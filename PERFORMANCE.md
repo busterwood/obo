@@ -11,7 +11,9 @@ Both are built from the same IR and must behave identically; the gate checks
 that on every test program. This page measures what each costs. Every table
 was measured again on 5 November 2026 at `d14a04f` (the math functions, the
 borrow-class types and TDS stage T2 all merged), on a quiet machine, unless
-it says otherwise. The native backend's progress tables, the passes tried
+it says otherwise; the Benchmarks table was measured again on 6 November at
+`38e114e` (Decimal, maps, code placement and the gcc move-width flags merged).
+The native backend's progress tables, the passes tried
 and shelved, the Math section's before-and-after figures and the obo record
 are history, each with its own date or commit. The numbers are
 host-dependent: use them to compare the columns, not as portable constants.
@@ -33,24 +35,29 @@ host-dependent: use them to compare the columns, not as portable constants.
 
 | benchmark | via C | native | native/C | what it does |
 |---|---:|---:|---:|---|
-| fib | 325 ms | 400 ms | 1.23 | recursive calls (native: code placement, see below) |
-| loop | 265 ms | 212 ms | 0.80 | two overflow-checked operations per iteration |
+| fib | 327 ms | 363 ms | 1.11 | recursive calls |
+| loop | 270 ms | 215 ms | 0.80 | two overflow-checked operations per iteration |
 | array | 102 ms | 90 ms | 0.88 | checked indexing |
-| alloc | 122 ms | 61 ms | 0.50 | 20 million records allocated and freed |
-| lists | 36 ms | 29 ms | 0.82 | linked list build, sum, drop |
-| strings | 78 ms | 42 ms | 0.54 | concatenation and `toStr` |
-| trees | 24 ms | 19 ms | 0.78 | binary trees |
-| tokens | 18 ms | 12 ms | 0.63 | byte scanning and hashing |
-| sieve | 170 ms | 116 ms | 0.68 | the sieve of Eratosthenes to 10 million, ten rounds |
-| maps | 182 ms | 188 ms | 1.03 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
+| alloc | 119 ms | 61 ms | 0.51 | 20 million records allocated and freed |
+| lists | 37 ms | 29 ms | 0.77 | linked list build, sum, drop |
+| strings | 79 ms | 42 ms | 0.53 | concatenation and `toStr` |
+| trees | 24 ms | 19 ms | 0.80 | binary trees |
+| tokens | 18 ms | 12 ms | 0.65 | byte scanning and hashing |
+| sieve | 187 ms | 133 ms | 0.71 | the sieve of Eratosthenes to 10 million, ten rounds |
+| maps | 183 ms | 185 ms | 1.01 | `Map[str, int]` with short and long keys, `Map[int, int]` (keyed hashing) |
 
-Native fib runs the same 4,305M instructions as after the nineteenth pass,
-in 1,855M cycles instead of the 1,550M it took then: the code placement
-described below (the runtime and the code before fib changed size with the
-math functions), not more work.
+Native fib runs the same 4,305M instructions as after the nineteenth pass.
+On 5 November it took 1,855M cycles, against 1,550M then, because the math
+functions had moved its code (code placement, below); with functions at
+multiples of 64 it takes 1,690M wherever its code falls (400 ms -> 363 ms).
+
+The sieve's 187 / 133 ms against 170 / 116 on 5 November is the machine,
+not obx: the instructions are the same (native 1,414M), and the plain C
+sieve, whose code did not change, went from 125 ms to 142 ms in the same
+run; native and plain C now both take about 600M cycles.
 
 The sieve also has a hand-written C version with no checks
-(`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 125 ms in
+(`obx/bench/c/sieve.c`, `gcc -O2`, bench.py's "plain C" column): 142 ms in
 the same run. Native obx runs as many instructions as it (1,414M) and about
 as many cycles (497M against 508M, best of 11 under `perf stat`); through C
 obx runs 1,428M and 741M, because gcc keeps the overflow and bounds checks
@@ -62,7 +69,7 @@ the native backend proves away (main's native build: 3,042M and 1,002M).
   the loop). Its freestanding runtime has a size-class
   allocator with no locks or libc bookkeeping, and the string and index
   checks are generated inline.
-- **Tight loops are now native's too** (loop, array; fib was level until code placement moved it, below). Since
+- **Tight loops are now native's too** (loop, array; fib is 1.11, see code placement below). Since
   the sixth pass the native backend tests at the bottom of loops and
   aligns their bodies, reads array headers once per loop, and drops the
   bounds and overflow checks that conditions, passed checks and induction
@@ -1143,3 +1150,29 @@ input set-up included): add of 6-digit values 280 / 135, mul 330 / 165, parse of
 20 digits 320 / 180, format of 38 digits 450 / 380, cmp 80 / 35 to 40. The C build is still about twice as fast as
 native on the arithmetic: native u128 values live on the stack between
 operations.
+
+The C figures above are at `-march=x86-64-v3` before `-mmove-max=128
+-mstore-max=128` (`38e114e`). At x86-64-v3 gcc copies a 32-byte value such as
+a Decimal passed by value with one 32-byte `ymm` load straight after the 8-
+and 16-byte stores that wrote it; store forwarding cannot serve that load,
+and every such call stalls. That made the C build of Decimal code 25-40%
+slower than the same build at x86-64-v2 (bisected to `-mavx`, Zen 4). The
+two flags keep gcc's copies to 16 bytes, in programs and the native runtime;
+the native backend never had the stall. Via C, least of 5 cycles, one CPU
+(x86-64-v2 / v3 / v3 with the flags):
+
+| case | v2 | v3 | v3 + flags |
+|---|---:|---:|---:|
+| add, 6 digits (M2:6) | 386M | 537M | 425M |
+| add, 19 digits (M2:19) | 384M | 546M | 398M |
+| trailing-zero strip, none to strip (M4:0) | 386M | 531M | 395M |
+| quantize, 6 digits (M6:6) | 365M | 480M | 371M |
+| div, big (M5:big) | 95M | 123M | 97M |
+| rem, gap 40 (M9:40) | 150M | 159M | 147M |
+
+So the per-operation C costs above are now about a fifth lower for add and
+quantize. What remains on M2:6 is BMI2 (gcc's `mulx`), left as it is. A
+16-byte load straight after a callee's two 8-byte stores (a returned
+Decimal) still stalls in every build; passing such values by pointer in the
+generated C would remove it. On the other bench programs the flags change no
+instruction counts, and natively (perfsuite) none at all.
