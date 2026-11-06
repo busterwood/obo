@@ -1,7 +1,8 @@
 # A native Oracle Database client
 
-Status: design for stages O1 to O3; items marked **provisional, for the user**
-are choices made to get going that the user should confirm or change.
+Status: stages O1 to O3 built (branch `oracle`; see "As built" at the end);
+items marked **provisional, for the user** are choices made to get going that
+the user should confirm or change.
 
 ## Why and what
 
@@ -199,3 +200,66 @@ PEM files work through `tls`); `tnsnames.ora` lookup.
 ## Language gaps
 
 None so far; workarounds will be listed here if any are needed.
+
+## As built (O1 to O3)
+
+Live against Oracle AI Database 26ai Free (23.26.3, the gvenzl/oracle-free
+slim image) on the C and the native backend, under `OBX_CHECK=1`:
+`oracle_live_basic` (connect, errors with ORA- codes, DML, transactions,
+5000-row fetches in rounds of Fetch Size, wrong password, a killed session,
+closing mid-result), `oracle_live_types` (every mapped type both ways,
+NUMBER edges 1e125 and 1e-130, 38 digits, NUMBER(10,2) rounding, 4000-byte
+VARCHAR2, NVARCHAR2, CHAR padding, RAW, DATE, TIMESTAMP(9), TIMESTAMP WITH
+TIME ZONE, BOOLEAN, nulls) and `oracle_live_tls`; offline `tns_codec` and
+`oracle_connstr`.
+
+What differs from the design above, and what was learned:
+
+- **Fast auth and END_OF_RESPONSE.** A 23ai ACCEPT carries flags2
+  FAST_AUTH (0x10000000) and HAS_END_OF_RESPONSE (0x02000000). With fast
+  auth the client sends one message (type 34) holding the Protocol request,
+  the DataTypes request and auth phase one; the reply runs PROTOCOL,
+  DATA_TYPES and the auth reply up to an END_OF_RESPONSE (29). With
+  END_OF_RESPONSE on (protocol version 319 and the capability bits set in
+  compile caps 40), ERROR and STATUS no longer end a reply: only
+  END_OF_RESPONSE does. Older servers get the classic three exchanges.
+- **The DataTypes table must be exact.** python-oracledb's table stores the
+  extended types as N + 256; a copy without the +256 was accepted by the
+  listener but made the server drop the connection on the first request
+  after login ("Network protocol error on first data after new connect",
+  ORA-28546 in the server trace). `tns`'s table is generated from
+  `data_types.pyx` (322 entries).
+- **Two length-prefixed byte forms.** Some fields are a ub4 length followed,
+  when non-zero, by u8-length chunks (python's `read_bytes_with_length`:
+  OIDs, the describe's current date, dcbqcky, error text, the row header's
+  rowid, piggybacks 7 and 8); `tns` reads those with `str2`, the rest with
+  the plain u8-length form. Mixing them up showed as "message type 0".
+- **TLS renegotiation.** Over tcps the listener hands the connection to the
+  database with a RESEND whose packet flags have 0x08: the TLS session ends
+  there without close_notify and a fresh handshake runs on the same socket
+  before CONNECT goes again (python's `renegotiate_tls`; `tls.Conn.detach`).
+- **Typed binds** (the provisional point under Types, decided for now):
+  `oracle.Param` is `Of(Value)`, `Date(time.Date)`, `DateTime(time.LocalDateTime)`,
+  `Offset(time.OffsetDateTime)` and `Number(tns.Num)` (NUMBER beyond
+  Decimal's range); `query` and `run` take `&[Value]`, `queryWith` and
+  `runWith` take `&[Param]`.
+- **Connection strings:** a provisional `CA File` key (a PEM of the CAs to
+  trust, for a self-signed server certificate) next to the design's keys.
+- **close() and logoff():** `close()` (and dropping a Conn) closes the
+  socket without a LOGOFF round trip, which cannot park in a destructor;
+  `logoff(w)` sends LOGOFF first. **provisional, for the user.**
+- LOB columns: their cells are E_TYPE errors until O4; the query itself
+  succeeds.
+- `crypto` is a public module (provisional, as proposed above).
+
+The test container: `obx/tools/oracle_container.sh create` (rootless podman,
+127.0.0.1:1521 TCP and 127.0.0.1:2484 TCPS, random passwords, the DSN in
+`~/.obo-oracle-dsn` mode 600), `tls` (run by create: orapki from a throwaway
+container of the full image makes a self-signed CN=localhost wallet; the CA
+goes to `~/.obo-oracle-ca.pem` and the TLS Data Source to `~/.obo-oracle-tls`),
+`start` after a reboot, `stop`, `status`, `logs`, `rm`.
+
+Next stages: O4 LOBs (LONG defines, then locators), REF CURSORs and implicit
+results, PL/SQL OUT binds, intervals, JSON and VECTOR, REDIRECT packets (RAC
+and shared servers), out-of-band breaks, statement cache, pooling and DRCP,
+Advanced Queuing, NNE.

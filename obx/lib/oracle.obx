@@ -13,7 +13,7 @@
 //         println((try rows.int(r, 0)).toStr() + " " + try rows.text(r, 1))
 //     }
 //
-// Stages O1 and O2 (design/oracle.md): Oracle Database 12.1 and later, the
+// Stages O1 to O3 (design/oracle.md): Oracle Database 12.1 and later, the
 // 12c and 11g password verifiers, plain TCP or TLS (tcps); SQL and PL/SQL
 // with positional binds :1, :2, ...; rows read whole (a FETCH a round trip
 // of Fetch Size rows until the last). Types: NUMBER (exact, as Num and
