@@ -1,0 +1,32 @@
+// postgres_libpq (the libpq client, the oracle of postgres_live_diff) without a
+// server: the libpq version, connection strings libpq
+// cannot parse (E_INPUT, before any connection attempt), a server that is not
+// there (CONNECTION_BAD), and no handle left open.
+// needs: pq
+// expect: libpq >= 10: true
+// expect: bad option: error 1000: invalid connection option "bogus"
+// expect: bad syntax: error 1000: missing "=" after "nonsense" in connection info string
+// expect: nul: error 1000: connection string contains a NUL byte
+// expect: no server: code 1, says connection: true
+// expect: open handles 0
+
+import "postgres_libpq"
+
+fn fails[T](r: Result[T, postgres_libpq.Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn main() {
+    println("libpq >= 10: " + (postgres_libpq.libVersion() >= 100000).toStr())
+    println("bad option: " + fails(postgres_libpq.connect("bogus=1")))
+    println("bad syntax: " + fails(postgres_libpq.connect("nonsense")))
+    println("nul: " + fails(postgres_libpq.connect("host=x\0")))
+    match postgres_libpq.connect("host=/nonexistent/obx port=5999 connect_timeout=1") {
+        Ok(_) { println("no server: connected?") }
+        Err(e) { println("no server: code " + e.code.toStr() + ", says connection: " + contains(e.msg, "connection").toStr()) }
+    }
+    println("open handles " + postgres_libpq.openHandles().toStr())
+}

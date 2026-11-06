@@ -1,12 +1,10 @@
 // postgres in tasks against a live server ($OBX_PG_DSN, default the local
 // socket; exits 77, skipped, when it cannot connect): connects and queries
-// park only their task (libpq's asynchronous API, the task waiting on the
-// socket), so a long pg_sleep does not hold up quick queries on other
+// park only their task (pgwire: the task waits on the socket), so a long pg_sleep does not hold up quick queries on other
 // connections, and three sleeps on three connections overlap. A query whose
 // task is cancelled, or whose within deadline passes, is cancelled on the
-// server (PQcancel) and its connection is usable again at once. A connect
+// server (a CancelRequest from pgwire) and its connection is usable again at once. A connect
 // that fails, never finishes, or is cancelled reports it. No handle stays open.
-// needs: pq
 // expect: connected 4
 // expect: quick queries done before the slow one: true
 // expect: slow: 1, quick: 10 10 10
@@ -39,7 +37,7 @@ fn show(r: &Result[int, Error]): str {
     }
 }
 
-fn one(c: &postgres.Conn, sql: str): Result[int, Error] {
+fn one(c: mut &postgres.Conn, sql: str): Result[int, Error] {
     let rows = try c.query(sql, &[])
     return rows.int(0, 0)
 }
@@ -48,27 +46,27 @@ fn opened(k: int): postgres.Conn { return postgres.connect(dsn()).unwrap() }
 
 type Done = value record { v: int; at: int }
 
-fn slow(c: postgres.Conn): Done {
-    let v = one(&c, "SELECT 1 FROM pg_sleep(0.3)").unwrap()
+fn slow(var c: postgres.Conn): Done {
+    let v = one(mut &c, "SELECT 1 FROM pg_sleep(0.3)").unwrap()
     return Done{v: v, at: time.monotonicNs()}
 }
 
-fn quick(c: postgres.Conn): Done {
+fn quick(var c: postgres.Conn): Done {
     var v = 0
     for i in 0..10 { v += c.query("SELECT $1::int8", &[V.Int(1)]).unwrap().int(0, 0).unwrap() }
     return Done{v: v, at: time.monotonicNs()}
 }
 
-fn sleepy(c: postgres.Conn): int { return one(&c, "SELECT 7 FROM pg_sleep(0.2)").unwrap() }
+fn sleepy(var c: postgres.Conn): int { return one(mut &c, "SELECT 7 FROM pg_sleep(0.2)").unwrap() }
 
 // A long query whose task is cancelled: it reports through a promise.
 type Outcome = record { r: Result[int, Error]; ms: int; c: postgres.Conn }
 type Job = record { c: postgres.Conn; p: task.Promise[Outcome] }
 
 fn long(j: Job): int {
-    let Job{c: c, p: p} = move(j)
+    var Job{c: c, p: p} = move(j)
     let t = time.monotonicNs()
-    let r = one(&c, "SELECT 1 FROM pg_sleep(10)")
+    let r = one(mut &c, "SELECT 1 FROM pg_sleep(10)")
     p.complete(Outcome{r: r, ms: (time.monotonicNs() - t) / 1000000, c: c})
     return 0
 }
@@ -121,17 +119,17 @@ fn main() {
         let f = s.start(long, Job{c: postgres.connect(dsn()).unwrap(), p: p})
         task.sleep(50).unwrap()
         cancel(f)
-        let o = res.wait().unwrap()
+        var o = res.wait().unwrap()
         println("cancelled: " + show(&o.r) + ", soon: " + (o.ms < 2000).toStr())
-        println("after cancel: " + show(&one(&o.c, "SELECT 2")))
+        println("after cancel: " + show(&one(mut &o.c, "SELECT 2")))
     })
 
     // A deadline: within around the query.
-    let c = postgres.connect(dsn()).unwrap()
+    var c = postgres.connect(dsn()).unwrap()
     let t1 = time.monotonicNs()
-    let r = task.within(100, fn(): Result[int, Error] { return one(&c, "SELECT 1 FROM pg_sleep(10)") })
+    let r = task.within(100, fn(): Result[int, Error] { return one(mut &c, "SELECT 1 FROM pg_sleep(10)") })
     println("timeout: " + show(&r) + ", soon: " + ((time.monotonicNs() - t1) / 1000000 < 2000).toStr())
-    println("after timeout: " + show(&one(&c, "SELECT 3")))
+    println("after timeout: " + show(&one(mut &c, "SELECT 3")))
 
     match postgres.connect("host=/nonexistent/obx dbname=x") {
         Ok(_) { println("no server: connected?") }
@@ -160,7 +158,7 @@ fn main() {
         Err(e) { println("syntax still reported: error " + e.code.toStr() + " (" + e.state + ")") }
     }
     c.exec("CREATE TEMP TABLE obx_c1c_async(a int); INSERT INTO obx_c1c_async VALUES (4)").unwrap()
-    println("script: " + show(&one(&c, "SELECT a FROM obx_c1c_async")))
+    println("script: " + show(&one(mut &c, "SELECT a FROM obx_c1c_async")))
     c.close()
     println("open handles " + intToStr(postgres.openHandles()))
 }

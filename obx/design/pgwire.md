@@ -100,8 +100,10 @@ native client decodes.
 
 ## 4. The public API of `postgres`
 
-Unchanged (names, signatures, behaviour; the tests' expected output stays,
-apart from the lines in "Changes"):
+Unchanged (names, behaviour; the tests' expected output stays, apart from
+the lines in "Changes"; the receivers are `mut &Conn` and `mut &Lease` and
+`transaction`'s body takes the connection, `fn(mut &Conn)`, see "As built
+(P2)"):
 
 | kind | members |
 |---|---|
@@ -309,7 +311,7 @@ Error texts are libpq's, so `postgres_basic`'s expected lines stay:
 | `bogus=1` | `invalid connection option "bogus"` |
 | `nonsense` | `missing "=" after "nonsense" in connection info string` |
 | `host='x` | `unterminated quoted string in connection info string` |
-| URI `?x` | `invalid URI query parameter: "x"` |
+| URI `?x` | `missing key/value separator "=" in URI query parameter: "x"` |
 | URI `%zz` | `invalid percent-encoded token: "%zz"` |
 | URI `?bogus=1` | `invalid URI query parameter: "bogus"` |
 | a NUL anywhere | `connection string contains a NUL byte` (today's text) |
@@ -1091,3 +1093,80 @@ No measurements were taken in P1.
 **For P2**: `Batch.rowAt` points at the DataRow's column count, which is what
 `scanRow` takes; `Reply.rows` keeps the chunks of the whole reply, so a
 `Rows` can hold the `RawRows` as they are.
+
+## 25. As built (P2)
+
+Branch `pgwire-p2`. `obx/lib/postgres.obx` is rewritten over `pgwire.Session`
+(664 lines); the libpq client is `obx/lib/postgres_libpq.obx` (`git mv`, only
+its header comment changed). No compiler, runtime or `pgwire` change. 6.1's
+table is corrected: a URI query parameter without `=` is `missing key/value
+separator "=" in URI query parameter: "x"` (as P1 built it).
+
+**Differences from the design and the brief.**
+
+- **`mut &Conn`.** A native session is mutated by every call, so `exec`,
+  `query`, `querySql`, `stream` and `transaction` take `mut &Conn`, and the
+  `Lease` ones `mut &Lease`, as `oracle` and `sqlserver` do (a `&Conn`
+  receiver cannot reach a `mut &Session`). `transaction`'s body therefore gets
+  the connection back: `body: &fn(mut &Conn): Result[T, Error]` (a closure
+  that captured the `Conn` would borrow it twice). Section 4 and the brief
+  said "unchanged signatures"; this cannot be, so the callers changed their
+  borrows only (`&postgres.Conn` to `mut &postgres.Conn`, `let` to `var` for
+  leases and connections, the body's parameter): `postgres_live`,
+  `task_postgres_async`, `task_postgres_pool`, `http_server_pg_cancel`,
+  `postgres_ledger`, `httpd`. No expected line changed. `serverVersion`,
+  `idle`, `inTransaction`, `parameter`, `backendPid` and `lastServerError`
+  keep `&Conn`.
+- **`Lease` holds `cs: []Conn`** (one element, none once given back) instead
+  of a `Conn` replaced by a null handle: a native `Conn` cannot be made empty,
+  and an `Option[Conn]` cannot be borrowed `mut` out of a match.
+- **`libVersion()` is gone from `postgres`**, as section 4 says; the one use
+  (the ledger example's first line) now prints the server version only.
+- **Status constants** are `pgwire`'s: `CONNECTION_BAD`, `PGRES_FATAL_ERROR`
+  and the 17 `OID_*` are `pub const` aliases of `pgwire.CONNECTION_BAD`,
+  `FATAL_ERROR`, `OID_*`; `CONNECTION_OK`, `PGRES_EMPTY_QUERY`,
+  `PGRES_COMMAND_OK`, `PGRES_TUPLES_OK`, `PGRES_SINGLE_TUPLE` stay as literals
+  (pgwire has no equivalent; nothing returns them).
+- **A statement that fails before its first row, streamed**, reports it from
+  the first `fill` or `next`, not from `stream()` (12.2: the first batch stays
+  on the wire). `idle()` is true afterwards as before. The old client said it
+  from `stream()` (single-row mode waited for the first result). A statement
+  without rows (INSERT, UPDATE) streamed is run by the Execute that
+  `stream()` sends; its error shows at the first `fill`.
+- **Stream sizes**: Execute 256 for the first batch and 1,024 for each later
+  one, no fetch-ahead and no byte sizing (P3).
+
+**The oracle.** `postgres_live_diff` compared 5,264 results (each a whole
+buffered or streamed result with every column, cell, accessor and error) and
+found no difference in the clients' values. What it did find, and who was
+right:
+
+- the empty query, streamed: libpq's `stream` answers `unsupported result
+  status 0 (COPY?)` (it treats PGRES_EMPTY_QUERY as an error); native gives a
+  stream with no columns and no rows. Native is right; compared buffered only.
+- COPY FROM STDIN through `postgres_libpq` leaves the call waiting forever
+  (the connection is stuck in COPY, the old known limit); native refuses it
+  with `E_INPUT "COPY is not supported yet"` and stays usable
+  (`pgwire_live`). Not compared.
+- NOTICE and WARNING: libpq prints them on stderr (`there is already a
+  transaction in progress`, `RAISE NOTICE`); native keeps them in the session.
+- the error timing above (first `fill` against `stream()`): the comparison
+  treats an error before any row alike.
+
+Everything else matched: the edge values of every mapped type (numeric with
+38 and 39 digits, `1e-16383`, NaN, numeric(p, s) with a negative scale, 1 MB
+text and bytea, all 256 byte values, date limits and infinities,
+`timestamptz` under five zones, interval under four styles), 2,000 generated
+rows, 24 parameter values alone and into 13 column types (bytea goes as
+binary now: the stored values are equal), 65,536 parameters (E_INPUT on
+both), and the errors (22012 mid-result and late, 22003, 42601, 23505,
+23502, a custom SQLSTATE, 25P02 after an error in a block, a script failing
+in the middle and rolled back, with `idle()` after each).
+
+**Tests** (C and native, `OBX_CHECK=1`): `postgres_basic` (its `libpq >= 10`
+line moved to `postgres_libpq_basic`), `postgres_libpq_basic`, `postgres_live`,
+`postgres_live_stream`, `task_postgres_async`, `task_postgres_pool`,
+`http_server_pg_cancel` (all ran live against the local socket, none
+skipped, expected lines unchanged), `postgres_live_diff` (about 3 s). `httpd`
+serves `/db`; `dbstream pg` stream and buffered agree (checksum 212159094,
+20,000 rows).

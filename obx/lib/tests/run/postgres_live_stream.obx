@@ -1,14 +1,14 @@
 // postgres streams against a live server ($OBX_PG_DSN, default the local
 // socket; exits 77, skipped, when it cannot connect). Rows decoded into the
-// program's records in libpq's single-row mode (sqlrows): names matched with
+// program's records from portal batches (pgwire, sqlrows): names matched with
 // case and underscores ignored, a missing column (the error lists the
 // columns), a type refused at bind, NULL into an Option and into a plain
 // field (the error names the column and the row), every mapped type,
 // 200,000 rows through a buffer of 7 and of 1,024 against the buffered
 // query, rows kept in a list across fills, next(), an early close and a
-// dropped stream (PQcancel; the connection is idle and reusable after), an
+// dropped stream (its portal is closed; the connection is idle and reusable
+// after), an
 // error on a later row, a statement without rows, by position, a lease.
-// needs: pq
 // expect: names: 3 rows | 1 7 'Ann' 12.50 | 3 9 'Cy' 0.01 | columns ID, Customer_Id, CUSTOMERNAME, amount, extra
 // expect: missing: error 1024: no column "email" (case and underscores ignored); the columns are: ID, Customer_Id, CUSTOMERNAME, amount, extra
 // expect: ambiguous: error 1024: column "a_b" is ambiguous: ab and A_B both match

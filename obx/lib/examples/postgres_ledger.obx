@@ -14,23 +14,23 @@ type Error = postgres.Error
 
 type Move = record { from: str; to: str; amount: Decimal }
 
-fn transfer(c: &postgres.Conn, m: &Move): Result[Unit, Error] {
-    return c.transaction(fn(): Result[Unit, Error] {
+fn transfer(c: mut &postgres.Conn, m: &Move): Result[Unit, Error] {
+    return c.transaction(fn(k: mut &postgres.Conn): Result[Unit, Error] {
         let amount = try postgres.decimalParam(m.amount, 12, 2)
-        let out = try c.query("UPDATE account SET balance = balance - $1 WHERE name = $2", &[amount, V.Text(m.from)])
-        let into = try c.query("UPDATE account SET balance = balance + $1 WHERE name = $2", &[amount, V.Text(m.to)])
+        let out = try k.query("UPDATE account SET balance = balance - $1 WHERE name = $2", &[amount, V.Text(m.from)])
+        let into = try k.query("UPDATE account SET balance = balance + $1 WHERE name = $2", &[amount, V.Text(m.to)])
         if out.affected() != 1 || into.affected() != 1 {
             return Err(Error{code: 2000, state: "", msg: "no such account"})
         }
-        try c.query("INSERT INTO entry(src, dst, amount) VALUES ($1, $2, $3)", &[V.Text(m.from), V.Text(m.to), amount])
+        try k.query("INSERT INTO entry(src, dst, amount) VALUES ($1, $2, $3)", &[V.Text(m.from), V.Text(m.to), amount])
         return Ok(Unit{})
     })
 }
 
 fn run(dsn: str): Result[Unit, Error] {
-    let conn = try postgres.connect(dsn)
-    let c = &conn
-    println("server " + c.serverVersion().toStr() + ", libpq " + postgres.libVersion().toStr())
+    var conn = try postgres.connect(dsn)
+    let c = mut &conn
+    println("server " + c.serverVersion().toStr())
     try c.exec("CREATE TEMP TABLE account(name text PRIMARY KEY, balance numeric(12,2) NOT NULL CHECK (balance >= 0)); " +
         "CREATE TEMP TABLE entry(id bigserial PRIMARY KEY, src text, dst text, amount numeric(12,2), at timestamptz DEFAULT now())")
     try c.query("INSERT INTO account VALUES ('alice', $1), ('bob', $2), ('carol', $3)", &[V.Dec(100.00m), V.Dec(20.50m), V.Dec(0.00m)])

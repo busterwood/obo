@@ -98,7 +98,7 @@ fn shutdown(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Uni
 
 // One query on a connection of the pool, given back when the lease drops.
 fn query(pool: &postgres.Pool, n: int): Result[int, postgres.Error] {
-    let c = try pool.acquire()
+    var c = try pool.acquire()
     let rows = try c.query("SELECT $1::int8 + 1", &[postgres.Value.Int(n)])
     return rows.int(0, 0)
 }

@@ -1,5 +1,5 @@
-// postgres: PostgreSQL through libpq (libpq.so.5; a program that uses it is
-// dynamically linked to it).
+// postgres: PostgreSQL over the native wire protocol (pgwire; no libpq, no C
+// library: the client is obx all the way down to the socket).
 //
 //     var conn = try postgres.connect("host=/var/run/postgresql dbname=app")
 //     try conn.exec("CREATE TEMP TABLE t(id int8, price numeric(10,2))")
@@ -9,280 +9,154 @@
 //         println((try rows.int(r, 0)).toStr() + " " + (try rows.decimal(r, 0)).toStr())
 //     }
 //
-// Resources: Conn and Rows own their libpq handle and release it when they
-// are dropped (PQfinish, PQclear). Conn.close() consumes the connection, so
-// there is no closed-handle state. Rows hold the whole result in client
-// memory and do not borrow their Conn: they stay readable after it closes.
-// openHandles() counts the live handles of both kinds, for tests.
+// The program API of the libpq client (now `postgres_libpq`, kept as the
+// oracle of the differential test) over pgwire.Session (design/pgwire.md).
+// The connection string is libpq's (pgwire.parseConfig). Connections, calls
+// and streams take the task's Where, so they park the task, not the thread;
+// a Conn is used by one task at a time (the calls take `mut &Conn`).
 //
-// Parameters are $1, $2, ... with values from sqldialect.Value, sent in text
-// format with an explicit type OID each: NULL 0 (untyped: cast it in the SQL
-// where the server cannot infer a type, `$1::numeric`), Int int8 (20), Float
-// float8 (701, shortest round-trip text), Bool bool (16), Text text (25, no
-// NUL byte), Bytes bytea (17, hex), Dec numeric (1700, exact text). SQL is
+// Resources: Conn and Rows are counted by openHandles(), for tests. A Conn
+// closes its session (Terminate) when it is dropped; Conn.close() consumes
+// it. Rows hold the whole result in client memory (the raw DataRow bytes as
+// they came off the wire) and do not borrow their Conn: they stay readable
+// after it closes.
+//
+// Parameters are $1, $2, ... with values from sqldialect.Value, sent with an
+// explicit type OID each: NULL 0 (untyped: cast it in the SQL where the
+// server cannot infer a type, `$1::numeric`), Int int8 (20), Float float8
+// (701, shortest round-trip text), Bool bool (16), Text text (25, no NUL
+// byte), Bytes bytea (17, binary), Dec numeric (1700, exact text). SQL is
 // never interpolated. Results come in text format, which is exact for every
 // type: numeric is never read through a float; bytea is decoded from hex.
 // Columns report their type OID and typmod; decimal() uses the typmod of a
 // numeric(p, s) column to restore its display scale and check the value.
 //
-// stream (design/db-streaming.md) reads a statement's rows in libpq's
-// single-row mode into the program's own records, a buffer at a time, and
-// cancels (PQcancel) a stream ended early.
+// stream (design/db-streaming.md) reads a statement's rows through a portal
+// (Execute with a row limit) into the program's own records, a buffer at a
+// time; a stream ended early closes its portal (Close, Sync) and asks the
+// server to cancel only when a running Execute is slow to answer.
 //
-// Errors are sqldialect.DbError. A failed statement is code
-// PGRES_FATAL_ERROR (7) with the server's SQLSTATE in `state` ("23505") and
-// its primary message; a failed connection CONNECTION_BAD (1); a connection
-// string libpq cannot parse E_INPUT.
+// Errors are sqldialect.DbError. A failed statement is code 7 (FATAL_ERROR)
+// with the server's SQLSTATE in `state` ("23505") and its primary message; a
+// failed connect CONNECTION_BAD (1), with the SQLSTATE when the server sent
+// one; a connection string that cannot be parsed E_INPUT; a lost connection
+// E_IO and a malformed reply E_PROTOCOL (the connection is then broken).
 
 import "sqldialect"
 import "sqlrows"
-import "math"
-import "ffi"
+import "pgwire"
 import "task"
-import "time"
+import "math"
 
 pub type Value = sqldialect.Value
 pub type Error = sqldialect.DbError
 type Sql = sqldialect.Sql
 
 pub const CONNECTION_OK = 0
-pub const CONNECTION_BAD = 1
+pub const CONNECTION_BAD = pgwire.CONNECTION_BAD
 pub const PGRES_EMPTY_QUERY = 0
 pub const PGRES_COMMAND_OK = 1
 pub const PGRES_TUPLES_OK = 2
-pub const PGRES_FATAL_ERROR = 7
+pub const PGRES_FATAL_ERROR = pgwire.FATAL_ERROR
 pub const PGRES_SINGLE_TUPLE = 9
 
-pub const OID_BOOL = 16
-pub const OID_BYTEA = 17
-pub const OID_INT8 = 20
-pub const OID_INT2 = 21
-pub const OID_INT4 = 23
-pub const OID_TEXT = 25
-pub const OID_FLOAT4 = 700
-pub const OID_FLOAT8 = 701
-pub const OID_NUMERIC = 1700
-pub const OID_CHAR = 18
-pub const OID_NAME = 19
-pub const OID_BPCHAR = 1042
-pub const OID_VARCHAR = 1043
-pub const OID_DATE = 1082
-pub const OID_TIME = 1083
-pub const OID_TIMESTAMP = 1114
-pub const OID_TIMESTAMPTZ = 1184
+pub const OID_BOOL = pgwire.OID_BOOL
+pub const OID_BYTEA = pgwire.OID_BYTEA
+pub const OID_INT8 = pgwire.OID_INT8
+pub const OID_INT2 = pgwire.OID_INT2
+pub const OID_INT4 = pgwire.OID_INT4
+pub const OID_TEXT = pgwire.OID_TEXT
+pub const OID_FLOAT4 = pgwire.OID_FLOAT4
+pub const OID_FLOAT8 = pgwire.OID_FLOAT8
+pub const OID_NUMERIC = pgwire.OID_NUMERIC
+pub const OID_CHAR = pgwire.OID_CHAR
+pub const OID_NAME = pgwire.OID_NAME
+pub const OID_BPCHAR = pgwire.OID_BPCHAR
+pub const OID_VARCHAR = pgwire.OID_VARCHAR
+pub const OID_DATE = pgwire.OID_DATE
+pub const OID_TIME = pgwire.OID_TIME
+pub const OID_TIMESTAMP = pgwire.OID_TIMESTAMP
+pub const OID_TIMESTAMPTZ = pgwire.OID_TIMESTAMPTZ
 
-const DIAG_SQLSTATE = 67           // 'C'
-const DIAG_MESSAGE_PRIMARY = 77    // 'M'
-const MAX_DSCALE = 16383           // numeric's largest display scale
-const POLLING_FAILED = 0           // PostgresPollingStatusType
-const POLLING_READING = 1
-const POLLING_WRITING = 2
-const POLLING_OK = 3
-const PQTRANS_IDLE = 0
-const PQTRANS_ACTIVE = 1
-const ABORT_MS = 5000              // how long a cancelled query's results are waited for
-
-extern "pq" fn PQlibVersion(): i32
-extern "pq" fn PQconninfoParse(conninfo: str, err: mut &ptr): ptr
-extern "pq" fn PQconninfoFree(opts: ptr)
-extern "pq" fn PQfreemem(p: ptr)
-extern "pq" fn PQconnectStart(conninfo: str): ptr blocking
-extern "pq" fn PQconnectPoll(c: ptr): i32 blocking
-extern "pq" fn PQconninfo(c: ptr): ptr
-extern "pq" fn PQsocket(c: ptr): i32
-extern "pq" fn PQsetnonblocking(c: ptr, on: i32): i32
-extern "pq" fn PQtransactionStatus(c: ptr): i32
-extern "pq" fn PQstatus(c: ptr): i32
-extern "pq" fn PQerrorMessage(c: ptr): str
-extern "pq" fn PQserverVersion(c: ptr): i32
-extern "pq" fn PQfinish(c: ptr)
-extern "pq" fn PQsendQuery(c: ptr, sql: str): i32
-extern "pq" fn PQsendQueryParams(c: ptr, sql: str, n: i32, types: &[]u32, values: &[]ptr, lengths: ptr,
-                                 formats: ptr, resultFormat: i32): i32
-extern "pq" fn PQflush(c: ptr): i32
-extern "pq" fn PQconsumeInput(c: ptr): i32
-extern "pq" fn PQisBusy(c: ptr): i32
-extern "pq" fn PQgetResult(c: ptr): ptr
-extern "pq" fn PQgetCancel(c: ptr): ptr
-extern "pq" fn PQcancel(cn: ptr, errbuf: mut &[]byte, n: i32): i32 blocking
-extern "pq" fn PQfreeCancel(cn: ptr)
-extern "c" fn rtFdWait(fd: int, dir: int, ms: int, cancellable: bool, w: ptr): int as "obxlib_fd_wait"
-extern "pq" fn PQresultStatus(r: ptr): i32
-extern "pq" fn PQresultErrorMessage(r: ptr): str
-extern "pq" fn PQresultErrorField(r: ptr, field: i32): str
-extern "pq" fn PQclear(r: ptr)
-extern "pq" fn PQntuples(r: ptr): i32
-extern "pq" fn PQnfields(r: ptr): i32
-extern "pq" fn PQfname(r: ptr, col: i32): str
-extern "pq" fn PQftype(r: ptr, col: i32): u32
-extern "pq" fn PQfmod(r: ptr, col: i32): i32
-extern "pq" fn PQgetisnull(r: ptr, row: i32, col: i32): i32
-extern "pq" fn PQgetvalue(r: ptr, row: i32, col: i32): str
-extern "pq" fn PQcmdTuples(r: ptr): str
-extern "pq" fn PQsetSingleRowMode(c: ptr): i32
+const FIRST_ROWS = 256             // the first Execute of a stream: a short result is one round trip
+const NEXT_ROWS = 1024             // the later ones (P3 sizes them by bytes and fetches ahead)
 
 var OPEN: int = 0
 
 // The number of Conn and Rows handles not yet closed or dropped.
 pub fn openHandles(): int { return OPEN }
 
-// libpq's version: 160004 for 16.4.
-pub fn libVersion(): int { return int(PQlibVersion()) }
-
-fn chomp(s: str): str {
-    var n = len(s)
-    while n > 0 && isSpace(s[n - 1]) { n -= 1 }
-    return s[..n]
-}
-
 // -------------------------------------------------------------- connections
 
-pub type Conn = record { h: ptr }
+pub type Conn = record { s: pgwire.Session }
 
 fn (c: mut &Conn) drop() {
-    if !isNull(c.h) {
-        PQfinish(c.h)
-        OPEN -= 1
-    }
-}
-
-fn connError(h: ptr): Error { return sqldialect.dbError(CONNECTION_BAD, chomp(PQerrorMessage(h))) }
-
-fn waitError(r: int, what: str): Error {
-    if r == 1 { return sqldialect.dbError(sqldialect.E_CANCELLED, what + " cancelled") }
-    if r == 3 { return sqldialect.dbError(sqldialect.E_TIMEOUT, what + ": deadline passed") }
-    return sqldialect.dbError(CONNECTION_BAD, what + ": cannot wait for the socket (" + r.toStr() + ")")
-}
-
-// Parks until the connection's socket is readable (dir 0), writable (1) or
-// either (2): 0, or 1 cancelled, 3 a deadline or ms passed, negative an error.
-fn sockWait(h: ptr, dir: int, ms: int, cancellable: bool, w: Where): int {
-    let fd = int(PQsocket(h))
-    if fd < 0 { return -9 }
-    return rtFdWait(fd, dir, ms, cancellable, w.cstr())
-}
-
-// The connection's connect_timeout in milliseconds (libpq: at least 2 s), or -1.
-fn connectTimeout(h: ptr): int {
-    let opts = PQconninfo(h)
-    if isNull(opts) { return -1 }
-    var ms = -1
-    var i = 0
-    while !isNull(ffi.peekPtr(opts, i * 7)) {
-        let v = ffi.peekPtr(opts, i * 7 + 3)       // PQconninfoOption: keyword, envvar, compiled, val, ...
-        if strFromC(ffi.peekPtr(opts, i * 7)) == "connect_timeout" && !isNull(v) {
-            let t = parseInt(trim(strFromC(v))).unwrapOr(0)
-            if t > 0 { ms = (if t < 2 { 2 } else { t }) * 1000 }
-        }
-        i += 1
-    }
-    PQconninfoFree(opts)
-    return ms
+    c.s.close()
+    OPEN -= 1
 }
 
 // Connects with a libpq connection string ("host=... dbname=... user=...") or
-// URI, without blocking the other tasks: PQconnectStart and PQconnectPoll
-// (blocking externs: name lookup, TLS and password hashing run on the helper
-// pool) with the task parked on the socket between the steps. The task's
-// cancellation (E_CANCELLED) and deadline, and the connection's
-// connect_timeout for the whole connect (E_TIMEOUT), end the wait.
+// URI (pgwire.parseConfig, pgwire.connect). The task's cancellation
+// (E_CANCELLED) and deadline, and the string's connect_timeout (E_TIMEOUT),
+// end the wait.
 pub fn connect(conninfo: str, w: Where): Result[Conn, Error] {
-    try sqldialect.noNul(conninfo, "connection string")
-    var msg = nullPtr()
-    let opts = PQconninfoParse(conninfo, mut &msg)
-    if isNull(opts) {
-        let text = if isNull(msg) { "out of memory" } else { chomp(strFromC(msg)) }
-        PQfreemem(msg)
-        return Err(sqldialect.inputError(text))
-    }
-    PQconninfoFree(opts)
-    let h = PQconnectStart(conninfo)
-    if isNull(h) { return Err(sqldialect.dbError(CONNECTION_BAD, "out of memory")) }
+    let cfg = try pgwire.parseConfig(conninfo)
+    let s = try pgwire.connect(&cfg, w)
     OPEN += 1
-    let conn = Conn{h: h}             // finished when dropped, on the error paths too
-    if int(PQstatus(h)) == CONNECTION_BAD { return Err(connError(h)) }
-    let limit = connectTimeout(h)
-    let t0 = time.monotonicNs()
-    var st = POLLING_WRITING          // as libpq says: as if PQconnectPoll had returned it
-    while st != POLLING_OK {
-        if st == POLLING_FAILED { return Err(connError(h)) }
-        var ms = -1
-        if limit > 0 {
-            ms = limit - (time.monotonicNs() - t0) / 1000000
-            if ms <= 0 { return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed")) }
-        }
-        let r = sockWait(h, if st == POLLING_READING { 0 } else { 1 }, ms, true, w)
-        if r != 0 {
-            if r == 3 && limit > 0 && (time.monotonicNs() - t0) / 1000000 >= limit {
-                return Err(sqldialect.dbError(sqldialect.E_TIMEOUT, "connect: connect_timeout passed"))
-            }
-            return Err(waitError(r, "connect"))
-        }
-        st = int(PQconnectPoll(h))
-    }
-    if PQsetnonblocking(h, 1) != 0 { return Err(connError(h)) }
-    return Ok(conn)
+    return Ok(Conn{s: s})
 }
 
 // Closes the connection (dropping it does the same).
 pub fn (c: Conn) close() {}
 
 // The server's version: 160015 for 16.15.
-pub fn (c: &Conn) serverVersion(): int { return int(PQserverVersion(c.h)) }
+pub fn (c: &Conn) serverVersion(): int { return c.s.serverVersion() }
 
 // Whether the connection is up and outside a transaction, with no query
-// running: what a pool keeps.
-pub fn (c: &Conn) idle(): bool {
-    return int(PQstatus(c.h)) == CONNECTION_OK && int(PQtransactionStatus(c.h)) == PQTRANS_IDLE
-}
+// running and no stream left unfinished: what a pool keeps.
+pub fn (c: &Conn) idle(): bool { return c.s.ready() && c.s.txStatus() == pgwire.TX_IDLE && !c.s.portalOpen() }
+
+// Whether the session is inside a transaction block (also a failed one).
+pub fn (c: &Conn) inTransaction(): bool { return c.s.txStatus() != pgwire.TX_IDLE }
+
+// The server's ParameterStatus value (TimeZone, server_version, ...).
+pub fn (c: &Conn) parameter(name: str): Option[str] { return c.s.parameter(name) }
+
+// The server process id (BackendKeyData).
+pub fn (c: &Conn) backendPid(): int { return c.s.backendPid() }
+
+// The last ErrorResponse with all its fields (detail, hint, position, ...).
+pub fn (c: &Conn) lastServerError(): Option[pgwire.ServerError] { return c.s.lastServerError() }
 
 // Runs a script of any number of statements, without parameters.
-pub fn (c: &Conn) exec(script: str, w: Where): Result[Unit, Error] {
-    try sqldialect.noNul(script, "SQL text")
-    try c.settle(w)
-    let r = try c.finish(PQsendQuery(c.h, script), w)
+pub fn (c: mut &Conn) exec(script: str, w: Where): Result[Unit, Error] {
+    try c.s.settle(w)
+    let r = try c.s.script(script, w)
     return Ok(Unit{})
 }
 
 // Runs one statement with $1, $2, ... bound to args, in order.
-pub fn (c: &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
-    let sent = try c.send(sql, args, w)
-    return c.finish(sent, w)
-}
-
-// Sends sql with its parameters (PQsendQueryParams), after a stream left
-// unfinished is cancelled; its result, for finish.
-fn (c: &Conn) send(sql: str, args: &[Value], w: Where): Result[i32, Error] {
-    try sqldialect.noNul(sql, "SQL text")
-    if len(args) > 65535 { return Err(sqldialect.inputError("more than 65535 parameters")) }
-    try c.settle(w)
-    var ps: []Param = []
-    for v in args { append(mut &ps, try param(v)) }
-    var types: []u32 = []
-    var values: []ptr = []
-    var copies: []ffi.Mem = []          // the NUL-terminated texts, freed when this returns
-    for p in ps {
-        append(mut &types, u32(p.oid))
-        if p.null {
-            append(mut &values, nullPtr())
-        } else {
-            append(mut &copies, ffi.cstr(p.text))
-            append(mut &values, copies[len(copies) - 1].ptr())
-        }
-    }
-    return Ok(PQsendQueryParams(c.h, sql, i32(len(ps)), &types, &values, nullPtr(), nullPtr(), 0))
+pub fn (c: mut &Conn) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
+    try c.s.settle(w)
+    var ps: []pgwire.Param = []
+    for v in args { append(mut &ps, try pgwire.param(&v)) }
+    let pgwire.Reply{columns: cols, rows: raw, tag: tag, empty: empty} = try c.s.query(sql, &ps, w)
+    OPEN += 1
+    return Ok(Rows{cols: cols, raw: raw, tag: tag, empty: empty})
 }
 
 // Runs a fragment with $1, $2, ... placeholders and its arguments.
-pub fn (c: &Conn) querySql(q: &Sql, w: Where): Result[Rows, Error] {
+pub fn (c: mut &Conn) querySql(q: &Sql, w: Where): Result[Rows, Error] {
     return c.query(q.render(sqldialect.Dialect.Postgres), q.args(), w)
 }
 
 // Runs body in a transaction: BEGIN, then COMMIT when it returns Ok, ROLLBACK
-// when it returns Err (whose error is the result).
-pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error], w: Where): Result[T, Error] {
+// when it returns Err (whose error is the result). body gets the connection
+// back (a native session is used through a mut borrow, so the body cannot
+// capture it).
+pub fn (c: mut &Conn) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: Where): Result[T, Error] {
     try c.exec("BEGIN", w)
-    match body() {
+    match body(c) {
         Ok(v) {
             try c.exec("COMMIT", w)
             return Ok(v)
@@ -294,137 +168,6 @@ pub fn (c: &Conn) transaction[T](body: &fn(): Result[T, Error], w: Where): Resul
     }
 }
 
-// After PQsendQuery or PQsendQueryParams (sent: its result): flushes the
-// query, parks on the socket until the results are in, and collects them: the
-// first error, else the last result (as PQexec). Cancellation and the task's
-// deadline end the wait: the query is cancelled on the server then (abort).
-fn (c: &Conn) finish(sent: i32, w: Where): Result[Rows, Error] {
-    try c.flush(sent, w)
-    var keep = nullPtr()
-    while true {
-        while PQisBusy(c.h) != 0 {
-            let r = sockWait(c.h, 0, -1, true, w)
-            if r != 0 {
-                PQclear(keep)
-                return Err(c.abort(r, w))
-            }
-            if PQconsumeInput(c.h) == 0 {
-                PQclear(keep)
-                return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h))))
-            }
-        }
-        let res = PQgetResult(c.h)
-        if isNull(res) { break }
-        if isNull(keep) || int(PQresultStatus(keep)) != PGRES_FATAL_ERROR {
-            PQclear(keep)
-            keep = res
-        } else {
-            PQclear(res)
-        }
-    }
-    return c.result(keep)
-}
-
-// Flushes a query just sent (sent: what PQsendQuery or PQsendQueryParams
-// returned), parking while the socket is full.
-fn (c: &Conn) flush(sent: i32, w: Where): Result[Unit, Error] {
-    if sent == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    while true {
-        let f = int(PQflush(c.h))
-        if f == 0 { break }
-        if f < 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-        let r = sockWait(c.h, 2, -1, true, w)
-        if r != 0 { return Err(c.abort(r, w)) }
-        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    }
-    return Ok(Unit{})
-}
-
-// The query was given up (why: 1 cancelled, 3 deadline): asks the server to
-// cancel it (PQcancel, a blocking extern: it opens a second connection), then
-// reads what is left, for at most ABORT_MS, without being cancellable, so the
-// connection is idle again. If the server does not answer in time the
-// connection stays busy, and a pool closes it (idle() is false).
-fn (c: &Conn) abort(why: int, w: Where): Error {
-    c.cancel(w)
-    return waitError(why, "query")
-}
-
-// Whether a query is running: a stream left unfinished.
-fn (c: &Conn) busy(): bool { return int(PQtransactionStatus(c.h)) == PQTRANS_ACTIVE }
-
-// Cancels a stream left unfinished (as abort), so the connection takes the
-// next query.
-fn (c: &Conn) settle(w: Where): Result[Unit, Error] {
-    if !c.busy() { return Ok(Unit{}) }
-    c.cancel(w)
-    if c.busy() { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, "an unfinished stream could not be cancelled")) }
-    return Ok(Unit{})
-}
-
-// Asks the server to cancel the running query and reads what is left.
-fn (c: &Conn) cancel(w: Where) {
-    let cn = PQgetCancel(c.h)
-    if !isNull(cn) {
-        var buf = array(256, byte(0))
-        PQcancel(cn, mut &buf, i32(256))
-        PQfreeCancel(cn)
-    }
-    let t0 = time.monotonicNs()
-    var ok = true
-    while ok {
-        let left = ABORT_MS - (time.monotonicNs() - t0) / 1000000
-        if left <= 0 { break }
-        let f = int(PQflush(c.h))
-        if f < 0 { break }
-        if f == 1 || PQisBusy(c.h) != 0 {
-            if sockWait(c.h, if f == 1 { 2 } else { 0 }, left, false, w) != 0 { break }
-            ok = PQconsumeInput(c.h) != 0
-            continue
-        }
-        let res = PQgetResult(c.h)
-        if isNull(res) { break }
-        PQclear(res)
-    }
-}
-
-// Rows for a PGresult, or the error it reports (it is cleared then).
-fn (c: &Conn) result(r: ptr): Result[Rows, Error] {
-    if isNull(r) { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    OPEN += 1
-    let rows = Rows{h: r}
-    let st = int(PQresultStatus(r))
-    if st <= PGRES_TUPLES_OK { return Ok(rows) }
-    var msg = PQresultErrorField(r, DIAG_MESSAGE_PRIMARY)
-    if len(msg) == 0 { msg = chomp(PQresultErrorMessage(r)) }
-    if len(msg) == 0 { msg = "unsupported result status " + st.toStr() + " (COPY?)" }
-    return Err(Error{code: st, state: PQresultErrorField(r, DIAG_SQLSTATE), msg: msg})
-}
-
-// A parameter as sent: its type OID and text.
-type Param = value record { oid: int; null: bool; text: str }
-
-fn param(v: Value): Result[Param, Error] {
-    match v {
-        Value.Null { return Ok(Param{oid: 0, null: true, text: ""}) }
-        Value.Int(n) { return Ok(Param{oid: OID_INT8, null: false, text: n.toStr()}) }
-        Value.Float(f) { return Ok(Param{oid: OID_FLOAT8, null: false, text: floatText(f)}) }
-        Value.Bool(b) { return Ok(Param{oid: OID_BOOL, null: false, text: if b { "t" } else { "f" }}) }
-        Value.Text(s) {
-            try sqldialect.noNul(s, "text value")
-            return Ok(Param{oid: OID_TEXT, null: false, text: s})
-        }
-        Value.Bytes(b) { return Ok(Param{oid: OID_BYTEA, null: false, text: "\\x" + sqldialect.hex(b)}) }
-        Value.Dec(d) { return Ok(Param{oid: OID_NUMERIC, null: false, text: try sqldialect.decimalText(d, MAX_DSCALE)}) }
-    }
-}
-
-fn floatText(f: float): str {
-    if f.isNaN() { return "NaN" }
-    if f.isInf() { return if f > 0.0f { "Infinity" } else { "-Infinity" } }
-    return f.toStr()
-}
-
 // The Dec value for numeric(p, s), checked first (sqldialect.fitDecimal): the
 // server would round a value with more fraction digits instead of failing.
 pub fn decimalParam(d: Decimal, p: int, s: int): Result[Value, Error] {
@@ -433,37 +176,34 @@ pub fn decimalParam(d: Decimal, p: int, s: int): Result[Value, Error] {
 
 // ------------------------------------------------------------------- rows
 
-pub type Rows = record { h: ptr }
+pub type Rows = record { cols: []pgwire.Column; raw: pgwire.RawRows; tag: str; empty: bool }
 
-fn (r: mut &Rows) drop() {
-    PQclear(r.h)
-    OPEN -= 1
-}
+fn (r: mut &Rows) drop() { OPEN -= 1 }
 
-// Clears the result now (dropping it does the same).
+// Releases the result now (dropping it does the same).
 pub fn (r: Rows) close() {}
 
-pub fn (r: &Rows) rowCount(): int { return int(PQntuples(r.h)) }
+pub fn (r: &Rows) rowCount(): int { return r.raw.count() }
 
-pub fn (r: &Rows) columnCount(): int { return int(PQnfields(r.h)) }
+pub fn (r: &Rows) columnCount(): int { return len(r.cols) }
 
 // Rows inserted, updated, deleted, ... by the command (0 when it says none).
-pub fn (r: &Rows) affected(): int { return parseInt(PQcmdTuples(r.h)).unwrapOr(0) }
+pub fn (r: &Rows) affected(): int { return pgwire.affectedOf(r.tag) }
 
-fn (r: &Rows) col(col: int): Result[i32, Error] {
-    if col < 0 || col >= r.columnCount() {
-        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + r.columnCount().toStr() + " columns)"))
+fn (r: &Rows) col(col: int): Result[int, Error] {
+    if col < 0 || col >= len(r.cols) {
+        return Err(sqldialect.inputError("column " + col.toStr() + " out of range (" + len(r.cols).toStr() + " columns)"))
     }
-    return Ok(i32(col))
+    return Ok(col)
 }
 
-pub fn (r: &Rows) columnName(col: int): Result[str, Error] { return Ok(PQfname(r.h, try r.col(col))) }
+pub fn (r: &Rows) columnName(col: int): Result[str, Error] { return Ok(r.cols[try r.col(col)].name) }
 
 // The column's type OID (OID_INT8, OID_NUMERIC, ...).
-pub fn (r: &Rows) columnType(col: int): Result[int, Error] { return Ok(int(PQftype(r.h, try r.col(col)))) }
+pub fn (r: &Rows) columnType(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].typeOid) }
 
 // The column's type modifier; -1 when it has none (also a valid value).
-pub fn (r: &Rows) columnTypmod(col: int): Result[int, Error] { return Ok(int(PQfmod(r.h, try r.col(col)))) }
+pub fn (r: &Rows) columnTypmod(col: int): Result[int, Error] { return Ok(r.cols[try r.col(col)].typmod) }
 
 // The precision and scale of a numeric column; constrained is false for a
 // plain numeric. E_TYPE for another type, E_DEC_METADATA for a typmod that
@@ -492,13 +232,13 @@ pub fn (r: &Rows) isNull(row: int, col: int): Result[bool, Error] {
     if row < 0 || row >= r.rowCount() {
         return Err(sqldialect.inputError("row " + row.toStr() + " out of range (" + r.rowCount().toStr() + " rows)"))
     }
-    return Ok(PQgetisnull(r.h, i32(row), c) == 1)
+    return Ok(r.raw.isNull(row, c))
 }
 
 // The value's text form, as the server sent it. E_NULL for NULL.
 pub fn (r: &Rows) text(row: int, col: int): Result[str, Error] {
     if try r.isNull(row, col) { return Err(sqldialect.dbError(sqldialect.E_NULL, "column " + col.toStr() + " is NULL")) }
-    return Ok(PQgetvalue(r.h, i32(row), i32(col)))
+    return Ok(r.raw.bytes(row, col))
 }
 
 // An int2, int4 or int8 value.
@@ -506,7 +246,10 @@ pub fn (r: &Rows) int(row: int, col: int): Result[int, Error] {
     let t = try r.text(row, col)
     let oid = try r.columnType(col)
     if oid != OID_INT8 && oid != OID_INT4 && oid != OID_INT2 { return Err(typeError(col, "an integer")) }
-    return Ok(parseInt(t).unwrap())
+    match parseInt(t) {
+        Some(v) { return Ok(v) }
+        None { return Err(typeError(col, "an integer")) }
+    }
 }
 
 pub fn (r: &Rows) bool(row: int, col: int): Result[bool, Error] {
@@ -523,7 +266,10 @@ pub fn (r: &Rows) float(row: int, col: int): Result[float, Error] {
     if oid != OID_FLOAT8 && oid != OID_FLOAT4 { return Err(typeError(col, "a float")) }
     if t == "Infinity" { return Ok(math.inf()) }
     if t == "-Infinity" { return Ok(-math.inf()) }
-    return Ok(math.parse(t).unwrap())
+    match math.parse(t) {
+        Some(f) { return Ok(f) }
+        None { return Err(typeError(col, "a float")) }
+    }
 }
 
 // A bytea's exact bytes, or the text of any other type.
@@ -543,7 +289,7 @@ pub fn (r: &Rows) bytes(row: int, col: int): Result[str, Error] {
 pub fn (r: &Rows) decimal(row: int, col: int): Result[Decimal, Error] {
     let t = try r.text(row, col)
     let ty = try r.decimalType(col)
-    let d = try sqldialect.parseDecimal(t)
+    let d = try pgwire.decimalOfText(&t)
     if ty.constrained && ty.scale >= 0 { return sqldialect.fitDecimal(d, ty.precision, ty.scale) }
     return Ok(d)
 }
@@ -600,7 +346,7 @@ type Waiter = record { id: int; p: task.Promise[Option[Conn]] }
 
 // A connection taken from a pool, given back when it is dropped.
 pub type Lease = record {
-    c: Conn
+    cs: []Conn                // the leased connection: one element, none once given back
     pool: task.Shared[PoolState]
 }
 
@@ -674,13 +420,13 @@ pub fn (p: &Pool) acquire(w: Where): Result[Lease, Error] {
     }
     match replace(mut &got, None) {
         Some(c) {
-            if c.idle() { return Ok(Lease{c: c, pool: p.sh}) }
+            if c.idle() { return Ok(Lease{cs: [c], pool: p.sh}) }
             place = true                  // went bad while idle: closed here, its place reused
         }
         None {}
     }
     match connect(conninfo, w) {
-        Ok(c) { return Ok(Lease{c: c, pool: p.sh}) }
+        Ok(c) { return Ok(Lease{cs: [c], pool: p.sh}) }
         Err(e) {
             handOn(&p.sh, None)
             return Err(e)
@@ -713,8 +459,8 @@ fn handOn(sh: &task.Shared[PoolState], var c: Option[Conn]) {
 }
 
 fn (l: mut &Lease) drop() {
-    let c = replace(mut &l.c, Conn{h: nullPtr()})
-    if isNull(c.h) { return }
+    if len(l.cs) == 0 { return }
+    let c = pop(mut &l.cs)
     if c.idle() {
         handOn(&l.pool, Some(c))
     } else {
@@ -723,21 +469,34 @@ fn (l: mut &Lease) drop() {
     }
 }
 
-pub fn (l: &Lease) exec(script: str, w: Where): Result[Unit, Error] { return l.c.exec(script, w) }
+fn gone(): Error { return sqldialect.inputError("the lease is gone") }
 
-pub fn (l: &Lease) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] { return l.c.query(sql, args, w) }
+pub fn (l: mut &Lease) exec(script: str, w: Where): Result[Unit, Error] {
+    if len(l.cs) == 0 { return Err(gone()) }
+    return l.cs[0].exec(script, w)
+}
 
-pub fn (l: &Lease) querySql(q: &Sql, w: Where): Result[Rows, Error] { return l.c.querySql(q, w) }
+pub fn (l: mut &Lease) query(sql: str, args: &[Value], w: Where): Result[Rows, Error] {
+    if len(l.cs) == 0 { return Err(gone()) }
+    return l.cs[0].query(sql, args, w)
+}
+
+pub fn (l: mut &Lease) querySql(q: &Sql, w: Where): Result[Rows, Error] {
+    if len(l.cs) == 0 { return Err(gone()) }
+    return l.cs[0].querySql(q, w)
+}
 
 // A stream over the leased connection (Conn.stream); the lease is held
 // while the stream is in scope.
 pub fn (l: mut &Lease) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): Result[B, Error],
                                     read: fn(&B, &RowView): Result[T, Error], w: Where): Result[Stream[B, T], Error] {
-    return l.c.stream(sql, args, bind, read, w)
+    if len(l.cs) == 0 { return Err(gone()) }
+    return l.cs[0].stream(sql, args, bind, read, w)
 }
 
-pub fn (l: &Lease) transaction[T](body: &fn(): Result[T, Error], w: Where): Result[T, Error] {
-    return l.c.transaction(body, w)
+pub fn (l: mut &Lease) transaction[T](body: &fn(mut &Conn): Result[T, Error], w: Where): Result[T, Error] {
+    if len(l.cs) == 0 { return Err(gone()) }
+    return l.cs[0].transaction(body, w)
 }
 
 // ------------------------------------------------------------------ streams
@@ -746,36 +505,22 @@ pub type Columns = sqlrows.Columns
 pub type RowView = sqlrows.RowView
 pub type Kind = sqlrows.Kind
 
-// A PGresult owned by a stream (cleared when dropped).
-type Res = record { h: ptr }
-
-fn (r: mut &Res) drop() {
-    if !isNull(r.h) {
-        PQclear(r.h)
-        OPEN -= 1
-    }
-}
-
-fn res(h: ptr): Res {
-    if !isNull(h) { OPEN += 1 }
-    return Res{h: h}
-}
-
 // A result read a row at a time into the program's own records
-// (design/db-streaming.md), in libpq's single-row mode: libpq hands over one
-// row at a time, the stream decodes it into the caller's buffer, and the
-// whole result is never held. It holds the connection (a mut & borrow): the
-// checker refuses any other use of it while the stream is in scope.
-// Provisional, for the user.
+// (design/db-streaming.md), through a portal: Execute with a row limit, the
+// rows of each batch scanned in place from the bytes off the wire, the whole
+// result never held. It holds the connection (a mut & borrow): the checker
+// refuses any other use of it while the stream is in scope. Provisional, for
+// the user.
 pub type Stream[B, T] = value record {
     c: mut &Conn
     cols: sqlrows.Columns
     codec: sqlrows.Codec
     bound: B
     read: fn(&B, &RowView): Result[T, Error]
-    pending: Res                // the first row's result (read to describe the columns), until fill takes it
-    data: str                   // the current row: its values' text, one after the other
-    starts: []int
+    batch: pgwire.Batch         // the current batch of DataRows (raw)
+    k: int                      // the next row of batch
+    waiting: bool               // an Execute whose batch is not read yet
+    starts: []int               // the current row's values in its chunk
     lens: []int
     row: int
     state: int                  // sqlrows.LIVE, ENDED or FAILED
@@ -783,122 +528,32 @@ pub type Stream[B, T] = value record {
 }
 
 // Runs one statement with $1, $2, ... bound to args (taken, so the stream
-// borrows only the connection), in single-row mode, and waits for its first
-// row (or its end) to describe the columns; bind gets them and resolves the
-// record's fields once, and read makes one record from a row. The
-// statement's error before its first row, or bind's, is the Err.
+// borrows only the connection), Execute FIRST_ROWS on its portal, and reads
+// its description; bind gets the columns and resolves the record's fields
+// once, and read makes one record from a row. The statement's error before
+// its first row, or bind's, is the Err.
 //
-// Ending a stream early (close, or dropping it) cancels the query (PQcancel)
-// and reads what is left, so the connection takes the next query; a dropped
-// stream is cancelled by the connection's next call (idle() is false until
-// then).
+// Ending a stream early (close, or dropping it) closes its portal (Close and
+// Sync); the server is asked to cancel only when a running Execute is slow to
+// answer (pgwire.CLOSE_WAIT_MS). A dropped stream is settled by the
+// connection's next call (idle() is false until then).
 pub fn (c: mut &Conn) stream[B, T](sql: str, args: []Value, bind: fn(&Columns): Result[B, Error],
                                    read: fn(&B, &RowView): Result[T, Error], w: Where): Result[Stream[B, T], Error] {
-    let sent = try c.send(sql, &args, w)
-    if sent != 0 && PQsetSingleRowMode(c.h) != 1 {
-        c.cancel(w)
-        return Err(sqldialect.dbError(PGRES_FATAL_ERROR, "single-row mode refused"))
+    try c.s.settle(w)
+    var ps: []pgwire.Param = []
+    for v in args { append(mut &ps, try pgwire.param(&v)) }
+    let pcols = try c.s.openPortal(sql, &ps, FIRST_ROWS, w)
+    let cols = sqlrows.columns(pgwire.describe(&pcols))
+    let made = bind(&cols)
+    if made.isErr() {
+        c.s.closePortal(w)
+        return Err(made.unwrapErr())
     }
-    try c.flush(sent, w)
-    let first = res(try c.nextResult(w))
-    if isNull(first.h) { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    let st = int(PQresultStatus(first.h))
-    if st != PGRES_SINGLE_TUPLE && st != PGRES_TUPLES_OK && st != PGRES_COMMAND_OK {
-        let e = resultError(first.h, st)
-        c.cancel(w)
-        return Err(e)
-    }
-    let cols = sqlrows.columns(describe(first.h))
-    let bound = match bind(&cols) {
-        Ok(b) { b }
-        Err(e) { return Err(c.cancelled(e, w)) }
-    }
+    let bound = made.unwrap()
     let n = len(cols.list())
-    return Ok(Stream{c: c, cols: cols, codec: pgCodec(), bound: bound, read: read, pending: first, data: "",
+    let first = pgwire.Batch{chunks: [], rowChunk: [], rowAt: [], more: true, err: None, bytes: 0}
+    return Ok(Stream{c: c, cols: cols, codec: pgwire.codec(), bound: bound, read: read, batch: first, k: 0, waiting: true,
                      starts: array(n, 0), lens: array(n, -1), row: 0, state: sqlrows.LIVE, held: None})
-}
-
-fn (c: &Conn) cancelled(e: Error, w: Where): Error {
-    c.cancel(w)
-    return e
-}
-
-// The error a result reports.
-fn resultError(r: ptr, st: int): Error {
-    var msg = PQresultErrorField(r, DIAG_MESSAGE_PRIMARY)
-    if len(msg) == 0 { msg = chomp(PQresultErrorMessage(r)) }
-    if len(msg) == 0 { msg = "unsupported result status " + st.toStr() + " (COPY?)" }
-    return Error{code: st, state: PQresultErrorField(r, DIAG_SQLSTATE), msg: msg}
-}
-
-// The next result of the running query (null at its end), parking until it
-// is in.
-fn (c: &Conn) nextResult(w: Where): Result[ptr, Error] {
-    while PQisBusy(c.h) != 0 {
-        let r = sockWait(c.h, 0, -1, true, w)
-        if r != 0 { return Err(c.abort(r, w)) }
-        if PQconsumeInput(c.h) == 0 { return Err(sqldialect.dbError(PGRES_FATAL_ERROR, chomp(PQerrorMessage(c.h)))) }
-    }
-    return Ok(PQgetResult(c.h))
-}
-
-// The result's columns for sqlrows: wire is the type OID, aux the typmod.
-fn describe(r: ptr): []sqlrows.Column {
-    var out: []sqlrows.Column = []
-    let n = int(PQnfields(r))
-    for i in 0..n {
-        let oid = int(PQftype(r, i32(i)))
-        let tm = int(PQfmod(r, i32(i)))
-        let p = if oid == OID_NUMERIC && tm >= 4 { ((tm - 4) >> 16) & 0xffff } else { 0 }
-        let s = if oid == OID_NUMERIC && tm >= 4 { (((tm - 4) & 0x7ff) ^ 1024) - 1024 } else { 0 }
-        append(mut &out, sqlrows.column(PQfname(r, i32(i)), typeText(oid, tm, p, s), kindsOf(oid, tm, p, s),
-                                        sqlrows.NULLABLE_UNKNOWN, oid, 0, p, s, tm))
-    }
-    return out
-}
-
-fn typeText(oid: int, tm: int, p: int, s: int): str {
-    match oid {
-        OID_BOOL { return "bool" }
-        OID_BYTEA { return "bytea" }
-        OID_INT8 { return "int8" }
-        OID_INT2 { return "int2" }
-        OID_INT4 { return "int4" }
-        OID_TEXT { return "text" }
-        OID_FLOAT4 { return "float4" }
-        OID_FLOAT8 { return "float8" }
-        OID_NUMERIC { return if tm >= 4 { "numeric(" + p.toStr() + "," + s.toStr() + ")" } else { "numeric" } }
-        OID_CHAR { return "char" }
-        OID_NAME { return "name" }
-        OID_BPCHAR { return "bpchar" }
-        OID_VARCHAR { return "varchar" }
-        OID_DATE { return "date" }
-        OID_TIME { return "time" }
-        OID_TIMESTAMP { return "timestamp" }
-        OID_TIMESTAMPTZ { return "timestamptz" }
-        else { return "type " + oid.toStr() }
-    }
-}
-
-// What a column can be read as (design/db-streaming.md, section 3). An
-// unconstrained numeric (sum(int8), count's numeric cousins) reads as int too,
-// each value checked; a type without a case here reads as its text.
-fn kindsOf(oid: int, tm: int, p: int, s: int): int {
-    match oid {
-        OID_INT8, OID_INT2, OID_INT4 { return sqlrows.kinds(&[Kind.Int, Kind.Decimal]) }
-        OID_NUMERIC {
-            if tm < 4 || (s == 0 && p <= 18) { return sqlrows.kinds(&[Kind.Decimal, Kind.Int]) }
-            return sqlrows.kinds(&[Kind.Decimal])
-        }
-        OID_FLOAT4, OID_FLOAT8 { return sqlrows.kinds(&[Kind.Float]) }
-        OID_BOOL { return sqlrows.kinds(&[Kind.Bool]) }
-        OID_BYTEA { return sqlrows.kinds(&[Kind.Bytes]) }
-        OID_DATE { return sqlrows.kinds(&[Kind.Date]) }
-        OID_TIME { return sqlrows.kinds(&[Kind.Time]) }
-        OID_TIMESTAMP { return sqlrows.kinds(&[Kind.DateTime]) }
-        OID_TIMESTAMPTZ { return sqlrows.kinds(&[Kind.OffsetDateTime]) }
-        else { return sqlrows.kinds(&[Kind.Text]) }
-    }
 }
 
 // The result's columns (a copy).
@@ -907,15 +562,16 @@ pub fn (s: &Stream[B, T]) columns(): Columns { return s.cols.clone() }
 // The rows read so far.
 pub fn (s: &Stream[B, T]) rowsRead(): int { return s.row }
 
-// Ends the stream after an error: the rest of the query is cancelled.
+// Ends the stream after an error: its portal is closed.
 fn (s: mut &Stream[B, T]) failed(e: Error, w: Where): Error {
     s.state = sqlrows.FAILED
-    s.c.cancel(w)
+    s.c.s.closePortal(w)
     return e
 }
 
-// To the next row: true (its values in data, starts, lens), false at the
-// end, or the stream's error (once).
+// To the next row, reading the next batch when the last one is used: true
+// (its values in the current chunk, starts, lens), false at the end, or the
+// stream's error (once).
 fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
     if s.state != sqlrows.LIVE {
         match replace(mut &s.held, None) {
@@ -923,53 +579,42 @@ fn (s: mut &Stream[B, T]) advance(w: Where): Result[bool, Error] {
             None { return Ok(false) }
         }
     }
-    var h = replace(mut &s.pending, Res{h: nullPtr()})
-    if isNull(h.h) {
-        match s.c.nextResult(w) {
-            Ok(p) { h = res(p) }
-            Err(e) { return Err(s.failed(e, w)) }
+    while s.k >= len(s.batch.rowAt) {
+        match replace(mut &s.batch.err, None) {
+            Some(e) { return Err(s.failed(e, w)) }
+            None {}
         }
-    }
-    if isNull(h.h) {
-        s.state = sqlrows.ENDED
-        return Ok(false)
-    }
-    let st = int(PQresultStatus(h.h))
-    if st == PGRES_SINGLE_TUPLE {
-        var b = newStrBuf()
-        for i in 0..len(s.lens) {
-            if PQgetisnull(h.h, 0, i32(i)) == 1 {
-                s.lens[i] = -1
-            } else {
-                let v = PQgetvalue(h.h, 0, i32(i))
-                s.starts[i] = b.size()
-                s.lens[i] = len(v)
-                b.add(v)
-            }
+        if !s.batch.more && !s.waiting {
+            s.state = sqlrows.ENDED
+            return Ok(false)
         }
-        s.data = b.toStr()
-        s.row += 1
-        return Ok(true)
-    }
-    if st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK {
-        s.state = sqlrows.ENDED
-        while true {                            // the end of the query: libpq's last null
-            match s.c.nextResult(w) {
-                Ok(p) {
-                    if isNull(p) { break }
-                    let more = res(p)
-                }
+        if !s.waiting {
+            match s.c.s.execute(NEXT_ROWS, w) {
+                Ok(_) {}
                 Err(e) { return Err(s.failed(e, w)) }
             }
+            s.waiting = true
         }
-        return Ok(false)
+        match s.c.s.receiveBatch(w) {
+            Ok(b) { s.batch = b }
+            Err(e) { return Err(s.failed(e, w)) }
+        }
+        s.waiting = false
+        s.k = 0
     }
-    return Err(s.failed(resultError(h.h, st), w))
+    let at = int(s.batch.rowAt[s.k])
+    match pgwire.scanRow(&s.batch.chunks[int(s.batch.rowChunk[s.k])], at, len(s.lens), mut &s.starts, mut &s.lens) {
+        Ok(_) {}
+        Err(e) { return Err(s.failed(e, w)) }
+    }
+    s.k += 1
+    s.row += 1
+    return Ok(true)
 }
 
 // The record of the current row.
 fn (s: &Stream[B, T]) current(): Result[T, Error] {
-    let rv = sqlrows.rowView(s.cols.list(), &s.codec, &s.data, &s.starts, &s.lens, s.row)
+    let rv = sqlrows.rowView(s.cols.list(), &s.codec, &s.batch.chunks[int(s.batch.rowChunk[s.k - 1])], &s.starts, &s.lens, s.row)
     return s.read(&s.bound, &rv)
 }
 
@@ -1010,111 +655,10 @@ pub fn (s: mut &Stream[B, T]) next(w: Where): Result[Option[T], Error] {
     }
 }
 
-// Ends the stream; a query still running is cancelled and what is left of
-// it read, so the connection takes the next query.
+// Ends the stream: the portal is closed (Close, Sync) and the session takes
+// the next request.
 pub fn (s: Stream[B, T]) close(w: Where): Result[Unit, Error] {
     var t = s
-    let p = replace(mut &t.pending, Res{h: nullPtr()})
     t.state = sqlrows.ENDED
-    return t.c.settle(w)
-}
-
-// ---------------------------------------------------------------- values (text format)
-
-fn pgErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_TYPE, msg) }
-
-fn pInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
-    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 {
-        match parseInt(b) {
-            Some(v) { return Ok(v) }
-            None { return Err(pgErr("an integer of " + b)) }
-        }
-    }
-    if col.wire == OID_NUMERIC {
-        let d = try sqldialect.parseDecimal(b)
-        match d.toInt(Rounding.UNNECESSARY) {
-            Ok(v) { return Ok(v) }
-            Err(_) { return Err(pgErr(d.toStr() + " is not an int")) }
-        }
-    }
-    return Err(sqlrows.wrongKind(col, "int"))
-}
-
-fn pDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
-    if col.wire == OID_NUMERIC {
-        let d = try sqldialect.parseDecimal(b)
-        if col.aux >= 4 && col.scale >= 0 { return sqldialect.fitDecimal(d, col.precision, col.scale) }
-        return Ok(d)
-    }
-    if col.wire == OID_INT8 || col.wire == OID_INT2 || col.wire == OID_INT4 { return Ok(decimalOf(try pInt(b, col))) }
-    if col.wire == OID_FLOAT4 || col.wire == OID_FLOAT8 {
-        return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal"))
-    }
-    return Err(sqlrows.wrongKind(col, "Decimal"))
-}
-
-fn pFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
-    if col.wire != OID_FLOAT8 && col.wire != OID_FLOAT4 { return Err(sqlrows.wrongKind(col, "float")) }
-    if b == "Infinity" { return Ok(math.inf()) }
-    if b == "-Infinity" { return Ok(-math.inf()) }
-    match math.parse(b) {
-        Some(f) { return Ok(f) }
-        None { return Err(pgErr("a float of " + b)) }
-    }
-}
-
-fn pText(b: &str, col: &sqlrows.Column): Result[str, Error] {
-    if col.wire == OID_BYTEA { return Err(sqlrows.wrongKind(col, "text")) }
-    return Ok(b)
-}
-
-fn pBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
-    if col.wire != OID_BYTEA { return Err(sqlrows.wrongKind(col, "bytes")) }
-    if len(b) < 2 || b[0] != '\\' || b[1] != 'x' { return Err(pgErr("bytea not in hex format")) }
-    match sqldialect.unhex(b[2..]) {
-        Some(x) { return Ok(x) }
-        None { return Err(pgErr("bytea not in hex format")) }
-    }
-}
-
-fn pBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
-    if col.wire != OID_BOOL { return Err(sqlrows.wrongKind(col, "bool")) }
-    return Ok(b == "t")
-}
-
-fn pDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
-    if col.wire != OID_DATE { return Err(sqlrows.wrongKind(col, "date")) }
-    match time.parseDate(b) {
-        Some(d) { return Ok(d) }
-        None { return Err(pgErr("a date of " + b + " (only years 1 to 9999)")) }
-    }
-}
-
-fn pTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
-    if col.wire != OID_TIME { return Err(sqlrows.wrongKind(col, "time")) }
-    match time.parseTimeOfDay(b) {
-        Some(t) { return Ok(t) }
-        None { return Err(pgErr("a time of " + b)) }
-    }
-}
-
-fn pDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
-    if col.wire != OID_TIMESTAMP { return Err(sqlrows.wrongKind(col, "date-time")) }
-    match time.parseLocalDateTime(b) {
-        Some(t) { return Ok(t) }
-        None { return Err(pgErr("a timestamp of " + b)) }
-    }
-}
-
-fn pOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
-    if col.wire != OID_TIMESTAMPTZ { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
-    match time.parseOffsetDateTime(b) {
-        Some(t) { return Ok(t) }
-        None { return Err(pgErr("a timestamptz of " + b)) }
-    }
-}
-
-fn pgCodec(): sqlrows.Codec {
-    return sqlrows.Codec{int: pInt, decimal: pDecimal, float: pFloat, text: pText, bytes: pBytes, bool: pBool, date: pDate,
-                         time: pTime, dateTime: pDateTime, offsetDateTime: pOffset}
+    return t.c.s.closePortal(w)
 }
