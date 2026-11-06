@@ -9,8 +9,8 @@ is rejected with an error, never silently ignored.
 The long view (`-l`) is the full default form: decimal sizes, `-b` binary
 prefixes, `-B` bytes, user names from /etc/passwd (`-n` for numeric ids),
 dates in the zone of `TZ` (else the system's) with the current-year rule,
-`--time-style=long-iso` (and `default`), `-h` header rows, and eza's default
-colours. `--time-style=iso` and the other styles are rejected. The measured
+`--time-style=long-iso` (and `default`), `-h` header rows (`-lh` is the long
+view with a header), and eza's default colours. `--time-style=iso` and the other styles are rejected. The measured
 rules are in [../tests/eza/E3-PROBES.md](../tests/eza/E3-PROBES.md).
 
 It is one file. The parts (argument parsing, deduction, entries and sorting,
@@ -352,7 +352,7 @@ Results on both builds:
 concurrency stages C1b, C1c and C2 (design/concurrency.md) and since stage
 S1 the example program of the server library, `lib/httpserver.obx`
 (design/http-server.md; [../lib/README.md](../lib/README.md)). It is about
-230 lines: four handlers, a router and a call to `http.serve`. `GET /`
+210 lines: four handlers, a router and a call to `http.serve`. `GET /`
 says hello, `GET /stats` gives its counters, `GET /db` (when started with
 a pool size, `httpd ADDR POOL`: stage C1c) runs one query through a
 `postgres.Pool` of that many connections (`$OBX_PG_DSN`, default the local
