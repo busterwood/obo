@@ -14,8 +14,23 @@
 // expect: not blocks: crypto: AES-CBC decrypt: 3 bytes, not whole blocks
 // expect: random 32 32 different true
 // expect: unhex true false false
+// expect: sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+// expect: sha256 ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+// expect: hmac1 b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7
+// expect: hmac2 5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843
+// expect: hmac empty b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad
+// expect: pbkdf2-256 rfc7914 55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783
+// expect: pbkdf2-256 c1 120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b
+// expect: pbkdf2-256 c4096 c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a
+// expect: pbkdf2-256 bad: crypto: PBKDF2: 0 iterations
+// expect: pbkdf2-256 helper pool: other task ran true, same key true
+// expect: base64 [] [Zg==] [Zm8=] [Zm9v] [Zm9vYg==] [Zm9vYmE=] [Zm9vYmFy]
+// expect: unbase64 back: true
+// expect: unbase64 binary: true
+// expect: unbase64 rejects: true true true true true true true true true
 
 import "crypto"
+import "task"
 
 fn show(label: str, r: Result[str, crypto.Error]) {
     match r {
@@ -51,4 +66,54 @@ fn main() {
     let r2 = text(crypto.randomBytes(32))
     println("random " + len(r1).toStr() + " " + len(r2).toStr() + " different " + (r1 != r2).toStr())
     println("unhex " + crypto.unhex("0aFf").isSome().toStr() + " " + crypto.unhex("0g").isSome().toStr() + " " + crypto.unhex("abc").isSome().toStr())
+
+    // SHA-256 and HMAC-SHA-256 (FIPS 180-4, RFC 4231 cases 1 and 2)
+    show("sha256", crypto.sha256(""))
+    show("sha256", crypto.sha256("abc"))
+    show("hmac1", crypto.hmacSha256("\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b", "Hi There"))
+    show("hmac2", crypto.hmacSha256("Jefe", "what do ya want for nothing?"))
+    show("hmac empty", crypto.hmacSha256("", ""))
+
+    // PBKDF2-HMAC-SHA-256 (RFC 7914 section 11; the published ones for "password"/"salt")
+    show("pbkdf2-256 rfc7914", crypto.pbkdf2Sha256("passwd", "salt", 1, 64))
+    show("pbkdf2-256 c1", crypto.pbkdf2Sha256("password", "salt", 1, 32))
+    show("pbkdf2-256 c4096", crypto.pbkdf2Sha256("password", "salt", 4096, 32))
+    println("pbkdf2-256 bad: " + text(crypto.pbkdf2Sha256("p", "s", 0, 32)))
+    // a big count runs on the helper pool: another task goes on meanwhile
+    let want = text(crypto.pbkdf2Sha256("pw", "salt", 1000, 32))
+    task.scope(fn(s: mut &task.Scope) {
+        let slow = s.start(slowKey, 600000)
+        s.spawn(ticker, 0)
+        let k = slow.wait().unwrap()
+        println("pbkdf2-256 helper pool: other task ran " + OTHER_RAN.toStr() + ", same key " + (len(k) == 32).toStr())
+    })
+
+    // base64 (RFC 4648 section 10)
+    var enc = ""
+    for v in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] { enc = enc + "[" + crypto.base64(v) + "] " }
+    println("base64 " + trim(enc))
+    var back = true
+    for v in ["", "f", "fo", "foo", "foob", "fooba", "foobar"] {
+        if crypto.unbase64(crypto.base64(v)).unwrapOr("?") != v { back = false }
+    }
+    println("unbase64 back: " + back.toStr())
+    var all = ""
+    for i in 0..256 { all = all + strFromBytes(&[byte(i)]) }
+    println("unbase64 binary: " + (crypto.unbase64(crypto.base64(all)).unwrapOr("?") == all).toStr())
+    // bad padding, white space, bad characters, a misplaced "="
+    println("unbase64 rejects: " + crypto.unbase64("Zg").isNone().toStr() + " " + crypto.unbase64("Zg=").isNone().toStr() + " " +
+            crypto.unbase64("Zm9vYg=").isNone().toStr() + " " + crypto.unbase64("Zm9v ").isNone().toStr() + " " +
+            crypto.unbase64("Zm9v\n").isNone().toStr() + " " + crypto.unbase64("Z=9v").isNone().toStr() + " " +
+            crypto.unbase64("Zg==Zg==").isNone().toStr() + " " + crypto.unbase64("Zm9-").isNone().toStr() + " " +
+            crypto.unbase64("Z===").isNone().toStr())
+}
+
+var OTHER_RAN: bool = false
+
+fn slowKey(n: int): str { return text(crypto.pbkdf2Sha256("pw", "salt", n, 32)) }
+
+fn ticker(n: int): int {
+    let r = task.sleep(2)
+    OTHER_RAN = true
+    return 0
 }

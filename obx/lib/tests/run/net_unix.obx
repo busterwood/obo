@@ -1,0 +1,163 @@
+// net: Unix-domain sockets (listenUnix, connectUnix, connectUnixFor, Conn.isUnix) on a path in
+// a temporary directory and in the abstract namespace ("@name"); the ...For calls (readFor,
+// writeFor, connectFor), which ignore the task's cancellation and deadline and stop after
+// their own time limit; setKeepAlive on a TCP socket.
+// expect: file path: echo ok, peer unix:, local ""
+// expect: file path: addr ok, listener ok
+// expect: abstract: echo ok, peer unix:
+// expect: missing: ENOENT true
+// expect: long path: ENAMETOOLONG true
+// expect: 108 bytes: ENAMETOOLONG true
+// expect: 107 bytes: not ENAMETOOLONG true
+// expect: readFor: timed out true, took ok
+// expect: cancelled task: read cancelled true
+// expect: cancelled task: readFor got data ping
+// expect: deadline: read timed out true
+// expect: deadline: readFor got data pong
+// expect: writeFor and connectUnixFor ok
+// expect: connectFor ok, not unix ok
+// expect: keepalive ok
+// expect: keepalive on a unix socket fails true
+import "task"
+import "net"
+import "io"
+import "os"
+import "fs"
+import "time"
+
+fn text(buf: &[]byte, n: int): str {
+    var b: []byte = []
+    for i in 0..n { append(mut &b, buf[i]) }
+    return strFromBytes(&b)
+}
+
+// A reads "hello" from c and writes it back; true when the other side sees it.
+fn echo(c: &net.Conn, peer: &net.Conn): bool {
+    var buf = array(16, byte(0))
+    c.writeStr("hello").unwrap()
+    let n = peer.read(mut &buf).unwrap()
+    peer.write(buf[0..n]).unwrap()
+    let m = c.read(mut &buf).unwrap()
+    return text(&buf, m) == "hello"
+}
+
+fn ok(b: bool): str { return if b { "ok" } else { "WRONG" } }
+
+fn reader(c: net.Conn): int {
+    var buf = array(16, byte(0))
+    let y = task.yield()                 // cancelled meanwhile; the data has arrived when it runs on
+    match c.read(mut &buf) {
+        Ok(n) { println("cancelled task: read got " + text(&buf, n)) }
+        Err(e) { println("cancelled task: read cancelled " + e.isCancelled().toStr()) }
+    }
+    match c.readFor(mut &buf, 1000) {
+        Ok(n) { println("cancelled task: readFor got data " + text(&buf, n)) }
+        Err(e) { println("cancelled task: readFor failed " + e.toStr()) }
+    }
+    return 0
+}
+
+fn main() {
+    let dir = "/tmp/obx_net_unix_" + os.pid().toStr()
+    fs.removeAll(dir)
+    fs.mkdirAll(dir).unwrap()
+    let path = dir + "/sock"
+
+    // a file path
+    let ln = net.listenUnix(path).unwrap()
+    let c = net.connectUnix(path).unwrap()
+    let peer = ln.accept().unwrap()
+    println("file path: echo " + ok(echo(&c, &peer) && c.isUnix() && peer.isUnix()) + ", peer " + strSlice(c.peerAddr(), 0, 5) +
+        ", local \"" + c.localAddr() + "\"")
+    println("file path: addr " + ok(c.peerAddr() == "unix:" + path && peer.peerAddr() == "unix:") + ", listener " +
+        ok(ln.localAddr() == "unix:" + path))
+
+    // the abstract namespace
+    let name = "@obx_net_unix_" + os.pid().toStr()
+    let aln = net.listenUnix(name).unwrap()
+    let ac = net.connectUnix(name).unwrap()
+    let apeer = aln.accept().unwrap()
+    println("abstract: echo " + ok(echo(&ac, &apeer) && ac.peerAddr() == "unix:" + name) + ", peer " + apeer.peerAddr())
+
+    // errors
+    match net.connectUnix(dir + "/missing") {
+        Ok(x) { println("missing: connected?") }
+        Err(e) { println("missing: ENOENT " + (e.errno == 2).toStr()) }
+    }
+    var long = ""
+    for i in 0..108 { long = long + "a" }
+    match net.listenUnix("/tmp/" + long) {
+        Ok(x) { println("long path: listened?") }
+        Err(e) { println("long path: ENAMETOOLONG " + (e.errno == 36).toStr()) }
+    }
+    var l107 = "@"
+    for i in 0..106 { l107 = l107 + "b" }
+    match net.listenUnix(l107 + "x") {      // 108 bytes
+        Ok(x) { println("108 bytes: listened?") }
+        Err(e) { println("108 bytes: ENAMETOOLONG " + (e.errno == 36).toStr()) }
+    }
+    match net.listenUnix(l107) {            // 107 bytes: allowed in the abstract namespace
+        Ok(x) { println("107 bytes: not ENAMETOOLONG true") }
+        Err(e) { println("107 bytes: " + e.toStr()) }
+    }
+
+    // readFor with nothing to read
+    var buf = array(16, byte(0))
+    let t0 = time.monotonicNs()
+    match c.readFor(mut &buf, 50) {
+        Ok(n) { println("readFor: read " + intToStr(n) + "?") }
+        Err(e) {
+            let ms = (time.monotonicNs() - t0) / 1000000
+            println("readFor: timed out " + e.isTimeout().toStr() + ", took " + ok(ms >= 45 && ms < 1000))
+        }
+    }
+
+    // in a cancelled task read gives ECANCELED, readFor still reads what arrives
+    task.scope(fn(s: mut &task.Scope) {
+        let c3 = net.connectUnix(path).unwrap()
+        let peer3 = ln.accept().unwrap()
+        let f = s.start(reader, c3)
+        task.yield().unwrap()                // the reader parks in nothing yet; it yields
+        let dropped = f                      // a dropped future cancels its task
+        peer3.writeStr("ping").unwrap()
+    })
+
+    // the same inside a passed deadline
+    peer.writeStr("pong").unwrap()
+    let r = task.within(10, fn(): int {
+        let z = task.sleep(30)
+        match c.read(mut &buf) {
+            Ok(n) { println("deadline: read got " + text(&buf, n)) }
+            Err(e) { println("deadline: read timed out " + e.isTimeout().toStr()) }
+        }
+        match c.readFor(mut &buf, 1000) {
+            Ok(n) { println("deadline: readFor got data " + text(&buf, n)) }
+            Err(e) { println("deadline: readFor failed " + e.toStr()) }
+        }
+        return 0
+    })
+
+    // writeFor, connectUnixFor, connectFor
+    let big = array(65536, byte(7))
+    let tl = net.listenUnix(dir + "/two").unwrap()
+    let c2 = net.connectUnixFor(dir + "/two", 1000).unwrap()
+    let p2 = tl.accept().unwrap()
+    c2.writeFor(big[0..100], 1000).unwrap()
+    var got = 0
+    while got < 100 { got += p2.read(mut &buf).unwrap() }
+    println("writeFor and connectUnixFor ok")
+    let tcp = net.listen("127.0.0.1:0").unwrap()
+    let t1 = net.connectFor(tcp.localAddr(), 1000).unwrap()
+    let t2 = tcp.accept().unwrap()
+    println("connectFor " + ok(echo(&t1, &t2)) + ", not unix " + ok(!t1.isUnix()))
+
+    // keepalive
+    match t1.setKeepAlive(true, 30, 10, 3) {
+        Ok(u) { println("keepalive ok") }
+        Err(e) { println("keepalive: " + e.toStr()) }
+    }
+    t1.setKeepAlive(false, 0, 0, 0).unwrap()
+    println("keepalive on a unix socket fails " + c.setKeepAlive(true, 30, 10, 3).isErr().toStr())
+
+    fs.removeAll(dir)
+}

@@ -1,0 +1,26 @@
+// os: userName and homeDir. userName is the effective user's passwd name (equal to $USER when that
+// is set); homeDir is $HOME when set and not empty, else the passwd entry's directory.
+// expect: userName not empty: true
+// expect: userName is USER: true
+// expect: HOME set: /some/where
+// expect: HOME empty is the passwd directory: true
+// expect: HOME unset is the passwd directory: true
+// expect: passwd directory is absolute: true
+import "os"
+
+fn main() {
+    let name = os.userName()
+    println("userName not empty: " + (len(name) > 0).toStr())
+    match os.env("USER") {
+        Some(u) { println("userName is USER: " + (u == name).toStr()) }
+        None { println("userName is USER: true") }      // no $USER: nothing to compare
+    }
+    os.setEnv("HOME", "/some/where").unwrap()
+    println("HOME set: " + os.homeDir())
+    os.setEnv("HOME", "").unwrap()
+    let fromPasswd = os.homeDir()
+    println("HOME empty is the passwd directory: " + (len(fromPasswd) > 0).toStr())
+    os.unsetEnv("HOME").unwrap()
+    println("HOME unset is the passwd directory: " + (os.homeDir() == fromPasswd).toStr())
+    println("passwd directory is absolute: " + (fromPasswd[0] == '/').toStr())
+}

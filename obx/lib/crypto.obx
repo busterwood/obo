@@ -1,4 +1,5 @@
-// crypto: digests, PBKDF2, AES-CBC and random bytes from OpenSSL's
+// crypto: digests (SHA-1, SHA-256, SHA-512, MD5), HMAC-SHA-256, PBKDF2 (SHA-512
+// and SHA-256), base64, AES-CBC and random bytes from OpenSSL's
 // libcrypto (the library `tls` already links). Byte strings are `str`
 // values holding any bytes, as in `tds` and `tns`; nothing here is text.
 //
@@ -15,6 +16,9 @@ extern "crypto" fn EVP_sha512(): ptr
 extern "crypto" fn EVP_md5(): ptr
 extern "crypto" fn EVP_Digest(data: &[byte], n: int, md: mut &[byte], size: mut &[i32], t: ptr, impl: ptr): i32
 extern "crypto" fn PKCS5_PBKDF2_HMAC(pass: &[byte], passlen: i32, salt: &[byte], saltlen: i32, iter: i32, md: ptr, keylen: i32, out: mut &[byte]): i32
+extern "crypto" fn EVP_sha256(): ptr
+extern "crypto" fn HMAC(md: ptr, key: &[byte], keylen: i32, d: &[byte], n: int, out: mut &[byte], outl: mut &[i32]): ptr
+extern "crypto" fn pbkdf2Blocking(pass: &[byte], passlen: i32, salt: &[byte], saltlen: i32, iter: i32, md: ptr, keylen: i32, out: mut &[byte]): i32 as "PKCS5_PBKDF2_HMAC" blocking
 extern "crypto" fn EVP_aes_128_cbc(): ptr
 extern "crypto" fn EVP_aes_192_cbc(): ptr
 extern "crypto" fn EVP_aes_256_cbc(): ptr
@@ -70,6 +74,112 @@ pub fn pbkdf2Sha512(password: str, salt: str, iterations: int, keyLen: int): Res
         return Err(failed("PBKDF2"))
     }
     return Ok(strFromBytes(&out))
+}
+
+// The SHA-256 digest of data, 32 bytes.
+pub fn sha256(data: str): Result[str, Error] { return digest(EVP_sha256(), 32, data, "SHA-256") }
+
+// HMAC-SHA-256 (RFC 2104, OpenSSL's HMAC()) of data under key, 32 bytes.
+pub fn hmacSha256(key: str, data: str): Result[str, Error] {
+    if len(key) > MAX_INPUT || len(data) > MAX_INPUT { return Err(Error{msg: "HMAC-SHA-256: input too large"}) }
+    let k = strToBytes(key)
+    let d = strToBytes(data)
+    var md = array(64, byte(0))
+    var n = array(1, i32(0))
+    if isNull(HMAC(EVP_sha256(), &k, i32(len(k)), &d, len(d), mut &md, mut &n)) { return Err(failed("HMAC-SHA-256")) }
+    if int(n[0]) != 32 { return Err(Error{msg: "HMAC-SHA-256: digest of " + n[0].toStr() + " bytes"}) }
+    return Ok(strFromBytes(&md[0..32]))
+}
+
+// PBKDF2 with HMAC-SHA-256 (RFC 8018, RFC 7914 section 11): keyLen bytes from
+// password and salt. A large iteration count takes long: the call runs on the
+// helper pool (a blocking extern, SPEC 12), so other tasks go on meanwhile.
+pub fn pbkdf2Sha256(password: str, salt: str, iterations: int, keyLen: int): Result[str, Error] {
+    if iterations < 1 || iterations > 100000000 { return Err(Error{msg: "PBKDF2: " + iterations.toStr() + " iterations"}) }
+    if keyLen < 1 || keyLen > 1024 { return Err(Error{msg: "PBKDF2: a key of " + keyLen.toStr() + " bytes"}) }
+    if len(password) > MAX_INPUT || len(salt) > MAX_INPUT { return Err(Error{msg: "PBKDF2: input too large"}) }
+    let p = strToBytes(password)
+    let s = strToBytes(salt)
+    var out = array(keyLen, byte(0))
+    if pbkdf2Blocking(&p, i32(len(p)), &s, i32(len(s)), i32(iterations), EVP_sha256(), i32(keyLen), mut &out) != 1 {
+        ERR_clear_error()          // the error queue belongs to the helper thread that ran the call
+        return Err(Error{msg: "PBKDF2 failed"})
+    }
+    return Ok(strFromBytes(&out))
+}
+
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+// Base64 (RFC 4648 section 4: the standard alphabet, padded with "=").
+pub fn base64(data: str): str {
+    var b = newStrBuf()
+    var i = 0
+    while i + 3 <= len(data) {
+        let v = (int(data[i]) << 16) | (int(data[i + 1]) << 8) | int(data[i + 2])
+        b.addByte(B64[(v >> 18) & 63])
+        b.addByte(B64[(v >> 12) & 63])
+        b.addByte(B64[(v >> 6) & 63])
+        b.addByte(B64[v & 63])
+        i += 3
+    }
+    let rest = len(data) - i
+    if rest == 1 {
+        let v = int(data[i]) << 16
+        b.addByte(B64[(v >> 18) & 63])
+        b.addByte(B64[(v >> 12) & 63])
+        b.addByte('=')
+        b.addByte('=')
+    } else if rest == 2 {
+        let v = (int(data[i]) << 16) | (int(data[i + 1]) << 8)
+        b.addByte(B64[(v >> 18) & 63])
+        b.addByte(B64[(v >> 12) & 63])
+        b.addByte(B64[(v >> 6) & 63])
+        b.addByte('=')
+    }
+    return b.toStr()
+}
+
+fn b64Value(c: byte): int {
+    if c >= 'A' && c <= 'Z' { return int(c - 'A') }
+    if c >= 'a' && c <= 'z' { return int(c - 'a') + 26 }
+    if c >= '0' && c <= '9' { return int(c - '0') + 52 }
+    if c == '+' { return 62 }
+    if c == '/' { return 63 }
+    return -1
+}
+
+// The bytes of standard base64 text; None unless it is whole groups of four
+// characters, with "=" only as the last one or two (padding is required), no
+// white space and no other character. The unused bits of the last character
+// are not checked (as libpq's decoder).
+pub fn unbase64(text: str): Option[str] {
+    let n = len(text)
+    if n % 4 != 0 { return None }
+    var out: []byte = []
+    var i = 0
+    while i < n {
+        let last = i + 4 == n
+        var pad = 0
+        var v = 0
+        for k in 0..4 {
+            let c = text[i + k]
+            if c == '=' {
+                if !last || k < 2 { return None }
+                pad += 1
+                v = v << 6
+            } else {
+                if pad > 0 { return None }
+                let d = b64Value(c)
+                if d < 0 { return None }
+                v = (v << 6) | d
+            }
+        }
+        append(mut &out, byte((v >> 16) & 255))
+        if pad < 2 { append(mut &out, byte((v >> 8) & 255)) }
+        if pad < 1 { append(mut &out, byte(v & 255)) }
+        i += 4
+    }
+    return Some(strFromBytes(&out))
 }
 
 // An EVP cipher context, freed when dropped.
