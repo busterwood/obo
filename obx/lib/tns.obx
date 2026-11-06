@@ -47,6 +47,7 @@ import "sqldialect"
 import "math"
 import "time"
 import "crypto"
+import "sqlrows"
 
 pub type Error = sqldialect.DbError
 
@@ -866,6 +867,12 @@ pub type Reply = record {
     pub flush: bool         // FLUSH_OUT_BINDS: the OUT values follow after a FLUSH_OUT_BINDS request
     bitvec: str             // "" when the next row has every column
     done: bool
+    pub raw: bool           // rows are kept as their values' bytes (streams), not as cells
+    pub rawData: []byte     // raw rows: value v is rawData[rawStarts[v]..] for rawLens[v] bytes (-1: NULL)
+    pub rawStarts: []int    // len(columns) values a row, after rawFirst values of the previous row
+    pub rawLens: []int
+    pub rawFirst: int       // the values of the row before this reply's first (BIT_VECTOR repeats from it)
+    pub rawRows: int
 }
 
 pub const K_PLAIN = 0
@@ -883,7 +890,8 @@ pub fn newReply(kind: int, columns: &[]Column, last: &[]Cell): Reply {
                  warnings: [], callStatus: 0,
                  protocol: ProtocolInfo{banner: "", charset: 0, ncharset: 0, compileCaps: "", runtimeCaps: ""},
                  eor: false, fast: false, binds: [], outIndex: [], outMode: false, returning: false, outs: [], cursors: [],
-                 implicit: [], flush: false, last: prev, bitvec: "", done: false}
+                 implicit: [], flush: false, last: prev, bitvec: "", done: false, raw: false, rawData: [], rawStarts: [],
+                 rawLens: [], rawFirst: 0, rawRows: 0}
 }
 
 // The last row decoded (BIT_VECTOR repeats columns from it).
@@ -1021,6 +1029,7 @@ pub fn decodeMessage(c: mut &Cur, r: mut &Reply, fv: int): Result[Unit, Error] {
                 for i in 0..len(found) { append(mut &r.cursors, replace(mut &found[i], RefCursor{columns: [], id: 0})) }
                 return Ok(Unit{})
             }
+            if r.raw { return rawRow(c, r) }
             let row = try rowData(c, r)
             r.last = []
             for x in row { append(mut &r.last, x) }
@@ -1262,6 +1271,103 @@ fn rowData(c: mut &Cur, r: &Reply): Result[[]Cell, Error] {
         append(mut &row, try columnValue(c, &col))
     }
     return Ok(row)
+}
+
+// A row kept as its values' bytes (Reply.raw), appended to rawData; a row
+// cut off at the end of c is taken back.
+fn rawRow(c: mut &Cur, r: mut &Reply): Result[Unit, Error] {
+    let mark = len(r.rawData)
+    let base = len(r.rawStarts)
+    match rawValues(c, r, base) {
+        Ok(_) {
+            r.bitvec = ""
+            r.rawRows += 1
+            return Ok(Unit{})
+        }
+        Err(e) {
+            while len(r.rawData) > mark { let b = pop(mut &r.rawData) }
+            while len(r.rawStarts) > base { let x = pop(mut &r.rawStarts) }
+            while len(r.rawLens) > base { let y = pop(mut &r.rawLens) }
+            return Err(e)
+        }
+    }
+}
+
+fn rawValues(c: mut &Cur, r: mut &Reply, base: int): Result[Unit, Error] {
+    let nc = len(r.columns)
+    for i in 0..nc {
+        if len(r.bitvec) > 0 && (int(r.bitvec[i / 8]) & (1 << (i % 8))) == 0 {
+            let p = base - nc + i
+            if p < 0 { return Err(proto("a repeated column without a previous row")) }
+            let from = r.rawStarts[p]
+            let n = r.rawLens[p]
+            append(mut &r.rawStarts, len(r.rawData))
+            append(mut &r.rawLens, n)
+            for k in 0..n {
+                let b = r.rawData[from + k]
+                append(mut &r.rawData, b)
+            }
+            continue
+        }
+        let col = r.columns[i]
+        append(mut &r.rawStarts, len(r.rawData))
+        match try columnRaw(c, &col) {
+            Some(v) {
+                append(mut &r.rawLens, len(v))
+                appendStr(mut &r.rawData, v)
+            }
+            None { append(mut &r.rawLens, -1) }
+        }
+    }
+    return Ok(Unit{})
+}
+
+// A column's value as its bytes (None: NULL), as columnValue reads it: a
+// ROWID as its text; a LOB's locator is skipped (its columns read as
+// nothing, so a bind refuses them).
+fn columnRaw(c: mut &Cur, col: &Column): Result[Option[str], Error] {
+    let t = col.oraType
+    if col.bufferSize == 0 && t != T_LONG && t != T_LONG_RAW && t != T_UROWID { return Ok(None) }
+    if t == T_ROWID {
+        let l = try c.u8("ROWID")
+        if l == 0 || l == 255 { return Ok(None) }
+        let rba = try c.ub4("ROWID")
+        let part = try c.ub2("ROWID")
+        try c.skip(1, "ROWID")
+        let block = try c.ub4("ROWID")
+        let slot = try c.ub2("ROWID")
+        return Ok(Some(rowidText(rba, part, block, slot)))
+    }
+    if t == T_CLOB || t == T_BLOB || t == T_BFILE {
+        let n = try c.ub4("LOB")
+        if n == 0 { return Ok(None) }
+        if t != T_BFILE { try c.skipN(2, "LOB") }
+        let loc = try c.bytes("LOB")
+        return Ok(Some(""))
+    }
+    if t == T_CURSOR || t == T_JSON || t == T_VECTOR || t == T_OBJECT {
+        return Err(typeErr(col.typeName() + " columns are not supported yet"))
+    }
+    let v = try c.bytes("column " + col.name)
+    if t == T_LONG || t == T_LONG_RAW { try c.skipN(2, "LONG") }
+    return Ok(v)
+}
+
+// A reply's raw rows start after prev's last row (BIT_VECTOR may repeat
+// its values).
+pub fn seedRaw(r: mut &Reply, prev: &Reply) {
+    r.raw = true
+    let nc = len(prev.columns)
+    if prev.rawRows == 0 || nc == 0 { return }
+    let first = len(prev.rawStarts) - nc
+    for i in 0..nc {
+        let n = prev.rawLens[first + i]
+        append(mut &r.rawStarts, len(r.rawData))
+        append(mut &r.rawLens, n)
+        let from = prev.rawStarts[first + i]
+        for k in 0..n { append(mut &r.rawData, prev.rawData[from + k]) }
+    }
+    r.rawFirst = nc
 }
 
 fn columnValue(c: mut &Cur, col: &Column): Result[Cell, Error] {
@@ -2019,6 +2125,7 @@ pub type Session = record {
     pub warnings: []str
     pub maxReply: int           // bytes a reply may have
     toClose: []int              // cursors to close with the next request
+    pub streamCursor: int       // the cursor of a stream still open: closed by the next request but the stream's own
     eor: bool                   // the server ends every reply with END_OF_RESPONSE (ACCEPT's flag)
     fastAuth: bool              // the server takes the fast authentication (Oracle 23 and up)
 }
@@ -2138,6 +2245,10 @@ fn (s: mut &Session) nextSeq(): int {
 
 // A function message's header, after the piggybacks (cursors to close).
 fn (s: mut &Session) header(m: mut &[]byte, fnCode: int) {
+    if s.streamCursor != 0 {
+        append(mut &s.toClose, s.streamCursor)      // a stream left open: its cursor is closed now
+        s.streamCursor = 0
+    }
     if len(s.toClose) > 0 {
         put8(m, MT_PIGGYBACK)
         put8(m, FN_CLOSE_CURSORS)
@@ -2398,7 +2509,7 @@ pub fn open(cfg: &Config, w: Where): Result[Session, Error] {
     let st = if cfg.tls { try tlsOver(sock, cfg, w) } else { Stream.Plain(sock) }
     var s = Session{t: transport(st), fieldVersion: FV_MAX, seq: 0, broken: false, maxString: 4000, charset: 0,
                     ncharset: 0, banner: "", version: "", sessionId: 0, serial: 0, inTransaction: false, warnings: [],
-                    maxReply: 1 << 30, toClose: [], eor: false, fastAuth: false}
+                    maxReply: 1 << 30, toClose: [], streamCursor: 0, eor: false, fastAuth: false}
     try s.connect(cfg, w)
     try s.login(cfg, w)
     return Ok(s)
@@ -2586,10 +2697,16 @@ fn (s: mut &Session) login(cfg: &Config, w: Where): Result[Unit, Error] {
 // Runs an execute; the reply has the columns, the first rows and the end
 // status (an ORA- error is r.error, not Err).
 pub fn (s: mut &Session) execute(e: &Execute, columns: &[]Column, w: Where): Result[Reply, Error] {
+    return s.executeAs(e, columns, false, w)
+}
+
+// execute, with rows kept raw (Reply.raw) when raw.
+pub fn (s: mut &Session) executeAs(e: &Execute, columns: &[]Column, raw: bool, w: Where): Result[Reply, Error] {
     var m: []byte = []
     s.header(mut &m, FN_EXECUTE)
     executeBody(mut &m, e, s.fieldVersion, s.maxString)
     var r = s.reply(K_EXECUTE, columns, &[])
+    r.raw = raw
     for i in 0..len(e.binds) {
         let b = e.binds[i]
         append(mut &r.binds, Column{name: ":" + (i + 1).toStr(), oraType: b.oraType, csfrm: b.csfrm, precision: 0, scale: -127,
@@ -2638,6 +2755,23 @@ pub fn (s: mut &Session) fetch(cursorId: int, n: int, columns: &[]Column, last: 
     return Ok(r)
 }
 
+// fetch with the rows kept raw, after prev's (a stream's previous fetch:
+// BIT_VECTOR may repeat its last row's values). The stream's own cursor is
+// not closed by this request (streamCursor).
+pub fn (s: mut &Session) fetchRaw(cursorId: int, n: int, columns: &[]Column, prev: &Reply, w: Where): Result[Reply, Error] {
+    var m: []byte = []
+    let keep = s.streamCursor
+    s.streamCursor = 0
+    s.header(mut &m, FN_FETCH)
+    s.streamCursor = keep
+    putUb(mut &m, cursorId)
+    putUb(mut &m, n)
+    var r = s.reply(K_EXECUTE, columns, &[])
+    seedRaw(mut &r, prev)
+    try s.call(&m, mut &r, w)
+    return Ok(r)
+}
+
 // COMMIT, ROLLBACK or LOGOFF; the server's error, if any, as Err.
 pub fn (s: mut &Session) simple(fnCode: int, w: Where): Result[Unit, Error] {
     var m: []byte = []
@@ -2663,4 +2797,194 @@ pub fn (s: mut &Session) close(w: Where) {
     }
     s.broken = true
     let old = replace(mut &s.t.s, Stream.Gone)
+}
+
+// ---------------------------------------------------------------- streamed values (sqlrows)
+
+// A column for sqlrows: wire is the Oracle type, aux its csfrm.
+pub fn describe(cols: &[]Column): []sqlrows.Column {
+    var out: []sqlrows.Column = []
+    for c in cols {
+        let nullable = if c.nullable { sqlrows.NULLABLE_YES } else { sqlrows.NULLABLE_NO }
+        append(mut &out, sqlrows.column(c.name, typeText(&c), kindsOf(&c), nullable, c.oraType, c.maxSize, c.precision,
+                                        c.scale, c.csfrm))
+    }
+    return out
+}
+
+// "NUMBER(10,2)", "NUMBER", "VARCHAR2", ...
+fn typeText(c: &Column): str {
+    if c.oraType == T_NUMBER && c.precision > 0 {
+        if c.scale == -127 { return "FLOAT(" + c.precision.toStr() + ")" }
+        return "NUMBER(" + c.precision.toStr() + "," + c.scale.toStr() + ")"
+    }
+    return c.typeName()
+}
+
+// What a column can be read as (design/db-streaming.md, section 3). A
+// NUMBER without precision (what Oracle says for COUNT(*), SUM, ROWNUM and
+// most expressions) reads as int too, each value checked; NUMBER(p, 0)
+// only for p up to 18.
+fn kindsOf(c: &Column): int {
+    let t = c.oraType
+    if t == T_NUMBER {
+        if c.precision == 0 || (c.scale == 0 && c.precision <= 18) {
+            return sqlrows.kinds(&[sqlrows.Kind.Decimal, sqlrows.Kind.Int])
+        }
+        return sqlrows.kinds(&[sqlrows.Kind.Decimal])
+    }
+    if t == T_BINARY_INTEGER { return sqlrows.kinds(&[sqlrows.Kind.Int, sqlrows.Kind.Decimal]) }
+    if t == T_BINARY_FLOAT || t == T_BINARY_DOUBLE { return sqlrows.kinds(&[sqlrows.Kind.Float]) }
+    if t == T_VARCHAR || t == T_CHAR || t == T_LONG || t == T_ROWID { return sqlrows.kinds(&[sqlrows.Kind.Text]) }
+    if t == T_RAW || t == T_LONG_RAW { return sqlrows.kinds(&[sqlrows.Kind.Bytes]) }
+    if t == T_DATE { return sqlrows.kinds(&[sqlrows.Kind.DateTime, sqlrows.Kind.Date]) }
+    if t == T_TIMESTAMP || t == T_TIMESTAMP_LTZ { return sqlrows.kinds(&[sqlrows.Kind.DateTime]) }
+    if t == T_TIMESTAMP_TZ { return sqlrows.kinds(&[sqlrows.Kind.OffsetDateTime]) }
+    if t == T_BOOLEAN { return sqlrows.kinds(&[sqlrows.Kind.Bool]) }
+    return 0
+}
+
+// A NUMBER as units * 10^-scale (scale 0 to 38, no trailing zeros in the
+// fraction), straight from its bytes; None when it needs more than 38
+// digits or a scale outside 0 to 38 (the slow path then: decodeNumber).
+type Fixed = value record { units: i128; scale: int }
+
+const MAX38: i128 = 99999999999999999999999999999999999999
+
+fn numberFixed(b: &str): Result[Option[Fixed], Error] {
+    let n = len(b)
+    if n == 0 || n > 21 { return Err(proto("a NUMBER of " + n.toStr() + " bytes")) }
+    let b0 = int(b[0])
+    let pos = (b0 & 0x80) != 0
+    if n == 1 {
+        if pos { return Ok(Some(Fixed{units: 0, scale: 0})) }
+        return Err(typeErr("the NUMBER is -1e126 (Oracle's negative infinity)"))
+    }
+    let e = (if pos { b0 } else { (~b0) & 0xff }) - 193
+    var last = n
+    if !pos && int(b[n - 1]) == 102 { last = n - 1 }
+    let pairs = last - 1
+    if pairs > 19 { return Ok(None) }
+    var u: i128 = 0
+    for i in 1..last {
+        let v = if pos { int(b[i]) - 1 } else { 101 - int(b[i]) }
+        if v < 0 || v > 99 { return Err(proto("a NUMBER mantissa byte " + int(b[i]).toStr())) }
+        u = u * 100 + i128(v)
+    }
+    var p = e - pairs + 1                // value = u * 100^p
+    var scale = 0
+    while p > 0 {
+        if u > MAX38 / 100 { return Ok(None) }
+        u = u * 100
+        p -= 1
+    }
+    if p < 0 { scale = -2 * p }
+    while scale > 0 && u % 10 == 0 {
+        u = u / 10
+        scale -= 1
+    }
+    if scale > 38 { return Ok(None) }
+    return Ok(Some(Fixed{units: if pos { u } else { -u }, scale: scale}))
+}
+
+fn oInt(b: &str, col: &sqlrows.Column): Result[int, Error] {
+    if col.wire != T_NUMBER && col.wire != T_BINARY_INTEGER { return Err(sqlrows.wrongKind(col, "int")) }
+    match try numberFixed(b) {
+        Some(f) {
+            if f.scale == 0 && f.units <= i128(9223372036854775807) && f.units >= -i128(9223372036854775807) - 1 {
+                return Ok(int(f.units))
+            }
+        }
+        None {}
+    }
+    let num = try decodeNumber(b)
+    return Err(typeErr(num.toStr() + " is not an int"))
+}
+
+fn oDecimal(b: &str, col: &sqlrows.Column): Result[Decimal, Error] {
+    if col.wire == T_BINARY_FLOAT || col.wire == T_BINARY_DOUBLE {
+        return Err(sqldialect.dbError(sqldialect.E_INEXACT, "a binary float is not exact as a decimal"))
+    }
+    if col.wire != T_NUMBER && col.wire != T_BINARY_INTEGER { return Err(sqlrows.wrongKind(col, "Decimal")) }
+    var d = Decimal.zero()
+    match try numberFixed(b) {
+        Some(f) { d = fromFraction(f.units, f.scale) }
+        None {
+            let num = try decodeNumber(b)
+            d = match num.decimal() {
+                Ok(x) { x }
+                Err(e) { return Err(sqldialect.dbError(sqldialect.E_INEXACT, num.toStr() + " has more digits than a Decimal")) }
+            }
+        }
+    }
+    let s = col.scale
+    if s > 0 && s != -127 && d.scale() < s {
+        match d.withScale(s) {
+            Ok(x) { return Ok(x) }
+            Err(_) { return Ok(d) }
+        }
+    }
+    return Ok(d)
+}
+
+fn oFloat(b: &str, col: &sqlrows.Column): Result[float, Error] {
+    if col.wire == T_BINARY_DOUBLE { return decodeDouble(b) }
+    if col.wire == T_BINARY_FLOAT { return decodeFloat(b) }
+    return Err(sqlrows.wrongKind(col, "float"))
+}
+
+fn oText(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    let t = col.wire
+    if t == T_ROWID { return Ok(b) }
+    if t != T_VARCHAR && t != T_CHAR && t != T_LONG { return Err(sqlrows.wrongKind(col, "text")) }
+    if col.aux == CS_NCHAR { return fromUtf16be(b) }
+    if !strings.isValidUtf8(b) { return Err(typeErr("invalid UTF-8")) }
+    return Ok(b)
+}
+
+fn oBytes(b: &str, col: &sqlrows.Column): Result[str, Error] {
+    if col.wire != T_RAW && col.wire != T_LONG_RAW { return Err(sqlrows.wrongKind(col, "bytes")) }
+    return Ok(b)
+}
+
+fn oBool(b: &str, col: &sqlrows.Column): Result[bool, Error] {
+    if col.wire != T_BOOLEAN { return Err(sqlrows.wrongKind(col, "bool")) }
+    return Ok(len(b) > 0 && int(b[len(b) - 1]) == 1)
+}
+
+fn stampOf(b: &str, col: &sqlrows.Column, kind: str): Result[Stamp, Error] {
+    let t = col.wire
+    if t != T_DATE && t != T_TIMESTAMP && t != T_TIMESTAMP_TZ && t != T_TIMESTAMP_LTZ { return Err(sqlrows.wrongKind(col, kind)) }
+    return decodeStamp(b)
+}
+
+fn oDate(b: &str, col: &sqlrows.Column): Result[time.Date, Error] {
+    let s = try stampOf(b, col, "date")
+    if s.hasOffset { return Err(sqlrows.wrongKind(col, "date")) }
+    if s.local.time.nanos != 0 { return Err(sqldialect.dbError(sqldialect.E_INEXACT, "the value has a time of day")) }
+    return Ok(s.local.date)
+}
+
+fn oTime(b: &str, col: &sqlrows.Column): Result[time.TimeOfDay, Error] {
+    let s = try stampOf(b, col, "time")
+    if s.hasOffset { return Err(sqlrows.wrongKind(col, "time")) }
+    return Ok(s.local.time)
+}
+
+fn oDateTime(b: &str, col: &sqlrows.Column): Result[time.LocalDateTime, Error] {
+    let s = try stampOf(b, col, "date-time")
+    if s.hasOffset { return Err(sqlrows.wrongKind(col, "date-time")) }
+    return Ok(s.local)
+}
+
+fn oOffset(b: &str, col: &sqlrows.Column): Result[time.OffsetDateTime, Error] {
+    let s = try stampOf(b, col, "date-time with offset")
+    if !s.hasOffset { return Err(sqlrows.wrongKind(col, "date-time with offset")) }
+    return Ok(time.OffsetDateTime{local: s.local, offset: s.offset})
+}
+
+// How sqlrows.RowView decodes Oracle values.
+pub fn codec(): sqlrows.Codec {
+    return sqlrows.Codec{int: oInt, decimal: oDecimal, float: oFloat, text: oText, bytes: oBytes, bool: oBool, date: oDate,
+                         time: oTime, dateTime: oDateTime, offsetDateTime: oOffset}
 }

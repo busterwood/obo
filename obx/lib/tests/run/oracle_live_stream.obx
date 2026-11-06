@@ -1,0 +1,412 @@
+// oracle streams against a live Oracle Database ($ORACLE_TEST_DSN or
+// ~/.obo-oracle-dsn; never printed). Exits 77, skipped, without one. Rows
+// fetched a buffer at a time and decoded from their bytes into the
+// program's records (sqlrows): names matched with case and underscores
+// ignored, a missing column (the error lists the columns), a type refused
+// at bind, NULL into an Option and into a plain field (the error names the
+// column and the row), every mapped type, 200,000 rows through a buffer of
+// 7 and of 1,024 against the buffered query, rows kept in a list across
+// fills, next(), an early close and a dropped stream, an error on a later
+// row (Oracle sends none of the rows of the FETCH that fails: 100-row fetches
+// give 4,900 rows though the error says 4,999 were made),
+// a statement without rows, by position, parameters; no cursor left
+// open (V$MYSTAT, as oracle_live_out).
+// needs: ssl
+// expect: names: 3 rows | 1 7 'Ann' 12.50 | 3 9 'Cy' 0.01 | columns ID, Customer_Id, CUSTOMERNAME, AMOUNT, EXTRA
+// expect: missing: error 1024: no column "email" (case and underscores ignored); the columns are: ID, Customer_Id, CUSTOMERNAME, AMOUNT, EXTRA
+// expect: ambiguous: error 1024: column "a_b" is ambiguous: AB and A_B both match
+// expect: type: error 1002: column CUSTOMERNAME (VARCHAR2) cannot be read as Decimal; it reads as text
+// expect: wide int: error 1002: column W (NUMBER(19,0)) cannot be read as int; it reads as Decimal
+// expect: null: Some(5) None | plain: 1 row, then error 1001: column NOTE is NULL at row 2: read it with textOrNull into an Option | idle true
+// expect: types: 42 -3 12.50 123456789012 0.1 0.5 'café' 'naïve' 'ab   ' x'00ff10' true false 2026-11-05 2026-11-05T13:45:07 2026-11-05T13:45:07.123456 2026-11-05T13:45:07+01:30 None 7 true
+// expect: buffered: 200000 rows sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 7: 200000 rows in 28572 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 1024: 200000 rows in 196 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: kept: 300 rows equal to the buffered query true | first 'name1' 0.01 last 'name300' 3.00
+// expect: next: 1 2 3 None
+// expect: early close: 5 rows | idle true | after: 2
+// expect: dropped: 3 rows | after: 2
+// expect: later error: 4900 rows then error 1476 | idle true | after: 2
+// expect: no rows: 0 rows | columns none
+// expect: position: 7 'x'
+// expect: parameters: 3 rows 24 | after: 2
+// expect: cursor leak: none
+// expect: open handles: 0
+
+import "oracle"
+import "sqldialect"
+import "io"
+import "os"
+import "strings"
+
+type Kind = oracle.Kind
+type Error = oracle.Error
+type Columns = oracle.Columns
+type RowView = oracle.RowView
+
+fn dsn(): Option[str] {
+    match os.env("ORACLE_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-oracle-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn err[T: borrow](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+type Order = value record { id: int; customer: int; name: str; amount: Decimal }
+type OrderCols = value record { id: int; customer: int; name: int; amount: int }
+
+fn bindOrder(c: &Columns): Result[OrderCols, Error] {
+    return Ok(OrderCols{id: try c.index("id", Kind.Int), customer: try c.index("customer_id", Kind.Int),
+                        name: try c.index("customerName", Kind.Text), amount: try c.index("AMOUNT", Kind.Decimal)})
+}
+
+fn readOrder(b: &OrderCols, r: &RowView): Result[Order, Error] {
+    return Ok(Order{id: try r.int(b.id), customer: try r.int(b.customer), name: try r.text(b.name), amount: try r.decimal(b.amount)})
+}
+
+fn show(o: &Order): str { return o.id.toStr() + " " + o.customer.toStr() + " '" + o.name + "' " + o.amount.toStr() }
+
+const ORDERS = "SELECT id AS \"ID\", cust AS \"Customer_Id\", nm AS CUSTOMERNAME, amt AS amount, 0 AS extra FROM obx_stream_t ORDER BY id"
+
+fn empty(): Order { return Order{id: 0, customer: 0, name: "", amount: 0.00m} }
+
+fn names(c: mut &oracle.Conn): Result[Unit, Error] {
+    var src = try c.stream(ORDERS, [], bindOrder, readOrder)
+    var buf = array(2, empty())
+    var all: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for o in buf[0..n] { append(mut &all, o) }
+    }
+    println("names: " + len(all).toStr() + " rows | " + show(&all[0]) + " | " + show(&all[2]) + " | columns " + src.columns().names())
+    return Ok(Unit{})
+}
+
+type Email = value record { email: str }
+fn bindEmail(c: &Columns): Result[int, Error] { return c.index("email", Kind.Text) }
+fn readEmail(b: &int, r: &RowView): Result[Email, Error] { return Ok(Email{email: try r.text(b)}) }
+fn bindAb(c: &Columns): Result[int, Error] { return c.index("a_b", Kind.Int) }
+fn readInt(b: &int, r: &RowView): Result[int, Error] { return r.int(b) }
+fn bindNameAsDecimal(c: &Columns): Result[int, Error] { return c.index("customername", Kind.Decimal) }
+fn readDec(b: &int, r: &RowView): Result[Decimal, Error] { return r.decimal(b) }
+fn bindW(c: &Columns): Result[int, Error] { return c.index("w", Kind.Int) }
+
+type Noted = value record { qty: Option[int]; note: str }
+type NotedCols = value record { qty: int; note: int }
+fn bindNoted(c: &Columns): Result[NotedCols, Error] {
+    return Ok(NotedCols{qty: try c.index("qty", Kind.Int), note: try c.index("note", Kind.Text)})
+}
+fn readNoted(b: &NotedCols, r: &RowView): Result[Noted, Error] { return Ok(Noted{qty: try r.intOrNull(b.qty), note: try r.text(b.note)}) }
+fn readQty(b: &NotedCols, r: &RowView): Result[Option[int], Error] { return r.intOrNull(b.qty) }
+
+fn nulls(c: mut &oracle.Conn): Result[Unit, Error] {
+    let sql = "SELECT qty, note FROM obx_stream_t WHERE id IN (1, 2) ORDER BY id"
+    var q = try c.stream(sql, [], bindNoted, readQty)
+    let a = try q.next()
+    let b = try q.next()
+    var line = "null: " + a.unwrap().toStr() + " " + b.unwrap().toStr()
+    try q.close()
+    var p = try c.stream(sql, [], bindNoted, readNoted)
+    var buf = array(4, Noted{qty: None, note: ""})
+    let first = try p.fill(mut &buf)
+    line = line + " | plain: " + first.toStr() + " row, then " + err(p.fill(mut &buf))
+    println(line + " | idle " + c.idle().toStr())
+    return Ok(Unit{})
+}
+
+type All = value record {
+    big: int; neg: int; amount: Decimal; whole: int; ratio: float; half: float
+    name: str; nname: str; fixed: str; data: str; flag: bool; off: bool; day: str; dt: str; stamp: str; zoned: str
+    none: Option[str]; count: int; rid: bool
+}
+type AllCols = value record {
+    big: int; neg: int; amount: int; whole: int; ratio: int; half: int
+    name: int; nname: int; fixed: int; data: int; flag: int; off: int; day: int; dt: int; stamp: int; zoned: int
+    none: int; count: int; rid: int
+}
+
+fn bindAll(c: &Columns): Result[AllCols, Error] {
+    return Ok(AllCols{big: try c.index("big", Kind.Int), neg: try c.index("neg", Kind.Int),
+                      amount: try c.index("amount", Kind.Decimal), whole: try c.index("whole", Kind.Int),
+                      ratio: try c.index("ratio", Kind.Float), half: try c.index("half", Kind.Float),
+                      name: try c.index("name", Kind.Text), nname: try c.index("n_name", Kind.Text), fixed: try c.index("fixed", Kind.Text),
+                      data: try c.index("data", Kind.Bytes), flag: try c.index("flag", Kind.Bool), off: try c.index("off", Kind.Bool),
+                      day: try c.index("day", Kind.Date), dt: try c.index("dt", Kind.DateTime), stamp: try c.index("stamp", Kind.DateTime),
+                      zoned: try c.index("zoned", Kind.OffsetDateTime), none: try c.index("none", Kind.Text),
+                      count: try c.index("count", Kind.Int), rid: try c.index("rid", Kind.Text)})
+}
+
+fn readAll(b: &AllCols, r: &RowView): Result[All, Error] {
+    return Ok(All{big: try r.int(b.big), neg: try r.int(b.neg), amount: try r.decimal(b.amount),
+                  whole: try r.int(b.whole), ratio: try r.float(b.ratio), half: try r.float(b.half),
+                  name: try r.text(b.name), nname: try r.text(b.nname), fixed: try r.text(b.fixed), data: try r.bytes(b.data),
+                  flag: try r.bool(b.flag), off: try r.bool(b.off), day: (try r.date(b.day)).toStr(), dt: (try r.localDateTime(b.dt)).toStr(),
+                  stamp: (try r.localDateTime(b.stamp)).toStr(), zoned: (try r.offsetDateTime(b.zoned)).toStr(),
+                  none: try r.textOrNull(b.none), count: try r.int(b.count), rid: len(try r.text(b.rid)) == 18})
+}
+
+fn types(c: mut &oracle.Conn): Result[Unit, Error] {
+    let sql = "SELECT CAST(42 AS NUMBER(10)) AS big, -3 AS neg, CAST(12.5 AS NUMBER(12,2)) AS amount, " +
+              "CAST(123456789012 AS NUMBER(18,0)) AS whole, CAST(0.1 AS BINARY_DOUBLE) AS ratio, CAST(0.5 AS BINARY_FLOAT) AS half, " +
+              "CAST('café' AS VARCHAR2(20)) AS name, CAST(N'naïve' AS NVARCHAR2(20)) AS n_name, CAST('ab' AS CHAR(5)) AS fixed, " +
+              "HEXTORAW('00FF10') AS data, TRUE AS flag, FALSE AS off, " +
+              "TO_DATE('2026-11-05 13:45:07', 'YYYY-MM-DD HH24:MI:SS') AS dt, DATE '2026-11-05' AS day, " +
+              "TIMESTAMP '2026-11-05 13:45:07.123456' AS stamp, TIMESTAMP '2026-11-05 13:45:07 +01:30' AS zoned, " +
+              "CAST(NULL AS VARCHAR2(5)) AS none, (SELECT COUNT(*) FROM dual CONNECT BY level <= 7) AS count, " +
+              "ROWIDTOCHAR(t.rowid) AS rid_text, t.rowid AS rid FROM obx_stream_t t WHERE t.id = 1"
+    var s = try c.stream(sql, [], bindAll, readAll)
+    let a = (try s.next()).unwrap()
+    println("types: " + a.big.toStr() + " " + a.neg.toStr() + " " + a.amount.toStr() + " " + a.whole.toStr() +
+            " " + a.ratio.toStr() + " " + a.half.toStr() + " '" + a.name + "' '" + a.nname + "' '" + a.fixed + "' x'" +
+            sqldialect.hex(a.data) + "' " + a.flag.toStr() + " " + a.off.toStr() + " " + a.day + " " +
+            a.dt + " " + a.stamp + " " + a.zoned + " " + a.none.toStr() + " " +
+            a.count.toStr() + " " + a.rid.toStr())
+    try s.close()
+    return Ok(Unit{})
+}
+
+const MANY = "SELECT level AS id, MOD(level, 1000) AS customer_id, 'name' || level AS customer_name, " +
+             "CAST(level / 100 AS NUMBER(12,2)) AS amount FROM dual CONNECT BY level <= 200000"
+
+fn many(c: mut &oracle.Conn, size: int): Result[Unit, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(size, empty())
+    var rows = 0
+    var fills = 0
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            amounts = amounts + o.amount
+            chars += len(o.name)
+        }
+    }
+    println("buffer " + size.toStr() + ": " + rows.toStr() + " rows in " + fills.toStr() + " fills sum " + sum.toStr() + " amounts " +
+            amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn buffered(c: mut &oracle.Conn): Result[Unit, Error] {
+    let r = try c.query(MANY, &[])
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    for i in 0..r.rowCount() {
+        sum += try r.int(i, 0)
+        amounts = amounts + try r.decimal(i, 3)
+        chars += len(try r.text(i, 2))
+    }
+    println("buffered: " + r.rowCount().toStr() + " rows sum " + sum.toStr() + " amounts " + amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn kept(c: mut &oracle.Conn): Result[Unit, Error] {
+    let sql = strings.replaceAll(MANY, "200000", "300")
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(7, empty())
+    var list: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for i in 0..n { append(mut &list, buf[i]) }
+    }
+    let r = try c.query(sql, &[])
+    var same = len(list) == r.rowCount()
+    for i in 0..len(list) {
+        let o = list[i]
+        same = same && o.id == (try r.int(i, 0)) && o.customer == (try r.int(i, 1)) && o.name == (try r.text(i, 2)) &&
+               o.amount == (try r.decimal(i, 3))
+    }
+    let last = list[len(list) - 1]
+    println("kept: " + len(list).toStr() + " rows equal to the buffered query " + same.toStr() + " | first '" + list[0].name + "' " +
+            list[0].amount.toStr() + " last '" + last.name + "' " + last.amount.toStr())
+    return Ok(Unit{})
+}
+
+fn bindFirst(c: &Columns): Result[int, Error] { return c.at(0, Kind.Int) }
+
+fn nexts(c: mut &oracle.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 1 FROM dual UNION ALL SELECT 2 FROM dual UNION ALL SELECT 3 FROM dual", [], bindFirst, readInt)
+    var line = "next:"
+    for i in 0..3 { line = line + " " + (try s.next()).unwrap().toStr() }
+    println(line + " " + (try s.next()).toStr())
+    return Ok(Unit{})
+}
+
+fn after(c: mut &oracle.Conn): str {
+    match c.query("SELECT 1 + 1 FROM dual", &[]) {
+        Ok(r) { return r.int(0, 0).unwrap().toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn early(c: mut &oracle.Conn, sql: str, quiet: bool): Result[Unit, Error] {
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(5, empty())
+    let n = try src.fill(mut &buf)
+    try src.close()
+    let a = after(c)
+    if !quiet { println("early close: " + n.toStr() + " rows | idle " + c.idle().toStr() + " | after: " + a) }
+    return Ok(Unit{})
+}
+
+fn dropped(c: mut &oracle.Conn, sql: str, quiet: bool): Result[Unit, Error] {
+    var n = 0
+    if true {
+        var src = try c.stream(sql, [], bindOrder, readOrder)
+        for i in 0..3 { if (try src.next()).isSome() { n += 1 } }
+    }
+    let a = after(c)
+    if !quiet { println("dropped: " + n.toStr() + " rows | after: " + a) }
+    return Ok(Unit{})
+}
+
+fn later(c: mut &oracle.Conn, at: int, quiet: bool): Result[Unit, Error] {
+    let sql = "SELECT TRUNC(100 / (level - " + at.toStr() + ")) AS id, 1 AS customer_id, 'n' AS customer_name, " +
+              "CAST(1 AS NUMBER(12,2)) AS amount FROM dual CONNECT BY level <= " + (2 * at).toStr()
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(64, empty())
+    var rows = 0
+    var e = ""
+    while true {
+        match src.fill(mut &buf) {
+            Ok(n) {
+                if n == 0 { break }
+                rows += n
+            }
+            Err(x) {
+                e = "error " + x.code.toStr()
+                break
+            }
+        }
+    }
+    let a = after(c)
+    if !quiet { println("later error: " + rows.toStr() + " rows then " + e + " | idle " + c.idle().toStr() + " | after: " + a) }
+    return Ok(Unit{})
+}
+
+fn bindNone(c: &Columns): Result[int, Error] { return Ok(c.count()) }
+
+fn noRows(c: mut &oracle.Conn): Result[Unit, Error] {
+    var s = try c.stream("UPDATE obx_stream_t SET amt = amt WHERE id < 0", [], bindNone, readInt)
+    var buf = array(4, 0)
+    let n = try s.fill(mut &buf)
+    println("no rows: " + n.toStr() + " rows | columns " + s.columns().names())
+    return Ok(Unit{})
+}
+
+type Pos = value record { n: int; s: str }
+fn bindPos(c: &Columns): Result[int, Error] {
+    let a = try c.at(0, Kind.Int)
+    let b = try c.at(1, Kind.Text)
+    return Ok(a + b)
+}
+fn readPos(b: &int, r: &RowView): Result[Pos, Error] { return Ok(Pos{n: try r.int(0), s: try r.text(1)}) }
+
+fn position(c: mut &oracle.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 7, 'x' FROM dual", [], bindPos, readPos)
+    let p = (try s.next()).unwrap()
+    println("position: " + p.n.toStr() + " '" + p.s + "'")
+    return Ok(Unit{})
+}
+
+fn params(c: mut &oracle.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT id AS \"ID\", cust AS \"Customer_Id\", nm AS CUSTOMERNAME, amt AS amount FROM obx_stream_t " +
+                         "WHERE id >= :1 AND nm <> :2 ORDER BY id", [oracle.Value.Int(1), oracle.Value.Text("zz")], bindOrder, readOrder)
+    var buf = array(8, empty())
+    let n = try s.fill(mut &buf)
+    var t = 0
+    for o in buf[0..n] { t += o.customer }
+    try s.close()
+    println("parameters: " + n.toStr() + " rows " + t.toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn openCursors(c: mut &oracle.Conn): int {
+    let r = c.query("SELECT m.value FROM v$mystat m JOIN v$statname n ON n.statistic# = m.statistic# " +
+                    "WHERE n.name = 'opened cursors current'", &[]).unwrap()
+    return r.int(0, 0).unwrap()
+}
+
+fn leaks(c: mut &oracle.Conn): Result[Unit, Error] {
+    var before = 0
+    let small = strings.replaceAll(MANY, "200000", "100")
+    for i in 0..6 {
+        if i == 1 { before = openCursors(c) }
+        try early(c, small, true)
+        try dropped(c, small, true)
+        try later(c, 50, true)
+        let x = c.stream(ORDERS, [], bindEmail, readEmail)
+    }
+    let a = openCursors(c)
+    println("cursor leak: " + if a <= before { "none" } else { (a - before).toStr() + " cursors" })
+    return Ok(Unit{})
+}
+
+fn run(c: mut &oracle.Conn): Result[Unit, Error] {
+    let gone = c.exec("DROP TABLE obx_stream_t PURGE")
+    try c.exec("CREATE TABLE obx_stream_t (id NUMBER(10), cust NUMBER(10), nm VARCHAR2(20), amt NUMBER(12,2), qty NUMBER(10), note VARCHAR2(10))")
+    try c.exec("INSERT INTO obx_stream_t VALUES (1, 7, 'Ann', 12.50, 5, 'a')")
+    try c.exec("INSERT INTO obx_stream_t VALUES (2, 8, 'Bo', 3.00, NULL, NULL)")
+    try c.exec("INSERT INTO obx_stream_t VALUES (3, 9, 'Cy', 0.01, 1, 'c')")
+    try names(c)
+    println("missing: " + err(c.stream(ORDERS, [], bindEmail, readEmail)))
+    println("ambiguous: " + err(c.stream("SELECT 1 AS ab, 2 AS \"A_B\" FROM dual", [], bindAb, readInt)))
+    println("type: " + err(c.stream(ORDERS, [], bindNameAsDecimal, readDec)))
+    println("wide int: " + err(c.stream("SELECT CAST(1 AS NUMBER(19,0)) AS w FROM dual", [], bindW, readInt)))
+    try nulls(c)
+    try types(c)
+    try buffered(c)
+    try many(c, 7)
+    try many(c, 1024)
+    try kept(c)
+    try nexts(c)
+    try early(c, MANY, false)
+    try dropped(c, MANY, false)
+    try later(c, 5000, false)
+    try noRows(c)
+    try position(c)
+    try params(c)
+    try leaks(c)
+    try c.exec("DROP TABLE obx_stream_t PURGE")
+    return Ok(Unit{})
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(x) { x }
+        None { exit(77) }
+    }
+    if true {
+        let r = oracle.connect(d)
+        if r.isErr() {
+            println("connect failed: " + r.unwrapErr().code.toStr())
+            exit(1)
+        }
+        var c = r.unwrap()
+        match run(mut &c) {
+            Ok(_) {}
+            Err(e) { println("FAIL " + e.toStr()) }
+        }
+        c.logoff()
+    }
+    println("open handles: " + oracle.openHandles().toStr())
+}
