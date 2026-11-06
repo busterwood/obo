@@ -1352,8 +1352,7 @@ the program's own records (design/db-streaming.md; names provisional):
   buffer cannot outlive the next `fill` (the checker refuses it).
 - `Stream`: `fill(out)` (the count, 0 at the end; rows before an error come
   first, the error from the next call), `next()`, `close()` (SQL Server:
-  ATTENTION; PostgreSQL: Close portal and Sync (a CancelRequest only when a running
-  Execute is slow to answer); Oracle: the cursor closed with the next
+  ATTENTION; PostgreSQL: the rest of the reply is read and discarded (no cancel); Oracle: the cursor closed with the next
   request), `columns()`, `rowsRead()`. A dropped stream is cleaned up by the
   connection's next call. `postgres.Lease.stream`, `oracle.Conn.streamWith`.
 - Tests: `sqlserver_live_stream`, `postgres_live_stream`,

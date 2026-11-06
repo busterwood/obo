@@ -94,7 +94,8 @@ The programs are in [obx/cmd/](obx/cmd/README.md):
 | Client | Database | How it connects |
 |---|---|---|
 | `sqlite` | SQLite | libsqlite3 |
-| `postgres` | PostgreSQL | libpq |
+| `postgres` | PostgreSQL | native, over the protocol 3.0 (`pgwire`): TLS, SCRAM |
+| `postgres_libpq` | PostgreSQL | libpq; kept as the test oracle for `postgres` |
 | `sqlserver` | SQL Server | native, over the TDS protocol |
 | `mssql` | SQL Server | ODBC |
 | `oracle` | Oracle Database | native, over the TNS protocol, ported from python-oracledb |

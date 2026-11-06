@@ -2230,3 +2230,14 @@ oracle of `postgres_live_diff`, which runs thousands of queries through both
 buffered and streamed, and compares every column, cell and error. The calls now
 take `mut &Conn`, as `oracle` and `sqlserver` do, and `transaction`'s body
 gets the connection back. See `obx/design/pgwire.md`, "As built (P2)".
+
+P3 sized the streamed fetches from the row width and added a decimal fast
+path. Then, the same day, the user chose the fire hose: a streamed query is
+one Execute with no row limit, so the server sends the result once and TCP
+holds it back while the program reads, and the fetch sizing went with the
+row limits. The limits had cost a round trip per batch (1,000,000 rows took
+164 of them, 1,376 ms at a 6.4 ms round trip).
+Closing a stream early reads and discards the rest of its reply: a
+1,000,000-row stream closed after 10 rows takes about 200 ms. For 1,000,000
+rows, native against libpq: 386 ms against 598 ms at 0 ms one way, and 431 ms
+against 607 ms at 2.5 ms. See `obx/design/pgwire.md`, sections 12, 26 and 28.
