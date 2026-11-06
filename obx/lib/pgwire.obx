@@ -1,0 +1,772 @@
+// pgwire: the PostgreSQL frontend/backend protocol 3.0 in obx (design/pgwire.md).
+// Everything on the wire and nothing of a program API: connection strings, the
+// environment and ~/.pgpass; the transport (a Unix socket, TCP, TLS after an
+// SSLRequest); startup and authentication (trust, cleartext, MD5, SCRAM-SHA-256
+// and -PLUS); simple and extended queries; raw rows; errors; portals read in
+// batches; cancel requests; and the text value codecs. `postgres` is built on
+// it (stage P2); `tds` and `tns` are its models.
+//
+//     let cfg = try pgwire.parseConfig("host=/var/run/postgresql dbname=app")
+//     var s = try pgwire.connect(&cfg)
+//     let r = try s.query("SELECT $1::int8 + 1", &[try pgwire.param(&Value.Int(41))])
+//     println(r.rows.bytes(0, 0))          // 42
+//
+// Errors are sqldialect.DbError: a failed connect is code CONNECTION_BAD (1)
+// (with the server's SQLSTATE in `state` when it sent one); a statement the
+// server refuses FATAL_ERROR (7) with its SQLSTATE and message; a lost
+// connection E_IO and a malformed reply E_PROTOCOL, both leaving the session
+// broken; cancellation and deadlines E_CANCELLED and E_TIMEOUT. No error text
+// contains a password. Nothing here prints.
+
+import "net"
+import "tls"
+import "crypto"
+import "sqldialect"
+import "sqlrows"
+import "time"
+import "math"
+import "os"
+import "io"
+import "fs"
+import "strings"
+
+pub type Error = sqldialect.DbError
+pub const PROTOCOL = 196608
+pub const CONNECTION_BAD = 1          // connect failures
+pub const FATAL_ERROR = 7             // server errors (PGRES_FATAL_ERROR)
+
+pub const OID_BOOL = 16
+pub const OID_BYTEA = 17
+pub const OID_INT8 = 20
+pub const OID_INT2 = 21
+pub const OID_INT4 = 23
+pub const OID_TEXT = 25
+pub const OID_FLOAT4 = 700
+pub const OID_FLOAT8 = 701
+pub const OID_NUMERIC = 1700
+pub const OID_CHAR = 18
+pub const OID_NAME = 19
+pub const OID_BPCHAR = 1042
+pub const OID_VARCHAR = 1043
+pub const OID_DATE = 1082
+pub const OID_TIME = 1083
+pub const OID_TIMESTAMP = 1114
+pub const OID_TIMESTAMPTZ = 1184
+pub const OID_OID = 26
+pub const OID_JSON = 114
+pub const OID_JSONB = 3802
+pub const OID_UUID = 2950
+pub const OID_INTERVAL = 1186
+
+pub const TX_IDLE = 73                // 'I'
+pub const TX_BLOCK = 84               // 'T'
+pub const TX_FAILED = 69              // 'E'
+pub const ABORT_MS = 5000             // how long a cancelled request's reply is waited for
+pub const CLOSE_WAIT_MS = 1000        // how long closing a portal waits before it cancels
+
+const MAX_DSCALE = 16383              // numeric's largest display scale
+const MAX_MSG = 1073741824 + 65536    // the largest message length accepted
+const INBOX = 65536
+const SHRINK_OVER = 1048576
+const MAX_NOTICES = 100
+const MAX_NOTIFIES = 10000
+const DEFAULT_PORT = 5432
+
+fn proto(msg: str): Error { return sqldialect.dbError(sqldialect.E_PROTOCOL, "pgwire: " + msg) }
+
+fn ioErr(msg: str): Error { return sqldialect.dbError(sqldialect.E_IO, "pgwire: " + msg) }
+
+fn input(msg: str): Error { return sqldialect.inputError(msg) }
+
+fn bad(msg: str): Error { return sqldialect.dbError(CONNECTION_BAD, msg) }
+
+fn chomp(s: str): str {
+    var n = len(s)
+    while n > 0 && isSpace(s[n - 1]) { n -= 1 }
+    return s[..n]
+}
+
+// ------------------------------------------------------------ configuration
+
+pub type SslMode = value closed { Disable; Allow; Prefer; Require; VerifyCa; VerifyFull }
+pub type ChannelBinding = value closed { Disable; Prefer; Require }
+
+// Where to connect: a host name or address, "/dir" or "@name" (a Unix socket's
+// directory or abstract name), with the port that names the socket file.
+pub type Endpoint = value record {
+    pub host: str          // as given: a name, an address, "/dir" or "@name" (Unix)
+    pub hostaddr: str      // "" when not given
+    pub port: int
+}
+
+pub fn (e: &Endpoint) isUnix(): bool {
+    return len(e.hostaddr) == 0 && len(e.host) > 0 && (e.host[0] == '/' || e.host[0] == '@')
+}
+
+// "<dir>/.s.PGSQL.<port>" for a Unix endpoint ("@name/.s.PGSQL.<port>" abstract).
+pub fn (e: &Endpoint) socketPath(): str { return e.host + "/.s.PGSQL." + e.port.toStr() }
+
+pub type Setting = value record { pub name: str; pub value: str }
+pub type KeepAlive = value record { pub on: bool; pub idleS: int; pub intervalS: int; pub count: int }
+
+pub type Config = record {
+    pub endpoints: []Endpoint
+    pub user: str
+    pub password: Option[str]       // from the string or PGPASSWORD; .pgpass is read at connect
+    pub passfile: str
+    pub dbname: str
+    pub sslmode: SslMode
+    pub sslrootcert: str            // a path, "system", or "" (no file: none exists at the default path)
+    pub sslcert: str                // "" none
+    pub sslkey: str
+    pub sslsni: bool
+    pub sslMin: tls.Version
+    pub sslMax: tls.Version
+    pub channelBinding: ChannelBinding
+    pub requireAuth: str            // as given; "" any
+    pub connectTimeoutMs: int       // -1: none; 1 s counts as 2 s
+    pub keepAlive: KeepAlive
+    pub startup: []Setting          // StartupMessage pairs after user and database, in design/pgwire.md 5.1's order
+}
+
+type KV = value record { k: str; v: str }
+
+// Every keyword libpq 16 knows (and `replication`, `sslnegotiation` of 17).
+const KEYWORDS: []str = ["host", "hostaddr", "port", "dbname", "user", "password", "passfile", "channel_binding",
+    "connect_timeout", "client_encoding", "options", "application_name", "fallback_application_name", "keepalives",
+    "keepalives_idle", "keepalives_interval", "keepalives_count", "tcp_user_timeout", "sslmode", "sslcompression",
+    "sslcert", "sslkey", "sslpassword", "sslcertmode", "sslrootcert", "sslcrl", "sslcrldir", "sslsni", "requirepeer",
+    "require_auth", "ssl_min_protocol_version", "ssl_max_protocol_version", "gssencmode", "krbsrvname", "gsslib",
+    "gssdelegation", "service", "target_session_attrs", "load_balance_hosts", "replication", "sslnegotiation",
+    "min_protocol_version", "max_protocol_version"]
+
+fn knownKey(k: str): bool {
+    for x in KEYWORDS {
+        if x == k { return true }
+    }
+    return false
+}
+
+fn isWs(c: byte): bool { return c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == 11 || c == 12 }
+
+// keyword/value form (libpq's conninfo_parse).
+fn parseKeywords(s: str): Result[[]KV, Error] {
+    var out: []KV = []
+    let n = len(s)
+    var i = 0
+    while i < n {
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n { break }
+        let start = i
+        while i < n && !isWs(s[i]) && s[i] != '=' { i += 1 }
+        let key = s[start..i]
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n || s[i] != '=' { return Err(input("missing \"=\" after \"" + key + "\" in connection info string")) }
+        i += 1
+        while i < n && isWs(s[i]) { i += 1 }
+        var val = newStrBuf()
+        if i < n && s[i] == '\'' {
+            i += 1
+            var shut = false
+            while i < n {
+                let c = s[i]
+                if c == '\\' {
+                    i += 1
+                    if i < n {
+                        val.addByte(s[i])
+                        i += 1
+                    }
+                    continue
+                }
+                if c == '\'' {
+                    shut = true
+                    i += 1
+                    break
+                }
+                val.addByte(c)
+                i += 1
+            }
+            if !shut { return Err(input("unterminated quoted string in connection info string")) }
+        } else {
+            while i < n && !isWs(s[i]) {
+                let c = s[i]
+                if c == '\\' {
+                    i += 1
+                    if i < n {
+                        val.addByte(s[i])
+                        i += 1
+                    }
+                    continue
+                }
+                val.addByte(c)
+                i += 1
+            }
+        }
+        if !knownKey(key) { return Err(input("invalid connection option \"" + key + "\"")) }
+        append(mut &out, KV{k: key, v: val.toStr()})
+    }
+    return Ok(out)
+}
+
+fn hexVal(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
+
+// A URI part with %XX decoded.
+fn pctDecode(s: str): Result[str, Error] {
+    var b = newStrBuf()
+    var i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c != '%' {
+            b.addByte(c)
+            i += 1
+            continue
+        }
+        let hi = if i + 1 < len(s) { hexVal(s[i + 1]) } else { -1 }
+        let lo = if i + 2 < len(s) { hexVal(s[i + 2]) } else { -1 }
+        if hi < 0 || lo < 0 {
+            let e = if i + 3 <= len(s) { i + 3 } else { len(s) }
+            return Err(input("invalid percent-encoded token: \"" + s[i..e] + "\""))
+        }
+        if hi == 0 && lo == 0 { return Err(input("forbidden value %00 in percent-encoded value: \"" + s[i..i + 3] + "\"")) }
+        b.addByte(byte(hi * 16 + lo))
+        i += 3
+    }
+    return Ok(b.toStr())
+}
+
+fn isUriSep(c: byte): bool { return c == ':' || c == '/' || c == '?' || c == ',' }
+
+// The text after "postgresql://" (libpq's conninfo_uri_parse_options).
+fn parseUri(whole: str, prefix: int): Result[[]KV, Error] {
+    let rest = whole[prefix..]
+    let n = len(rest)
+    var out: []KV = []
+    var p = 0
+    var q = 0
+    while q < n && rest[q] != '@' && rest[q] != '/' { q += 1 }
+    if q < n && rest[q] == '@' {
+        var colon = 0
+        while colon < q && rest[colon] != ':' { colon += 1 }
+        let user = try pctDecode(rest[..colon])
+        if len(user) > 0 { append(mut &out, KV{k: "user", v: user}) }
+        if colon < q {
+            let pw = try pctDecode(rest[colon + 1..q])
+            if len(pw) > 0 { append(mut &out, KV{k: "password", v: pw}) }
+        }
+        p = q + 1
+    }
+    var hosts: []str = []
+    var ports: []str = []
+    var anyHost = false
+    var anyPort = false
+    while true {
+        var host = ""
+        if p < n && rest[p] == '[' {
+            q = p + 1
+            while q < n && rest[q] != ']' { q += 1 }
+            if q >= n {
+                return Err(input("end of string reached when looking for matching \"]\" in IPv6 host address in URI: \"" + maskedUri(whole) + "\""))
+            }
+            if q == p + 1 { return Err(input("IPv6 host address may not be empty in URI: \"" + maskedUri(whole) + "\"")) }
+            host = rest[p + 1..q]
+            p = q + 1
+            if p < n && !isUriSep(rest[p]) {
+                return Err(input("unexpected character \"" + rest[p..p + 1] + "\" at position " + (prefix + p + 1).toStr() +
+                                 " in URI (expected \":\" or \"/\"): \"" + maskedUri(whole) + "\""))
+            }
+        } else {
+            q = p
+            while q < n && !isUriSep(rest[q]) { q += 1 }
+            host = try pctDecode(rest[p..q])
+            p = q
+        }
+        var port = ""
+        if p < n && rest[p] == ':' {
+            p += 1
+            q = p
+            while q < n && rest[q] != '/' && rest[q] != '?' && rest[q] != ',' { q += 1 }
+            port = try pctDecode(rest[p..q])
+            p = q
+        }
+        if len(host) > 0 { anyHost = true }
+        if len(port) > 0 { anyPort = true }
+        append(mut &hosts, host)
+        append(mut &ports, port)
+        if p < n && rest[p] == ',' {
+            p += 1
+            continue
+        }
+        break
+    }
+    if anyHost { append(mut &out, KV{k: "host", v: strings.join(&hosts, ",")}) }
+    if anyPort { append(mut &out, KV{k: "port", v: strings.join(&ports, ",")}) }
+    if p < n && rest[p] == '/' {
+        p += 1
+        q = p
+        while q < n && rest[q] != '?' { q += 1 }
+        let db = try pctDecode(rest[p..q])
+        if len(db) > 0 { append(mut &out, KV{k: "dbname", v: db}) }
+        p = q
+    }
+    if p < n && rest[p] == '?' {
+        p += 1
+        for part in split(rest[p..], '&') {
+            if len(part) == 0 { continue }
+            var eq = 0
+            while eq < len(part) && part[eq] != '=' { eq += 1 }
+            if eq >= len(part) { return Err(input("missing key/value separator \"=\" in URI query parameter: \"" + part + "\"")) }
+            var key = try pctDecode(part[..eq])
+            var val = try pctDecode(part[eq + 1..])
+            if key == "ssl" && val == "true" {
+                key = "sslmode"
+                val = "require"
+            }
+            if !knownKey(key) { return Err(input("invalid URI query parameter: \"" + key + "\"")) }
+            append(mut &out, KV{k: key, v: val})
+        }
+    }
+    return Ok(out)
+}
+
+fn uriPrefix(s: str): int {
+    if startsWith(s, "postgresql://") { return 13 }
+    if startsWith(s, "postgres://") { return 11 }
+    return 0
+}
+
+fn parsePairs(conninfo: str): Result[[]KV, Error] {
+    try sqldialect.noNul(conninfo, "connection string")
+    let u = uriPrefix(conninfo)
+    if u > 0 { return parseUri(conninfo, u) }
+    return parseKeywords(conninfo)
+}
+
+// The string with the password value replaced by ***, for logs. A string that
+// does not parse is not shown at all.
+pub fn masked(conninfo: str): str {
+    let u = uriPrefix(conninfo)
+    if u > 0 { return maskedUri(conninfo) }
+    var b = newStrBuf()
+    let s = conninfo
+    let n = len(s)
+    var i = 0
+    while i < n {
+        let ws = i
+        while i < n && isWs(s[i]) { i += 1 }
+        b.add(s[ws..i])
+        if i >= n { break }
+        let start = i
+        while i < n && !isWs(s[i]) && s[i] != '=' { i += 1 }
+        let key = s[start..i]
+        while i < n && isWs(s[i]) { i += 1 }
+        if i >= n || s[i] != '=' { return "(connection string does not parse)" }
+        i += 1
+        while i < n && isWs(s[i]) { i += 1 }
+        b.add(s[start..i])
+        let vs = i
+        if i < n && s[i] == '\'' {
+            i += 1
+            var shut = false
+            while i < n {
+                if s[i] == '\\' {
+                    i += 2
+                    continue
+                }
+                if s[i] == '\'' {
+                    shut = true
+                    i += 1
+                    break
+                }
+                i += 1
+            }
+            if !shut { return "(connection string does not parse)" }
+        } else {
+            while i < n && !isWs(s[i]) {
+                if s[i] == '\\' { i += 1 }
+                i += 1
+            }
+        }
+        if i > n { i = n }
+        b.add(if key == "password" { "***" } else { s[vs..i] })
+    }
+    return b.toStr()
+}
+
+fn maskedUri(s: str): str {
+    let u = uriPrefix(s)
+    let n = len(s)
+    var b = newStrBuf()
+    var q = u
+    while q < n && s[q] != '@' && s[q] != '/' { q += 1 }
+    var from = 0
+    if q < n && s[q] == '@' {
+        var colon = u
+        while colon < q && s[colon] != ':' { colon += 1 }
+        if colon < q {
+            b.add(s[..colon + 1])
+            b.add("***")
+            from = q
+        }
+    }
+    // password=... query parameters
+    let rest = s[from..]
+    var i = 0
+    var qpos = -1
+    for k in 0..len(rest) {
+        if rest[k] == '?' {
+            qpos = k
+            break
+        }
+    }
+    if qpos < 0 {
+        b.add(rest)
+        return b.toStr()
+    }
+    b.add(rest[..qpos + 1])
+    var first = true
+    for part in split(rest[qpos + 1..], '&') {
+        if !first { b.add("&") }
+        first = false
+        if startsWith(part, "password=") { b.add("password=***") } else { b.add(part) }
+    }
+    return b.toStr()
+}
+
+fn pick(kv: &[]KV, key: str): Option[str] {
+    var i = len(kv)
+    while i > 0 {
+        i -= 1
+        if kv[i].k == key { return Some(kv[i].v) }
+    }
+    return None
+}
+
+fn envPick(name: str): Option[str] {
+    match os.env(name) {
+        Some(v) {
+            if len(v) > 0 { return Some(v) }
+            return None
+        }
+        None { return None }
+    }
+}
+
+// The keyword's value: the string's (even when empty), else the environment
+// variable's (when not empty), else dflt.
+fn setting(kv: &[]KV, key: str, envName: str, dflt: str): str {
+    match pick(kv, key) {
+        Some(v) { return v }
+        None {}
+    }
+    if len(envName) > 0 {
+        match envPick(envName) {
+            Some(v) { return v }
+            None {}
+        }
+    }
+    return dflt
+}
+
+fn splitList(s: str): []str {
+    if len(s) == 0 { return [] }
+    return split(s, ',')
+}
+
+fn parseIntOpt(v: str, key: str): Result[int, Error] {
+    match parseInt(v) {
+        Some(n) { return Ok(n) }
+        None { return Err(input("invalid integer value \"" + v + "\" for connection option \"" + key + "\"")) }
+    }
+}
+
+fn parsePort(v: str): Result[int, Error] {
+    if len(v) == 0 { return Ok(DEFAULT_PORT) }
+    let n = try parseIntOpt(v, "port")
+    if n < 1 || n > 65535 { return Err(input("invalid port number: \"" + v + "\"")) }
+    return Ok(n)
+}
+
+const SOCKET_DIRS: []str = ["/var/run/postgresql", "/tmp"]
+
+// The default Unix socket directory: the first of dirs that holds the socket
+// file for port; else the first (libpq has one compiled-in directory; Debian's
+// is /var/run/postgresql, upstream's /tmp).
+pub fn socketDirFor(port: int, dirs: &[str]): str {
+    for d in dirs {
+        if fs.exists(d + "/.s.PGSQL." + port.toStr()) { return d }
+    }
+    return dirs[0]
+}
+
+fn sslModeOf(v: str): Result[SslMode, Error] {
+    match v {
+        "disable" { return Ok(SslMode.Disable) }
+        "allow" { return Ok(SslMode.Allow) }
+        "prefer" { return Ok(SslMode.Prefer) }
+        "require" { return Ok(SslMode.Require) }
+        "verify-ca" { return Ok(SslMode.VerifyCa) }
+        "verify-full" { return Ok(SslMode.VerifyFull) }
+        else { return Err(input("invalid sslmode value: \"" + v + "\"")) }
+    }
+}
+
+fn versionOf(key: str, v: str, dflt: tls.Version): Result[tls.Version, Error] {
+    if len(v) == 0 { return Ok(dflt) }
+    if v == "TLSv1.2" { return Ok(tls.Version.Tls12) }
+    if v == "TLSv1.3" { return Ok(tls.Version.Tls13) }
+    if v == "TLSv1" || v == "TLSv1.1" { return Err(input(key + " " + v + " is not supported (TLSv1.2 or TLSv1.3)")) }
+    return Err(input("invalid " + key + " value: \"" + v + "\""))
+}
+
+// require_auth's list, checked: methods separated by commas, all negated with ! or none.
+fn checkRequireAuth(v: str): Result[Unit, Error] {
+    if len(v) == 0 { return Ok(Unit{}) }
+    var neg = 0
+    var pos = 0
+    for m in split(v, ',') {
+        var name = m
+        if startsWith(m, "!") {
+            name = m[1..]
+            neg += 1
+        } else {
+            pos += 1
+        }
+        if name != "password" && name != "md5" && name != "scram-sha-256" && name != "none" && name != "gss" && name != "sspi" {
+            return Err(input("invalid require_auth method: \"" + m + "\""))
+        }
+    }
+    if neg > 0 && pos > 0 { return Err(input("require_auth method cannot mix negated and non-negated methods")) }
+    return Ok(Unit{})
+}
+
+fn startupSetting(out: mut &[]Setting, name: str, v: str) {
+    if len(v) > 0 { append(out, Setting{name: name, value: v}) }
+}
+
+// A connection string (keyword/value or URI), then the environment, then the
+// defaults, as libpq: design/pgwire.md section 6.
+pub fn parseConfig(conninfo: str): Result[Config, Error] {
+    let kv = try parsePairs(conninfo)
+    // refused or unsupported keywords and values
+    if len(setting(&kv, "service", "PGSERVICE", "")) > 0 { return Err(input("service files are not supported yet")) }
+    if pick(&kv, "replication").isSome() { return Err(input("the keyword replication is not supported")) }
+    if len(setting(&kv, "requirepeer", "", "")) > 0 { return Err(input("the keyword requirepeer is not supported yet")) }
+    if len(setting(&kv, "sslpassword", "", "")) > 0 { return Err(input("encrypted private keys are not supported")) }
+    let certmode = setting(&kv, "sslcertmode", "PGSSLCERTMODE", "allow")
+    if certmode == "require" { return Err(input("sslcertmode=require is not supported yet")) }
+    if certmode != "allow" && certmode != "disable" { return Err(input("invalid sslcertmode value: \"" + certmode + "\"")) }
+    let neg = setting(&kv, "sslnegotiation", "", "postgres")
+    if neg == "direct" || neg == "requiredirect" { return Err(input("sslnegotiation=direct is not supported yet")) }
+    if neg != "postgres" { return Err(input("invalid sslnegotiation value: \"" + neg + "\"")) }
+    for key in ["min_protocol_version", "max_protocol_version"] {
+        let v = setting(&kv, key, "", "")
+        if len(v) > 0 && v != "3.0" && !(key == "max_protocol_version" && v == "latest") {
+            return Err(input("the keyword " + key + " is supported only as 3.0"))
+        }
+    }
+    let gss = setting(&kv, "gssencmode", "PGGSSENCMODE", "prefer")
+    if gss == "require" { return Err(input("GSSAPI encryption is not supported")) }
+    if gss != "disable" && gss != "prefer" && gss != "allow" { return Err(input("invalid gssencmode value: \"" + gss + "\"")) }
+    let tsa = setting(&kv, "target_session_attrs", "PGTARGETSESSIONATTRS", "any")
+    if tsa != "any" { return Err(input("target_session_attrs=" + tsa + " is not supported yet")) }
+    let lb = setting(&kv, "load_balance_hosts", "PGLOADBALANCEHOSTS", "disable")
+    if lb != "disable" { return Err(input("load_balance_hosts=" + lb + " is not supported yet")) }
+
+    // the user and the database
+    var user = setting(&kv, "user", "PGUSER", "")
+    if len(user) == 0 { user = os.userName() }
+    if len(user) == 0 { return Err(input("could not look up local user ID")) }
+    var dbname = setting(&kv, "dbname", "PGDATABASE", "")
+    if len(dbname) == 0 { dbname = user }
+
+    // endpoints
+    let hosts = splitList(setting(&kv, "host", "PGHOST", ""))
+    let addrs = splitList(setting(&kv, "hostaddr", "PGHOSTADDR", ""))
+    let ports = splitList(setting(&kv, "port", "PGPORT", ""))
+    var nh = len(hosts)
+    if nh == 0 { nh = len(addrs) }
+    if nh == 0 { nh = 1 }
+    if len(hosts) > 0 && len(addrs) > 0 && len(hosts) != len(addrs) {
+        return Err(input("could not match " + len(hosts).toStr() + " host names to " + len(addrs).toStr() + " hostaddr values"))
+    }
+    if len(ports) > 1 && len(ports) != nh {
+        return Err(input("could not match " + len(ports).toStr() + " port numbers to " + nh.toStr() + " hosts"))
+    }
+    var eps: []Endpoint = []
+    for i in 0..nh {
+        let port = try parsePort(if len(ports) == 0 { "" } else if len(ports) == 1 { ports[0] } else { ports[i] })
+        var host = if i < len(hosts) { hosts[i] } else { "" }
+        let addr = if i < len(addrs) { addrs[i] } else { "" }
+        if len(host) == 0 && len(addr) == 0 { host = socketDirFor(port, SOCKET_DIRS) }
+        append(mut &eps, Endpoint{host: host, hostaddr: addr, port: port})
+    }
+
+    // TLS
+    let home = os.homeDir()
+    var rootcert = setting(&kv, "sslrootcert", "PGSSLROOTCERT", "")
+    var smv = setting(&kv, "sslmode", "PGSSLMODE", "")
+    if len(smv) == 0 && pick(&kv, "sslmode").isNone() {
+        if rootcert == "system" {
+            smv = "verify-full"
+        } else if os.env("PGREQUIRESSL").unwrapOr("") == "1" {
+            smv = "require"
+        } else {
+            smv = "prefer"
+        }
+    }
+    let sslmode = try sslModeOf(smv)
+    if rootcert == "system" && sslmode != SslMode.VerifyFull {
+        return Err(input("weak sslmode \"" + smv + "\" may not be used with sslrootcert=system (use \"verify-full\")"))
+    }
+    if len(rootcert) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/root.crt") { rootcert = home + "/.postgresql/root.crt" }
+    var sslcert = setting(&kv, "sslcert", "PGSSLCERT", "")
+    var sslkey = setting(&kv, "sslkey", "PGSSLKEY", "")
+    if len(sslcert) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/postgresql.crt") {
+        sslcert = home + "/.postgresql/postgresql.crt"
+        if len(sslkey) == 0 { sslkey = home + "/.postgresql/postgresql.key" }
+    }
+    let verifying = sslmode == SslMode.VerifyCa || sslmode == SslMode.VerifyFull || (sslmode == SslMode.Require && len(rootcert) > 0) ||
+                    (sslmode == SslMode.Prefer && len(rootcert) > 0)
+    if verifying {
+        var crl = setting(&kv, "sslcrl", "PGSSLCRL", "")
+        if len(crl) == 0 && len(setting(&kv, "sslcrldir", "PGSSLCRLDIR", "")) == 0 && len(home) > 0 && fs.isFile(home + "/.postgresql/root.crl") {
+            crl = "x"
+        }
+        if len(crl) > 0 || len(setting(&kv, "sslcrldir", "PGSSLCRLDIR", "")) > 0 {
+            return Err(input("certificate revocation lists are not supported yet"))
+        }
+    }
+    let sni = setting(&kv, "sslsni", "PGSSLSNI", "1")
+    if sni != "0" && sni != "1" { return Err(input("invalid sslsni value: \"" + sni + "\"")) }
+    let sslMin = try versionOf("ssl_min_protocol_version", setting(&kv, "ssl_min_protocol_version", "PGSSLMINPROTOCOLVERSION", ""), tls.Version.Tls12)
+    let sslMax = try versionOf("ssl_max_protocol_version", setting(&kv, "ssl_max_protocol_version", "PGSSLMAXPROTOCOLVERSION", ""), tls.Version.Tls13)
+    if sslMin == tls.Version.Tls13 && sslMax == tls.Version.Tls12 {
+        return Err(input("ssl_min_protocol_version is higher than ssl_max_protocol_version"))
+    }
+    let cbv = setting(&kv, "channel_binding", "PGCHANNELBINDING", "prefer")
+    var cb = ChannelBinding.Prefer
+    if cbv == "disable" {
+        cb = ChannelBinding.Disable
+    } else if cbv == "require" {
+        cb = ChannelBinding.Require
+    } else if cbv != "prefer" {
+        return Err(input("invalid channel_binding value: \"" + cbv + "\""))
+    }
+    let ra = setting(&kv, "require_auth", "PGREQUIREAUTH", "")
+    try checkRequireAuth(ra)
+
+    // timing
+    var ctms = -1
+    let ct = setting(&kv, "connect_timeout", "PGCONNECT_TIMEOUT", "")
+    if len(ct) > 0 {
+        let t = try parseIntOpt(ct, "connect_timeout")
+        if t > 0 { ctms = (if t < 2 { 2 } else { t }) * 1000 }
+    }
+    var ka = KeepAlive{on: true, idleS: 0, intervalS: 0, count: 0}
+    let kas = setting(&kv, "keepalives", "", "1")
+    ka.on = (try parseIntOpt(kas, "keepalives")) != 0
+    let idle = setting(&kv, "keepalives_idle", "", "")
+    if len(idle) > 0 { ka.idleS = try parseIntOpt(idle, "keepalives_idle") }
+    let intvl = setting(&kv, "keepalives_interval", "", "")
+    if len(intvl) > 0 { ka.intervalS = try parseIntOpt(intvl, "keepalives_interval") }
+    let cnt = setting(&kv, "keepalives_count", "", "")
+    if len(cnt) > 0 { ka.count = try parseIntOpt(cnt, "keepalives_count") }
+
+    // the StartupMessage pairs after user and database (5.1)
+    var startup: []Setting = []
+    var app = setting(&kv, "application_name", "PGAPPNAME", "")
+    if len(app) == 0 { app = setting(&kv, "fallback_application_name", "", "") }
+    startupSetting(mut &startup, "application_name", app)
+    var enc = setting(&kv, "client_encoding", "PGCLIENTENCODING", "")
+    if len(enc) == 0 || enc == "auto" { enc = "UTF8" }
+    startupSetting(mut &startup, "client_encoding", enc)
+    startupSetting(mut &startup, "options", setting(&kv, "options", "PGOPTIONS", ""))
+    startupSetting(mut &startup, "datestyle", os.env("PGDATESTYLE").unwrapOr(""))
+    startupSetting(mut &startup, "timezone", os.env("PGTZ").unwrapOr(""))
+    startupSetting(mut &startup, "geqo", os.env("PGGEQO").unwrapOr(""))
+    try sqldialect.noNul(user, "user")
+    try sqldialect.noNul(dbname, "database")
+    for st in startup {
+        try sqldialect.noNul(st.name, "startup parameter")
+        try sqldialect.noNul(st.value, st.name)
+    }
+
+    var pw: Option[str] = None
+    match pick(&kv, "password") {
+        Some(v) { pw = Some(v) }
+        None { pw = envPick("PGPASSWORD") }
+    }
+    var passfile = setting(&kv, "passfile", "PGPASSFILE", "")
+    if len(passfile) == 0 && len(home) > 0 { passfile = home + "/.pgpass" }
+    return Ok(Config{endpoints: eps, user: user, password: pw, passfile: passfile, dbname: dbname, sslmode: sslmode,
+                     sslrootcert: rootcert, sslcert: sslcert, sslkey: sslkey, sslsni: sni == "1", sslMin: sslMin, sslMax: sslMax,
+                     channelBinding: cb, requireAuth: ra, connectTimeoutMs: ctms, keepAlive: ka, startup: startup})
+}
+
+// ----------------------------------------------------------------- .pgpass
+
+// One field of a .pgpass line, from s[at..]: the text up to the next unescaped
+// ':' (\: and \\ unescaped), and the position after the ':'. The last field
+// runs to the end of the line.
+type PwField = value record { text: str; next: int }
+
+fn pwField(s: str, at: int, last: bool): PwField {
+    var b = newStrBuf()
+    var i = at
+    while i < len(s) {
+        let c = s[i]
+        if c == '\\' && i + 1 < len(s) {
+            b.addByte(s[i + 1])
+            i += 2
+            continue
+        }
+        if c == ':' && !last { return PwField{text: b.toStr(), next: i + 1} }
+        b.addByte(c)
+        i += 1
+    }
+    return PwField{text: b.toStr(), next: -1}
+}
+
+fn pwMatch(field: str, v: str): bool { return field == "*" || field == v }
+
+// The password the .pgpass file gives for the endpoint, user and database of
+// the configuration (design/pgwire.md 6.4): the first matching line. None when
+// there is no usable file (not a regular file, or readable by group or other).
+pub fn passwordFor(cfg: &Config, ep: &Endpoint): Option[str] {
+    if len(cfg.passfile) == 0 { return None }
+    match fs.stat(cfg.passfile) {
+        Ok(st) {
+            if !st.isFile() || (st.perm() & 0x3F) != 0 { return None }
+        }
+        Err(_) { return None }
+    }
+    let text = match io.read(cfg.passfile) {
+        Ok(t) { t }
+        Err(_) { return None }
+    }
+    var host = if len(ep.host) > 0 { ep.host } else if len(ep.hostaddr) > 0 { ep.hostaddr } else { "localhost" }
+    if ep.isUnix() && (ep.host == "/var/run/postgresql" || ep.host == "/tmp") { host = "localhost" }
+    let port = ep.port.toStr()
+    for raw in split(text, '\n') {
+        var line = raw
+        if len(line) > 0 && line[len(line) - 1] == '\r' { line = line[..len(line) - 1] }
+        if len(line) == 0 || line[0] == '#' { continue }
+        let f1 = pwField(line, 0, false)
+        if f1.next < 0 { continue }
+        let f2 = pwField(line, f1.next, false)
+        if f2.next < 0 { continue }
+        let f3 = pwField(line, f2.next, false)
+        if f3.next < 0 { continue }
+        let f4 = pwField(line, f3.next, false)
+        if f4.next < 0 { continue }
+        if pwMatch(f1.text, host) && pwMatch(f2.text, port) && pwMatch(f3.text, cfg.dbname) && pwMatch(f4.text, cfg.user) {
+            return Some(pwField(line, f4.next, true).text)
+        }
+    }
+    return None
+}
