@@ -4,5 +4,5 @@ import "money"
 type Euro = value record {}
 fn (Euro) code(): str { return "EUR" }
 fn main() {
-    let a: money.Money[Euro] = money.of(1.00)
+    let a: money.Money[Euro] = money.of(1.00m)
 }

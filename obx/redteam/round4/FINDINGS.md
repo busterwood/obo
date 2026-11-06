@@ -29,7 +29,7 @@ Counts: 2 medium (trap order), 4 low (2 wrong accepts, 2 wrong rejects).
   `else` last and once.
 - **F4** `k04_char_literal_arm_on_int`: `match n { 'a' {..} }` with `n: int`
   is accepted (`match_lits` does not check a char arm against a non-byte).
-- **F5** `k05_matchx_frac_literal_arm`: `match k { 1 { 1.5 } else { f } }`
+- **F5** `k05_matchx_frac_literal_arm`: `match k { 1 { 1.5m } else { f } }`
   with `f: float` is rejected; `x_matchx` re-types only integer literal arms
   (`x_ifx` handles fractional ones).
 - **F6** `k06_literal_branch_too_big_for_int`: `if c { 18446744073709551615 }

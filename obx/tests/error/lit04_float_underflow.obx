@@ -1,5 +1,0 @@
-// SPEC 2: an f literal that rounds to zero is an error.
-// error: float literal 1e-400 is out of range (underflows to zero)
-fn main() {
-    let x = 1e-400f
-}

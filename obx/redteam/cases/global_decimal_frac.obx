@@ -1,5 +1,5 @@
 // A global initializer must be constant; a fractional literal is a fromFraction call
 // (decision: stays an error). Was: expect 1.25.
 // error: constant
-var g: Decimal = 1.25
+var g: Decimal = 1.25m
 fn main() { println(g) }

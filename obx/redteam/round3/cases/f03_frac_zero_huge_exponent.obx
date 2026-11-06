@@ -2,6 +2,6 @@
 // this is a compile error even though the value is 0.
 // error: exponent|scale
 fn main() {
-    let d = 0e99999999999999999999
+    let d = 0e99999999999999999999m
     println(d.toStr())
 }

@@ -1,3 +1,3 @@
 // expect: 2
-fn app(f: &fn(float, byte, bool): int): int { return f(1.5, byte(1), true) }
+fn app(f: &fn(float, byte, bool): int): int { return f(1.5f, byte(1), true) }
 fn main() { println(app(fn(a: float, b: byte, c: bool): int { if c { return int(a) + int(b) } return 0 })) }

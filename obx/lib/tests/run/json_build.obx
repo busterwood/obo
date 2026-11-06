@@ -63,7 +63,7 @@ fn main() {
     out.set("ok", json.boolean(true))
     out.set("ids", json.arrayOf([json.integer(1), json.integer(2)]))
     let copy = out.clone()
-    out.set("ok", json.number(0.1))
+    out.set("ok", json.number(0.1f))
     var ids = out.field("ids")
     ids.push(json.integer(3))
     out.set("ids", ids)

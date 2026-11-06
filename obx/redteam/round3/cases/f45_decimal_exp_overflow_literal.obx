@@ -1,2 +1,2 @@
 // exit: 10
-fn main() { println((9e40000).toStr()) }
+fn main() { println((9e40000m).toStr()) }

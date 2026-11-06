@@ -1,2 +1,2 @@
 // expect: 12.50
-fn main() { println((12.50).toStr()) }
+fn main() { println((12.50m).toStr()) }

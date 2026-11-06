@@ -8,13 +8,13 @@
 // expect: 6020000000000000000000000
 // expect: true
 fn main() {
-    println(1.5e3)
-    println(2e-7)
-    println(12.50)
-    println(99999999999999999999999999999999999999e0)
-    println(1.2345678901234567890123456789012345678)
-    println(-1e-39)
-    println(6.02e24)
-    let a: Decimal = 1.0e2
-    println(a == 100.00)
+    println(1.5e3m)
+    println(2e-7m)
+    println(12.50m)
+    println(99999999999999999999999999999999999999e0m)
+    println(1.2345678901234567890123456789012345678m)
+    println(-1e-39m)
+    println(6.02e24m)
+    let a: Decimal = 1.0e2m
+    println(a == 100.00m)
 }

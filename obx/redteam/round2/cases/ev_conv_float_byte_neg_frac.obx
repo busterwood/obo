@@ -1,6 +1,6 @@
 // int(-0.5) truncates to 0, which fits a byte.
 // expect: 0
 fn main() {
-    let f: float = -0.5
+    let f: float = -0.5f
     println(byte(f).toStr())
 }

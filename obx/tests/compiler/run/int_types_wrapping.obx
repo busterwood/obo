@@ -39,11 +39,11 @@ fn main() {
     println(int(~byte(1)))
     println((u128(1) << 127).toStr())
     println(i128(9223372036854775807) * 4 > 0 && true == true)
-    let f: float = 3.75
+    let f: float = 3.75f
     println(int(f))
-    let g: float = -3.75
+    let g: float = -3.75f
     println(int(g))
-    println(float(7) / 2.0 == 3.5)
-    println(floatToStr(0.1))
-    println(floatToStr(1.0 / 3.0))
+    println(float(7) / 2.0f == 3.5f)
+    println(floatToStr(0.1f))
+    println(floatToStr(1.0f / 3.0f))
 }

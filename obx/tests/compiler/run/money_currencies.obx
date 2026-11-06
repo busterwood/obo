@@ -20,21 +20,21 @@ fn (JPY) code(): str { return "JPY" }
 fn (JPY) scale(): int { return 0 }
 
 fn main() {
-    let a: money.Money[USD] = money.of(12.5)
-    let b: money.Money[USD] = money.of(20.00)
+    let a: money.Money[USD] = money.of(12.5m)
+    let b: money.Money[USD] = money.of(20.00m)
     println(a)
     println(b)
     let c = a + b
     println(c)
-    let tax = c.times(0.0825)
+    let tax = c.times(0.0825m)
     println(tax)
     let y: money.Money[JPY] = money.of(decimalOf(1500))
     println(y)
-    let y2 = y.times(1.1)
+    let y2 = y.times(1.1m)
     println(y2)
     if a < b { println("true") }
-    let d: Decimal = -1.5
+    let d: Decimal = -1.5m
     println(d)
-    let e: Decimal = 0.05
+    let e: Decimal = 0.05m
     println(e)
 }

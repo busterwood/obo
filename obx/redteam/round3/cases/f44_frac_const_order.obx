@@ -1,6 +1,6 @@
 // expect: f
 // expect: 2.5
-const C = 2.5
+const C = 2.5m
 fn f(): int { println("f"); return 1 }
 fn two(a: Decimal, b: int): Decimal { return a }
 fn main() { println(two(C, f()).toStr()) }

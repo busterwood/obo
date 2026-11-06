@@ -944,7 +944,7 @@ fn (pg: mut &Program) collect(m: int) {
     }
 }
 
-fn noValue(): CVal { return CVal{ty: -1, kind: CK_INT, i: num.bigOf(0), f: 0.0, s: "", b: false} }
+fn noValue(): CVal { return CVal{ty: -1, kind: CK_INT, i: num.bigOf(0), f: 0.0f, s: "", b: false} }
 
 // ---------------------------------------------------------------- names
 
@@ -1684,7 +1684,7 @@ fn (pg: mut &Program) resolveGlobal(g: int) {
 
 // ---------------------------------------------------------------- constants
 
-fn cv(ty: int, kind: int): CVal { return CVal{ty: ty, kind: kind, i: num.bigOf(0), f: 0.0, s: "", b: false} }
+fn cv(ty: int, kind: int): CVal { return CVal{ty: ty, kind: kind, i: num.bigOf(0), f: 0.0f, s: "", b: false} }
 
 fn cInt(ty: int, x: num.Big): CVal {
     var v = cv(ty, CK_INT)
@@ -1792,7 +1792,7 @@ fn toFloat(v: CVal): float {
 // ref's cto: a folded value as the type t (an untyped literal or constant takes the type).
 pub fn (pg: &Program) cto(v: CVal, t: int, m: int, line: int): CVal {
     if v.ty == t { return v }
-    if v.ty < 0 && t == T_FLOAT && (v.kind == CK_INT || v.kind == CK_FRAC) {
+    if v.ty < 0 && t == T_FLOAT && v.kind == CK_INT {
         return pg.cfit(cFloat(T_FLOAT, toFloat(v)), m, line)
     }
     if v.ty < 0 && pg.isInt(t) && v.kind == CK_INT { return pg.cfit(cInt(t, v.i), m, line) }
@@ -1839,11 +1839,10 @@ pub fn (pg: mut &Program) fold(e: int, m: int, t0: int): CVal {
             if n.a == 1 {    // an f literal is a float whatever the context
                 let x = num.floatOfText(n.s)
                 if x != x || x - x != x - x { pg.err(m, w, "float literal " + n.s + " is out of range (overflow)") }
-                if x == 0.0 && num.hasNonzeroDigit(n.s) { pg.err(m, w, "float literal " + n.s + " is out of range (underflows to zero)") }
                 return cFloat(T_FLOAT, x)
             }
             let v = cText(-1, CK_FRAC, n.s)
-            return if t == T_FLOAT && n.a == 0 { pg.cto(v, t, m, w) } else { v }
+            return v
         }
         sx.N_STR { return cText(T_STR, CK_STR, n.s) }
         sx.N_BOOL { return cBool(n.flags & sx.TRUE != 0) }
@@ -1932,7 +1931,7 @@ fn (pg: mut &Program) foldBin(n: sx.Node, m: int, t: int): CVal {
         return cBool(if c == 2 { op == "!=" } else { cmpResult(op, c) })     // c == 2: NaN, only != holds
     }
     if (kind == CK_INT || kind == CK_FLOAT) && (op == "/" || op == "%") {
-        let zero = if kind == CK_INT { num.bigIsZero(b.i) } else { b.f == 0.0 }
+        let zero = if kind == CK_INT { num.bigIsZero(b.i) } else { b.f == 0.0f }
         if zero { pg.err(m, w, "division by zero in a constant") }
     }
     let arith = op == "+" || op == "-" || op == "*"

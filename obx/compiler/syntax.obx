@@ -601,8 +601,8 @@ fn (lx: mut &Lexer) number(i: int): int {
     }
     if k > j {
         if k < n && isWord(strByte(src, k)) { lx.fail(line, "bad fractional literal " + src[i..k + 1]) }
-        lx.push(T_FRAC, -1, noUnderscores(src[i..k]), 0, line)
-        return k
+        let t = noUnderscores(src[i..k])
+        lx.fail(line, t + ": a fractional literal needs a suffix: " + t + "m for a Decimal, " + t + "f for a float")
     }
     if j < n && (isAlpha(strByte(src, j)) || strByte(src, j) == '_') {
         lx.fail(line, "bad integer literal " + src[i..j + 1])

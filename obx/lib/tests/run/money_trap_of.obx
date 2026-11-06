@@ -3,6 +3,6 @@
 // exit: 10
 import "money"
 fn main() {
-    let m: money.Money[money.USD] = money.of(1.005)
+    let m: money.Money[money.USD] = money.of(1.005m)
     println(m)
 }

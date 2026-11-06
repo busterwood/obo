@@ -1,6 +1,6 @@
 // A constant expression that overflows is a compile error (5.2).
 // error: overflow|range|fit|constant
-const A: float = 1.5
+const A: float = 1.5f
 const B: float = A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A * A
 const C: float = B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B * B
 fn main() { println(C) }

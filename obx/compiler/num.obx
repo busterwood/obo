@@ -367,7 +367,7 @@ pub fn bigToFloat(a: Big): float { return floatOfText(bigStr(a)) }
 // digits only): the nearest float, inf on overflow. Text longer than strtod's
 // buffer keeps its first 300 significant digits and a sticky digit for the rest.
 pub fn floatOfText(s: str): float {
-    var f: float = 0.0
+    var f: float = 0.0f
     if len(s) <= 400 {
         if parseFloat(s, mut &f) { return f }
         return f
@@ -430,16 +430,6 @@ pub fn floatOfText(s: str): float {
     if exp < -100000 { exp = -100000 }
     if parseFloat(sign + d + "e" + intToStr(exp), mut &f) { return f }
     return f
-}
-
-// Whether the mantissa of the number text (before any exponent) has a digit other than 0.
-pub fn hasNonzeroDigit(s: str): bool {
-    for i in 0..len(s) {
-        let c = strByte(s, i)
-        if c == 'e' || c == 'E' { return false }
-        if c >= '1' && c <= '9' { return true }
-    }
-    return false
 }
 
 // Python's repr of a float: the shortest text that reads back as the same

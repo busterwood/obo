@@ -5,11 +5,11 @@
 // expect: 2.5
 // expect: 1.5
 fn main() {
-    let f: float = 2.5
+    let f: float = 2.5f
     let k = 2
     let c = false
-    println(if c { 1.5 } else { f }.toStr())
-    println(match k { 1 { 1.5 } else { f } }.toStr())
-    let g = match k { 1 { f } 2 { 1.5 } else { 0.5 } }
+    println(if c { 1.5f } else { f }.toStr())
+    println(match k { 1 { 1.5f } else { f } }.toStr())
+    let g = match k { 1 { f } 2 { 1.5f } else { 0.5f } }
     println(g.toStr())
 }

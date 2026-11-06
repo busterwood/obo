@@ -123,7 +123,7 @@ temporaries; `try` anywhere in an expression; checked division; a run-time leak
 check (every test must end with zero live objects).
 
 The compiler knows two library names, as lang items: a fractional literal
-`12.34` calls `fromFraction(1234, 2)`, and `try` needs variants named `Ok`
+`12.34m` calls `fromFraction(1234, 2)`, and `try` needs variants named `Ok`
 and `Err`. It has no other knowledge of any library type.
 
 Tests (`run_tests.py`, all passing):

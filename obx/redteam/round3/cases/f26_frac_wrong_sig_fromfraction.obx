@@ -1,4 +1,4 @@
 // error: Decimal|Fx
 type Fx = value record { u: int; s: int }
 fn (Fx) fromFraction(u: int, s: int): Fx { return Fx{u: u, s: s} }
-fn main() { let x: Fx = 0.2 }
+fn main() { let x: Fx = 0.2m }

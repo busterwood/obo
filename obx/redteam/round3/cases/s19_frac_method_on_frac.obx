@@ -1,2 +1,2 @@
 // expect: 1.5
-fn main() { println(1.5.toStr()) }
+fn main() { println(1.5m.toStr()) }

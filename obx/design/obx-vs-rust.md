@@ -192,18 +192,19 @@ with `obx: integer overflow at t4.obx:28` and exit code 10, and
 Fractional literals are exact decimals by default. `Decimal` is ordinary
 library code in `std` (a coefficient below 10^38, an exponent and a display
 scale); the compiler's only part is a lang item, `fromFraction(units, scale)`,
-which a literal like `19.99` calls. Operators `+ - *` are exact and stop the
+which a literal like `19.99m` calls. Operators `+ - *` are exact and stop the
 program when not representable; `div`, `quantize` and `round` take a
 rounding mode and return `Result`. `float` is the type to use for binary
-floating point, and a literal takes it from the expected type.
+floating point. A fractional literal says which it is: `m` for a Decimal,
+`f` for a float, and one without a suffix is an error.
 
 ```obx
-let price = 19.99            // Decimal
-let f = 1.5
-println(f * 2.0)             // 3.00  (Decimal keeps its display scale)
-println(0.1 + 0.2)           // 0.3
-let a: float = 0.1
-let b: float = 0.2
+let price = 19.99m           // Decimal
+let f = 1.5m
+println(f * 2.0m)            // 3.00  (Decimal keeps its display scale)
+println(0.1m + 0.2m)         // 0.3
+let a = 0.1f
+let b = 0.2f
 println(a + b)               // 0.30000000000000004
 ```
 
@@ -309,7 +310,7 @@ enum Shape {
 
 `closed` is boxed and may be recursive; `value closed` is inline and sized by
 its largest variant plus a tag. Variant names are written qualified
-(`Shape.Circle(2.0)`), except the prelude's `Some`, `None`, `Ok` and `Err`.
+(`Shape.Circle(2.0f)`), except the prelude's `Some`, `None`, `Ok` and `Err`.
 A closed type whose variants have no fields gets built-in `==` and `!=`.
 There are no explicit discriminants or casts to integers, and no `impl`
 blocks (methods are free-standing `fn (s: &Shape) name()` declarations).
@@ -340,7 +341,7 @@ bindings. Arms must cover every variant or end with `else`.
 ```obx
 fn area(s: &Shape): float {
     return match s {
-        Shape.Circle(r) { 3.14159 * r * r }
+        Shape.Circle(r) { 3.14159f * r * r }
         Shape.Rect(w, h) { w * h }
     }
 }
@@ -704,7 +705,7 @@ parameter:
 
 ```text
 type Shape = interface { fn (&Self) area(): float }
-let s: Shape = Sq{s: 2.0}
+let s: Shape = Sq{s: 2.0f}
    -> Shape is an interface: it can only constrain a type parameter
 ```
 

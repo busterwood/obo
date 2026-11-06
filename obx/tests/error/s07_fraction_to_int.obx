@@ -1,4 +1,4 @@
 // error: int|Decimal
 fn main() {
-    let x: int = 1.5
+    let x: int = 1.5m
 }

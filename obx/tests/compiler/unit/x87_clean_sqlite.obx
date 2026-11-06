@@ -13,7 +13,7 @@ type Error = sqlite.Error
 fn run(): Result[Unit, Error] {
     var db = try sqlite.open(":memory:")
     try db.exec("CREATE TABLE m(id INTEGER PRIMARY KEY, amount TEXT, n NUMERIC)")
-    let values = [12.50, 0.000, -0.001, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7]
+    let values = [12.50m, 0.000m, -0.001m, Decimal.parse("99999999999999999999999999999999999999").unwrap(), 1.5e-7m]
     for v in values {
         try db.run("INSERT INTO m(amount) VALUES (?)", &[V.Dec(v)])
     }

@@ -1,5 +1,5 @@
 // expect: 0
 fn main() {
-    let f: float = -0.5
+    let f: float = -0.5f
     println(int(u64(f)))
 }

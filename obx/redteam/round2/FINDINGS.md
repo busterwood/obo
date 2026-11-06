@@ -49,7 +49,7 @@ mutants (5,000 also built with gcc) with no traceback and no gcc failure.
 - **g10** The constant `MIN % -1` folds to 0; at run time it traps:
   `sema.fold` has no overflow check for `%`.
 - **g11** Wrong reject: `+% -% *%` in constants: no cases in `sema.fold`.
-- **g12** `0.2 + f()` with a user `fromFraction` runs `f()` first: the
+- **g12** `0.2m + f()` with a user `fromFraction` runs `f()` first: the
   `is_lit(e.l) and not is_lit(e.r)` branch of `x_bin` evaluates the right
   operand first, and `is_lit` includes `'frac'`.
 

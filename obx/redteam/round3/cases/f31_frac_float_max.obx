@@ -1,5 +1,5 @@
 // expect: ok
 fn main() {
-    let f: float = 1.7976931348623157e308
-    if f > 1e308 { println("ok") }
+    let f: float = 1.7976931348623157e308f
+    if f > 1e308f { println("ok") }
 }

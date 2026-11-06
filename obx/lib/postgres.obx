@@ -373,7 +373,7 @@ fn param(v: Value): Result[Param, Error] {
 
 fn floatText(f: float): str {
     if f.isNaN() { return "NaN" }
-    if f.isInf() { return if f > 0.0 { "Infinity" } else { "-Infinity" } }
+    if f.isInf() { return if f > 0.0f { "Infinity" } else { "-Infinity" } }
     return f.toStr()
 }
 

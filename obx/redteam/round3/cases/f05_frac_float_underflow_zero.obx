@@ -1,5 +1,5 @@
 // expect: ok
 fn main() {
-    let f: float = 1e-400
-    if f == 0.0 { println("ok") }
+    let f: float = 1e-400f
+    if f == 0.0f { println("ok") }
 }

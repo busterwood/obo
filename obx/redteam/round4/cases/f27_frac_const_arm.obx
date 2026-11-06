@@ -1,5 +1,5 @@
 // error: constant|frac
-const F = 1.5
+const F = 1.5m
 fn main() {
     let x = 1
     match x { F { println("f") } else { println("?") } }

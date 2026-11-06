@@ -1,6 +1,6 @@
 // expect: ok
 fn main() {
-    let d = 1.25
+    let d = 1.25m
     let e = d
     println("ok")
 }

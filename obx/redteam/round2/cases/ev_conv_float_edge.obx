@@ -1,5 +1,5 @@
 // expect: -9223372036854775808
 fn main() {
-    let f: float = -9223372036854775808.0
+    let f: float = -9223372036854775808.0f
     println(int(f).toStr())
 }

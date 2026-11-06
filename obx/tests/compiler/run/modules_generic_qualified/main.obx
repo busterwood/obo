@@ -15,6 +15,6 @@ fn main() {
     env.bind("x", 40)
     let e = ast.Expr.Add(ast.Expr.Var{name: "x"}, a2.Expr.Num(2))
     println(eval(&e, &env))
-    let f = 1.5
+    let f = 1.5m
     println(f)
 }

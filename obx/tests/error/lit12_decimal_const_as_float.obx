@@ -1,0 +1,7 @@
+// SPEC 2: a Decimal constant is never converted to a float.
+// error: is Decimal, not float
+const P = 2.5m
+fn main() {
+    let x: float = P
+    println(x.toStr())
+}
