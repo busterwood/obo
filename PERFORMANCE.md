@@ -788,20 +788,24 @@ figures are not affected.
 | SQL Server | native | 612 ms, 11.6 MB | 1,678 ms, 365.3 MB | 139 ms, 11.7 MB |
 | PostgreSQL | via C | 990 ms, 8.0 MB | 1,012 ms, 109.0 MB | 114 ms, 8.0 MB |
 | PostgreSQL | native | 813 ms, 8.4 MB | 1,475 ms, 109.4 MB | 85 ms, 8.4 MB |
-| Oracle | via C | 1,460 ms, 10.5 MB | 2,114 ms, 378.0 MB | 183 ms, 10.5 MB |
-| Oracle | native | 1,346 ms, 11.1 MB | 2,323 ms, 410.4 MB | 171 ms, 11.0 MB |
+| Oracle | via C | 873 ms, 11.0 MB | 1,923 ms, 377.9 MB | 120 ms, 11.0 MB |
+| Oracle | native | 810 ms, 11.2 MB | 1,328 ms, 410.0 MB | 110 ms, 11.2 MB |
 
 - **Memory is flat while streaming:** the same at 100,000 and 1,000,000
   rows (8 to 12 MB: the program and its buffer). Buffered memory grows
   with the result: 109 MB for PostgreSQL (libpq's whole result) and 365
   to 410 MB for SQL Server and Oracle (a decoded cell per value).
 - **Streaming is never slower:** 2.4 to 2.7 times faster for SQL Server,
-  1.4 to 1.7 for Oracle, 1.0 to 1.8 for PostgreSQL. Through C, libpq's
+  1.6 to 2.2 for Oracle, 1.0 to 1.8 for PostgreSQL. Through C, libpq's
   single-row mode (a result object per row) costs about as much as
   parsing the whole buffered result, so PostgreSQL via C is level.
 - **How each client streams:** SQL Server decodes the reply a packet at a
   time; PostgreSQL uses libpq's single-row mode, batched into the buffer;
-  Oracle fetches per fill, at least 100 rows a round trip.
+  Oracle fetches about 256 KB a round trip at the widest row (2,202 rows
+  here) and sends the next FETCH before the program uses the last rows.
+  The Oracle rows were measured again on 2026-11-06 at 14:32 (load 0.5)
+  with that fetching; over 1 ms and 5 ms round trips (a delay proxy) see
+  design/db-streaming.md, section 7.
 
 ## Reproducing
 
@@ -825,4 +829,5 @@ python3 obx/cmd/http_gate.py --workers 1,2,4,8 --db 4  # worker processes (about
 python3 obx/tests/httpsrvgen.py -n 100000              # the server's parsing against Go and llhttp
 python3 obx/cmd/tls_bench.py                           # TLS handshakes, bulk and https requests (about 2 minutes)
 python3 obx/bench/dbstream/run.py                      # database streaming against buffered (the servers' DSNs; a quiet machine)
+python3 obx/bench/dbstream/run.py --latency 0,0.12,1.75  # Oracle over ~1 ms and ~5 ms round trips (delayproxy.py)
 ```
