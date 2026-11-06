@@ -39,8 +39,8 @@ for leaks.
 | `tds.obx` | 2,340 | the TDS 7.4 protocol of SQL Server, from MS-TDS: packets, PRELOGIN with TLS inside, LOGIN7, SQLBatch, sp_executesql RPCs, transaction requests, a checked token decoder for every core type, sessions over net and tls |
 | `sqlserver.obx` | 780 | Microsoft SQL Server natively over `tds`, for tasks: connection strings, Conn, parameters, every result set, errors, transaction[T], buffered Rows (stages T1, T2) |
 | `crypto.obx` | 160 | digests (SHA-1, SHA-512, MD5), PBKDF2-HMAC-SHA512, AES-CBC and random bytes from libcrypto, for Oracle's password authentication |
-| `tns.obx` | 2,400 | Oracle's TNS and TTC protocol, ported from python-oracledb's thin mode: packets, connect (TLS renegotiation over tcps), fast auth and the classic login with the 12c and 11g verifiers, execute, fetch, binds, the value codecs (NUMBER, DATE, TIMESTAMP[ TZ], BINARY_FLOAT/DOUBLE, BOOLEAN) |
-| `oracle.obx` | 840 | Oracle Database natively over `tns`, for tasks: connection strings, Conn, Value and typed Param binds, buffered Rows, errors with ORA- codes, transaction[T] (stages O1 to O3) |
+| `tns.obx` | 2,670 | Oracle's TNS and TTC protocol, ported from python-oracledb's thin mode: packets, connect (TLS renegotiation over tcps), fast auth and the classic login with the 12c and 11g verifiers, execute, fetch, binds, the value codecs (NUMBER, DATE, TIMESTAMP[ TZ], BINARY_FLOAT/DOUBLE, BOOLEAN), OUT and IN OUT binds, REF CURSORs and implicit results, the bind placeholder parser |
+| `oracle.obx` | 1,300 | Oracle Database natively over `tns`, for tasks: connection strings, Conn, Value and typed Param binds, buffered Rows, errors with ORA- codes, transaction[T], call with OUT binds and REF CURSORs (stages O1 to O3, O5) |
 | `task.obx` | 644 | concurrent tasks on one thread: Scope, Future, Promise, Shared, Frozen, all/any, yield, cancellation, sleep, deadlines; signals; worker processes |
 | `net.obx` | 910 | TCP over IPv4 and IPv6 for tasks: listen (also with SO_REUSEPORT), accept, connect, read, write; name lookup and dial |
 | `tls.obx` | 950 | TLS 1.2 and 1.3 through OpenSSL 3: an engine over memory buffers, and connections over net sockets for tasks; verification, pins, client certificates, ALPN |
@@ -1423,7 +1423,7 @@ deadlines end it (`E_CANCELLED`, `E_TIMEOUT`); the connection is then broken
 
 Oracle Database over its own protocol (TNS and TTC), a port of the thin mode
 of python-oracledb (Apache-2.0 OR UPL-1.0, see NOTICE), read with
-node-oracledb's lib/thin (design/oracle.md; stages O1 to O3): no Oracle
+node-oracledb's lib/thin (design/oracle.md; stages O1 to O3, O5): no Oracle
 client libraries, only libcrypto for the password verifiers. Oracle 12.1 and
 later, plain TCP or TLS (`tcps`); every call parks only its task, like
 `sqlserver`'s, and the API has the same shape: `oracle.connect(connStr)`
@@ -1434,12 +1434,30 @@ Name`, `CA File`, `Connect Timeout`, `Fetch Size`, `Application Name`),
 `logoff`. Outside a transaction every statement commits with its execute
 (provisional). NUMBER is exact (Decimal, or `tns.Num` beyond its range).
 
+`call(sql, args, outs)` (and `callWith` with `Param`s) runs PL/SQL blocks,
+procedure and function calls (`begin :r := f(:1); end;`, `CALL p(:x)`) and
+DML `RETURNING ... INTO` with OUT and IN OUT binds, like sqlserver's call:
+each `oracle.out(name, sqlType)` or `oracle.inOut(name, sqlType, value)`
+takes the placeholder of its name, and args fill the others in order.
+`Results.outputs` has a column per Out (one row; a row per changed row for
+RETURNING), `Results.sets` the rows of each `SYS_REFCURSOR` Out and of each
+implicit result (DBMS_SQL.RETURN_RESULT), read whole with their server
+cursors closed. Out types are Oracle's with a size where Oracle has one
+(`VARCHAR2(100)`, `RAW(16)`, `NUMBER(12,2)`, `TIMESTAMP WITH TIME ZONE`,
+`SYS_REFCURSOR`); a value longer than its size is the server's ORA-06502,
+never a shortened value (provisional names and sizes: design/oracle.md).
+
+    let r = try conn.call("begin :total := order_total(:1); end;", &[Value.Int(42)],
+                          &[oracle.out("total", "NUMBER(12,2)")])
+    let total = try r.outputs.decimal(0, 0)
+
 - Tests: `tns_codec` and `oracle_connstr` (no server), and live
-  `oracle_live_basic`, `oracle_live_types` and `oracle_live_tls`, which read
+  `oracle_live_basic`, `oracle_live_types`, `oracle_live_out` and `oracle_live_tls`, which read
   the connection string from `ORACLE_TEST_DSN` or `~/.obo-oracle-dsn` (and
   the TLS entries from `ORACLE_TEST_TLS` or `~/.obo-oracle-tls`) and are
   skipped without them. `obx/tools/oracle_container.sh create` makes the
-  Oracle Database Free container and those files:
+  Oracle Database Free container and those files, and grants APP the
+  session views that `oracle_live_out`'s cursor leak check reads:
 
       python3 lib/run_tests.py tns_ oracle_
 

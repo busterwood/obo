@@ -24,6 +24,12 @@
 // an E_TYPE error for their cells until stage O4; REF CURSOR, JSON, VECTOR
 // and object columns fail the query with E_TYPE.
 //
+// call (stage O5): PL/SQL blocks, procedure and function calls and DML
+// RETURNING ... INTO with OUT and IN OUT binds (Out, by placeholder name)
+// next to the positional args, like sqlserver's call; REF CURSOR OUT
+// values and implicit results (DBMS_SQL.RETURN_RESULT) come back as Rows,
+// read whole, their server cursors closed.
+//
 // Autocommit (provisional): outside transaction[T], every statement is
 // committed with its execute (Oracle's COMMIT option, no extra round trip),
 // as SQL Server and the sqlserver module do. Inside, nothing is until the
@@ -477,9 +483,10 @@ fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, 
     var binds: []tns.Bind = []
     for p in params { append(mut &binds, try bindOf(&p, &c.s)) }
     let kind = tns.statementKind(sql)
-    let e = tns.Execute{sql: sql, kind: kind, cursorId: 0, binds: binds, prefetch: c.fetchSize,
-                        commit: !c.inBlock && kind != tns.S_QUERY}
+    let e = tns.newExecute(sql, kind, binds, c.fetchSize,
+                           !c.inBlock && kind != tns.S_QUERY)
     var r = try c.s.execute(&e, &[], w)
+    c.closeReturned(&r, 0)
     let cursor = r.error.cursorId
     let query = kind == tns.S_QUERY || r.described
     if r.hasError && r.error.num != 0 && !(query && r.error.num == 1403) {
@@ -490,23 +497,52 @@ fn (c: mut &Conn) statement(sql: str, params: &[Param], w: Where): Result[Rows, 
         c.s.closeCursor(cursor)
         return Ok(Rows{cols: [], rows: [], affected: r.error.rowCount})
     }
+    return c.rest(mut &r, cursor, false, w)
+}
+
+// The cursors a reply returned (REF CURSOR OUT values, implicit results)
+// from the first'th on, to be closed with the next request.
+fn (c: mut &Conn) closeReturned(r: &tns.Reply, first: int) {
+    for i in first..len(r.cursors) { c.s.closeCursor(r.cursors[i].id) }
+    for x in r.implicit { c.s.closeCursor(x.id) }
+}
+
+// Every row of a cursor: the reply's first rows, then FETCH after FETCH
+// (an EXECUTE with FETCH alone for a cursor without SQL: ref) until the
+// end; the cursor is closed with the next request, also after an error.
+fn (c: mut &Conn) rest(r: mut &tns.Reply, cursor: int, ref: bool, w: Where): Result[Rows, Error] {
     var cols = replace(mut &r.columns, [])
     var rows = replace(mut &r.rows, [])
     var more = !(r.hasError && r.error.num == 1403)
     var last = r.lastRow()
     while more {
-        var f = try c.s.fetch(cursor, c.fetchSize, &cols, &last, w)
+        let got = if ref { c.s.fetchRef(cursor, c.fetchSize, &cols, &last, w) } else { c.s.fetch(cursor, c.fetchSize, &cols, &last, w) }
+        if got.isErr() { c.s.closeCursor(cursor) }
+        var f = try got
         if f.hasError && f.error.num != 0 && f.error.num != 1403 {
             c.s.closeCursor(cursor)
             return Err(c.failWith(tns.serverError(&f.error)))
         }
         more = !(f.hasError && f.error.num == 1403)
-        if len(f.rows) == 0 && more { return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: a FETCH without rows or an end")) }
+        if len(f.rows) == 0 && more {
+            c.s.closeCursor(cursor)
+            return Err(sqldialect.dbError(sqldialect.E_PROTOCOL, "tns: a FETCH without rows or an end"))
+        }
         last = f.lastRow()
         for i in 0..len(f.rows) { append(mut &rows, replace(mut &f.rows[i], [])) }
     }
     c.s.closeCursor(cursor)
     return Ok(Rows{cols: cols, rows: rows, affected: -1})
+}
+
+// Every row of a cursor the server returned (REF CURSOR, implicit result).
+fn (c: mut &Conn) drain(rc: mut &tns.RefCursor, what: str, w: Where): Result[Rows, Error] {
+    if rc.id == 0 {
+        return Err(c.failWith(sqldialect.dbError(sqldialect.E_INPUT, what + " was not opened by the PL/SQL")))
+    }
+    var r = tns.newReply(tns.K_EXECUTE, &rc.columns, &[])
+    r.columns = replace(mut &rc.columns, [])
+    return c.rest(mut &r, rc.id, true, w)
 }
 
 // Runs a statement without binds (DDL, DML, PL/SQL; one statement, no
@@ -547,6 +583,430 @@ pub fn (c: mut &Conn) run(sql: str, args: &[Value], w: Where): Result[int, Error
 pub fn (c: mut &Conn) runWith(sql: str, params: &[Param], w: Where): Result[int, Error] {
     let r = try c.statement(sql, params, w)
     return Ok(max(r.affected, 0))
+}
+
+// ---------------------------------------------------------------- calls: OUT binds and REF CURSORs
+
+// An OUT or IN OUT bind of call: the placeholder's name without ':'
+// ("total"; "1" for :1; case-insensitive unless written in double quotes,
+// as Oracle's bind names are), its type, and for IN OUT the value that
+// goes in. Types (provisional, for the user):
+//
+//   NUMBER, NUMBER(p), NUMBER(p,s), INTEGER    exact (Decimal, int); p and s only label the output column
+//   BINARY_DOUBLE, BINARY_FLOAT                float (BINARY_FLOAT travels as BINARY_DOUBLE: exact)
+//   VARCHAR2(n), CHAR(n), RAW(n)               n bytes (VARCHAR2(n CHAR): n characters, 4n bytes)
+//   NVARCHAR2(n), NCHAR(n)                     n UTF-16 units
+//   DATE, TIMESTAMP, TIMESTAMP WITH TIME ZONE  the time types
+//   BOOLEAN                                    Oracle Database 23 and up
+//   SYS_REFCURSOR, REF CURSOR                  a cursor: its rows are in Results.sets
+//
+// A value longer than the bind's size is the server's error (ORA-06502),
+// never a shortened value.
+pub type Out = value record {
+    pub name: str
+    pub sqlType: str
+    pub value: Param            // IN OUT: what goes in; OUT: Param.Of(Value.Null)
+}
+
+// An OUT bind: name and type.
+pub fn out(name: str, sqlType: str): Out { return Out{name: name, sqlType: sqlType, value: Param.Of(Value.Null)} }
+
+// An IN OUT bind: name, type and the value that goes in.
+pub fn inOut(name: str, sqlType: str, value: Param): Out { return Out{name: name, sqlType: sqlType, value: value} }
+
+// What call gave.
+pub type Results = record {
+    pub sets: []Rows            // the rows of each REF CURSOR Out, in the order of outs, then the implicit
+                                // results (DBMS_SQL.RETURN_RESULT) in order; a query's own rows first
+    pub outputs: Rows           // the other Outs: a column each, named as the Out; one row, or for DML
+                                // RETURNING ... INTO a row per row the statement changed
+    pub affected: int           // the rows a DML statement changed; 0 for PL/SQL
+}
+
+// An Out's type: the bind it makes, the column its value reads as.
+type OutType = value record {
+    oraType: int
+    csfrm: int
+    size: int                   // the buffer in bytes
+    precision: int
+    scale: int
+    cursor: bool
+}
+
+fn outErr(o: &Out, why: str): Error { return sqldialect.inputError("Out :" + o.name + ": " + why) }
+
+// The size in a type's parentheses: "VARCHAR2(10)" → 10; "VARCHAR2(10 CHAR)" → 40.
+fn sizeOf(o: &Out, args: str, max: int, chars: int): Result[int, Error] {
+    var a = trim(args)
+    var mult = 1
+    if endsWith(a, " CHAR") {
+        mult = chars
+        a = trim(a[0..len(a) - 5])
+    } else if endsWith(a, " BYTE") {
+        a = trim(a[0..len(a) - 5])
+    }
+    match strings.parseInt(a) {
+        Ok(n) {
+            if n < 1 || n * mult > max { return Err(outErr(o, "the size must be 1 to " + (max / mult).toStr())) }
+            return Ok(n * mult)
+        }
+        Err(_) { return Err(outErr(o, "a size must be a number")) }
+    }
+}
+
+fn outTypeOf(o: &Out, hasBoolean: bool): Result[OutType, Error] {
+    var t = newStrBuf()
+    var space = false
+    let up = strings.toUpper(trim(o.sqlType))
+    for ci in 0..len(up) {
+        let ch = up[ci]
+        if ch == ' ' || ch == '\t' || ch == '\n' {
+            space = t.size() > 0
+        } else {
+            if space { t.addByte(' ') }
+            space = false
+            t.addByte(ch)
+        }
+    }
+    let s = t.toStr()
+    var base = s
+    var args = ""
+    var tail = ""
+    let p = indexOf(s, "(", 0)
+    if p >= 0 {
+        let q = indexOf(s, ")", p)
+        if q < 0 { return Err(outErr(o, "a type without ')'")) }
+        base = trim(s[0..p])
+        args = s[p + 1..q]
+        tail = trim(s[q + 1..])
+    }
+    var r = OutType{oraType: 0, csfrm: 0, size: 0, precision: 0, scale: -127, cursor: false}
+    if tail != "" {
+        if (base == "TIMESTAMP") && tail == "WITH TIME ZONE" {
+            base = "TIMESTAMP WITH TIME ZONE"
+        } else {
+            return Err(outErr(o, "an unknown type " + s))
+        }
+    }
+    match base {
+        "NUMBER", "INTEGER", "INT", "DECIMAL", "NUMERIC" {
+            r.oraType = tns.T_NUMBER
+            r.size = 22
+            if base == "INTEGER" || base == "INT" {
+                r.precision = 38
+                r.scale = 0
+            } else if args != "" {
+                let parts = strings.split(&args, ",")
+                match strings.parseInt(trim(parts[0])) {
+                    Ok(n) { r.precision = n }
+                    Err(_) { return Err(outErr(o, "a precision must be a number")) }
+                }
+                r.scale = 0
+                if len(parts) > 1 {
+                    match strings.parseInt(trim(parts[1])) {
+                        Ok(n) { r.scale = n }
+                        Err(_) { return Err(outErr(o, "a scale must be a number")) }
+                    }
+                }
+            }
+        }
+        "BINARY_DOUBLE", "BINARY_FLOAT" {
+            r.oraType = tns.T_BINARY_DOUBLE
+            r.size = 8
+        }
+        "VARCHAR2", "VARCHAR" {
+            if args == "" { return Err(outErr(o, base + " needs a size: " + base + "(n)")) }
+            r.oraType = tns.T_VARCHAR
+            r.csfrm = tns.CS_IMPLICIT
+            r.size = try sizeOf(o, args, 32767, 4)
+        }
+        "CHAR" {
+            r.oraType = tns.T_CHAR
+            r.csfrm = tns.CS_IMPLICIT
+            r.size = if args == "" { 1 } else { try sizeOf(o, args, 32767, 4) }
+        }
+        "NVARCHAR2" {
+            if args == "" { return Err(outErr(o, "NVARCHAR2 needs a size: NVARCHAR2(n)")) }
+            r.oraType = tns.T_VARCHAR
+            r.csfrm = tns.CS_NCHAR
+            r.size = 2 * try sizeOf(o, args, 16383, 1)
+        }
+        "NCHAR" {
+            r.oraType = tns.T_CHAR
+            r.csfrm = tns.CS_NCHAR
+            r.size = 2 * (if args == "" { 1 } else { try sizeOf(o, args, 16383, 1) })
+        }
+        "RAW" {
+            if args == "" { return Err(outErr(o, "RAW needs a size: RAW(n)")) }
+            r.oraType = tns.T_RAW
+            r.size = try sizeOf(o, args, 32767, 1)
+        }
+        "DATE" {
+            r.oraType = tns.T_DATE
+            r.size = 7
+        }
+        "TIMESTAMP" {
+            r.oraType = tns.T_TIMESTAMP
+            r.size = 11
+        }
+        "TIMESTAMP WITH TIME ZONE" {
+            r.oraType = tns.T_TIMESTAMP_TZ
+            r.size = 13
+        }
+        "BOOLEAN" {
+            if !hasBoolean { return Err(outErr(o, "BOOLEAN binds need Oracle Database 23 or later")) }
+            r.oraType = tns.T_BOOLEAN
+            r.size = 4
+        }
+        "SYS_REFCURSOR", "REF CURSOR", "CURSOR" {
+            r.oraType = tns.T_CURSOR
+            r.size = 4
+            r.cursor = true
+        }
+        else { return Err(outErr(o, "an unknown type " + s)) }
+    }
+    return Ok(r)
+}
+
+// The bind of an Out: NULL of its type, or its IN OUT value in its type.
+fn outBindOf(o: &Out, t: &OutType, s: &tns.Session): Result[tns.Bind, Error] {
+    if t.cursor {
+        match o.value {
+            Param.Of(v) {
+                match v {
+                    Value.Null { return Ok(tns.cursorBind()) }
+                    else { }
+                }
+            }
+            else { }
+        }
+        return Err(outErr(o, "a REF CURSOR cannot be IN OUT"))
+    }
+    let empty = tns.outBind(t.oraType, t.csfrm, t.size)
+    var b = empty
+    match o.value {
+        Param.Of(v) {
+            match v {
+                Value.Null { return Ok(empty) }
+                Value.Text(x) {
+                    if t.csfrm == tns.CS_NCHAR { b = try tns.ncharBind(x, t.oraType) } else { b = try bindOf(&o.value, s) }
+                }
+                else { b = try bindOf(&o.value, s) }
+            }
+        }
+        Param.Date(d) {
+            if t.oraType == tns.T_TIMESTAMP {
+                let l = time.LocalDateTime{date: d, time: time.timeOfDay(0, 0, 0, 0).unwrap()}
+                b = tns.timestampBind(&l)
+            } else {
+                b = try bindOf(&o.value, s)
+            }
+        }
+        Param.DateTime(l) {
+            if t.oraType == tns.T_DATE {
+                if l.time.nano() != 0 { return Err(outErr(o, "a DATE has no fraction of a second")) }
+                b = tns.dateBind(&l)
+            } else {
+                b = try bindOf(&o.value, s)
+            }
+        }
+        else { b = try bindOf(&o.value, s) }
+    }
+    let natural = if b.oraType == tns.T_CHAR { tns.T_VARCHAR } else { b.oraType }
+    let want = if t.oraType == tns.T_CHAR { tns.T_VARCHAR } else { t.oraType }
+    if natural != want {
+        return Err(outErr(o, "the value is " + tns.typeNameOf(b.oraType, b.csfrm) + ", not " + tns.typeNameOf(t.oraType, t.csfrm)))
+    }
+    if b.bufferSize > t.size && t.oraType != tns.T_NUMBER && t.oraType != tns.T_BOOLEAN {
+        return Err(outErr(o, "the value (" + b.bufferSize.toStr() + " bytes) is larger than the bind (" + t.size.toStr() + ")"))
+    }
+    b.oraType = t.oraType
+    b.csfrm = t.csfrm
+    b.bufferSize = max(b.bufferSize, t.size)
+    return Ok(b)
+}
+
+// An Out's name as the server's placeholders have it: upper case unless in
+// double quotes; no ':'.
+fn outName(n: str): str {
+    var x = trim(n)
+    if startsWith(x, ":") { x = trim(x[1..]) }
+    if len(x) >= 2 && x[0] == '"' && x[len(x) - 1] == '"' { return x[1..len(x) - 1] }
+    return strings.toUpper(x)
+}
+
+// Runs sql (a PL/SQL block, a CALL, DML with RETURNING ... INTO, or any
+// statement) with Outs bound by name and args bound in order to the other
+// placeholders:
+//
+//     let r = try conn.call("begin :total := order_total(:1, :2); end;",
+//                           &[Value.Int(42), Value.Text("EUR")], &[oracle.out("total", "NUMBER(12,2)")])
+//     let total = try r.outputs.decimal(0, 0)
+//
+//     let c = try conn.call("begin open :rc for select id, name from t; end;", &[],
+//                           &[oracle.out("rc", "SYS_REFCURSOR")])
+//     for i in 0..c.sets[0].rowCount() { ... }
+//
+// A REF CURSOR is read whole (FETCH after FETCH of Fetch Size rows) and its
+// server cursor closed before call returns; one the PL/SQL never opened is
+// E_INPUT. Implicit results (DBMS_SQL.RETURN_RESULT) are read the same way.
+// E_INPUT: an Out that names no placeholder, two Outs of one name, a type
+// call does not know, more or fewer args than the other placeholders.
+pub fn (c: mut &Conn) call(sql: str, args: &[Value], outs: &[Out], w: Where): Result[Results, Error] {
+    let ps = paramsOf(args)
+    return c.callWith(sql, &ps, outs, w)
+}
+
+pub fn (c: mut &Conn) callWith(sql: str, params: &[Param], outs: &[Out], w: Where): Result[Results, Error] {
+    c.lastErrors = []
+    if len(trim(sql)) == 0 { return Err(sqldialect.inputError("an empty statement")) }
+    let kind = tns.statementKind(sql)
+    // the Outs: names, types, binds
+    var names: []str = []
+    var types: []OutType = []
+    var obinds: []tns.Bind = []
+    for o in outs {
+        let n = outName(o.name)
+        if n == "" { return Err(sqldialect.inputError("an Out without a name")) }
+        for x in names { if x == n { return Err(outErr(&o, "two Outs of one name")) } }
+        let t = try outTypeOf(&o, c.s.hasBoolean())
+        append(mut &obinds, try outBindOf(&o, &t, &c.s))
+        append(mut &names, n)
+        append(mut &types, t)
+    }
+    // the binds, placeholder by placeholder
+    let ph = tns.placeholders(sql)
+    var binds: []tns.Bind = []
+    var outOf: []int = []           // per bind: its Out, or -1
+    var used: []bool = []
+    for o in outs { append(mut &used, false) }
+    var next = 0
+    for p in ph {
+        var k = -1
+        for i in 0..len(names) { if names[i] == p.name { k = i } }
+        if k >= 0 {
+            var b = obinds[k]
+            b.returning = p.returning
+            if p.returning && types[k].cursor { return Err(outErr(&outs[k], "RETURNING ... INTO cannot be a REF CURSOR")) }
+            append(mut &binds, b)
+            used[k] = true
+        } else {
+            if p.returning { return Err(sqldialect.inputError("RETURNING ... INTO :" + p.name + " needs an Out")) }
+            if next >= len(params) {
+                return Err(sqldialect.inputError("no value for :" + p.name + " (" + len(params).toStr() + " values for the other placeholders)"))
+            }
+            append(mut &binds, try bindOf(&params[next], &c.s))
+            next += 1
+        }
+        append(mut &outOf, k)
+    }
+    if next < len(params) {
+        return Err(sqldialect.inputError(len(params).toStr() + " values for " + next.toStr() + " placeholders"))
+    }
+    for i in 0..len(outs) {
+        if !used[i] { return Err(outErr(&outs[i], "the statement has no such placeholder")) }
+    }
+    if len(binds) > 65535 { return Err(sqldialect.inputError("more than 65535 binds")) }
+    let ex = tns.newExecute(sql, kind, binds, c.fetchSize, !c.inBlock && kind != tns.S_QUERY)
+    var r = try c.s.execute(&ex, &[], w)
+    let cursor = r.error.cursorId
+    let query = kind == tns.S_QUERY || r.described
+    if r.hasError && r.error.num != 0 && !(query && r.error.num == 1403) {
+        c.closeReturned(&r, 0)
+        c.s.closeCursor(cursor)
+        return Err(c.failWith(tns.serverError(&r.error)))
+    }
+    var sets: []Rows = []
+    if query {
+        match c.rest(mut &r, cursor, false, w) {
+            Ok(x) { append(mut &sets, x) }
+            Err(e) {
+                c.closeReturned(&r, 0)
+                return Err(e)
+            }
+        }
+    } else {
+        c.s.closeCursor(cursor)
+    }
+    // OUT values: the Out of each bind the server sent one for
+    var values: [][]tns.Cell = []
+    for o in outs { append(mut &values, []) }
+    for j in 0..len(r.outIndex) {
+        let bi = r.outIndex[j]
+        if bi < len(outOf) && outOf[bi] >= 0 && j < len(r.outs) {
+            values[outOf[bi]] = replace(mut &r.outs[j], [])
+        }
+    }
+    // cursors, in the order of the Outs, then the implicit results; every
+    // one is closed, also after an error
+    var failure: Option[Error] = None
+    var closedFrom = 0
+    for k in 0..len(outs) {
+        if !types[k].cursor || failure.isSome() { continue }
+        var idx = -1
+        if len(values[k]) == 1 {
+            match values[k][0] {
+                tns.Cell.Cursor(i) { idx = i }
+                else { }
+            }
+        }
+        if idx < 0 || idx >= len(r.cursors) {
+            failure = Some(c.failWith(outErr(&outs[k], "the REF CURSOR was not opened by the PL/SQL")))
+            continue
+        }
+        var rc = replace(mut &r.cursors[idx], tns.RefCursor{columns: [], id: 0})
+        match c.drain(mut &rc, "REF CURSOR :" + outs[k].name, w) {
+            Ok(x) { append(mut &sets, x) }
+            Err(e) { failure = Some(e) }
+        }
+    }
+    for i in 0..len(r.implicit) {
+        var rc = replace(mut &r.implicit[i], tns.RefCursor{columns: [], id: 0})
+        if failure.isSome() {
+            c.s.closeCursor(rc.id)
+            continue
+        }
+        match c.drain(mut &rc, "implicit result " + (i + 1).toStr(), w) {
+            Ok(x) { append(mut &sets, x) }
+            Err(e) { failure = Some(e) }
+        }
+    }
+    for x in r.cursors { c.s.closeCursor(x.id) }       // not taken above: never read
+    match failure {
+        Some(e) { return Err(e) }
+        None { }
+    }
+    // the other OUT values, a column each
+    var cols: []tns.Column = []
+    var nrows = if r.returning { -1 } else { 1 }
+    for k in 0..len(outs) {
+        if types[k].cursor { continue }
+        let t = types[k]
+        append(mut &cols, tns.Column{name: outs[k].name, oraType: t.oraType, csfrm: t.csfrm, precision: t.precision, scale: t.scale,
+                                     bufferSize: t.size, maxSize: t.size, nullable: true})
+        if r.returning && (nrows < 0 || len(values[k]) < nrows) { nrows = len(values[k]) }
+    }
+    if nrows < 0 { nrows = 0 }
+    var orows: [][]tns.Cell = []
+    if len(cols) > 0 {
+        for i in 0..nrows {
+            var row: []tns.Cell = []
+            for k in 0..len(outs) {
+                if types[k].cursor { continue }
+                if i < len(values[k]) {
+                    match values[k][i] {
+                        tns.Cell.Failed(why) { return Err(c.failWith(outErr(&outs[k], why))) }
+                        else { append(mut &row, values[k][i]) }
+                    }
+                } else {
+                    append(mut &row, tns.Cell.Null)
+                }
+            }
+            append(mut &orows, row)
+        }
+    }
+    let affected = if kind == tns.S_DML { r.error.rowCount } else { 0 }
+    return Ok(Results{sets: sets, outputs: Rows{cols: cols, rows: orows, affected: -1}, affected: affected})
 }
 
 // ---------------------------------------------------------------- transactions

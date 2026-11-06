@@ -30,6 +30,12 @@
 // expect: tz: 78 7e 0b 06 14 01 3b 07 5b cd 15 0f 1e -> 2026-11-06T13:30:58.123456789-05:30
 // expect: bc: 2b 3c 01 01 01 01 01 -> -5740-01-01T00:00:00
 // expect: utf16: 00 41 00 e9 d8 3d de 00 -> back true
+// expect: binds: [1 2 1] (select)
+// expect: binds: [X Y] (plsql, X once)
+// expect: binds: [A Mixed Case B] (quoted name kept)
+// expect: binds: [] (strings, q-strings, comments, JSON colon)
+// expect: binds: [1 ID* V*] (returning)
+// expect: binds: [3] (blank after colon, digits)
 
 import "tns"
 import "time"
@@ -67,6 +73,17 @@ fn num(label: str, n: tns.Num) {
 }
 
 fn dec(s: str): tns.Num { return tns.numOfDecimal(Decimal.parse(s).unwrap()) }
+
+fn binds(sql: str, label: str) {
+    var b = newStrBuf()
+    let ps = tns.placeholders(sql)
+    for i in 0..len(ps) {
+        if i > 0 { b.addByte(' ') }
+        b.add(ps[i].name)
+        if ps[i].returning { b.addByte('*') }
+    }
+    println("binds: [" + b.toStr() + "] (" + label + ")")
+}
 
 fn main() {
     println("ub: " + ub(0) + " | " + ub(5) + " | " + ub(256) + " | " + ub(65536) + " | " + ub(4294967296))
@@ -159,4 +176,10 @@ fn main() {
     let s16 = "A\xc3\xa9\xf0\x9f\x98\x80"
     let u = tns.toUtf16be(s16).unwrap()
     println("utf16: " + hex(u) + " -> back " + (tns.fromUtf16be(u).unwrap() == s16).toStr())
+    binds("SELECT :1, :2 FROM dual WHERE x = :1", "select")
+    binds("BEGIN :x := :y + :x; END;", "plsql, X once")
+    binds("begin :a := :\"Mixed Case\" || :b; end;", "quoted name kept")
+    binds("SELECT ':no', q'[:no']', \"A:B\", '{\"k\": 1}' -- :no\n /* :no */ FROM dual", "strings, q-strings, comments, JSON colon")
+    binds("INSERT INTO t VALUES (:1) RETURNING id, v INTO :id, :v", "returning")
+    binds("SELECT : 3 FROM dual", "blank after colon, digits")
 }
