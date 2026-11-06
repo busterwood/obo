@@ -70,15 +70,6 @@ fn fingerprint(file: str, hash: str): str {
     return strings.toLower(strings.replaceAll(strings.cut(&trim(text), "=").unwrap().after, ":", ""))
 }
 
-fn selfSigned(name: str, kind: str, hash: str) {
-    var args = ["req", "-x509", "-newkey", kind, "-nodes", "-keyout", name + ".key", "-out", name + ".pem", "-days", "2",
-                "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"]
-    if len(hash) > 0 {
-        append(mut &args, "-" + hash)
-    }
-    if !tt.openssl(args) { panic("openssl req failed for " + name) }
-}
-
 // The channel binding data the client gets from a server with the certificate name (self-signed, trusted).
 fn bound(name: str): Result[str, tls.Error] {
     let srv = tt.sServer(["-cert", name + ".pem", "-key", name + ".key", "-rev"])
@@ -119,10 +110,10 @@ fn main() {
         println("readFor and writeFor: " + trim(got))
     }
     let id = "-" + os.pid().toStr()      // the C and native runs may share the directory
-    selfSigned("rsa256" + id, "rsa:2048", "sha256")
-    selfSigned("rsa384" + id, "rsa:2048", "sha384")
-    selfSigned("rsa1" + id, "rsa:2048", "sha1")
-    selfSigned("ed" + id, "ed25519", "")
+    tt.selfSigned("rsa256" + id, "rsa:2048", "sha256")
+    tt.selfSigned("rsa384" + id, "rsa:2048", "sha384")
+    tt.selfSigned("rsa1" + id, "rsa:2048", "sha1")
+    tt.selfSigned("ed" + id, "ed25519", "")
     println("rsa-sha256: endPoint is the certificate's SHA-256 " + (hex(bound("rsa256" + id).unwrap()) == fingerprint("rsa256" + id + ".pem", "sha256")).toStr())
     println("rsa-sha384: endPoint is the certificate's SHA-384 " + (hex(bound("rsa384" + id).unwrap()) == fingerprint("rsa384" + id + ".pem", "sha384")).toStr())
     println("rsa-sha1: endPoint is a SHA-256 " + (hex(bound("rsa1" + id).unwrap()) == fingerprint("rsa1" + id + ".pem", "sha256")).toStr())

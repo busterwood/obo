@@ -19,8 +19,10 @@ import "http"
 import "url"
 import "strings"
 import "os"
+import "time"
 
 pub const DIR = "tlspki"
+const DAY = 86400
 
 // The path of a file of the PKI.
 pub fn path(name: str): str { return DIR + "/" + name }
@@ -66,19 +68,62 @@ fn request(name: str, subject: str) {
           "-out", name + ".csr", "-subj", subject])
 }
 
-// name.pem signed by the CA ca, for days (negative: already expired), with
-// the extensions of the file ext ("": none).
-fn sign(name: str, ca: str, days: int, ext: str) {
-    var args = ["x509", "-req", "-in", name + ".csr", "-CA", ca + ".pem", "-CAkey", ca + ".key", "-days",
-                intToStr(days), "-out", name + ".pem"]
+// openssl's form of a Unix time in seconds (YYMMDDHHMMSSZ, UTC).
+fn opensslTime(sec: int): str {
+    let s = time.isoDateTime(sec)   // "2026-11-06T20:08:34Z"
+    let d = strings.replaceAll(strings.replaceAll(strings.replaceAll(s, "-", ""), ":", ""), "T", "")
+    return d[2..len(d)]
+}
+
+// The openssl ca files of this process: the C and native runs may share DIR,
+// so each process has its own configuration (ca-PID.cnf), database and serial.
+fn caTag(): str { return "-" + intToStr(os.pid()) }
+
+// Writes the configuration of openssl ca and its empty database, once per process.
+fn ensureCa() {
+    let tag = caTag()
+    if fs.exists(path("ca" + tag + ".cnf")) { return }
+    io.write(path("ca" + tag + ".cnf"), "[ ca ]\ndefault_ca = obx_test\n[ obx_test ]\ndatabase = ./index" + tag + ".txt\n" +
+             "new_certs_dir = .\nserial = ./serial" + tag + "\ndefault_md = sha256\nunique_subject = no\n" +
+             "policy = policy_any\ncopy_extensions = none\n[ policy_any ]\ncommonName = supplied\n").unwrap()
+    io.write(path("index" + tag + ".txt"), "").unwrap()
+    io.write(path("serial" + tag), "1000\n").unwrap()
+}
+
+// Issues name.pem from name.csr, valid from `from` to `to` (Unix seconds).
+// It is signed by the CA ca (ca.pem, ca.key), or by its own key when ca is ""
+// (a CA or a self-signed certificate). ext: its extensions file ("": none);
+// md: its digest ("": the default). Dates are explicit because openssl 3.0 has
+// no -not_before, and x509 -req and req -x509 start a certificate now: a check
+// a moment later could then find it not yet valid.
+fn issue(name: str, ca: str, from: int, to: int, ext: str, md: str) {
+    ensureCa()
+    var args = ["ca", "-batch", "-config", "ca" + caTag() + ".cnf", "-in", name + ".csr", "-out", name + ".pem",
+                "-startdate", opensslTime(from), "-enddate", opensslTime(to), "-notext"]
+    if len(ca) == 0 {
+        append(mut &args, "-selfsign")
+        append(mut &args, "-keyfile")
+        append(mut &args, name + ".key")
+    } else {
+        append(mut &args, "-cert")
+        append(mut &args, ca + ".pem")
+        append(mut &args, "-keyfile")
+        append(mut &args, ca + ".key")
+    }
     if len(ext) > 0 {
         append(mut &args, "-extfile")
         append(mut &args, ext)
     }
+    if len(md) > 0 {
+        append(mut &args, "-md")
+        append(mut &args, md)
+    }
     must(args)
 }
 
-// Makes the PKI in ./tlspki unless it is there:
+// Makes the PKI in ./tlspki unless it is there. Each certificate is valid
+// from a day ago (expired: from three days ago to a day ago), so a check
+// after the making never sees it as not yet valid:
 //   ca.pem                 the test CA (ca.key)
 //   srv.pem, srv.key       localhost and 127.0.0.1, signed by the CA
 //   expired.pem, .key      the same names, expired
@@ -94,21 +139,36 @@ pub fn pki() {
     io.write(path("san.ext"), "subjectAltName=DNS:localhost,IP:127.0.0.1\n").unwrap()
     io.write(path("other.ext"), "subjectAltName=DNS:other.example\n").unwrap()
     io.write(path("cli.ext"), "extendedKeyUsage=clientAuth\n").unwrap()
+    io.write(path("ca.ext"), "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n").unwrap()
+    let now = time.unixSeconds()
     for ca in ["ca", "rogue-ca"] {
-        must(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", ca + ".key",
-              "-out", ca + ".pem", "-days", "2", "-subj", "/CN=obx test " + ca])
+        request(ca, "/CN=obx test " + ca)
+        issue(ca, "", now - DAY, now + 2 * DAY, "ca.ext", "")
     }
     request("srv", "/CN=localhost")
-    sign("srv", "ca", 2, "san.ext")
+    issue("srv", "ca", now - DAY, now + 2 * DAY, "san.ext", "")
     request("expired", "/CN=localhost")
-    sign("expired", "ca", -1, "san.ext")
+    issue("expired", "ca", now - 3 * DAY, now - DAY, "san.ext", "")
     request("other", "/CN=other.example")
-    sign("other", "ca", 2, "other.ext")
+    issue("other", "ca", now - DAY, now + 2 * DAY, "other.ext", "")
     request("rogue", "/CN=localhost")
-    sign("rogue", "rogue-ca", 2, "san.ext")
+    issue("rogue", "rogue-ca", now - DAY, now + 2 * DAY, "san.ext", "")
     request("cli", "/CN=client")
-    sign("cli", "ca", 2, "cli.ext")
+    issue("cli", "ca", now - DAY, now + 2 * DAY, "cli.ext", "")
     io.write(path("done"), "").unwrap()
+}
+
+// A self-signed certificate name.pem for CN=localhost, SAN localhost, with a key
+// of kind (as req -newkey takes it: "rsa:2048", "ed25519", ...) and the digest
+// hash ("": the default). It is valid from a day ago, as pki() makes them; a
+// test trusts it as its own CA file.
+pub fn selfSigned(name: str, kind: str, hash: str) {
+    must(["req", "-new", "-newkey", kind, "-nodes", "-keyout", name + ".key", "-out", name + ".csr",
+          "-subj", "/CN=localhost"])
+    let ext = "self" + caTag() + ".ext"
+    io.write(path(ext), "basicConstraints=critical,CA:TRUE\nsubjectAltName=DNS:localhost\n").unwrap()
+    let now = time.unixSeconds()
+    issue(name, "", now - DAY, now + 2 * DAY, ext, hash)
 }
 
 // Client options that trust the test CA.
@@ -137,12 +197,13 @@ pub type Server = record {
 var SERVERS: int = 0
 
 // Starts `openssl s_server -accept 127.0.0.1:0 ...args` in DIR and waits
-// until it listens; its output goes to DIR/s_server-N.out. Dropping the
-// Server kills it; under `timeout 60` in a group of its own, it also ends
-// when a test that panicked or was killed cannot drop it.
+// until it listens; its output goes to DIR/s_server-PID-N.out (the C and
+// native runs may share DIR). Dropping the Server kills it; under `timeout 60`
+// in a group of its own, it also ends when a test that panicked or was killed
+// cannot drop it.
 pub fn sServer(args: []str): Server {
     SERVERS += 1
-    let out = "s_server-" + intToStr(SERVERS) + ".out"
+    let out = "s_server-" + intToStr(os.pid()) + "-" + intToStr(SERVERS) + ".out"
     var all = ["60", "openssl", "s_server", "-accept", "127.0.0.1:0"]
     for a in args { append(mut &all, a) }
     var c = proc.command("timeout", all)
