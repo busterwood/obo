@@ -378,8 +378,11 @@ program.
     python3 obx/tools/perfsuite.py main BRANCH     # or two compiler paths
 
 It builds both revisions' native compilers from their seeds, then measures
-them on inputs frozen at one revision (`7d519d1`; moved only on purpose,
-with a note here):
+them on inputs frozen at one revision (`af99f933`; moved only on purpose,
+with a note here). The inputs were frozen at `7d519d1` until 6 November
+2026, when number literals got their `f` and `m` suffixes and the old
+inputs stopped compiling; they moved to `af99f933`, the last revision
+before the native float registers:
 
 - **Compile suite:** the frozen compiler (`--native` and `--emit-c`) and the
   frozen eza, grep and zoxide, compiled by each compiler. This is the compile
@@ -399,8 +402,9 @@ in sign. A pass is kept when:
   or
 - the compile suite gains and the run suite is not worse.
 
-The compile suite's total cost over `7d519d1` stays under 5%
-(`perfsuite.py 7d519d1 main`). Because the inputs are frozen, a change to
+The compile suite's total cost over `af99f933` stays under 5%
+(`perfsuite.py af99f933 main`); compilers older than the literal suffixes
+cannot compile the frozen inputs, so the budget counts from there. Because the inputs are frozen, a change to
 the library (std's Map, say) shows in perfsuite only through the compiler,
 not in the frozen programs; measure such changes with bench.py and `perf
 stat` as well. The passes tried and shelved are in HISTORY.md.
