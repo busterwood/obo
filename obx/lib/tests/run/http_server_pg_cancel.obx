@@ -1,10 +1,9 @@
 // httpserver and postgres against a live server ($OBX_PG_DSN, default the
 // local socket; exits 77, skipped, when it cannot connect): a client that
 // hangs up while its handler waits on SELECT pg_sleep(30) cancels the
-// handler's task, which cancels the query on the server (PQcancel), so the
+// handler's task, which cancels the query on the server (pgwire's CancelRequest), so the
 // handler returns at once and the pool's connection is usable again. A
 // route's deadline does the same. Nothing stays waiting in the pool.
-// needs: pq
 // expect: hangup: query cancelled, early
 // expect: deadline: 503, query cancelled, early
 // expect: after: 200 [db 2]
@@ -29,7 +28,7 @@ fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=p
 
 fn sleepy(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
     let t0 = nowMs()
-    let c = try http.check(app.pool.acquire(), 503)
+    var c = try http.check(app.pool.acquire(), 503)
     match c.query("SELECT 1 FROM pg_sleep(30)", &[]) {
         Ok(_) {
             RESULT = "finished"
@@ -44,7 +43,7 @@ fn sleepy(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit,
 }
 
 fn quick(app: &App, rq: mut &http.Request, w: mut &http.Response): Result[Unit, http.Error] {
-    let c = try http.check(app.pool.acquire(), 503)
+    var c = try http.check(app.pool.acquire(), 503)
     let rows = try http.check(c.query("SELECT 2::int8", &[]), 503)
     return w.text("db " + intToStr(try http.check(rows.int(0, 0), 503)) + "\n")
 }

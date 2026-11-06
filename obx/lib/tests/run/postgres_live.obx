@@ -1,9 +1,8 @@
-// postgres against a live server ($OBX_PG_DSN, default the local socket; the
+// postgres (the native client on pgwire) against a live server ($OBX_PG_DSN, default the local socket; the
 // test exits 77, skipped, when it cannot connect): typed parameter OIDs,
 // NULLs, numeric exactness and typmods, floats, bytea, result metadata,
 // SQLSTATE errors, transactions, rows that outlive their connection,
 // fragments, and no handle left open.
-// needs: pq
 // expect: oids: bigint double precision boolean text bytea numeric | untyped NULL is NULL: true
 // expect: inserted 3, updated 2
 // expect: columns: id int8 20 -1 | name text 25 -1 | price numeric 1700 655366 | qty int4 23 -1 | ratio float8 701 -1 | data bytea 17 -1 | flag bool 16 -1 | note text 25 -1
@@ -58,22 +57,22 @@ fn code[T](r: Result[T, Error]): str {
     }
 }
 
-fn one(c: &postgres.Conn, sql: str, args: &[V]): Result[V, Error] {
+fn one(c: mut &postgres.Conn, sql: str, args: &[V]): Result[V, Error] {
     let rows = try c.query(sql, args)
     return rows.value(0, 0)
 }
 
-fn dec(c: &postgres.Conn, sql: str): Result[Decimal, Error] {
+fn dec(c: mut &postgres.Conn, sql: str): Result[Decimal, Error] {
     let rows = try c.query(sql, &[])
     return rows.decimal(0, 0)
 }
 
-fn count(c: &postgres.Conn): Result[int, Error] {
+fn count(c: mut &postgres.Conn): Result[int, Error] {
     let rows = try c.query("SELECT count(*) FROM items", &[])
     return rows.int(0, 0)
 }
 
-fn run(c: &postgres.Conn): Result[Unit, Error] {
+fn run(c: mut &postgres.Conn): Result[Unit, Error] {
     let ty = try c.query("SELECT pg_typeof($1)::text, pg_typeof($2)::text, pg_typeof($3)::text, pg_typeof($4)::text, " +
         "pg_typeof($5)::text, pg_typeof($6)::text, $7::int8 IS NULL",
         &[V.Int(1), V.Float(1.5f), V.Bool(true), V.Text("x"), V.Bytes("x"), V.Dec(1.5m), V.Null])
@@ -156,13 +155,13 @@ fn run(c: &postgres.Conn): Result[Unit, Error] {
         fails(c.query("SELECT $1::int4", &[V.Int(1099511627776)])))
     println("nul text: " + fails(c.query("SELECT $1", &[V.Text("a\0b")])) + " | still usable: " + show(one(c, "SELECT 1", &[])))
 
-    let good = c.transaction(fn(): Result[int, Error] {
-        try c.query("INSERT INTO items(id, name) VALUES (4, 'a'), (5, 'b')", &[])
+    let good = c.transaction(fn(k: mut &postgres.Conn): Result[int, Error] {
+        try k.query("INSERT INTO items(id, name) VALUES (4, 'a'), (5, 'b')", &[])
         return Ok(2)
     })
-    let bad = c.transaction(fn(): Result[int, Error] {
-        try c.query("INSERT INTO items(id, name) VALUES (6, 'c')", &[])
-        try c.query("INSERT INTO items(id, name) VALUES (1, 'dup')", &[])
+    let bad = c.transaction(fn(k: mut &postgres.Conn): Result[int, Error] {
+        try k.query("INSERT INTO items(id, name) VALUES (6, 'c')", &[])
+        try k.query("INSERT INTO items(id, name) VALUES (1, 'dup')", &[])
         return Ok(2)
     })
     let n1 = try count(c)
@@ -179,11 +178,11 @@ fn run(c: &postgres.Conn): Result[Unit, Error] {
 
 fn main() {
     let dsn = os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
-    let conn = match postgres.connect(dsn) {
+    var conn = match postgres.connect(dsn) {
         Ok(c) { c }
         Err(_) { exit(77) }
     }
-    match run(&conn) {
+    match run(mut &conn) {
         Ok(_) {}
         Err(e) { println("FAIL " + e.toStr()) }
     }

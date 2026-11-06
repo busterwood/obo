@@ -1,0 +1,664 @@
+// postgres (native, on pgwire) against postgres_libpq (libpq, the oracle) on a
+// live server ($OBX_PG_DSN, default the local socket; never printed; exits 77
+// when it cannot connect, printing only the error code): the same SQL through
+// both clients, each on its own connection to the same server, must give the
+// same columns (count, names, type OIDs, typmods, decimalType), row count,
+// affected count, and for each cell isNull, text, value().toStr() and every
+// typed accessor as its value or its error (code, state, message); the same
+// queries streamed by both, with a RowView reader that calls every accessor
+// of every column; and the same errors with the connection's idle() after.
+// A difference is printed with the query's own values only; the last line is
+// "differences: 0".
+//
+// What is compared: the edge values of every mapped type (int2/4/8 limits,
+// numeric 0, -0.00, 38 and 39 digits, 1e-16383, NaN, Infinity, numeric(p, s),
+// floats, bool, text of 1 MB, char(n) padding, bytea of all 256 values and of
+// 1 MB, date/time/timestamp limits and infinities, timestamptz under three
+// session zones, interval under each IntervalStyle, uuid, json, jsonb, oid,
+// arrays, NULLs); 2,000 generated rows of random columns of random types with
+// random or edge values (a fixed-seed linear congruential generator); every
+// Value variant as a parameter, alone and into columns of each mapped type;
+// and errors (syntax, undefined table, unique and not-null violations,
+// division by zero in mid-result, 22003, two statements in query, RAISE
+// EXCEPTION with a custom SQLSTATE, RAISE NOTICE, an error in a block and
+// then 25P02, a script failing in the middle).
+//
+// Disagreements found, and who was right (design/pgwire.md, "As built (P2)"):
+//   - a statement that fails before its first row, streamed: libpq reports it
+//     from stream(), native from the first fill (the first batch stays on the
+//     wire, section 12.2); the comparison treats an error before any row alike.
+//   - the empty query, streamed: libpq's stream says "unsupported result
+//     status 0 (COPY?)"; native gives a stream with no columns and no rows.
+//     Native is right; compared buffered only.
+//   - COPY ... FROM STDIN through the libpq client leaves the connection stuck
+//     in COPY (the call never returns); native refuses it with E_INPUT (tested
+//     in pgwire_live), so it is not compared here.
+//   - libpq writes NOTICE and WARNING messages to stderr; native keeps them in
+//     the session and writes nothing (stderr is not compared).
+// needs: pq
+// expect: compared: 5264
+// expect: differences: 0
+
+import "postgres"
+import "postgres_libpq"
+import "sqldialect"
+import "sqlrows"
+import "os"
+import "math"
+
+type Value = sqldialect.Value
+type DbError = sqldialect.DbError
+
+var DIFFS: int = 0
+var COMPARED: int = 0
+
+fn eStr(e: &DbError): str { return e.code.toStr() + "/" + e.state + "/" + e.msg }
+
+// A long text as its length, ends and a checksum, so a difference in a 1 MB
+// value is found and printed short.
+fn shorten(s: &str): str {
+    if len(s) <= 160 { return s }
+    var h = 2166136261
+    for i in 0..len(s) { h = ((h ^ int(s[i])) * 16777619) % 4294967296 }
+    return "<" + len(s).toStr() + " bytes " + s[..40] + "..." + s[len(s) - 40..] + " fnv " + h.toStr() + ">"
+}
+
+fn sh[X: Show](r: Result[X, DbError]): str {
+    match r {
+        Ok(v) { return "ok " + shorten(&v.toStr()) }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+fn shBytes(r: Result[str, DbError]): str {
+    match r {
+        Ok(v) { return "ok " + shorten(&sqldialect.hex(v)) }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+fn shOpt[X: Show](r: Result[Option[X], DbError]): str {
+    match r {
+        Ok(o) {
+            match o {
+                Some(v) { return "ok some " + shorten(&v.toStr()) }
+                None { return "ok none" }
+            }
+        }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+fn shValue(r: Result[Value, DbError]): str {
+    match r {
+        Ok(v) { return "ok " + shorten(&v.toStr()) }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+// ---------------------------------------------------------------- one row, streamed
+
+fn bindAll(c: &sqlrows.Columns): Result[int, DbError] { return Ok(c.count()) }
+
+// Calls every accessor of every column.
+fn readRow(b: &int, r: &sqlrows.RowView): Result[str, DbError] {
+    var o = newStrBuf()
+    o.add("row " + r.rowNumber().toStr())
+    for i in 0..r.columnCount() {
+        o.add(" | " + sh(r.isNull(i)) + " int " + sh(r.int(i)) + " dec " + sh(r.decimal(i)) + " float " + sh(r.float(i)) +
+              " text " + sh(r.text(i)) + " bytes " + shBytes(r.bytes(i)) + " bool " + sh(r.bool(i)) + " date " + sh(r.date(i)) +
+              " time " + sh(r.timeOfDay(i)) + " dt " + sh(r.localDateTime(i)) + " odt " + sh(r.offsetDateTime(i)) +
+              " intN " + shOpt(r.intOrNull(i)) + " decN " + shOpt(r.decimalOrNull(i)) + " textN " + shOpt(r.textOrNull(i)))
+    }
+    return Ok(o.toStr())
+}
+
+fn dup(args: &[Value]): []Value {
+    var a: []Value = []
+    for v in args { append(mut &a, v) }
+    return a
+}
+
+// ------------------------------------------------------------- per client (generated copies)
+
+fn decTA(r: Result[postgres.DecimalType, DbError]): str {
+    match r {
+        Ok(d) { return "ok " + d.precision.toStr() + "," + d.scale.toStr() + "," + d.constrained.toStr() }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+// Every observable of a buffered result, as lines.
+fn canonA(c: mut &postgres.Conn, sql: str, args: &[Value]): str {
+    match c.query(sql, args) {
+        Err(e) { return "error " + eStr(&e) + " idle " + c.idle().toStr() }
+        Ok(r) {
+            var o = newStrBuf()
+            o.add("columns " + r.columnCount().toStr() + " rows " + r.rowCount().toStr() + " affected " + r.affected().toStr() + "\n")
+            for i in 0..r.columnCount() {
+                o.add("col " + i.toStr() + " " + sh(r.columnName(i)) + " oid " + sh(r.columnType(i)) + " typmod " + sh(r.columnTypmod(i)) +
+                      " dec " + decTA(r.decimalType(i)) + "\n")
+            }
+            o.add("range " + sh(r.columnName(r.columnCount())) + " " + sh(r.columnName(-1)) + " " + sh(r.isNull(r.rowCount(), 0)) + " " +
+                  sh(r.text(0, r.columnCount())) + " " + sh(r.int(-1, 0)) + "\n")
+            for row in 0..r.rowCount() {
+                for i in 0..r.columnCount() {
+                    o.add("cell " + row.toStr() + "," + i.toStr() + " null " + sh(r.isNull(row, i)) + " text " + sh(r.text(row, i)) +
+                          " value " + shValue(r.value(row, i)) + " int " + sh(r.int(row, i)) + " float " + sh(r.float(row, i)) +
+                          " bool " + sh(r.bool(row, i)) + " bytes " + shBytes(r.bytes(row, i)) + " dec " + sh(r.decimal(row, i)) +
+                          " decN " + shOpt(r.decimalOrNull(row, i)) + "\n")
+                }
+            }
+            o.add("idle " + c.idle().toStr())
+            return o.toStr()
+        }
+    }
+}
+
+fn execA(c: mut &postgres.Conn, sql: str): str {
+    match c.exec(sql) {
+        Ok(_) { return "ok idle " + c.idle().toStr() }
+        Err(e) { return "error " + eStr(&e) + " idle " + c.idle().toStr() }
+    }
+}
+
+// The same query streamed, every accessor called on every row, with a buffer of 3.
+fn streamA(c: mut &postgres.Conn, sql: str, args: []Value): str {
+    var o = newStrBuf()
+    var head = ""
+    if true {
+        match c.stream(sql, args, bindAll, readRow) {
+            Err(e) { o.add("error " + eStr(&e) + "\n") }
+            Ok(s0) {
+                var s = s0
+                head = "columns " + s.columns().names() + "\n"
+                var buf = array(3, "")
+                var more = true
+                while more {
+                    match s.fill(mut &buf) {
+                        Ok(n) {
+                            if n == 0 { more = false }
+                            for i in 0..n { o.add(buf[i] + "\n") }
+                        }
+                        Err(e) {
+                            o.add("error " + eStr(&e) + "\n")
+                            if s.rowsRead() == 0 { head = "" }      // libpq says it at stream(), native at the first fill
+                            more = false
+                        }
+                    }
+                }
+                if len(head) > 0 { o.add("read " + s.rowsRead().toStr() + "\n") }
+            }
+        }
+    }
+    o.add("idle " + c.idle().toStr())
+    return head + o.toStr()
+}
+
+fn decTB(r: Result[postgres_libpq.DecimalType, DbError]): str {
+    match r {
+        Ok(d) { return "ok " + d.precision.toStr() + "," + d.scale.toStr() + "," + d.constrained.toStr() }
+        Err(e) { return "err " + eStr(&e) }
+    }
+}
+
+// Every observable of a buffered result, as lines.
+fn canonB(c: mut &postgres_libpq.Conn, sql: str, args: &[Value]): str {
+    match c.query(sql, args) {
+        Err(e) { return "error " + eStr(&e) + " idle " + c.idle().toStr() }
+        Ok(r) {
+            var o = newStrBuf()
+            o.add("columns " + r.columnCount().toStr() + " rows " + r.rowCount().toStr() + " affected " + r.affected().toStr() + "\n")
+            for i in 0..r.columnCount() {
+                o.add("col " + i.toStr() + " " + sh(r.columnName(i)) + " oid " + sh(r.columnType(i)) + " typmod " + sh(r.columnTypmod(i)) +
+                      " dec " + decTB(r.decimalType(i)) + "\n")
+            }
+            o.add("range " + sh(r.columnName(r.columnCount())) + " " + sh(r.columnName(-1)) + " " + sh(r.isNull(r.rowCount(), 0)) + " " +
+                  sh(r.text(0, r.columnCount())) + " " + sh(r.int(-1, 0)) + "\n")
+            for row in 0..r.rowCount() {
+                for i in 0..r.columnCount() {
+                    o.add("cell " + row.toStr() + "," + i.toStr() + " null " + sh(r.isNull(row, i)) + " text " + sh(r.text(row, i)) +
+                          " value " + shValue(r.value(row, i)) + " int " + sh(r.int(row, i)) + " float " + sh(r.float(row, i)) +
+                          " bool " + sh(r.bool(row, i)) + " bytes " + shBytes(r.bytes(row, i)) + " dec " + sh(r.decimal(row, i)) +
+                          " decN " + shOpt(r.decimalOrNull(row, i)) + "\n")
+                }
+            }
+            o.add("idle " + c.idle().toStr())
+            return o.toStr()
+        }
+    }
+}
+
+fn execB(c: mut &postgres_libpq.Conn, sql: str): str {
+    match c.exec(sql) {
+        Ok(_) { return "ok idle " + c.idle().toStr() }
+        Err(e) { return "error " + eStr(&e) + " idle " + c.idle().toStr() }
+    }
+}
+
+// The same query streamed, every accessor called on every row, with a buffer of 3.
+fn streamB(c: mut &postgres_libpq.Conn, sql: str, args: []Value): str {
+    var o = newStrBuf()
+    var head = ""
+    if true {
+        match c.stream(sql, args, bindAll, readRow) {
+            Err(e) { o.add("error " + eStr(&e) + "\n") }
+            Ok(s0) {
+                var s = s0
+                head = "columns " + s.columns().names() + "\n"
+                var buf = array(3, "")
+                var more = true
+                while more {
+                    match s.fill(mut &buf) {
+                        Ok(n) {
+                            if n == 0 { more = false }
+                            for i in 0..n { o.add(buf[i] + "\n") }
+                        }
+                        Err(e) {
+                            o.add("error " + eStr(&e) + "\n")
+                            if s.rowsRead() == 0 { head = "" }      // libpq says it at stream(), native at the first fill
+                            more = false
+                        }
+                    }
+                }
+                if len(head) > 0 { o.add("read " + s.rowsRead().toStr() + "\n") }
+            }
+        }
+    }
+    o.add("idle " + c.idle().toStr())
+    return head + o.toStr()
+}
+
+
+// --------------------------------------------------------------------------- comparing
+
+fn lineAt(s: &str, pos: int): str {
+    var a = pos
+    while a > 0 && s[a - 1] != '\n' { a -= 1 }
+    var e = pos
+    while e < len(s) && s[e] != '\n' { e += 1 }
+    return shorten(&s[a..e])
+}
+
+fn same(label: str, kind: str, x: &str, y: &str) {
+    COMPARED += 1
+    if x == y { return }
+    DIFFS += 1
+    var p = 0
+    while p < len(x) && p < len(y) && x[p] == y[p] { p += 1 }
+    println("DIFF " + kind + " " + shorten(&label) + "\n  native: " + lineAt(x, p) + "\n  libpq:  " + lineAt(y, p))
+}
+
+type Both = record { a: postgres.Conn; b: postgres_libpq.Conn }
+
+// One query through both, buffered and streamed.
+fn both(label: str, t: mut &Both, sql: str, args: &[Value]) {
+    let x = canonA(mut &t.a, sql, args)
+    let y = canonB(mut &t.b, sql, args)
+    same(label, "buffered", &x, &y)
+    let xs = streamA(mut &t.a, sql, dup(args))
+    let ys = streamB(mut &t.b, sql, dup(args))
+    same(label, "streamed", &xs, &ys)
+}
+
+fn q(label: str, t: mut &Both, sql: str) { both(label + ": " + sql, t, sql, &[]) }
+
+// Buffered only.
+fn qb(label: str, t: mut &Both, sql: str) {
+    let x = canonA(mut &t.a, sql, &[])
+    let y = canonB(mut &t.b, sql, &[])
+    same(label + ": " + sql, "buffered", &x, &y)
+}
+
+// A script through both: the same outcome and idle() after.
+fn script(t: mut &Both, sql: str) {
+    let x = execA(mut &t.a, sql)
+    let y = execB(mut &t.b, sql)
+    same(sql, "exec", &x, &y)
+}
+
+// Setup that must work on both.
+fn setup(t: mut &Both, sql: str) {
+    let x = execA(mut &t.a, sql)
+    let y = execB(mut &t.b, sql)
+    if !startsWith(x, "ok") || !startsWith(y, "ok") {
+        DIFFS += 1
+        println("DIFF setup " + sql + ": native " + x + ", libpq " + y)
+    }
+}
+
+// ----------------------------------------------------------------------- generated rows
+
+type Rng = record { s: int }
+
+fn (r: mut &Rng) next(n: int): int {
+    r.s = (r.s * 1103515245 + 12345) % 2147483648
+    return (r.s >> 8) % n
+}
+
+fn (r: mut &Rng) pick(list: &[]str): str { return list[r.next(len(list))] }
+
+fn (r: mut &Rng) digits(n: int): str {
+    var o = newStrBuf()
+    for i in 0..n { o.add(r.next(10).toStr()) }
+    return o.toStr()
+}
+
+fn (r: mut &Rng) chars(n: int): str {
+    let pool = ["a", "Z", "k", "e", "é", "ü", "☃", "😀", " ", "''", "\\", "_", "%", "7", "\"", "\t"]
+    var o = newStrBuf()
+    for i in 0..n { o.add(r.pick(&pool)) }
+    return o.toStr()
+}
+
+fn pad(n: int, w: int): str {
+    var s = n.toStr()
+    while len(s) < w { s = "0" + s }
+    return s
+}
+
+fn (r: mut &Rng) number(): str {
+    var s = if r.next(2) == 0 { "-" } else { "" }
+    s = s + r.digits(1 + r.next(18))
+    if r.next(2) == 0 { s = s + "." + r.digits(1 + r.next(12)) }
+    return s
+}
+
+fn (r: mut &Rng) time(): str {
+    var s = pad(r.next(24), 2) + ":" + pad(r.next(60), 2) + ":" + pad(r.next(60), 2)
+    if r.next(2) == 0 { s = s + "." + r.digits(1 + r.next(6)) }
+    return s
+}
+
+fn (r: mut &Rng) date(): str { return pad(1 + r.next(9999), 4) + "-" + pad(1 + r.next(12), 2) + "-" + pad(1 + r.next(28), 2) }
+
+// A SQL expression for a value of type kind t: an edge value or a random one.
+fn (r: mut &Rng) lit(t: int): str {
+    let edge = r.next(3) == 0
+    if t == 0 { return "'" + (if edge { r.pick(&["-32768", "32767", "0", "-1"]) } else { (r.next(65536) - 32768).toStr() }) + "'::int2" }
+    if t == 1 { return "'" + (if edge { r.pick(&["-2147483648", "2147483647", "0", "-1"]) } else { (r.next(2147483647) - 1073741824).toStr() }) + "'::int4" }
+    if t == 2 {
+        return "'" + (if edge { r.pick(&["-9223372036854775808", "9223372036854775807", "0", "-1"]) } else { (if r.next(2) == 0 { "-" } else { "" }) + r.digits(1 + r.next(18)) }) + "'::int8"
+    }
+    if t == 3 {
+        let e = ["0", "-0.00", "99999999999999999999999999999999999999", "123456789012345678901234567890123456789", "NaN", "Infinity", "-Infinity",
+                 "1e-16383", "0.000000000000000000000000000000000000001", "100", "1e3", "-1.5e2"]
+        return "'" + (if edge { r.pick(&e) } else { r.digits(1 + r.next(40)) + (if r.next(2) == 0 { "." + r.digits(1 + r.next(20)) } else { "" }) }) + "'::numeric"
+    }
+    if t == 4 {
+        let ty = r.pick(&["numeric(10,2)", "numeric(5,0)", "numeric(38,10)", "numeric(12,2)", "numeric(18,0)", "numeric(38,0)"])
+        return "'" + (if edge { r.pick(&["0", "-0.5", "99999", "12.345", "1e2"]) } else { r.digits(1 + r.next(6)) + "." + r.digits(1 + r.next(4)) }) + "'::" + ty
+    }
+    if t == 5 {
+        return "'" + (if edge { r.pick(&["0.1", "1e300", "5e-324", "-0", "Infinity", "-Infinity", "NaN", "1.7976931348623157e308", "123456789.125"]) }
+                      else { (if r.next(2) == 0 { "-" } else { "" }) + r.digits(1 + r.next(8)) + "." + r.digits(1 + r.next(8)) + "e" + (r.next(600) - 300).toStr() }) + "'::float8"
+    }
+    if t == 6 {
+        return "'" + (if edge { r.pick(&["0.1", "3.4028235e38", "1e-45", "NaN", "-Infinity", "16777217"]) }
+                      else { r.digits(1 + r.next(6)) + "." + r.digits(1 + r.next(4)) + "e" + (r.next(70) - 35).toStr() }) + "'::float4"
+    }
+    if t == 7 { return if r.next(2) == 0 { "true" } else { "false" } }
+    if t == 8 { return "'" + (if edge { r.pick(&["", "x", "é☃😀"]) } else { r.chars(r.next(14)) }) + "'::text" }
+    if t == 9 { return "'" + r.chars(r.next(8)) + "'::varchar(10)" }
+    if t == 10 { return "'" + r.chars(r.next(6)) + "'::char(8)" }
+    if t == 11 {
+        var h = newStrBuf()
+        for i in 0..(if edge { 0 } else { r.next(9) }) { h.add(pad(r.next(256), 3)) }
+        var o = newStrBuf()
+        let d = h.toStr()
+        var i = 0
+        while i + 3 <= len(d) {
+            let b = parseInt(d[i..i + 3]).unwrapOr(0) % 256
+            o.add("0123456789abcdef"[b / 16..b / 16 + 1] + "0123456789abcdef"[b % 16..b % 16 + 1])
+            i += 3
+        }
+        return "'\\x" + o.toStr() + "'::bytea"
+    }
+    if t == 12 { return "'" + (if edge { r.pick(&["0001-01-01", "9999-12-31", "infinity", "-infinity", "0044-03-15 BC", "2000-02-29"]) } else { r.date() }) + "'::date" }
+    if t == 13 { return "'" + (if edge { r.pick(&["24:00:00", "00:00:00", "23:59:59.999999"]) } else { r.time() }) + "'::time" }
+    if t == 14 { return "'" + (if edge { r.pick(&["infinity", "-infinity", "4713-01-01 00:00:00 BC", "0001-01-01 00:00:00", "9999-12-31 23:59:59.999999"]) } else { r.date() + " " + r.time() }) + "'::timestamp" }
+    if t == 15 {
+        let off = r.pick(&["+00", "+01:30", "-05", "+05:30", "-12", "+14", "+00:19:32"])
+        return "'" + (if edge { r.pick(&["infinity", "-infinity", "2026-11-05 13:45:07.123456+00", "0001-01-01 00:00:00+00"]) } else { r.date() + " " + r.time() + off }) + "'::timestamptz"
+    }
+    if t == 16 {
+        return "'" + (if edge { r.pick(&["0", "1 year 2 mons 3 days 04:05:06.789", "-1 days", "178000000 years", "00:00:00.000001", "-2 mons -3 days -04:05:06"]) }
+                      else { (r.next(200) - 100).toStr() + " days " + (r.next(30)).toStr() + " hours " + r.next(60).toStr() + " minutes" }) + "'::interval"
+    }
+    if t == 17 { return "'" + r.digits(8) + "-" + r.digits(4) + "-" + r.digits(4) + "-" + r.digits(4) + "-" + r.digits(12) + "'::uuid" }
+    if t == 18 { return "'{\"k\": " + r.number() + ", \"s\": \"" + r.digits(r.next(5)) + "\", \"a\": [1, null, true]}'::jsonb" }
+    if t == 19 { return "'{\"k\":  " + r.number() + "}'::json" }
+    if t == 20 { return "NULL::" + r.pick(&["int2", "int4", "int8", "numeric", "float8", "bool", "text", "bytea", "date", "time", "timestamp", "timestamptz", "interval", "uuid", "jsonb", "oid"]) }
+    if t == 21 { return "'{" + r.next(100).toStr() + ", NULL, " + (r.next(200) - 100).toStr() + "}'::int4[]" }
+    if t == 22 { return "'" + r.next(4294967295).toStr() + "'::oid" }
+    if t == 23 { return "'" + r.digits(1 + r.next(10)) + "'::name" }
+    return "'" + r.pick(&["a", "Z", "é"]) + "'::\"char\""
+}
+
+// ------------------------------------------------------------------------------- sections
+
+fn edges(t: mut &Both): int {
+    let ty = ["int2", "int4", "int8"]
+    let lim = ["-32768", "32767", "0", "-1", "-2147483648", "2147483647", "-9223372036854775808", "9223372036854775807"]
+    for tn in ty { for l in lim { q("int", t, "SELECT '" + l + "'::" + tn + " AS v") } }
+    let nums = ["0", "-0.00", "99999999999999999999999999999999999999", "123456789012345678901234567890123456789", "1e-16383", "NaN", "Infinity",
+                "-Infinity", "12.345", "0.000000000000000000000000000000000000001", "-0", "1e1000", "123456789.1234567890123456789012345678901234567"]
+    for n in nums { q("numeric", t, "SELECT '" + n + "'::numeric AS v, '" + n + "'::numeric(40,20) AS w") }
+    for tyn in ["numeric(10,2)", "numeric(2,-3)", "numeric(38,0)", "numeric(5,5)", "numeric(18,0)", "numeric(19,0)", "numeric(1000,500)"] {
+        for n in ["12345", "12.345", "-0.5", "99999", "0"] { q("numeric typmod", t, "SELECT '" + n + "'::" + tyn + " AS v") }
+    }
+    q("numeric sums", t, "SELECT sum(x) AS s, sum(x::numeric(12,2)) AS t, count(*) AS n, avg(x) AS a FROM generate_series(1, 10) x")
+    for f in ["0.1", "1e300", "5e-324", "-0", "Infinity", "-Infinity", "NaN", "1.7976931348623157e308", "1e-7", "123456789012345678", "0.30000000000000004"] {
+        q("float8", t, "SELECT '" + f + "'::float8 AS v")
+    }
+    for f in ["0.1", "3.4028235e38", "1e-45", "-0", "Infinity", "NaN", "16777217", "1.1754944e-38"] { q("float4", t, "SELECT '" + f + "'::float4 AS v") }
+    q("bool", t, "SELECT true AS a, false AS b, 't'::bool AS c, 'no'::bool AS d")
+    q("text", t, "SELECT ''::text AS a, 'héllo wörld ☃ 😀'::text AS b, 'a''b\\c'::text AS c, E'tab\\there\\nnl'::text AS d")
+    q("text 1 MB", t, "SELECT repeat('x', 1000000) AS v")
+    q("text multibyte 1 MB", t, "SELECT repeat('é☃😀', 90000) AS v")
+    q("varchar", t, "SELECT 'abcdef'::varchar(5) AS a, 'ab'::varchar(5) AS b, ''::varchar AS c")
+    q("char(n)", t, "SELECT 'ab'::char(5) AS a, 'abcde'::char(5) AS b, ''::char(3) AS c, 'é'::char(3) AS d")
+    q("name", t, "SELECT 'abc'::name AS a, repeat('n', 80)::name AS b")
+    q("char", t, "SELECT 'a'::\"char\" AS a, 'é'::\"char\" AS b, ''::\"char\" AS c")
+    q("bytea", t, "SELECT ''::bytea AS a, '\\x00ff10'::bytea AS b, '\\000\\377abc'::bytea AS c")
+    q("bytea 256", t, "SELECT decode(string_agg(lpad(to_hex(i), 2, '0'), ''), 'hex') AS v FROM generate_series(0, 255) i")
+    q("bytea 1 MB", t, "SELECT decode(repeat('ab', 1000000), 'hex') AS v")
+    q("bytea escape", t, "SET bytea_output = 'escape'")
+    q("bytea escape", t, "SELECT '\\x00ff10'::bytea AS v")
+    q("bytea hex again", t, "SET bytea_output = 'hex'")
+    for d in ["0001-01-01", "9999-12-31", "infinity", "-infinity", "0044-03-15 BC", "2000-02-29", "10000-01-01", "5874897-12-31"] {
+        q("date", t, "SELECT '" + d + "'::date AS v")
+    }
+    for d in ["24:00:00", "00:00:00", "13:45:07.123456", "23:59:59.999999", "12:00:00.5"] { q("time", t, "SELECT '" + d + "'::time AS v") }
+    q("timetz", t, "SELECT '13:45:07+01:30'::timetz AS v")
+    for d in ["infinity", "-infinity", "2026-11-05 13:45:07.123456", "4713-01-01 00:00:00 BC", "0001-01-01 00:00:00", "9999-12-31 23:59:59.999999",
+              "2026-11-05 13:45:07", "0044-03-15 12:00:00 BC"] {
+        q("timestamp", t, "SELECT '" + d + "'::timestamp AS v")
+    }
+    for z in ["UTC", "America/New_York", "Asia/Kolkata", "Asia/Kathmandu", "Europe/Amsterdam"] {
+        setup(t, "SET TimeZone = '" + z + "'")
+        for d in ["2026-11-05 13:45:07.123456+00", "infinity", "-infinity", "0001-01-01 00:00:00+00", "1900-01-01 00:00:00+00",
+                  "9999-12-31 23:59:59.999999+00", "2026-07-01 12:00:00+00", "4713-01-01 00:00:00+00 BC"] {
+            q("timestamptz " + z, t, "SELECT '" + d + "'::timestamptz AS v")
+        }
+    }
+    setup(t, "SET TimeZone = 'UTC'")
+    for st in ["postgres", "postgres_verbose", "sql_standard", "iso_8601"] {
+        setup(t, "SET IntervalStyle = '" + st + "'")
+        for d in ["1 year 2 mons 3 days 04:05:06.789", "-1 days", "0", "-2 mons -3 days -04:05:06", "178000000 years", "00:00:00.000001"] {
+            q("interval " + st, t, "SELECT '" + d + "'::interval AS v")
+        }
+    }
+    setup(t, "SET IntervalStyle = 'postgres'")
+    q("uuid", t, "SELECT '550e8400-e29b-41d4-a716-446655440000'::uuid AS v, 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'::uuid AS w")
+    q("json", t, "SELECT '{\"a\": [1, 2,  3], \"b\": null}'::json AS v, '{\"a\": [1, 2,  3], \"b\": null, \"a\": 5}'::jsonb AS w")
+    q("oid", t, "SELECT 0::oid AS a, 4294967295::oid AS b, 'pg_class'::regclass AS c")
+    q("arrays", t, "SELECT '{1,2,3}'::int4[] AS a, '{}'::int4[] AS b, '{{1,2},{3,4}}'::int8[] AS c, '{a,\"b c\",NULL}'::text[] AS d")
+    q("misc types", t, "SELECT '1.2.3.4'::inet AS a, '12.50'::money AS b, '[1,5)'::int4range AS c, 'happy'::text AS d, 1 AS e")
+    q("nulls", t, "SELECT NULL::int2 AS a, NULL::int4 AS b, NULL::int8 AS c, NULL::numeric AS d, NULL::float4 AS e, NULL::float8 AS f, NULL::bool AS g, " +
+                  "NULL::text AS h, NULL::varchar AS i, NULL::bpchar AS j, NULL::bytea AS k, NULL::date AS l, NULL::time AS m, NULL::timestamp AS n, " +
+                  "NULL::timestamptz AS o, NULL::interval AS p, NULL::uuid AS q, NULL::json AS r, NULL::jsonb AS s, NULL::oid AS u, NULL::int4[] AS v, NULL AS w")
+    qb("empty", t, "")
+    q("no rows", t, "SELECT 1 AS a, 'x'::text AS b WHERE false")
+    q("many columns", t, "SELECT 1 AS a, 2 AS a, 3.50::numeric(10,2) AS \"B c\", 'x' AS \"é\", now()::date = current_date AS today")
+    return 0
+}
+
+fn commands(t: mut &Both): int {
+    setup(t, "CREATE TEMP TABLE ct(id int8 PRIMARY KEY, n numeric(10,2), name text NOT NULL)")
+    q("create", t, "CREATE TEMP TABLE ct2(x int)")
+    q("insert", t, "INSERT INTO ct VALUES (1, 1.50, 'a'), (2, 2.50, 'b'), (3, 3.50, 'c')")
+    q("insert returning", t, "INSERT INTO ct VALUES (4, 4.50, 'd') RETURNING id, n")
+    q("update", t, "UPDATE ct SET n = n + 1 WHERE id < 3")
+    q("update none", t, "UPDATE ct SET n = n WHERE id < 0")
+    q("select", t, "SELECT id, n, name FROM ct ORDER BY id")
+    q("delete", t, "DELETE FROM ct WHERE id = 4")
+    q("do", t, "DO $$ BEGIN PERFORM 1; END $$")
+    q("begin", t, "BEGIN")
+    q("in block", t, "SELECT 1 AS v")
+    q("rollback", t, "ROLLBACK")
+    q("set", t, "SET application_name = 'obx_diff'")
+    q("show", t, "SHOW application_name")
+    q("explain", t, "EXPLAIN SELECT 1")
+    q("values", t, "VALUES (1, 'a'), (2, 'b')")
+    q("big stream", t, "SELECT i::int8 AS i, (i * 3)::numeric(12,2) AS n, 'row' || i AS s FROM generate_series(1, 5000) i")
+    q("exactly 256", t, "SELECT i FROM generate_series(1, 256) i")
+    q("exactly 1280", t, "SELECT i FROM generate_series(1, 1280) i")
+    q("257", t, "SELECT i FROM generate_series(1, 257) i")
+    q("wide rows", t, "SELECT i, repeat('w', 5000) AS s FROM generate_series(1, 700) i")
+    q("null rows", t, "SELECT NULL::int4 AS a, NULL::text AS b FROM generate_series(1, 400) i")
+    return 0
+}
+
+fn generated(t: mut &Both): int {
+    var r = Rng{s: 20261106}
+    for k in 0..2000 {
+        let n = 1 + r.next(6)
+        var sql = newStrBuf()
+        sql.add("SELECT ")
+        for c in 0..n {
+            if c > 0 { sql.add(", ") }
+            sql.add(r.lit(r.next(25)) + " AS c" + c.toStr())
+        }
+        let text = sql.toStr()
+        both("generated " + k.toStr() + ": " + text, t, text, &[])
+    }
+    return 0
+}
+
+fn params(t: mut &Both): int {
+    let bytes = strFromBytes(&[byte(0), byte(255), byte(10), byte(92), byte(120)])
+    let vals = [Value.Null, Value.Int(0), Value.Int(-1), Value.Int(9223372036854775807), Value.Int(-9223372036854775807 - 1),
+                Value.Float(0.1f), Value.Float(-0.0f), Value.Float(1e300f), Value.Float(5e-324f), Value.Float(math.inf()), Value.Float(-math.inf()),
+                Value.Float(math.nan()), Value.Bool(true), Value.Bool(false), Value.Text(""), Value.Text("héllo ☃ 😀 'q' \\"), Value.Text("a\0b"),
+                Value.Bytes(""), Value.Bytes(bytes), Value.Dec(0m), Value.Dec(2.50m), Value.Dec(-0.00m), Value.Dec(123456789012345678901234567890.12345678m),
+                Value.Dec(0.00000000000000000001m)]
+    for i in 0..len(vals) {
+        both("param " + i.toStr() + " select", t, "SELECT $1 AS v", &[vals[i]])
+        both("param " + i.toStr() + " cast", t, "SELECT $1::text AS v, $1 IS NULL AS n", &[vals[i]])
+    }
+    both("param null numeric", t, "SELECT $1::numeric AS v", &[Value.Null])
+    both("two params", t, "SELECT $1 AS a, $2 AS b, $1 AS c", &[Value.Int(1), Value.Text("x")])
+    both("too few params", t, "SELECT $1 AS a, $2 AS b", &[Value.Int(1)])
+    both("too many params", t, "SELECT $1 AS a", &[Value.Int(1), Value.Int(2)])
+    both("params without use", t, "SELECT 1 AS a", &[Value.Int(1)])
+    setup(t, "CREATE TEMP TABLE pt(i2 int2, i4 int4, i8 int8, n numeric, n102 numeric(10,2), f4 float4, f8 float8, b bool, t text, v varchar(20), y bytea, d date, ts timestamp)")
+    for col in ["i2", "i4", "i8", "n", "n102", "f4", "f8", "b", "t", "v", "y", "d", "ts"] {
+        for i in 0..len(vals) {
+            both("param " + i.toStr() + " into " + col, t, "INSERT INTO pt(" + col + ") VALUES ($1) RETURNING " + col, &[vals[i]])
+        }
+    }
+    q("params table", t, "SELECT count(*) AS n, count(i8) AS i8, count(n) AS n2, count(y) AS y FROM pt")
+    var many: []Value = []
+    for i in 0..65536 { append(mut &many, Value.Null) }
+    both("65536 params", t, "SELECT 1", &many)
+    var ok: []Value = []
+    for i in 0..3 { append(mut &ok, Value.Int(i)) }
+    both("3 of 3 params", t, "SELECT $1::int8 + $2::int8 + $3::int8 AS s", &ok)
+    both("nul in sql", t, "SELECT 1\0", &[])
+    return 0
+}
+
+fn errors(t: mut &Both): int {
+    setup(t, "CREATE TEMP TABLE et(id int8 PRIMARY KEY, name text NOT NULL, small int2)")
+    setup(t, "INSERT INTO et VALUES (1, 'a', 1)")
+    q("syntax", t, "SELEC 1")
+    q("syntax 2", t, "SELECT FROM WHERE")
+    q("undefined table", t, "SELECT * FROM nope")
+    q("undefined column", t, "SELECT nope FROM et")
+    q("undefined function", t, "SELECT nope(1)")
+    q("unique", t, "INSERT INTO et VALUES (1, 'again', 1)")
+    q("not null", t, "INSERT INTO et VALUES (2, NULL, 1)")
+    q("22003", t, "SELECT (32767::int2 + 1::int2) AS v")
+    q("22003 insert", t, "INSERT INTO et VALUES (3, 'x', 100000)")
+    q("22003 numeric", t, "SELECT 1e1000::float8 AS v")
+    q("division", t, "SELECT 1 / 0 AS v")
+    q("division mid-result", t, "SELECT 10 / (i - 3) AS v FROM generate_series(1, 5) i")
+    q("division late", t, "SELECT 100 / (i - 5000) AS v FROM generate_series(1, 10000) i")
+    q("22P02", t, "SELECT 'abc'::int4 AS v")
+    q("two statements", t, "SELECT 1; SELECT 2")
+    q("two statements ok", t, "SELECT 1 AS a; ")
+    q("raise exception", t, "DO $$ BEGIN RAISE EXCEPTION 'custom % problem', 42 USING ERRCODE = 'ZZ123', DETAIL = 'the detail', HINT = 'a hint'; END $$")
+    q("raise sqlstate", t, "DO $$ BEGIN RAISE SQLSTATE '22012' USING MESSAGE = 'my division'; END $$")
+    q("raise notice", t, "DO $$ BEGIN RAISE NOTICE 'hello %', 1; END $$")
+    q("raise warning", t, "DO $$ BEGIN RAISE WARNING 'careful'; END $$")
+    q("raise in function", t, "SELECT (SELECT 1 / 0) AS v")
+    q("cast failure", t, "SELECT '2026-13-45'::date AS v")
+    q("value too long", t, "SELECT 'abcdef'::varchar(3)::text AS v")
+    q("array error", t, "SELECT '{1,2'::int4[] AS v")
+    q("json error", t, "SELECT '{\"a\": }'::jsonb AS v")
+    q("nested error after rows", t, "SELECT i, 1 / (i - 400) AS v FROM generate_series(1, 1000) i")
+    script(t, "BEGIN")
+    q("failing in block", t, "SELECT 1 / 0")
+    q("after failure in block", t, "SELECT 1 AS v")
+    q("after failure in block insert", t, "INSERT INTO et VALUES (5, 'x', 1)")
+    script(t, "ROLLBACK")
+    q("after rollback", t, "SELECT count(*) AS n FROM et")
+    script(t, "CREATE TEMP TABLE e1(x int); INSERT INTO e1 VALUES (1); SELECT 1 / 0; INSERT INTO e1 VALUES (2)")
+    q("script rolled back", t, "SELECT count(*) AS n FROM e1")
+    script(t, "SELECT 1; SELECT 2; SELECT 3")
+    script(t, "")
+    script(t, "SELEC 1")
+    script(t, "INSERT INTO et VALUES (1, 'dup', 1)")
+    script(t, "INSERT INTO et VALUES (6, 'six', 1); INSERT INTO et VALUES (1, 'dup', 1)")
+    q("after script error", t, "SELECT count(*) AS n FROM et")
+    script(t, "DO $$ BEGIN RAISE EXCEPTION 'in a script' USING ERRCODE = 'ZZ999'; END $$")
+    script(t, "SELECT pg_sleep(0)")
+    script(t, "SET LOCAL x.y = 1")
+    script(t, "BEGIN; INSERT INTO et VALUES (7, 'seven', 1)")
+    q("open block", t, "SELECT count(*) AS n FROM et")
+    script(t, "ROLLBACK")
+    script(t, "BEGIN; SELECT 1 / 0")
+    script(t, "ROLLBACK")
+    return 0
+}
+
+fn session(t: mut &Both): int {
+    same("serverVersion", "session", &t.a.serverVersion().toStr(), &t.b.serverVersion().toStr())
+    same("idle", "session", &t.a.idle().toStr(), &t.b.idle().toStr())
+    return 0
+}
+
+fn main() {
+    let dsn = os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3")
+    let ca = postgres.connect(dsn)
+    if ca.isErr() {
+        println("connect failed: native code " + ca.unwrapErr().code.toStr())
+        exit(77)
+    }
+    let cb = postgres_libpq.connect(dsn)
+    if cb.isErr() {
+        println("connect failed: libpq code " + cb.unwrapErr().code.toStr())
+        exit(77)
+    }
+    var t = Both{a: ca.unwrap(), b: cb.unwrap()}
+    setup(mut &t, "SET TimeZone = 'UTC'")
+    let s = session(mut &t)
+    let e = edges(mut &t)
+    let c = commands(mut &t)
+    let g = generated(mut &t)
+    let p = params(mut &t)
+    let r = errors(mut &t)
+    println("compared: " + COMPARED.toStr())
+    println("differences: " + DIFFS.toStr())
+}

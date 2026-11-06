@@ -4,7 +4,6 @@
 // dropped; a waiter whose deadline passes leaves the queue; a lease left in
 // a transaction is closed and its place reopened; a pool that cannot connect
 // reports it and keeps no place. No handle stays open.
-// needs: pq
 // expect: results 0 1 2 3 4 5 6 7
 // expect: most open at once: 2
 // expect: after: open 2, idle 2, waiting 0
@@ -26,14 +25,14 @@ fn dsn(): str { return os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=p
 type Work = value record { pool: postgres.Pool; k: int; peak: task.Shared[int] }
 
 fn work(w: Work): int {
-    let c = w.pool.acquire().unwrap()
+    var c = w.pool.acquire().unwrap()
     let st = w.pool.stats()
     w.peak.with(fn(p: mut &int) { if st.open > p { p = st.open } })
     let r = c.query("SELECT $1::int8 FROM pg_sleep(0.02)", &[V.Int(w.k)]).unwrap().int(0, 0).unwrap()
     return r
 }
 
-fn pid(c: &postgres.Lease): int { return c.query("SELECT pg_backend_pid()", &[]).unwrap().int(0, 0).unwrap() }
+fn pid(c: mut &postgres.Lease): int { return c.query("SELECT pg_backend_pid()", &[]).unwrap().int(0, 0).unwrap() }
 
 fn stats(p: &postgres.Pool): str {
     let s = p.stats()
@@ -43,7 +42,7 @@ fn stats(p: &postgres.Pool): str {
 type Hold = value record { pool: postgres.Pool; ms: int }
 
 fn hold(h: Hold): int {
-    let c = h.pool.acquire().unwrap()
+    var c = h.pool.acquire().unwrap()
     task.sleep(h.ms).unwrap()
     return 0
 }
@@ -83,17 +82,17 @@ fn run() {
     println("after timeout: " + stats(&one))
     var first = 0
     {
-        let c = one.acquire().unwrap()
-        first = pid(&c)
+        var c = one.acquire().unwrap()
+        first = pid(mut &c)
     }
     {
-        let c = one.acquire().unwrap()
-        println("same connection again: " + (pid(&c) == first).toStr())
+        var c = one.acquire().unwrap()
+        println("same connection again: " + (pid(mut &c) == first).toStr())
         c.exec("BEGIN").unwrap()
     }
     {
-        let c = one.acquire().unwrap()
-        println("in a transaction: closed, a new one: " + (pid(&c) != first).toStr())
+        var c = one.acquire().unwrap()
+        println("in a transaction: closed, a new one: " + (pid(mut &c) != first).toStr())
     }
 
     let bad = postgres.newPool("host=/nonexistent/obx dbname=x", 3)
