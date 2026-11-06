@@ -1,0 +1,423 @@
+// sqlrows: reading query results into the program's own records, a row at a
+// time, for the database clients that stream (sqlserver, postgres, oracle).
+// It knows no client and no wire format: each client describes its columns
+// as Column values and decodes values with its own Codec.
+//
+// A streamed result is read in two phases (design/db-streaming.md):
+//
+//   1. Bind, once: the program's bind function gets the result's Columns and
+//      resolves each field of its record to a column index with index(name,
+//      kind), which checks that the column can be read as that kind. A name
+//      with no column is an error naming the column asked for and listing
+//      the columns there are; extra columns are allowed and never decoded.
+//   2. Read, per row: the program's read function gets the binding and a
+//      RowView, and reads each field by its index with a typed accessor
+//      (int, decimal, text, ... and intOrNull, decimalOrNull, ... for NULL).
+//      No name is looked up per row.
+//
+//     type Order = value record { id: int; customer: str; amount: Decimal; note: Option[str] }
+//     type OrderCols = value record { id: int; customer: int; amount: int; note: int }
+//
+//     fn bindOrder(c: &sqlrows.Columns): Result[OrderCols, sqlrows.Error] {
+//         return Ok(OrderCols{id: try c.index("id", Kind.Int), customer: try c.index("customer_name", Kind.Text),
+//                             amount: try c.index("amount", Kind.Decimal), note: try c.index("note", Kind.Text)})
+//     }
+//     fn readOrder(b: &OrderCols, r: &sqlrows.RowView): Result[Order, sqlrows.Error] {
+//         return Ok(Order{id: try r.int(b.id), customer: try r.text(b.customer),
+//                         amount: try r.decimal(b.amount), note: try r.textOrNull(b.note)})
+//     }
+//
+// Names match with ASCII case ignored and underscores ignored: customer_id,
+// CUSTOMER_ID and customerId are one name. Rename with SQL aliases.
+//
+// NULL: a non-Option accessor on a NULL value is E_NULL naming the column and
+// the row (1 is the first row of the stream). Bind never refuses a column for
+// being nullable: servers describe most computed columns as nullable.
+//
+// Every accessor returns an owned value (text is a str of its own), so a
+// record read from a RowView does not borrow the client's buffers and may be
+// kept after the next fetch.
+
+import "sqldialect"
+import "time"
+
+pub type Error = sqldialect.DbError
+
+// What a field asks its column to be read as.
+pub type Kind = value closed {
+    Int             // int
+    Decimal         // Decimal, exact
+    Float           // float
+    Text            // str
+    Bytes           // str of the exact bytes
+    Bool            // bool
+    Date            // time.Date
+    Time            // time.TimeOfDay
+    DateTime        // time.LocalDateTime
+    OffsetDateTime  // time.OffsetDateTime
+}
+
+pub fn (k: Kind) bit(): int {
+    match k {
+        Kind.Int { return 1 }
+        Kind.Decimal { return 2 }
+        Kind.Float { return 4 }
+        Kind.Text { return 8 }
+        Kind.Bytes { return 16 }
+        Kind.Bool { return 32 }
+        Kind.Date { return 64 }
+        Kind.Time { return 128 }
+        Kind.DateTime { return 256 }
+        Kind.OffsetDateTime { return 512 }
+    }
+}
+
+pub fn (k: Kind) toStr(): str {
+    match k {
+        Kind.Int { return "int" }
+        Kind.Decimal { return "Decimal" }
+        Kind.Float { return "float" }
+        Kind.Text { return "text" }
+        Kind.Bytes { return "bytes" }
+        Kind.Bool { return "bool" }
+        Kind.Date { return "date" }
+        Kind.Time { return "time" }
+        Kind.DateTime { return "date-time" }
+        Kind.OffsetDateTime { return "date-time with offset" }
+    }
+}
+
+// The bits of kinds (Kind.bit), for Column.kinds.
+pub fn kinds(ks: &[Kind]): int {
+    var b = 0
+    for k in ks { b = b | k.bit() }
+    return b
+}
+
+fn kindsText(bits: int): str {
+    let all = [Kind.Int, Kind.Decimal, Kind.Float, Kind.Text, Kind.Bytes, Kind.Bool, Kind.Date, Kind.Time, Kind.DateTime,
+               Kind.OffsetDateTime]
+    var out = ""
+    for k in all {
+        if (bits & k.bit()) != 0 {
+            if len(out) > 0 { out = out + ", " }
+            out = out + k.toStr()
+        }
+    }
+    return if len(out) == 0 { "nothing" } else { out }
+}
+
+pub const NULLABLE_NO = 0
+pub const NULLABLE_YES = 1
+pub const NULLABLE_UNKNOWN = -1   // the server does not say (PostgreSQL)
+
+// A result column as a client describes it. name, typeName, kinds and
+// nullable are for programs; wire, size, precision, scale and aux are the
+// client's own, read by its Codec.
+pub type Column = value record {
+    pub name: str
+    pub typeName: str       // the server's type: "decimal(12,2)", "numeric(10,2)", "NUMBER(10,0)"
+    pub kinds: int          // what it can be read as: Kind bits
+    pub nullable: int       // NULLABLE_*
+    pub wire: int           // the client's type code
+    pub size: int
+    pub precision: int
+    pub scale: int
+    pub aux: int
+    key: str                // the name for matching: ASCII lower case, no underscores
+}
+
+pub fn column(name: str, typeName: str, kinds: int, nullable: int, wire: int, size: int, precision: int, scale: int,
+              aux: int): Column {
+    return Column{name: name, typeName: typeName, kinds: kinds, nullable: nullable, wire: wire, size: size,
+                  precision: precision, scale: scale, aux: aux, key: matchKey(name)}
+}
+
+// The form names are matched in: ASCII letters in lower case, underscores
+// left out, every other byte as it is.
+pub fn matchKey(name: str): str {
+    var b = newStrBuf()
+    for i in 0..len(name) {
+        let c = name[i]
+        if c == '_' { continue }
+        b.addByte(if c >= 'A' && c <= 'Z' { c + 32 } else { c })
+    }
+    return b.toStr()
+}
+
+// The columns of a result, for a bind function.
+pub type Columns = record { cols: []Column }
+
+pub fn columns(cols: []Column): Columns { return Columns{cols: cols} }
+
+pub fn (c: &Columns) count(): int { return len(c.cols) }
+
+// A copy (a stream's columns() gives one: a stream cannot lend its own).
+pub fn (c: &Columns) clone(): Columns {
+    var out: []Column = []
+    for k in c.cols { append(mut &out, k) }
+    return Columns{cols: out}
+}
+
+pub fn (c: &Columns) list(): &[]Column { return &c.cols }
+
+// The i'th column's description (E_INPUT out of range).
+pub fn (c: &Columns) get(i: int): Result[Column, Error] {
+    if i < 0 || i >= len(c.cols) {
+        return Err(sqldialect.inputError("column " + i.toStr() + " out of range (" + len(c.cols).toStr() + " columns)"))
+    }
+    return Ok(c.cols[i])
+}
+
+// "ID, CUSTOMER_ID, AMOUNT" ("none" when there are no columns).
+pub fn (c: &Columns) names(): str {
+    var out = ""
+    for k in c.cols {
+        if len(out) > 0 { out = out + ", " }
+        out = out + k.name
+    }
+    return if len(out) == 0 { "none" } else { out }
+}
+
+// The index of the column named name (case and underscores ignored), after
+// checking it can be read as kind. E_COLUMN when no column has the name (the
+// message lists the columns) or more than one has; E_TYPE when the column's
+// type cannot be read as kind.
+pub fn (c: &Columns) index(name: str, kind: Kind): Result[int, Error] {
+    let key = matchKey(name)
+    var found = -1
+    for i in 0..len(c.cols) {
+        if c.cols[i].key == key {
+            if found >= 0 {
+                return Err(sqldialect.dbError(sqldialect.E_COLUMN, "column \"" + name + "\" is ambiguous: " +
+                                              c.cols[found].name + " and " + c.cols[i].name + " both match"))
+            }
+            found = i
+        }
+    }
+    if found < 0 {
+        return Err(sqldialect.dbError(sqldialect.E_COLUMN, "no column \"" + name + "\" (case and underscores ignored); the columns are: " +
+                                      c.names()))
+    }
+    return c.at(found, kind)
+}
+
+// i, after checking that column i exists and can be read as kind: mapping by
+// position, for columns without a usable name.
+pub fn (c: &Columns) at(i: int, kind: Kind): Result[int, Error] {
+    let col = try c.get(i)
+    if (col.kinds & kind.bit()) == 0 {
+        return Err(sqldialect.dbError(sqldialect.E_TYPE, "column " + col.name + " (" + col.typeName + ") cannot be read as " +
+                                      kind.toStr() + "; it reads as " + kindsText(col.kinds)))
+    }
+    return Ok(i)
+}
+
+// ---------------------------------------------------------------- reading a row
+
+// How a client decodes a value's bytes (as RowView gives them: the value
+// alone, never NULL) for a column it described.
+pub type Codec = value record {
+    pub int: fn(&str, &Column): Result[int, Error]
+    pub decimal: fn(&str, &Column): Result[Decimal, Error]
+    pub float: fn(&str, &Column): Result[float, Error]
+    pub text: fn(&str, &Column): Result[str, Error]
+    pub bytes: fn(&str, &Column): Result[str, Error]
+    pub bool: fn(&str, &Column): Result[bool, Error]
+    pub date: fn(&str, &Column): Result[time.Date, Error]
+    pub time: fn(&str, &Column): Result[time.TimeOfDay, Error]
+    pub dateTime: fn(&str, &Column): Result[time.LocalDateTime, Error]
+    pub offsetDateTime: fn(&str, &Column): Result[time.OffsetDateTime, Error]
+}
+
+// One row of a stream, while the read function runs: the values are
+// data[starts[i]..starts[i] + lens[i]], lens[i] -1 for NULL. It borrows the
+// client's buffers; it cannot be kept.
+pub type RowView = value record {
+    cols: &[]Column
+    codec: &Codec
+    data: &str
+    starts: &[]int
+    lens: &[]int
+    row: int
+}
+
+pub fn rowView(cols: &[]Column, codec: &Codec, data: &str, starts: &[]int, lens: &[]int, row: int): RowView {
+    return RowView{cols: cols, codec: codec, data: data, starts: starts, lens: lens, row: row}
+}
+
+// The row's number in its stream: 1 for the first.
+pub fn (r: &RowView) rowNumber(): int { return r.row }
+
+pub fn (r: &RowView) columnCount(): int { return len(r.cols) }
+
+fn (r: &RowView) check(i: int): Result[int, Error] {
+    if i < 0 || i >= len(r.cols) || i >= len(r.lens) {
+        return Err(sqldialect.inputError("column " + i.toStr() + " out of range (" + len(r.cols).toStr() + " columns)"))
+    }
+    return Ok(r.lens[i])
+}
+
+// Whether column i is NULL in this row.
+pub fn (r: &RowView) isNull(i: int): Result[bool, Error] { return Ok(try r.check(i) < 0) }
+
+fn (r: &RowView) nullError(i: int, accessor: str): Error {
+    return sqldialect.dbError(sqldialect.E_NULL, "column " + r.cols[i].name + " is NULL at row " + r.row.toStr() +
+                              ": read it with " + accessor + "OrNull into an Option")
+}
+
+// A codec's error with the column and the row added.
+fn (r: &RowView) at(i: int, e: Error): Error {
+    return Error{code: e.code, state: e.state, msg: "column " + r.cols[i].name + ", row " + r.row.toStr() + ": " + e.msg}
+}
+
+// The bytes of column i (the caller has checked it is not NULL).
+fn (r: &RowView) value(i: int): &str {
+    let s = r.starts[i]
+    return &r.data[s..s + r.lens[i]]
+}
+
+pub fn (r: &RowView) int(i: int): Result[int, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "int")) }
+    match r.codec.int(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) intOrNull(i: int): Result[Option[int], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.int(i)))
+}
+
+pub fn (r: &RowView) decimal(i: int): Result[Decimal, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "decimal")) }
+    match r.codec.decimal(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) decimalOrNull(i: int): Result[Option[Decimal], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.decimal(i)))
+}
+
+pub fn (r: &RowView) float(i: int): Result[float, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "float")) }
+    match r.codec.float(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) floatOrNull(i: int): Result[Option[float], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.float(i)))
+}
+
+// The text, as a str of its own (it may be kept).
+pub fn (r: &RowView) text(i: int): Result[str, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "text")) }
+    match r.codec.text(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) textOrNull(i: int): Result[Option[str], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.text(i)))
+}
+
+// The exact bytes of a binary value, as a str of its own.
+pub fn (r: &RowView) bytes(i: int): Result[str, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "bytes")) }
+    match r.codec.bytes(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) bytesOrNull(i: int): Result[Option[str], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.bytes(i)))
+}
+
+pub fn (r: &RowView) bool(i: int): Result[bool, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "bool")) }
+    match r.codec.bool(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) boolOrNull(i: int): Result[Option[bool], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.bool(i)))
+}
+
+pub fn (r: &RowView) date(i: int): Result[time.Date, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "date")) }
+    match r.codec.date(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) dateOrNull(i: int): Result[Option[time.Date], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.date(i)))
+}
+
+pub fn (r: &RowView) timeOfDay(i: int): Result[time.TimeOfDay, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "timeOfDay")) }
+    match r.codec.time(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) timeOfDayOrNull(i: int): Result[Option[time.TimeOfDay], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.timeOfDay(i)))
+}
+
+pub fn (r: &RowView) localDateTime(i: int): Result[time.LocalDateTime, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "localDateTime")) }
+    match r.codec.dateTime(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) localDateTimeOrNull(i: int): Result[Option[time.LocalDateTime], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.localDateTime(i)))
+}
+
+pub fn (r: &RowView) offsetDateTime(i: int): Result[time.OffsetDateTime, Error] {
+    if try r.check(i) < 0 { return Err(r.nullError(i, "offsetDateTime")) }
+    match r.codec.offsetDateTime(r.value(i), &r.cols[i]) {
+        Ok(v) { return Ok(v) }
+        Err(e) { return Err(r.at(i, e)) }
+    }
+}
+
+pub fn (r: &RowView) offsetDateTimeOrNull(i: int): Result[Option[time.OffsetDateTime], Error] {
+    if try r.check(i) < 0 { return Ok(None) }
+    return Ok(Some(try r.offsetDateTime(i)))
+}
+
+// ---------------------------------------------------------------- for clients
+
+// E_TYPE: a value of col read as kind, where its codec cannot.
+pub fn wrongKind(col: &Column, kind: str): Error {
+    return sqldialect.dbError(sqldialect.E_TYPE, col.typeName + " cannot be read as " + kind)
+}
+
+// The state of a stream between fills: rows still to come, ended, or failed
+// (its error already returned).
+pub const LIVE = 0
+pub const ENDED = 1
+pub const FAILED = 2

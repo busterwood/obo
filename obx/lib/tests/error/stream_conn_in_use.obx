@@ -1,0 +1,19 @@
+// A stream holds its connection (a mut & borrow): the connection cannot be used while the
+// stream is in scope (design/db-streaming.md).
+// error: 'c' is borrowed by 'src' and cannot be used while that borrow is in scope
+import "sqlserver"
+
+type Error = sqlserver.Error
+type Row = value record { id: int; name: str }
+
+fn bindRow(c: &sqlserver.Columns): Result[int, Error] { return c.index("id", sqlserver.Kind.Int) }
+fn readRow(b: &int, r: &sqlserver.RowView): Result[Row, Error] { return Ok(Row{id: try r.int(b), name: "x"}) }
+
+fn run(c: mut &sqlserver.Conn): Result[int, Error] {
+    var src = try c.stream("SELECT 1 AS id", [], bindRow, readRow)
+    let other = try c.query("SELECT 2", &[])
+    var buf = array(4, Row{id: 0, name: ""})
+    return src.fill(mut &buf)
+}
+
+fn main() {}

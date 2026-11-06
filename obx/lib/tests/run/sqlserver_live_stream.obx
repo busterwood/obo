@@ -1,0 +1,401 @@
+// sqlserver streams against a live SQL Server ($MSSQL_TEST_DSN or
+// ~/.obo-mssql-dsn; never printed). Exits 77, skipped, without one. Rows
+// decoded straight into the program's records (sqlrows): names matched
+// with case and underscores ignored, a missing column (the error lists the
+// columns), a type refused at bind, NULL into an Option and into a plain
+// field (the error names the column and the row), every mapped type, a
+// varchar(max) value longer than a packet, 200,000 rows through a buffer
+// of 7 and of 1,024 against the buffered query, rows kept in a list across
+// fills, next(), an early close and a dropped stream (ATTENTION; the
+// connection is idle and reusable after), an error on a later row, a
+// statement without a result set, by position, parameters.
+// needs: ssl
+// expect: names: 3 rows | 1 7 'Ann' 12.50 | 3 9 'Cy' 0.01 | columns ID, Customer_Id, CUSTOMERNAME, amount, extra
+// expect: missing: error 1024: no column "email" (case and underscores ignored); the columns are: ID, Customer_Id, CUSTOMERNAME, amount, extra
+// expect: ambiguous: error 1024: column "a_b" is ambiguous: ab and A_B both match
+// expect: type: error 1002: column CUSTOMERNAME (nvarchar) cannot be read as Decimal; it reads as text
+// expect: wide int: error 1002: column w (decimal(19,0)) cannot be read as int; it reads as Decimal
+// expect: null: Some(5) None | plain: 1 row, then error 1001: column note is NULL at row 2: read it with textOrNull into an Option | idle true
+// expect: types: 42 7 -3 12.50 123456789012 2.5000 0.1 0.5 'café' 'naïve' x'00ff10' true false 2026-11-05 13:45:07.123 2026-11-05T13:45:07.1234567 2026-11-05T13:45:07 2026-11-05T13:45:07+01:30 6F9619FF-8B86-D011-B42D-00C04FC964FF 9000 x'' None
+// expect: buffered: 200000 rows sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 7: 200000 rows in 28572 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: buffer 1024: 200000 rows in 196 fills sum 20000100000 amounts 200001000.00 names 1888895
+// expect: kept: 300 rows equal to the buffered query true | first 'name1' 0.01 last 'name300' 3.00
+// expect: next: 1 2 3 None
+// expect: early close: 5 rows | streaming false idle true | after: 2
+// expect: dropped: 3 rows | idle false | after: 2 | idle true
+// expect: later error: 4999 rows then error 8134 | idle true | after: 2
+// expect: no result set: 0 rows | columns none
+// expect: position: 7 'x'
+// expect: parameters: 3 rows 24 | after: 2
+// expect: open handles: 0
+
+import "sqlserver"
+import "sqldialect"
+import "io"
+import "os"
+import "strings"
+
+type Kind = sqlserver.Kind
+type Error = sqlserver.Error
+type Columns = sqlserver.Columns
+type RowView = sqlserver.RowView
+
+fn dsn(): Option[str] {
+    match os.env("MSSQL_TEST_DSN") {
+        Some(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        None {}
+    }
+    match io.read(os.envOr("HOME", "") + "/.obo-mssql-dsn") {
+        Ok(d) { if len(trim(d)) > 0 { return Some(trim(d)) } }
+        Err(_) {}
+    }
+    return None
+}
+
+fn err[T: borrow](r: Result[T, Error]): str {
+    match r {
+        Ok(_) { return "ok" }
+        Err(e) { return e.toStr() }
+    }
+}
+
+// ---- a record mapped by name
+
+type Order = value record { id: int; customer: int; name: str; amount: Decimal }
+type OrderCols = value record { id: int; customer: int; name: int; amount: int }
+
+fn bindOrder(c: &Columns): Result[OrderCols, Error] {
+    return Ok(OrderCols{id: try c.index("id", Kind.Int), customer: try c.index("customer_id", Kind.Int),
+                        name: try c.index("customerName", Kind.Text), amount: try c.index("AMOUNT", Kind.Decimal)})
+}
+
+fn readOrder(b: &OrderCols, r: &RowView): Result[Order, Error] {
+    return Ok(Order{id: try r.int(b.id), customer: try r.int(b.customer), name: try r.text(b.name), amount: try r.decimal(b.amount)})
+}
+
+fn show(o: &Order): str { return o.id.toStr() + " " + o.customer.toStr() + " '" + o.name + "' " + o.amount.toStr() }
+
+const ORDERS = "SELECT id AS ID, cust AS Customer_Id, nm AS CUSTOMERNAME, amt AS amount, 0 AS extra FROM #o ORDER BY id"
+
+fn names(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var src = try c.stream(ORDERS, [], bindOrder, readOrder)
+    var buf = array(2, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    var all: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for o in buf[0..n] { append(mut &all, o) }
+    }
+    println("names: " + len(all).toStr() + " rows | " + show(&all[0]) + " | " + show(&all[2]) + " | columns " + src.columns().names())
+    return Ok(Unit{})
+}
+
+// ---- bind errors
+
+type Email = value record { email: str }
+fn bindEmail(c: &Columns): Result[int, Error] { return c.index("email", Kind.Text) }
+fn readEmail(b: &int, r: &RowView): Result[Email, Error] { return Ok(Email{email: try r.text(b)}) }
+
+fn bindAb(c: &Columns): Result[int, Error] { return c.index("a_b", Kind.Int) }
+fn readInt(b: &int, r: &RowView): Result[int, Error] { return r.int(b) }
+
+fn bindNameAsDecimal(c: &Columns): Result[int, Error] { return c.index("customername", Kind.Decimal) }
+fn readDec(b: &int, r: &RowView): Result[Decimal, Error] { return r.decimal(b) }
+
+fn bindW(c: &Columns): Result[int, Error] { return c.index("w", Kind.Int) }
+
+// ---- NULL
+
+type Noted = value record { qty: Option[int]; note: str }
+type NotedCols = value record { qty: int; note: int }
+fn bindNoted(c: &Columns): Result[NotedCols, Error] {
+    return Ok(NotedCols{qty: try c.index("qty", Kind.Int), note: try c.index("note", Kind.Text)})
+}
+fn readNoted(b: &NotedCols, r: &RowView): Result[Noted, Error] {
+    return Ok(Noted{qty: try r.intOrNull(b.qty), note: try r.text(b.note)})
+}
+fn readQty(b: &NotedCols, r: &RowView): Result[Option[int], Error] { return r.intOrNull(b.qty) }
+
+fn nulls(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    let sql = "SELECT CAST(5 AS int) AS qty, N'a' AS note UNION ALL SELECT NULL, NULL"
+    var q = try c.stream(sql, [], bindNoted, readQty)
+    let a = try q.next()
+    let b = try q.next()
+    var line = "null: " + a.unwrap().toStr() + " " + b.unwrap().toStr()
+    q.close()
+    var p = try c.stream(sql, [], bindNoted, readNoted)
+    var buf = array(4, Noted{qty: None, note: ""})
+    let first = try p.fill(mut &buf)
+    line = line + " | plain: " + first.toStr() + " row, then " + err(p.fill(mut &buf))
+    println(line + " | idle " + c.idle().toStr())
+    return Ok(Unit{})
+}
+
+// ---- every type
+
+type All = value record {
+    big: int; tiny: int; small: int; amount: Decimal; whole: int; cash: Decimal; ratio: float; half: float
+    name: str; code: str; data: str; flag: bool; off: bool; day: str; at: str; stamp: str; old: str; zoned: str; guid: str
+    long: int; empty: str; none: Option[str]
+}
+type AllCols = value record {
+    big: int; tiny: int; small: int; amount: int; whole: int; cash: int; ratio: int; half: int
+    name: int; code: int; data: int; flag: int; off: int; day: int; at: int; stamp: int; old: int; zoned: int; guid: int
+    long: int; empty: int; none: int
+}
+
+fn bindAll(c: &Columns): Result[AllCols, Error] {
+    return Ok(AllCols{big: try c.index("big", Kind.Int), tiny: try c.index("tiny", Kind.Int), small: try c.index("small", Kind.Int),
+                      amount: try c.index("amount", Kind.Decimal), whole: try c.index("whole", Kind.Int),
+                      cash: try c.index("cash", Kind.Decimal), ratio: try c.index("ratio", Kind.Float),
+                      half: try c.index("half", Kind.Float), name: try c.index("name", Kind.Text), code: try c.index("code", Kind.Text),
+                      data: try c.index("data", Kind.Bytes), flag: try c.index("flag", Kind.Bool), off: try c.index("off", Kind.Bool),
+                      day: try c.index("day", Kind.Date), at: try c.index("at", Kind.Time), stamp: try c.index("stamp", Kind.DateTime),
+                      old: try c.index("old", Kind.DateTime), zoned: try c.index("zoned", Kind.OffsetDateTime),
+                      guid: try c.index("guid", Kind.Text), long: try c.index("long_text", Kind.Text),
+                      empty: try c.index("empty", Kind.Bytes), none: try c.index("none", Kind.Text)})
+}
+
+fn readAll(b: &AllCols, r: &RowView): Result[All, Error] {
+    return Ok(All{big: try r.int(b.big), tiny: try r.int(b.tiny), small: try r.int(b.small), amount: try r.decimal(b.amount),
+                  whole: try r.int(b.whole), cash: try r.decimal(b.cash), ratio: try r.float(b.ratio), half: try r.float(b.half),
+                  name: try r.text(b.name), code: try r.text(b.code), data: try r.bytes(b.data), flag: try r.bool(b.flag),
+                  off: try r.bool(b.off), day: (try r.date(b.day)).toStr(), at: (try r.timeOfDay(b.at)).toStr(),
+                  stamp: (try r.localDateTime(b.stamp)).toStr(), old: (try r.localDateTime(b.old)).toStr(),
+                  zoned: (try r.offsetDateTime(b.zoned)).toStr(), guid: try r.text(b.guid), long: len(try r.text(b.long)),
+                  empty: try r.bytes(b.empty), none: try r.textOrNull(b.none)})
+}
+
+fn types(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    let sql = "SELECT CAST(42 AS bigint) AS big, CAST(7 AS tinyint) AS tiny, CAST(-3 AS smallint) AS small, " +
+              "CAST(12.5 AS decimal(12,2)) AS amount, CAST(123456789012 AS numeric(18,0)) AS whole, CAST(2.5 AS money) AS cash, " +
+              "CAST(0.1 AS float) AS ratio, CAST(0.5 AS real) AS half, N'café' AS name, " +
+              "CAST(N'naïve' COLLATE Latin1_General_CI_AS AS varchar(20)) AS code, CAST(0x00ff10 AS varbinary(10)) AS data, " +
+              "CAST(1 AS bit) AS flag, CAST(0 AS bit) AS [off], CAST('2026-11-05' AS date) AS day, CAST('13:45:07.123' AS time(3)) AS at, " +
+              "CAST('2026-11-05 13:45:07.1234567' AS datetime2(7)) AS stamp, CAST('2026-11-05 13:45:07' AS datetime) AS old, " +
+              "CAST('2026-11-05 13:45:07 +01:30' AS datetimeoffset(0)) AS zoned, " +
+              "CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS uniqueidentifier) AS guid, " +
+              "REPLICATE(CAST(N'x' AS nvarchar(max)), 9000) AS long_text, CAST(0x AS varbinary(max)) AS empty, " +
+              "CAST(NULL AS nvarchar(5)) AS none"
+    var s = try c.stream(sql, [], bindAll, readAll)
+    let a = (try s.next()).unwrap()
+    println("types: " + a.big.toStr() + " " + a.tiny.toStr() + " " + a.small.toStr() + " " + a.amount.toStr() + " " + a.whole.toStr() +
+            " " + a.cash.toStr() + " " + a.ratio.toStr() + " " + a.half.toStr() + " '" + a.name + "' '" + a.code + "' x'" +
+            sqldialect.hex(a.data) + "' " + a.flag.toStr() + " " + a.off.toStr() + " " + a.day + " " + a.at + " " + a.stamp + " " +
+            a.old + " " + a.zoned + " " + a.guid + " " + a.long.toStr() + " x'" + sqldialect.hex(a.empty) + "' " + a.none.toStr())
+    return Ok(Unit{})
+}
+
+// ---- many rows
+
+const MANY = "WITH n AS (SELECT TOP (200000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i " +
+             "FROM sys.all_columns a CROSS JOIN sys.all_columns b) " +
+             "SELECT i AS id, CAST(i % 1000 AS int) AS customer_id, N'name' + CAST(i AS nvarchar(10)) AS customer_name, " +
+             "CAST(i / 100.0 AS decimal(12,2)) AS amount FROM n ORDER BY i"
+
+fn many(c: mut &sqlserver.Conn, size: int): Result[Unit, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    var rows = 0
+    var fills = 0
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        fills += 1
+        for o in buf[0..n] {
+            rows += 1
+            sum += o.id
+            amounts = amounts + o.amount
+            chars += len(o.name)
+        }
+    }
+    println("buffer " + size.toStr() + ": " + rows.toStr() + " rows in " + fills.toStr() + " fills sum " + sum.toStr() + " amounts " +
+            amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+fn buffered(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    let r = try c.query(MANY, &[])
+    var sum = 0
+    var amounts = 0.00m
+    var chars = 0
+    for i in 0..r.rowCount() {
+        sum += try r.int(i, 0)
+        amounts = amounts + try r.decimal(i, 3)
+        chars += len(try r.text(i, 2))
+    }
+    println("buffered: " + r.rowCount().toStr() + " rows sum " + sum.toStr() + " amounts " + amounts.toStr() + " names " + chars.toStr())
+    return Ok(Unit{})
+}
+
+// ---- rows kept across fills
+
+fn kept(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    let sql = strings.replaceAll(MANY, "TOP (200000)", "TOP (300)")
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(7, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    var list: []Order = []
+    while true {
+        let n = try src.fill(mut &buf)
+        if n == 0 { break }
+        for i in 0..n { append(mut &list, buf[i]) }
+    }
+    let r = try c.query(sql, &[])
+    var same = len(list) == r.rowCount()
+    for i in 0..len(list) {
+        let o = list[i]
+        same = same && o.id == (try r.int(i, 0)) && o.customer == (try r.int(i, 1)) && o.name == (try r.text(i, 2)) &&
+               o.amount == (try r.decimal(i, 3))
+    }
+    let last = list[len(list) - 1]
+    println("kept: " + len(list).toStr() + " rows equal to the buffered query " + same.toStr() + " | first '" + list[0].name + "' " +
+            list[0].amount.toStr() + " last '" + last.name + "' " + last.amount.toStr())
+    return Ok(Unit{})
+}
+
+// ---- next, early close, drop, a later error
+
+fn bindFirst(c: &Columns): Result[int, Error] { return c.at(0, Kind.Int) }
+
+fn nexts(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3", [], bindFirst, readInt)
+    var line = "next:"
+    for i in 0..3 { line = line + " " + (try s.next()).unwrap().toStr() }
+    println(line + " " + (try s.next()).toStr())
+    return Ok(Unit{})
+}
+
+fn after(c: mut &sqlserver.Conn): str {
+    match c.query("SELECT 1 + 1", &[]) {
+        Ok(r) { return r.int(0, 0).unwrap().toStr() }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn early(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var src = try c.stream(MANY, [], bindOrder, readOrder)
+    var buf = array(5, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    let n = try src.fill(mut &buf)
+    try src.close()
+    println("early close: " + n.toStr() + " rows | streaming " + c.streaming().toStr() + " idle " + c.idle().toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn dropped(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var n = 0
+    if true {
+        var src = try c.stream(MANY, [], bindOrder, readOrder)
+        for i in 0..3 { if (try src.next()).isSome() { n += 1 } }
+    }
+    let idle = c.idle()
+    println("dropped: " + n.toStr() + " rows | idle " + idle.toStr() + " | after: " + after(c) + " | idle " + c.idle().toStr())
+    return Ok(Unit{})
+}
+
+fn later(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    let sql = "SELECT TOP (10000) 100 / (i - 5000) AS id, 1 AS customer_id, N'n' AS customer_name, CAST(1 AS decimal(12,2)) AS amount " +
+              "FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i FROM sys.all_columns a CROSS JOIN sys.all_columns b) AS n ORDER BY i"
+    var src = try c.stream(sql, [], bindOrder, readOrder)
+    var buf = array(64, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    var rows = 0
+    var e = ""
+    while true {
+        match src.fill(mut &buf) {
+            Ok(n) {
+                if n == 0 { break }
+                rows += n
+            }
+            Err(x) {
+                e = "error " + x.code.toStr()
+                break
+            }
+        }
+    }
+    println("later error: " + rows.toStr() + " rows then " + e + " | idle " + c.idle().toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn bindNone(c: &Columns): Result[int, Error] { return Ok(c.count()) }
+
+fn noSet(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var s = try c.stream("UPDATE #o SET amt = amt WHERE id < 0", [], bindNone, readInt)
+    var buf = array(4, 0)
+    let n = try s.fill(mut &buf)
+    println("no result set: " + n.toStr() + " rows | columns " + s.columns().names())
+    return Ok(Unit{})
+}
+
+type Pos = value record { n: int; s: str }
+fn bindPos(c: &Columns): Result[int, Error] {
+    let a = try c.at(0, Kind.Int)
+    let b = try c.at(1, Kind.Text)
+    return Ok(a + b)
+}
+fn readPos(b: &int, r: &RowView): Result[Pos, Error] { return Ok(Pos{n: try r.int(0), s: try r.text(1)}) }
+
+fn position(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT 7, N'x'", [], bindPos, readPos)
+    let p = (try s.next()).unwrap()
+    println("position: " + p.n.toStr() + " '" + p.s + "'")
+    return Ok(Unit{})
+}
+
+fn params(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    var s = try c.stream("SELECT id AS ID, cust AS Customer_Id, nm AS CUSTOMERNAME, amt AS amount FROM #o WHERE id >= @p1 AND nm <> @p2 ORDER BY id",
+                         [sqlserver.Value.Int(1), sqlserver.Value.Text("zz")], bindOrder, readOrder)
+    var buf = array(8, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+    let n = try s.fill(mut &buf)
+    var t = 0
+    for o in buf[0..n] { t += o.customer }
+    try s.close()
+    println("parameters: " + n.toStr() + " rows " + t.toStr() + " | after: " + after(c))
+    return Ok(Unit{})
+}
+
+fn run(c: mut &sqlserver.Conn): Result[Unit, Error] {
+    try c.exec("CREATE TABLE #o(id bigint, cust int, nm nvarchar(20), amt decimal(12,2), qty int NULL, note nvarchar(10) NULL)")
+    try c.exec("INSERT INTO #o VALUES (1, 7, N'Ann', 12.50, 5, N'a'), (2, 8, N'Bo', 3.00, NULL, NULL), (3, 9, N'Cy', 0.01, 1, N'c')")
+    try names(c)
+    println("missing: " + err(c.stream(ORDERS, [], bindEmail, readEmail)))
+    println("ambiguous: " + err(c.stream("SELECT 1 AS ab, 2 AS A_B", [], bindAb, readInt)))
+    println("type: " + err(c.stream(ORDERS, [], bindNameAsDecimal, readDec)))
+    println("wide int: " + err(c.stream("SELECT CAST(1 AS decimal(19,0)) AS w", [], bindW, readInt)))
+    try nulls(c)
+    try types(c)
+    try buffered(c)
+    try many(c, 7)
+    try many(c, 1024)
+    try kept(c)
+    try nexts(c)
+    try early(c)
+    try dropped(c)
+    try later(c)
+    try noSet(c)
+    try position(c)
+    try params(c)
+    return Ok(Unit{})
+}
+
+fn main() {
+    let d = match dsn() {
+        Some(x) { x }
+        None { exit(77) }
+    }
+    if true {
+        let r = sqlserver.connect(d + ";Encrypt=yes")
+        if r.isErr() {
+            println("connect failed: " + r.unwrapErr().code.toStr())
+            exit(1)
+        }
+        var c = r.unwrap()
+        match run(mut &c) {
+            Ok(_) {}
+            Err(e) { println("FAIL " + e.toStr()) }
+        }
+    }
+    println("open handles: " + sqlserver.openHandles().toStr())
+}

@@ -1,0 +1,178 @@
+// Streaming against buffered reads of the same query, for the three
+// database clients (design/db-streaming.md, section 7). Run by run.py:
+//
+//     dbstream CLIENT MODE ROWS [BUFFER]
+//
+// CLIENT is mssql, pg or oracle (the DSNs as the live tests find them:
+// MSSQL_TEST_DSN or ~/.obo-mssql-dsn, OBX_PG_DSN, ORACLE_TEST_DSN or
+// ~/.obo-oracle-dsn; never printed); MODE is stream or buffered. Every row
+// is decoded into an Order (bigint, int, text, decimal(12,2)) and folded
+// into a checksum. Prints: client mode rows ms peak-KB checksum. The peak is
+// the process's VmHWM.
+
+import "sqlserver"
+import "postgres"
+import "oracle"
+import "sqlrows"
+import "io"
+import "os"
+import "strings"
+import "time"
+
+type Error = sqlrows.Error
+type Kind = sqlrows.Kind
+
+type Order = value record { id: int; customer: int; name: str; amount: Decimal }
+type OrderCols = value record { id: int; customer: int; name: int; amount: int }
+
+fn bindOrder(c: &sqlrows.Columns): Result[OrderCols, Error] {
+    return Ok(OrderCols{id: try c.index("id", Kind.Int), customer: try c.index("customer_id", Kind.Int),
+                        name: try c.index("customer_name", Kind.Text), amount: try c.index("amount", Kind.Decimal)})
+}
+
+fn readOrder(b: &OrderCols, r: &sqlrows.RowView): Result[Order, Error] {
+    return Ok(Order{id: try r.int(b.id), customer: try r.int(b.customer), name: try r.text(b.name), amount: try r.decimal(b.amount)})
+}
+
+// The checksum of the rows so far.
+type Sum = value record { rows: int; ids: int; chars: int; units: int }
+
+fn (s: mut &Sum) add(o: &Order) {
+    s.rows += 1
+    s.ids += o.id + o.customer
+    s.chars += len(o.name)
+    s.units += o.amount.toInt(Rounding.TOWARD_ZERO).unwrapOr(0)
+}
+
+fn fileOr(env: str, file: str): str {
+    match os.env(env) {
+        Some(d) { if len(trim(d)) > 0 { return trim(d) } }
+        None {}
+    }
+    if len(file) == 0 { return "" }
+    match io.read(os.envOr("HOME", "") + "/" + file) {
+        Ok(d) { return trim(d) }
+        Err(_) { return "" }
+    }
+}
+
+fn mssqlSql(n: int): str {
+    return "WITH n AS (SELECT TOP (" + n.toStr() + ") ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i " +
+           "FROM sys.all_columns a CROSS JOIN sys.all_columns b) " +
+           "SELECT i AS id, CAST(i % 1000 AS int) AS customer_id, N'name' + CAST(i AS nvarchar(10)) AS customer_name, " +
+           "CAST(i / 100.0 AS decimal(12,2)) AS amount FROM n"
+}
+
+fn pgSql(n: int): str {
+    return "SELECT i::int8 AS id, (i % 1000)::int4 AS customer_id, 'name' || i AS customer_name, " +
+           "(i / 100.0)::numeric(12,2) AS amount FROM generate_series(1, " + n.toStr() + ") i"
+}
+
+fn oracleSql(n: int): str {
+    return "SELECT ROWNUM AS id, MOD(ROWNUM, 1000) AS customer_id, 'name' || ROWNUM AS customer_name, " +
+           "CAST(ROWNUM / 100 AS NUMBER(12,2)) AS amount FROM (SELECT 1 FROM dual CONNECT BY level <= 1000) a, " +
+           "(SELECT 1 FROM dual CONNECT BY level <= " + ((n + 999) / 1000).toStr() + ") b WHERE ROWNUM <= " + n.toStr()
+}
+
+fn mssql(stream: bool, n: int, size: int): Result[Sum, Error] {
+    var c = try sqlserver.connect(fileOr("MSSQL_TEST_DSN", ".obo-mssql-dsn") + ";Encrypt=yes")
+    var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
+    if stream {
+        var src = try c.stream(mssqlSql(n), [], bindOrder, readOrder)
+        var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+        while true {
+            let k = try src.fill(mut &buf)
+            if k == 0 { break }
+            for o in buf[0..k] { s.add(&o) }
+        }
+    } else {
+        let r = try c.query(mssqlSql(n), &[])
+        for i in 0..r.rowCount() {
+            let o = Order{id: try r.int(i, 0), customer: try r.int(i, 1), name: try r.text(i, 2), amount: try r.decimal(i, 3)}
+            s.add(&o)
+        }
+    }
+    return Ok(s)
+}
+
+fn pg(stream: bool, n: int, size: int): Result[Sum, Error] {
+    var c = try postgres.connect(os.envOr("OBX_PG_DSN", "host=/var/run/postgresql dbname=postgres connect_timeout=3"))
+    var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
+    if stream {
+        var src = try c.stream(pgSql(n), [], bindOrder, readOrder)
+        var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+        while true {
+            let k = try src.fill(mut &buf)
+            if k == 0 { break }
+            for o in buf[0..k] { s.add(&o) }
+        }
+    } else {
+        let r = try c.query(pgSql(n), &[])
+        for i in 0..r.rowCount() {
+            let o = Order{id: try r.int(i, 0), customer: try r.int(i, 1), name: try r.text(i, 2), amount: try r.decimal(i, 3)}
+            s.add(&o)
+        }
+    }
+    return Ok(s)
+}
+
+fn ora(stream: bool, n: int, size: int): Result[Sum, Error] {
+    var c = try oracle.connect(fileOr("ORACLE_TEST_DSN", ".obo-oracle-dsn"))
+    c.setFetchSize(size)
+    var s = Sum{rows: 0, ids: 0, chars: 0, units: 0}
+    if stream {
+        var src = try c.stream(oracleSql(n), [], bindOrder, readOrder)
+        var buf = array(size, Order{id: 0, customer: 0, name: "", amount: 0.00m})
+        while true {
+            let k = try src.fill(mut &buf)
+            if k == 0 { break }
+            for o in buf[0..k] { s.add(&o) }
+        }
+    } else {
+        let r = try c.query(oracleSql(n), &[])
+        for i in 0..r.rowCount() {
+            let o = Order{id: try r.int(i, 0), customer: try r.int(i, 1), name: try r.text(i, 2), amount: try r.decimal(i, 3)}
+            s.add(&o)
+        }
+    }
+    c.logoff()
+    return Ok(s)
+}
+
+// The process's peak resident set (VmHWM), in KB.
+fn peakKb(): int {
+    match io.read("/proc/self/status") {
+        Ok(t) {
+            for line in split(t, '\n') {
+                if startsWith(line, "VmHWM:") { return parseInt(trim(strings.replaceAll(line[6..], "kB", ""))).unwrapOr(-1) }
+            }
+        }
+        Err(_) {}
+    }
+    return -1
+}
+
+fn main() {
+    let a = os.argv()
+    if len(a) < 4 {
+        eprintln("usage: dbstream mssql|pg|oracle stream|buffered ROWS [BUFFER]")
+        exit(2)
+    }
+    let client = a[1]
+    let stream = a[2] == "stream"
+    let n = parseInt(a[3]).unwrapOr(1000)
+    let size = if len(a) > 4 { parseInt(a[4]).unwrapOr(1024) } else { 1024 }
+    let t0 = time.monotonicNs()
+    let r = if client == "mssql" { mssql(stream, n, size) } else if client == "pg" { pg(stream, n, size) } else { ora(stream, n, size) }
+    let ms = (time.monotonicNs() - t0) / 1000000
+    match r {
+        Ok(s) {
+            println(client + " " + a[2] + " " + s.rows.toStr() + " " + ms.toStr() + " " + peakKb().toStr() + " " +
+                    (s.ids + s.chars + s.units).toStr())
+        }
+        Err(e) {
+            println("error " + e.code.toStr())
+            exit(1)
+        }
+    }
+}
