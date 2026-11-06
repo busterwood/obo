@@ -1321,52 +1321,114 @@ fn rowData(c: mut &Cur, r: &Reply): Result[[]Cell, Error] {
 }
 
 // A row kept as its values' bytes (Reply.raw), appended to rawData; a row
-// cut off at the end of c is taken back.
+// cut off at the end of c is taken back (c.short).
 fn rawRow(c: mut &Cur, r: mut &Reply): Result[Unit, Error] {
-    let mark = len(r.rawData)
-    let base = len(r.rawStarts)
-    match rawValues(c, r, base) {
-        Ok(_) {
-            r.bitvec = ""
-            r.rawRows += 1
-            return Ok(Unit{})
-        }
-        Err(e) {
-            while len(r.rawData) > mark { let b = pop(mut &r.rawData) }
-            while len(r.rawStarts) > base { let x = pop(mut &r.rawStarts) }
-            while len(r.rawLens) > base { let y = pop(mut &r.rawLens) }
-            return Err(e)
-        }
+    let q = try scanRaw(&c.s, c.pos, r)
+    if q == RAW_SHORT {
+        c.short = true
+        return Err(proto("row data: the packet ends inside a row"))
     }
+    c.pos = q
+    return Ok(Unit{})
 }
 
-fn rawValues(c: mut &Cur, r: mut &Reply, base: int): Result[Unit, Error] {
+// What scanRaw gives when d ends inside the row.
+const RAW_SHORT = -1
+
+// Whether a column's value is the plain length-prefixed bytes (Cur.bytes's
+// form) that scanRaw reads in place; the others (ROWID, LOBs, LONG, the
+// unsupported types, a column without a buffer) go through columnRaw.
+fn plainRaw(col: &Column): bool {
+    let t = col.oraType
+    if col.bufferSize == 0 { return false }
+    return t != T_ROWID && t != T_CLOB && t != T_BLOB && t != T_BFILE && t != T_CURSOR && t != T_JSON && t != T_VECTOR &&
+           t != T_OBJECT && t != T_LONG && t != T_LONG_RAW
+}
+
+// One ROW_DATA's values at d[at..] appended to r's raw rows: the position
+// after them, or RAW_SHORT (nothing appended) when d ends inside the row,
+// which is then decoded again with the next packet joined on. Plain values
+// (a length byte below 254, then the bytes) are read straight from d, the
+// rest (chunked values over 252 bytes, the other types) with columnRaw.
+fn scanRaw(d: &str, at: int, r: mut &Reply): Result[int, Error] {
     let nc = len(r.columns)
+    let n = len(d)
+    let mark = len(r.rawData)
+    let base = len(r.rawStarts)
+    let rep = len(r.bitvec) > 0
+    var p = at
+    var short = false
     for i in 0..nc {
-        if len(r.bitvec) > 0 && (int(r.bitvec[i / 8]) & (1 << (i % 8))) == 0 {
-            let p = base - nc + i
-            if p < 0 { return Err(proto("a repeated column without a previous row")) }
-            let from = r.rawStarts[p]
-            let n = r.rawLens[p]
-            append(mut &r.rawStarts, len(r.rawData))
-            append(mut &r.rawLens, n)
-            for k in 0..n {
-                let b = r.rawData[from + k]
-                append(mut &r.rawData, b)
+        if rep && (int(r.bitvec[i / 8]) & (1 << (i % 8))) == 0 {
+            let q = base - nc + i
+            if q < 0 {
+                rawBack(r, mark, base)
+                return Err(proto("a repeated column without a previous row"))
             }
+            let from = r.rawStarts[q]
+            let k = r.rawLens[q]
+            append(mut &r.rawStarts, len(r.rawData))
+            append(mut &r.rawLens, k)
+            if k > 0 { appendStr(mut &r.rawData, strFromBytes(&r.rawData[from..from + k])) }
             continue
         }
-        let col = r.columns[i]
-        append(mut &r.rawStarts, len(r.rawData))
-        match try columnRaw(c, &col) {
-            Some(v) {
-                append(mut &r.rawLens, len(v))
-                appendStr(mut &r.rawData, v)
+        if plainRaw(&r.columns[i]) && p < n {
+            let l = int(d[p])
+            if l == 0 || l == 255 {
+                append(mut &r.rawStarts, len(r.rawData))
+                append(mut &r.rawLens, -1)
+                p += 1
+                continue
             }
-            None { append(mut &r.rawLens, -1) }
+            if l != 254 {
+                if p + 1 + l > n {
+                    short = true
+                    break
+                }
+                append(mut &r.rawStarts, len(r.rawData))
+                append(mut &r.rawLens, l)
+                appendStr(mut &r.rawData, d[p + 1..p + 1 + l])
+                p += 1 + l
+                continue
+            }
+        }
+        var c = Cur{s: d, pos: p, short: false}
+        match columnRaw(mut &c, &r.columns[i]) {
+            Ok(v) {
+                append(mut &r.rawStarts, len(r.rawData))
+                match v {
+                    Some(b) {
+                        append(mut &r.rawLens, len(b))
+                        appendStr(mut &r.rawData, b)
+                    }
+                    None { append(mut &r.rawLens, -1) }
+                }
+                p = c.pos
+            }
+            Err(e) {
+                if !c.short {
+                    rawBack(r, mark, base)
+                    return Err(e)
+                }
+                short = true
+                break
+            }
         }
     }
-    return Ok(Unit{})
+    if short {
+        rawBack(r, mark, base)
+        return Ok(RAW_SHORT)
+    }
+    r.bitvec = ""
+    r.rawRows += 1
+    return Ok(p)
+}
+
+// Takes back the values of a row scanRaw did not finish.
+fn rawBack(r: mut &Reply, mark: int, base: int) {
+    while len(r.rawData) > mark { let b = pop(mut &r.rawData) }
+    while len(r.rawStarts) > base { let x = pop(mut &r.rawStarts) }
+    while len(r.rawLens) > base { let y = pop(mut &r.rawLens) }
 }
 
 // A column's value as its bytes (None: NULL), as columnValue reads it: a
@@ -1943,22 +2005,35 @@ fn (s: mut &Stream) write(data: &[byte], w: Where): Result[Unit, Error] {
     }
 }
 
+// Bytes read from the socket and not yet taken: buf[pos..end].
 type Inbox = record { buf: []byte; pos: int; end: int }
 
-fn readFull(s: mut &Stream, ib: mut &Inbox, dst: mut &[byte], w: Where): Result[Unit, Error] {
-    var have = 0
-    while have < len(dst) {
-        if ib.pos < ib.end {
-            let n = min(ib.end - ib.pos, len(dst) - have)
-            for k in 0..n { dst[have + k] = ib.buf[ib.pos + k] }
-            ib.pos += n
-            have += n
-            continue
+const INBOX = 65536
+
+// Makes buf[pos..end] hold at least n bytes, reading as much as the socket
+// has each time. The bytes not taken move to the front only when the rest
+// of buf cannot hold n; buf grows for a packet larger than itself.
+fn fillTo(s: mut &Stream, ib: mut &Inbox, n: int, w: Where): Result[Unit, Error] {
+    while ib.end - ib.pos < n {
+        if ib.pos == ib.end {
+            ib.pos = 0
+            ib.end = 0
         }
-        let n = try s.read(mut &ib.buf, w)
-        if n == 0 { return Err(ioErr("the server closed the connection")) }
-        ib.pos = 0
-        ib.end = n
+        if ib.pos + n > len(ib.buf) {
+            let k = ib.end - ib.pos
+            if n > len(ib.buf) {
+                var nb = array(max(n, 2 * len(ib.buf)), byte(0))
+                for i in 0..k { nb[i] = ib.buf[ib.pos + i] }
+                ib.buf = nb
+            } else {
+                for i in 0..k { ib.buf[i] = ib.buf[ib.pos + i] }
+            }
+            ib.pos = 0
+            ib.end = k
+        }
+        let got = try s.read(mut &ib.buf[ib.end..], w)
+        if got == 0 { return Err(ioErr("the server closed the connection")) }
+        ib.end += got
     }
     return Ok(Unit{})
 }
@@ -1969,13 +2044,12 @@ pub type Packet = value record { pub ptype: int; pub flags: int; pub data: str }
 pub type Transport = record {
     s: Stream
     inbox: Inbox
-    hdr: []byte
     large: bool             // after an ACCEPT of version 315 and up: 32-bit lengths
     pub sdu: int
 }
 
 fn transport(s: Stream): Transport {
-    return Transport{s: s, inbox: Inbox{buf: array(16384, byte(0)), pos: 0, end: 0}, hdr: array(HEADER, byte(0)),
+    return Transport{s: s, inbox: Inbox{buf: array(INBOX, byte(0)), pos: 0, end: 0},
                      large: false, sdu: SDU}
 }
 
@@ -2021,17 +2095,20 @@ fn (t: mut &Transport) sendData(msg: &[]byte, w: Where): Result[Unit, Error] {
 }
 
 fn (t: mut &Transport) receive(w: Where): Result[Packet, Error] {
-    try readFull(mut &t.s, mut &t.inbox, mut &t.hdr, w)
+    try fillTo(mut &t.s, mut &t.inbox, HEADER, w)
+    let h = t.inbox.pos
     var n = 0
     if t.large {
-        n = (int(t.hdr[0]) << 24) | (int(t.hdr[1]) << 16) | (int(t.hdr[2]) << 8) | int(t.hdr[3])
+        n = (int(t.inbox.buf[h]) << 24) | (int(t.inbox.buf[h + 1]) << 16) | (int(t.inbox.buf[h + 2]) << 8) | int(t.inbox.buf[h + 3])
     } else {
-        n = (int(t.hdr[0]) << 8) | int(t.hdr[1])
+        n = (int(t.inbox.buf[h]) << 8) | int(t.inbox.buf[h + 1])
     }
     if n < HEADER || n > 4194304 { return Err(proto("a packet length of " + n.toStr())) }
-    var body = array(n - HEADER, byte(0))
-    try readFull(mut &t.s, mut &t.inbox, mut &body, w)
-    return Ok(Packet{ptype: int(t.hdr[4]), flags: int(t.hdr[5]), data: strFromBytes(&body)})
+    try fillTo(mut &t.s, mut &t.inbox, n, w)
+    let at = t.inbox.pos
+    t.inbox.pos += n
+    return Ok(Packet{ptype: int(t.inbox.buf[at + 4]), flags: int(t.inbox.buf[at + 5]),
+                     data: strFromBytes(&t.inbox.buf[at + HEADER..at + n])})
 }
 
 // ---------------------------------------------------------------- connecting
@@ -2449,11 +2526,35 @@ fn (s: mut &Session) exchange(msg: &[]byte, r: mut &Reply, w: Where): Result[Uni
 fn (s: mut &Session) receive(r: mut &Reply, w: Where): Result[Unit, Error] {
     var data = ""
     var total = 0
+    let rawRows = r.raw && !(r.outMode && !r.described)
     while !r.done {
         if len(data) == 0 {
             let d = try s.nextData(w)
             data = d.data
             total += len(data)
+        }
+        if rawRows && int(data[0]) == MT_ROW_DATA {
+            // a run of rows kept raw, scanned in place (decodeMessage's ROW_DATA)
+            var p = 0
+            var short = false
+            while p < len(data) && int(data[p]) == MT_ROW_DATA {
+                let q = try scanRaw(&data, p + 1, r)
+                if q == RAW_SHORT {
+                    short = true
+                    break
+                }
+                p = q
+            }
+            data = data[p..]
+            if short {
+                let d = try s.nextData(w)
+                total += len(d.data)
+                if total > s.maxReply {
+                    return Err(sqldialect.dbError(sqldialect.E_LIMIT, "tns: a reply larger than " + s.maxReply.toStr() + " bytes"))
+                }
+                data = if d.reset { d.data } else { data + d.data }
+            }
+            continue
         }
         var c = cursor(data)
         match decodeMessage(mut &c, r, s.fieldVersion) {
@@ -2997,13 +3098,30 @@ fn numberFixed(b: &str): Result[Option[Fixed], Error] {
     if !pos && int(b[n - 1]) == 102 { last = n - 1 }
     let pairs = last - 1
     if pairs > 19 { return Ok(None) }
+    var p = e - pairs + 1                // value = u * 100^p
+    if pairs + max(p, 0) <= 9 {
+        // up to 18 digits: in an int
+        var s = 0
+        for i in 1..last {
+            let v = if pos { int(b[i]) - 1 } else { 101 - int(b[i]) }
+            if v < 0 || v > 99 { return Err(proto("a NUMBER mantissa byte " + int(b[i]).toStr())) }
+            s = s * 100 + v
+        }
+        for k in 0..p { s = s * 100 }
+        var sc = if p < 0 { -2 * p } else { 0 }
+        while sc > 0 && s % 10 == 0 {
+            s = s / 10
+            sc -= 1
+        }
+        if sc > 38 { return Ok(None) }
+        return Ok(Some(Fixed{units: i128(if pos { s } else { -s }), scale: sc}))
+    }
     var u: i128 = 0
     for i in 1..last {
         let v = if pos { int(b[i]) - 1 } else { 101 - int(b[i]) }
         if v < 0 || v > 99 { return Err(proto("a NUMBER mantissa byte " + int(b[i]).toStr())) }
         u = u * 100 + i128(v)
     }
-    var p = e - pairs + 1                // value = u * 100^p
     var scale = 0
     while p > 0 {
         if u > MAX38 / 100 { return Ok(None) }
