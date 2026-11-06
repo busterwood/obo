@@ -1,0 +1,162 @@
+// tns's encoders and decoders on byte strings, without a server: universal
+// integers, bytes with a length (short and chunked), NUMBER both ways at its
+// edges (0, -1, 38 and 40 digits, 1e125, 1e-130, the negative sentinel
+// byte), BINARY_DOUBLE and BINARY_FLOAT, DATE, TIMESTAMP and TIMESTAMP WITH
+// TIME ZONE, UTF-16BE.
+// needs: ssl
+// expect: ub: 00 | 01 05 | 02 01 00 | 04 00 01 00 00 | 08 00 00 00 01 00 00 00 00
+// expect: ub read: 0 5 256 65536 4294967296 | sb4 -300
+// expect: bytes: 03 61 62 63 | long 300: fe 02 01 2c ... 00 | back 300 true
+// expect: 0: 80 -> 0
+// expect: 1: c1 02 -> 1
+// expect: -1: 3e 64 66 -> -1
+// expect: 100: c2 02 -> 100
+// expect: 123.45: c2 02 18 2e -> 123.45
+// expect: -123.45: 3d 64 4e 38 66 -> -123.45
+// expect: 0.01: c0 02 -> 0.01
+// expect: 1e125: ff 0b -> 100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+// expect: 1e-130: 80 02 -> 0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
+// expect: 38 digits: d3 0d 23 39 4f 5b 0d 23 39 4f 5b 0d 23 39 4f 5b 0d 23 39 4f -> 12345678901234567890123456789012345678
+// expect: -38 digits: 2c 59 43 2d 17 0b 59 43 2d 17 0b 59 43 2d 17 0b 59 43 2d 17 66 -> -12345678901234567890123456789012345678
+// expect: 40 digits: c0 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 -> 0.3333333333333333333333333333333333333333
+// expect: -40 digits: 3f 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 -> -0.3333333333333333333333333333333333333333
+// expect: decimal 12.50 -> c1 0d 33 -> 12.5 | 40 digits as decimal: error 7
+// expect: too big: error 1000: a number outside Oracle NUMBER's range (at most 40 digits, from 1e-130 to below 1e126): 1e126 | -1e126: error 1002
+// expect: int 9223372036854775807 true | 9223372036854775808 false | 1.5 false
+// expect: double 1.5: bf f8 00 00 00 00 00 00 -> 1.5 | -2.25: 3f fd ff ff ff ff ff ff -> -2.25 | 0: 80 00 00 00 00 00 00 00 -> 0
+// expect: float 0.5: bf 00 00 00 -> 0.5 | -0.5: 40 ff ff ff -> -0.5
+// expect: date: 78 7e 0b 06 0e 1f 3b -> 2026-11-06T13:30:58
+// expect: timestamp: 78 7e 0b 06 0e 1f 3b 07 5b cd 15 -> 2026-11-06T13:30:58.123456789
+// expect: tz: 78 7e 0b 06 14 01 3b 07 5b cd 15 0f 1e -> 2026-11-06T13:30:58.123456789-05:30
+// expect: bc: 2b 3c 01 01 01 01 01 -> -5740-01-01T00:00:00
+// expect: utf16: 00 41 00 e9 d8 3d de 00 -> back true
+
+import "tns"
+import "time"
+import "sqldialect"
+
+fn hex(s: str): str {
+    let digits = "0123456789abcdef"
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        if i > 0 { b.addByte(' ') }
+        b.addByte(digits[int(s[i] >> 4)])
+        b.addByte(digits[int(s[i] & 15)])
+    }
+    return b.toStr()
+}
+
+fn ub(v: int): str {
+    var b: []byte = []
+    tns.putUb(mut &b, v)
+    return hex(strFromBytes(&b))
+}
+
+fn err(e: &sqldialect.DbError): str { return "error " + e.code.toStr() }
+
+fn num(label: str, n: tns.Num) {
+    match tns.encodeNumber(&n) {
+        Ok(b) {
+            match tns.decodeNumber(b) {
+                Ok(m) { println(label + ": " + hex(b) + " -> " + m.toStr()) }
+                Err(e) { println(label + ": " + hex(b) + " -> " + err(&e)) }
+            }
+        }
+        Err(e) { println(label + ": " + e.msg) }
+    }
+}
+
+fn dec(s: str): tns.Num { return tns.numOfDecimal(Decimal.parse(s).unwrap()) }
+
+fn main() {
+    println("ub: " + ub(0) + " | " + ub(5) + " | " + ub(256) + " | " + ub(65536) + " | " + ub(4294967296))
+    var w: []byte = []
+    for v in [0, 5, 256, 65536, 4294967296] { tns.putUb(mut &w, v) }
+    append(mut &w, byte(0x82))
+    append(mut &w, byte(1))
+    append(mut &w, byte(44))
+    var c = tns.cursor(strFromBytes(&w))
+    var got = ""
+    for i in 0..5 { got = got + (if i > 0 { " " } else { "" }) + c.ub8("x").unwrap().toStr() }
+    println("ub read: " + got + " | sb4 " + c.ub4("x").unwrap().toStr())
+
+    var b: []byte = []
+    tns.putBytes(mut &b, "abc")
+    var l: []byte = []
+    let long = repeat("x", 300)
+    tns.putBytes(mut &l, long)
+    let ls = strFromBytes(&l)
+    var lc = tns.cursor(ls)
+    let back = lc.bytes("x").unwrap().unwrap()
+    println("bytes: " + hex(strFromBytes(&b)) + " | long 300: " + hex(ls[0..4]) + " ... " + hex(ls[len(ls) - 1..]) +
+            " | back " + len(back).toStr() + " " + (back == long && lc.pos == len(ls)).toStr())
+
+    num("0", tns.numOfInt(0))
+    num("1", tns.numOfInt(1))
+    num("-1", tns.numOfInt(-1))
+    num("100", tns.numOfInt(100))
+    num("123.45", dec("123.45"))
+    num("-123.45", dec("-123.45"))
+    num("0.01", dec("0.01"))
+    num("1e125", tns.Num{neg: false, digits: "1", exp: 125})
+    num("1e-130", tns.Num{neg: false, digits: "1", exp: -130})
+    num("38 digits", dec("12345678901234567890123456789012345678"))
+    num("-38 digits", dec("-12345678901234567890123456789012345678"))
+    num("40 digits", tns.Num{neg: false, digits: repeat("3", 40), exp: -40})
+    num("-40 digits", tns.Num{neg: true, digits: repeat("3", 40), exp: -40})
+    let d = tns.numOfDecimal(Decimal.parse("12.50").unwrap())
+    let db = tns.encodeNumber(&d).unwrap()
+    let forty = tns.Num{neg: false, digits: repeat("3", 40), exp: -40}
+    let fd = match forty.decimal() {
+        Ok(x) { x.toStr() }
+        Err(e) { "error " + e.code().toStr() }
+    }
+    println("decimal 12.50 -> " + hex(db) + " -> " + tns.decodeNumber(db).unwrap().decimal().unwrap().toStr() +
+            " | 40 digits as decimal: " + fd)
+    let big = tns.Num{neg: false, digits: "1", exp: 126}
+    let tb = match tns.encodeNumber(&big) {
+        Ok(x) { hex(x) }
+        Err(e) { "error " + e.code.toStr() + ": " + e.msg }
+    }
+    let ninf = match tns.decodeNumber("\x01") {
+        Ok(x) { x.toStr() }
+        Err(e) { err(&e) }
+    }
+    println("too big: " + tb + " | -1e126: " + ninf)
+    let i1 = tns.Num{neg: false, digits: "9223372036854775807", exp: 0}
+    let i2 = tns.Num{neg: false, digits: "9223372036854775808", exp: 0}
+    let i3 = tns.Num{neg: false, digits: "15", exp: -1}
+    let s1 = match i1.int() {
+        Some(v) { v.toStr() + " true" }
+        None { "false" }
+    }
+    println("int " + s1 + " | 9223372036854775808 " + i2.int().isSome().toStr() + " | 1.5 " + i3.int().isSome().toStr())
+
+    let e1 = tns.encodeDouble(1.5)
+    let e2 = tns.encodeDouble(-2.25)
+    let e3 = tns.encodeDouble(0.0)
+    println("double 1.5: " + hex(e1) + " -> " + tns.decodeDouble(e1).unwrap().toStr() + " | -2.25: " + hex(e2) + " -> " +
+            tns.decodeDouble(e2).unwrap().toStr() + " | 0: " + hex(e3) + " -> " + tns.decodeDouble(e3).unwrap().toStr())
+    println("float 0.5: bf 00 00 00 -> " + tns.decodeFloat("\xbf\x00\x00\x00").unwrap().toStr() + " | -0.5: 40 ff ff ff -> " +
+            tns.decodeFloat("\x40\xff\xff\xff").unwrap().toStr())
+
+    let ld = time.LocalDateTime{date: time.Date{year: 2026, month: 11, day: 6}, time: time.timeOfDay(13, 30, 58, 0).unwrap()}
+    let de = tns.encodeDate(&ld)
+    println("date: " + hex(de) + " -> " + tns.decodeStamp(de).unwrap().local.toStr())
+    let lt = time.LocalDateTime{date: time.Date{year: 2026, month: 11, day: 6}, time: time.timeOfDay(13, 30, 58, 123456789).unwrap()}
+    let te = tns.encodeTimestamp(&lt)
+    println("timestamp: " + hex(te) + " -> " + tns.decodeStamp(te).unwrap().local.toStr())
+    let od = lt.withOffset(-330).unwrap()
+    let ze = tns.encodeTimestampTz(&od)
+    let zs = tns.decodeStamp(ze).unwrap()
+    println("tz: " + hex(ze) + " -> " + time.OffsetDateTime{local: zs.local, offset: zs.offset}.toStr())
+    let bc = "\x2b\x3c\x01\x01\x01\x01\x01"
+    let bcs = match tns.decodeStamp(bc) {
+        Ok(s) { s.local.toStr() }
+        Err(e) { err(&e) }
+    }
+    println("bc: " + hex(bc) + " -> " + bcs)
+    let s16 = "A\xc3\xa9\xf0\x9f\x98\x80"
+    let u = tns.toUtf16be(s16).unwrap()
+    println("utf16: " + hex(u) + " -> back " + (tns.fromUtf16be(u).unwrap() == s16).toStr())
+}

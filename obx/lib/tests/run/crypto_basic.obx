@@ -1,0 +1,54 @@
+// crypto's wrappers against known answers (Python's hashlib and the
+// openssl command line computed them): digests, PBKDF2-HMAC-SHA512, AES-CBC
+// with and without padding, both ways, and the error paths.
+// needs: ssl
+// expect: sha1 a9993e364706816aba3e25717850c26c9cd0d89d
+// expect: sha512 ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f
+// expect: md5 900150983cd24fb0d6963f7d28e17f72
+// expect: pbkdf2 2a3d6e97a8e6d3020d9ba398a27d21dceaa15639f586270c8327e0716269720fce72ab4df4f135211ace9a559f7863a8a1d9cc76e04223ba613f3c6e30f51455
+// expect: aes256 9b8b0499c07b6239584044ccbff60c2a30a9de660d61d902f9c8acabe86296f1
+// expect: back Hello, Oracle!!!
+// expect: aes192 nopad 65b9f05ca3ae1a4c6721b73bae163065
+// expect: back Hello, Oracle!!!
+// expect: bad key: crypto: AES-CBC encrypt: a key of 5 bytes
+// expect: not blocks: crypto: AES-CBC decrypt: 3 bytes, not whole blocks
+// expect: random 32 32 different true
+// expect: unhex true false false
+
+import "crypto"
+
+fn show(label: str, r: Result[str, crypto.Error]) {
+    match r {
+        Ok(v) { println(label + " " + crypto.hex(v)) }
+        Err(e) { println(label + ": " + e.toStr()) }
+    }
+}
+
+fn text(r: Result[str, crypto.Error]): str {
+    match r {
+        Ok(v) { return v }
+        Err(e) { return e.toStr() }
+    }
+}
+
+fn main() {
+    show("sha1", crypto.sha1("abc"))
+    show("sha512", crypto.sha512("abc"))
+    show("md5", crypto.md5("abc"))
+    show("pbkdf2", crypto.pbkdf2Sha512("password", "salt\x00x", 4096, 64))
+    let iv = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    var k32 = crypto.unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()
+    let c = text(crypto.aesCbcEncrypt(k32, iv, "Hello, Oracle!!!", true))
+    println("aes256 " + crypto.hex(c))
+    println("back " + text(crypto.aesCbcDecrypt(k32, iv, c, true)))
+    let k24 = crypto.unhex("000102030405060708090a0b0c0d0e0f1011121314151617").unwrap()
+    let c2 = text(crypto.aesCbcEncrypt(k24, iv, "Hello, Oracle!!!", false))
+    println("aes192 nopad " + crypto.hex(c2))
+    println("back " + text(crypto.aesCbcDecrypt(k24, iv, c2, false)))
+    println("bad key: " + text(crypto.aesCbcEncrypt("12345", iv, "x", true)))
+    println("not blocks: " + text(crypto.aesCbcDecrypt(k32, iv, "abc", false)))
+    let r1 = text(crypto.randomBytes(32))
+    let r2 = text(crypto.randomBytes(32))
+    println("random " + len(r1).toStr() + " " + len(r2).toStr() + " different " + (r1 != r2).toStr())
+    println("unhex " + crypto.unhex("0aFf").isSome().toStr() + " " + crypto.unhex("0g").isSome().toStr() + " " + crypto.unhex("abc").isSome().toStr())
+}

@@ -1,0 +1,161 @@
+// crypto: digests, PBKDF2, AES-CBC and random bytes from OpenSSL's
+// libcrypto (the library `tls` already links). Byte strings are `str`
+// values holding any bytes, as in `tds` and `tns`; nothing here is text.
+//
+// These are the primitives Oracle's password authentication needs
+// (design/oracle.md); they are written as safe wrappers over the C calls,
+// so a failing call is an Err with OpenSSL's reason, never a trap.
+
+pub type Error = value record { pub msg: str }
+
+pub fn (e: Error) toStr(): str { return "crypto: " + e.msg }
+
+extern "crypto" fn EVP_sha1(): ptr
+extern "crypto" fn EVP_sha512(): ptr
+extern "crypto" fn EVP_md5(): ptr
+extern "crypto" fn EVP_Digest(data: &[byte], n: int, md: mut &[byte], size: mut &[i32], t: ptr, impl: ptr): i32
+extern "crypto" fn PKCS5_PBKDF2_HMAC(pass: &[byte], passlen: i32, salt: &[byte], saltlen: i32, iter: i32, md: ptr, keylen: i32, out: mut &[byte]): i32
+extern "crypto" fn EVP_aes_128_cbc(): ptr
+extern "crypto" fn EVP_aes_192_cbc(): ptr
+extern "crypto" fn EVP_aes_256_cbc(): ptr
+extern "crypto" fn EVP_CIPHER_CTX_new(): ptr
+extern "crypto" fn EVP_CIPHER_CTX_free(c: ptr)
+extern "crypto" fn EVP_CIPHER_CTX_set_padding(c: ptr, pad: i32): i32
+extern "crypto" fn EVP_CipherInit_ex(c: ptr, t: ptr, impl: ptr, key: &[byte], iv: &[byte], enc: i32): i32
+extern "crypto" fn EVP_CipherUpdate(c: ptr, out: mut &[byte], outl: mut &[i32], inp: &[byte], inl: i32): i32
+extern "crypto" fn EVP_CipherFinal_ex(c: ptr, out: mut &[byte], outl: mut &[i32]): i32
+extern "crypto" fn RAND_bytes(buf: mut &[byte], n: i32): i32
+extern "crypto" fn ERR_get_error(): u64
+extern "crypto" fn ERR_clear_error()
+extern "crypto" fn ERR_reason_error_string(e: u64): str
+
+fn failed(what: str): Error {
+    let e = ERR_get_error()
+    ERR_clear_error()
+    if e == 0 { return Error{msg: what + " failed"} }
+    let r = ERR_reason_error_string(e)
+    return Error{msg: what + ": " + (if r == "" { "error " + e.toStr() } else { r })}
+}
+
+const MAX_INPUT = 1 << 30
+
+fn digest(t: ptr, size: int, data: str, what: str): Result[str, Error] {
+    if len(data) > MAX_INPUT { return Err(Error{msg: what + ": input too large"}) }
+    let d = strToBytes(data)
+    var md = array(64, byte(0))
+    var n = array(1, i32(0))
+    if EVP_Digest(&d, len(d), mut &md, mut &n, t, nullPtr()) != 1 { return Err(failed(what)) }
+    if int(n[0]) != size { return Err(Error{msg: what + ": digest of " + n[0].toStr() + " bytes"}) }
+    return Ok(strFromBytes(&md[0..size]))
+}
+
+// The SHA-1 digest of data, 20 bytes.
+pub fn sha1(data: str): Result[str, Error] { return digest(EVP_sha1(), 20, data, "SHA-1") }
+
+// The SHA-512 digest of data, 64 bytes.
+pub fn sha512(data: str): Result[str, Error] { return digest(EVP_sha512(), 64, data, "SHA-512") }
+
+// The MD5 digest of data, 16 bytes (Oracle's session key arithmetic uses it).
+pub fn md5(data: str): Result[str, Error] { return digest(EVP_md5(), 16, data, "MD5") }
+
+// PBKDF2 with HMAC-SHA-512 (RFC 8018): keyLen bytes from password and salt.
+pub fn pbkdf2Sha512(password: str, salt: str, iterations: int, keyLen: int): Result[str, Error] {
+    if iterations < 1 || iterations > 100000000 { return Err(Error{msg: "PBKDF2: " + iterations.toStr() + " iterations"}) }
+    if keyLen < 1 || keyLen > 1024 { return Err(Error{msg: "PBKDF2: a key of " + keyLen.toStr() + " bytes"}) }
+    if len(password) > MAX_INPUT || len(salt) > MAX_INPUT { return Err(Error{msg: "PBKDF2: input too large"}) }
+    let p = strToBytes(password)
+    let s = strToBytes(salt)
+    var out = array(keyLen, byte(0))
+    if PKCS5_PBKDF2_HMAC(&p, i32(len(p)), &s, i32(len(s)), i32(iterations), EVP_sha512(), i32(keyLen), mut &out) != 1 {
+        return Err(failed("PBKDF2"))
+    }
+    return Ok(strFromBytes(&out))
+}
+
+// An EVP cipher context, freed when dropped.
+type Ctx = record { p: ptr }
+
+pub fn (c: mut &Ctx) drop() { if !isNull(c.p) { EVP_CIPHER_CTX_free(c.p) } }
+
+fn aesCbc(key: str, iv: str, data: str, encrypt: bool, padding: bool): Result[str, Error] {
+    let what = if encrypt { "AES-CBC encrypt" } else { "AES-CBC decrypt" }
+    let cipher = match len(key) {
+        16 { EVP_aes_128_cbc() }
+        24 { EVP_aes_192_cbc() }
+        32 { EVP_aes_256_cbc() }
+        else { return Err(Error{msg: what + ": a key of " + len(key).toStr() + " bytes"}) }
+    }
+    if len(iv) != 16 { return Err(Error{msg: what + ": an IV of " + len(iv).toStr() + " bytes"}) }
+    if len(data) > MAX_INPUT { return Err(Error{msg: what + ": input too large"}) }
+    if !padding && len(data) % 16 != 0 { return Err(Error{msg: what + ": " + len(data).toStr() + " bytes, not whole blocks"}) }
+    let c = Ctx{p: EVP_CIPHER_CTX_new()}
+    if isNull(c.p) { return Err(failed(what)) }
+    let k = strToBytes(key)
+    let v = strToBytes(iv)
+    if EVP_CipherInit_ex(c.p, cipher, nullPtr(), &k, &v, if encrypt { i32(1) } else { i32(0) }) != 1 { return Err(failed(what)) }
+    if EVP_CIPHER_CTX_set_padding(c.p, if padding { i32(1) } else { i32(0) }) != 1 { return Err(failed(what)) }
+    let d = strToBytes(data)
+    var out = array(len(d) + 32, byte(0))
+    var n = array(1, i32(0))
+    if EVP_CipherUpdate(c.p, mut &out, mut &n, &d, i32(len(d))) != 1 { return Err(failed(what)) }
+    let first = int(n[0])
+    if first < 0 || first > len(d) + 16 { return Err(Error{msg: what + ": bad output length"}) }
+    var m = array(1, i32(0))
+    if EVP_CipherFinal_ex(c.p, mut &out[first..], mut &m) != 1 { return Err(failed(what)) }
+    let total = first + int(m[0])
+    if total > len(out) { return Err(Error{msg: what + ": bad output length"}) }
+    return Ok(strFromBytes(&out[0..total]))
+}
+
+// AES-CBC encryption with a 16-, 24- or 32-byte key. padding: PKCS #7
+// (always a pad, a whole block when data is whole blocks); otherwise data
+// must be whole blocks.
+pub fn aesCbcEncrypt(key: str, iv: str, data: str, padding: bool): Result[str, Error] {
+    return aesCbc(key, iv, data, true, padding)
+}
+
+// AES-CBC decryption; padding: check and remove a PKCS #7 pad.
+pub fn aesCbcDecrypt(key: str, iv: str, data: str, padding: bool): Result[str, Error] {
+    return aesCbc(key, iv, data, false, padding)
+}
+
+// n bytes from OpenSSL's random generator.
+pub fn randomBytes(n: int): Result[str, Error] {
+    if n < 0 || n > 1 << 20 { return Err(Error{msg: "random: " + n.toStr() + " bytes"}) }
+    var b = array(n, byte(0))
+    if n > 0 && RAND_bytes(mut &b, i32(n)) != 1 { return Err(failed("random")) }
+    return Ok(strFromBytes(&b))
+}
+
+// Lowercase hex of the bytes of s.
+pub fn hex(s: str): str {
+    let digits = "0123456789abcdef"
+    var b = newStrBuf()
+    for i in 0..len(s) {
+        b.addByte(digits[int(s[i] >> 4)])
+        b.addByte(digits[int(s[i] & 15)])
+    }
+    return b.toStr()
+}
+
+// The bytes of hex text (either case); None if it is not hex of whole bytes.
+pub fn unhex(h: str): Option[str] {
+    if len(h) % 2 != 0 { return None }
+    var b: []byte = []
+    var i = 0
+    while i < len(h) {
+        let hi = hexDigit(h[i])
+        let lo = hexDigit(h[i + 1])
+        if hi < 0 || lo < 0 { return None }
+        append(mut &b, byte(hi * 16 + lo))
+        i += 2
+    }
+    return Some(strFromBytes(&b))
+}
+
+fn hexDigit(c: byte): int {
+    if c >= '0' && c <= '9' { return int(c - '0') }
+    if c >= 'a' && c <= 'f' { return int(c - 'a') + 10 }
+    if c >= 'A' && c <= 'F' { return int(c - 'A') + 10 }
+    return -1
+}
