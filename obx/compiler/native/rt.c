@@ -2178,6 +2178,7 @@ int64_t obxlib_net_addr(int64_t fd, int64_t peer, uint8_t* out) {
     i64 r = SYS(peer ? S_GETPEERNAME : S_GETSOCKNAME, fd, ss, &n);
     if (r < 0) return r;
     memset(out, 0, 19);
+    if (ss[0] == 1) { out[0] = 1; return 0; }                     /* AF_UNIX: no port or address bytes */
     out[1] = ss[2];
     out[2] = ss[3];
     if (ss[0] == 10) { out[0] = 6; memcpy(out + 3, ss + 8, 16); }
@@ -3035,4 +3036,73 @@ int64_t obxlib_worker_ready(void) {
     if (!rt_worker_parent || rt_wself < 0 || !rt_wmarks || rt_wself >= rt_nwmarks) return -1;
     __atomic_store_n(&rt_wmarks[rt_wself], (uint8_t)1, __ATOMIC_SEQ_CST);
     return 0;
+}
+
+/* ------------------------------------------------------------ the PostgreSQL client's pieces (stage P0)
+   rt.h's Unix-domain sockets, TCP keepalive and bounded socket wait, with raw system calls. */
+#define K_ENAMETOOLONG 36
+#define K_EINVAL_ 22
+static int rt_unix_sa(const uint8_t* path, int64_t n, unsigned char* su) {   /* struct sockaddr_un, 110 bytes */
+    if (n <= 0) return -K_ENOENT;
+    if (n > 107) return -K_ENAMETOOLONG;
+    memset(su, 0, 110);
+    su[0] = 1;                                                      /* AF_UNIX */
+    memcpy(su + 2, path, (size_t)n);
+    if (path[0] == '@') { su[2] = 0; return (int)(2 + n); }
+    return 110;
+}
+int64_t obxlib_net_connect_unix(const uint8_t* path, int64_t n, int64_t* pending) {
+    unsigned char su[110];
+    int len = rt_unix_sa(path, n, su);
+    if (len < 0) return len;
+    i64 fd = SYS(S_SOCKET, 1, 1 | K_O_NONBLOCK | K_O_CLOEXEC, 0);
+    if (fd < 0) return fd;
+    *pending = 0;
+    i64 r = SYS(S_CONNECT, fd, su, len);
+    if (r < 0) {
+        if (r != -K_EINPROGRESS && r != -K_EAGAIN) { SYS(S_CLOSE, fd, 0, 0); return r; }
+        *pending = 1;
+    }
+    return rt_net_new(fd);
+}
+int64_t obxlib_net_listen_unix(const uint8_t* path, int64_t n, int64_t backlog) {
+    unsigned char su[110];
+    int len = rt_unix_sa(path, n, su);
+    if (len < 0) return len;
+    i64 fd = SYS(S_SOCKET, 1, 1 | K_O_NONBLOCK | K_O_CLOEXEC, 0);
+    if (fd < 0) return fd;
+    i64 r = SYS(S_BIND, fd, su, len);
+    if (r >= 0) r = SYS(S_LISTEN, fd, backlog, 0);
+    if (r < 0) { SYS(S_CLOSE, fd, 0, 0); return r; }
+    rt_fd_table(fd);
+    rt_fds[fd].reg = 0;
+    rt_fds[fd].lazy = 1;
+    return fd;
+}
+int64_t obxlib_net_keepalive(int64_t fd, int64_t on, int64_t idle, int64_t intvl, int64_t cnt) {
+    int v = on != 0;
+    i64 r = sys6(S_SETSOCKOPT, fd, 1, 9, (i64)&v, sizeof v, 0);      /* SOL_SOCKET, SO_KEEPALIVE */
+    if (r < 0) return r;
+    if (!v) return 0;
+    int k;
+    if (idle > 0) { k = (int)idle; r = sys6(S_SETSOCKOPT, fd, 6, 4, (i64)&k, sizeof k, 0); if (r < 0) return r; }    /* TCP_KEEPIDLE */
+    if (intvl > 0) { k = (int)intvl; r = sys6(S_SETSOCKOPT, fd, 6, 5, (i64)&k, sizeof k, 0); if (r < 0) return r; }  /* TCP_KEEPINTVL */
+    if (cnt > 0) { k = (int)cnt; r = sys6(S_SETSOCKOPT, fd, 6, 6, (i64)&k, sizeof k, 0); if (r < 0) return r; }     /* TCP_KEEPCNT */
+    return 0;
+}
+int64_t obxlib_net_wait_for(int64_t fd, int64_t dir, int64_t ms, bool cancellable, const char* w) {
+    rt_nopark(w);
+    if (cancellable && rt_cur->cancelled) return 1;
+    if ((cancellable && rt_expired()) || ms == 0) return 3;
+    if (fd < 0) {                           /* no socket: a pause of ms that only ms ends (or, if cancellable, cancellation) */
+        int r = rt_park_until(cancellable, rt_fd_until(ms, cancellable), w);
+        return r;
+    }
+    if (fd >= rt_nfds || !rt_fds[fd].reg) return -K_EINVAL_;
+    if (dir) rt_fds[fd].wr = rt_cur; else rt_fds[fd].rd = rt_cur;
+    rt_nio++;
+    int r = rt_park_until(cancellable, rt_fd_until(ms, cancellable), w);
+    rt_nio--;
+    if (dir) rt_fds[fd].wr = 0; else rt_fds[fd].rd = 0;
+    return r;
 }
