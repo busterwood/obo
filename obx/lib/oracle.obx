@@ -329,6 +329,7 @@ pub type Param = value closed {
     Date(time.Date)                         // DATE, midnight
     DateTime(time.LocalDateTime)            // TIMESTAMP (a DATE column takes it, to the second)
     Offset(time.OffsetDateTime)             // TIMESTAMP WITH TIME ZONE
+    Number(tns.Num)                         // any NUMBER, beyond Decimal's range (1e125, 1e-130)
 }
 
 fn paramsOf(args: &[Value]): []Param {
@@ -366,6 +367,7 @@ fn bindOf(p: &Param, s: &tns.Session): Result[tns.Bind, Error] {
         }
         Param.DateTime(l) { return Ok(tns.timestampBind(&l)) }
         Param.Offset(o) { return Ok(tns.timestampTzBind(&o)) }
+        Param.Number(n) { return tns.numberBind(&n) }
     }
 }
 
