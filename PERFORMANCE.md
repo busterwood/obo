@@ -10,10 +10,17 @@ obx builds a program in two ways:
   -falign-loops=32`).
 
 Both are built from the same IR and must behave identically; the gate checks
-that on every test program. This page is the current report: every figure
-was measured on 6 November 2026 on `main` after `38e114e` (Decimal, maps,
-code placement and the gcc move-width flags merged), on a quiet machine. How
-the numbers got here, the native backend's passes, the earlier figures and
+that on every test program. This page is the current report. Its figures
+were measured on 6 November 2026. Most sections were measured on `main`
+after `38e114e` (Decimal, maps, code placement and the gcc move-width flags
+merged). Three sections were measured later, and say so:
+
+- Math, after `50eade0e` (doubles in xmm registers).
+- Decimal, on branch `nativedec` (merged as `7474e63d`).
+- Database streaming, on branch `streaming` (`deb05bea`), with Oracle
+  measured again after branch `oracle-speed` (merged as `5a6c5272`).
+
+How the numbers got here, the native backend's passes, the earlier figures and
 the obo record, is in [HISTORY.md](HISTORY.md), "The performance record".
 The numbers are host-dependent: use them to compare the columns, not as
 portable constants.
@@ -159,8 +166,9 @@ figure.
 ## eza
 
 [obx/cmd/eza.obx](obx/cmd/eza.obx), a 1,600-line implementation of the
-common subset of eza 0.23.3. `LC_ALL=C TZ=UTC`; the long listings use
-`--bytes --time-style=long-iso -n`, which this eza requires. Best of 9; both
+common subset of eza 0.23.3 at `38e114e` (1,857 lines now, with the full long
+view). `LC_ALL=C TZ=UTC`; the long listings use
+`--bytes --time-style=long-iso -n`, which that build required. Best of 9; both
 builds write byte-identical listings.
 
 | listing | output | via C | native |
@@ -806,12 +814,14 @@ figures are not affected.
   Oracle fetches about 256 KB a round trip (at the widest row for the
   first FETCH, then at the size the rows took: about 9,900 rows here) and
   sends the next FETCH before the program uses the last rows.
-- **Oracle** was measured again on 2026-11-06 at 15:09 (load 0.6 to 1.2)
-  after branch `oracle-speed` (rows scanned in place, buffered rows kept
-  raw, FETCHes by the rows' size). In the same run SQL Server took 449 and
-  380 ms streamed (via C, native), 1,172 and 999 buffered; PostgreSQL 626
-  and 542 streamed, 838 and 797 buffered: the rows above for them are from
-  a busier machine. Its client now takes 1,169 cycles a row streamed and
+- **Oracle.** The table's rows are from the 13:53 run on branch `streaming`
+  (`deb05bea`), before `oracle-speed`. Oracle was measured again on
+  2026-11-06 at 15:09 (load 0.6 to 1.2) after branch `oracle-speed` (rows
+  scanned in place, buffered rows kept raw, FETCHes by the rows' size): 430
+  and 450 ms streamed, 615 and 578 ms buffered (via C, native), with 110.7
+  and 111.2 MB. In the same run SQL Server took 449 and 380 ms streamed (via
+  C, native), 1,172 and 999 buffered; PostgreSQL 626 and 542 streamed, 838
+  and 797 buffered. The table's rows for those two are from a busier machine. Its client now takes 1,169 cycles a row streamed and
   1,010 buffered (native; SQL Server 1,290 and 2,515, PostgreSQL 2,172 and
   1,456), and its wall time is mostly the server's work and 100 round
   trips. The breakdown (client CPU, server, network) and the slow-network
