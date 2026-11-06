@@ -400,7 +400,10 @@ net/http and Node's http as references, when installed) it opens 10,000
 idle keep-alive connections, measures the server's RSS per connection, runs
 httpload with 1, 10 and 100 clients while they stay open, checks that they
 still answer, and shuts the server down under `OBX_CHECK=1` (exit 0, no
-leak, every connection closed). With `--db 4,16` it runs each obx server
+leak, every connection closed). The server runs on CPU 0 and httpload on
+the first CPU of another core (CPU 2 here: CPUs 0 and 1 are one core's two
+SMT threads), so the load does not take the server's cycles; `--client`
+sends the load through `http.Client` (`httpload --client`). With `--db 4,16` it runs each obx server
 once per pool size with the load on `/db`, and checks after the shutdown
 that the pool has nobody waiting. With `--workers 1,2,4,8` it measures the
 worker processes instead: requests/s and latency for each count, on `/`

@@ -841,7 +841,10 @@ thread, one task per connection, with every limit and timeout of the design
 on, the hangup cancellation armed around each handler, the request parsed
 strictly and the reply built by the library. Measured by
 `python3 obx/cmd/http_gate.py --servers native,c,go,node`: the server on
-CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 1.
+CPU 0, the load client `obx/cmd/httpload.obx` (native, one thread) on CPU 2,
+another core (measured again on 6 November 2026 at `75aa87b`; until then the
+load ran on CPU 1, CPU 0's SMT sibling, where it took cycles from the
+server it measured).
 10,000 idle keep-alive connections are opened first and stay open during
 the load; each load client sends `GET /` and waits for the reply, 5 s per
 row. Go 1.26's net/http (GOMAXPROCS=1) and Node 24's http serve the same
@@ -850,14 +853,14 @@ to the next.
 
 | | obx native | obx via C | Go net/http | Node 24 |
 |---|---:|---:|---:|---:|
-| RSS per idle connection | 15.5 KB | 14.9 KB | 19.7 KB | 9.6 KB |
-| RSS with 10,000 idle connections | 155 MiB | 148 MiB | 195 MiB | 140 MiB |
-| 1 client: requests/s | 4,240 | 4,090 | 3,860 | 4,200 |
-| 10 clients: requests/s | 36,700 | 34,500 | 32,200 | 30,200 |
-| 100 clients: requests/s | 64,600 | 61,300 | 40,400 | 38,100 |
-| 1 client: latency p50 / p99 | 224 / 422 µs | 232 / 421 µs | 248 / 409 µs | 222 / 443 µs |
-| 10 clients: latency p50 / p99 | 263 / 414 µs | 278 / 486 µs | 288 / 567 µs | 313 / 585 µs |
-| 100 clients: latency p50 / p99 | 1.50 / 2.92 ms | 1.57 / 2.87 ms | 2.29 / 7.83 ms | 2.39 / 5.73 ms |
+| RSS per idle connection | 15.3 KB | 14.9 KB | 19.8 KB | 9.5 KB |
+| RSS with 10,000 idle connections | 153 MiB | 148 MiB | 195 MiB | 139 MiB |
+| 1 client: requests/s | 4,280 | 4,480 | 3,790 | 3,650 |
+| 10 clients: requests/s | 37,300 | 39,300 | 34,800 | 32,900 |
+| 100 clients: requests/s | 65,600 | 68,700 | 44,500 | 43,100 |
+| 1 client: latency p50 / p99 | 219 / 420 µs | 212 / 393 µs | 254 / 410 µs | 260 / 452 µs |
+| 10 clients: latency p50 / p99 | 259 / 401 µs | 248 / 366 µs | 268 / 503 µs | 289 / 524 µs |
+| 100 clients: latency p50 / p99 | 1.47 / 2.80 ms | 1.43 / 2.09 ms | 2.10 / 6.36 ms | 2.07 / 4.95 ms |
 
 What a request costs the server beyond reading and writing the socket: the
 router's lookup (the router is a `task.Frozen`, read by every connection's
@@ -882,31 +885,34 @@ gate raises the soft limit when it can and stops when it cannot.
 
 `httpload --client` sends the same load through one `http.Client`
 (`obx/lib/http.obx`: `get` and `text()` per request, `maxPerHost` equal to
-the connections), against the native server on CPU 0, the loader on CPU 1,
-5 s per row, the median of three alternating rounds, beside httpload's own
+the connections), against the native server on CPU 0, the loader on CPU 2
+(another core; measured again on 6 November 2026, previously on CPU 1),
+5 s per row, the median of three alternating rounds (the native columns:
+`http_gate.py --servers native --client --conns 1,100,1000`), beside httpload's own
 loop (a fixed request, only Content-Length parsed). No idle connections
 are held open here, so the raw numbers differ a little from the table
 above.
 
 | connections | raw, native | client, native | raw, via C | client, via C |
 |---:|---:|---:|---:|---:|
-| 1: requests/s | 4,270 | 4,140 | 4,120 | 4,100 |
-| 100: requests/s | 65,400 | 57,200 | 64,000 | 55,100 |
-| 1,000: requests/s | 52,500 | 43,900 | 49,500 | 43,500 |
-| 1: latency p50 / p99 | 223 / 407 µs | 233 / 404 µs | 232 / 411 µs | 233 / 418 µs |
-| 100: latency p50 / p99 | 1.49 / 2.86 ms | 1.71 / 3.21 ms | 1.50 / 2.76 ms | 1.76 / 3.21 ms |
-| 1,000: latency p50 / p99 | 18.4 / 24.9 ms | 21.9 / 31.2 ms | 19.1 / 26.0 ms | 22.0 / 30.3 ms |
+| 1: requests/s | 4,360 | 4,200 | 4,440 | 4,400 |
+| 100: requests/s | 68,800 | 57,000 | 68,700 | 58,600 |
+| 1,000: requests/s | 57,200 | 49,900 | 54,000 | 47,200 |
+| 1: latency p50 / p99 | 219 / 380 µs | 225 / 400 µs | 214 / 383 µs | 218 / 384 µs |
+| 100: latency p50 / p99 | 1.43 / 2.59 ms | 1.72 / 2.79 ms | 1.41 / 2.53 ms | 1.67 / 2.82 ms |
+| 1,000: latency p50 / p99 | 16.4 / 21.6 ms | 19.6 / 27.5 ms | 17.5 / 25.0 ms | 20.4 / 28.7 ms |
 
 The client does more work per request than the raw loop: it builds a full
 request, parses every reply header, works out the framing and goes through
-the pool. With the loader's core full, that is 84 % to 88 % of the raw
+the pool. With the loader's core full, that is 83 % to 87 % of the raw
 throughput from 100 connections on; with one connection the loopback round
 trip is the limit and they are level. The design's gate asked for parity,
 so it is not met (design/http-client.md, section 8).
 
 ### With a Postgres pool
 
-`python3 obx/cmd/http_gate.py --db 4,16`: the same server and load, each
+`python3 obx/cmd/http_gate.py --db 4,16` (measured before the move of the
+load to another core, with the load on CPU 1): the same server and load, each
 request `GET /db`, which takes a connection from a `postgres.Pool` of 4 or
 16 connections, runs `SELECT $1::int8 + 1` with the request's number, and
 returns the connection. PostgreSQL 16 on the same machine, over its Unix

@@ -5,7 +5,7 @@ gracefully with no leaks (OBX_CHECK=1).
 
     python3 cmd/http_gate.py [--idle N] [--conns 1,10,100] [--seconds S]
                              [--servers native,c,go,node] [--compiler PATH] [--no-pin]
-                             [--db 4,16]
+                             [--db 4,16] [--client]
     python3 cmd/http_gate.py --workers 1,2,4,8 [--servers native,c] [--db 4]
                              [--listen shared|reuseport|both] [--conns 256]
                              [--seconds S] [--no-kill] [--no-pin]
@@ -28,7 +28,12 @@ connections still answer; then GET /shutdown and check that the program ends
 with exit 0, nothing on stderr and every connection closed. go and node are
 references when they are installed (GOMAXPROCS=1; node is single-threaded);
 they are stopped with SIGTERM. Unless --no-pin, the server runs on CPU 0 and
-the load client on CPU 1 (taskset), so each has one core.
+the load client on the first CPU of another core (taskset; CPU 2 where CPUs
+0 and 1 are one core's two SMT threads, as on the Ryzen here), so each has a
+core of its own: SMT siblings share a core's execution units and caches, and
+a load client there takes cycles from the server it measures. With --client
+the load goes through lib/http's Client (httpload --client): the HTTP
+client's numbers.
 
 With --workers 1,2,4,8 (stage C2) it is another gate: the scaling of
 `httpd ADDR POOL WORKERS MODE` over worker processes (task.workers), for each
@@ -65,6 +70,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))       # .../obx/cmd
+SERVER_CPU = 0
 OBX = os.path.dirname(HERE)
 DEFAULT_OBXC = os.path.join(OBX, 'compiler', 'out', 'obxc')
 
@@ -210,12 +216,47 @@ def parse_load(line):
     return {k: int(v) for k, v in m.items()}
 
 
+def siblings(cpu):
+    """The CPUs that share cpu's core (its SMT threads, cpu included), from sysfs."""
+    try:
+        text = open('/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list' % cpu).read().strip()
+    except OSError:
+        return {cpu}
+    out = set()
+    for part in text.split(','):
+        a, _, b = part.partition('-')
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def cores(cpus):
+    """The cores (as frozensets of their SMT threads) that cpus run on."""
+    return {frozenset(siblings(c)) for c in cpus}
+
+
+def cpu_list(spec):
+    out = []
+    for part in spec.split(','):
+        a, _, b = part.partition('-')
+        out.extend(range(int(a), int(b or a) + 1))
+    return out
+
+
+def load_cpu():
+    """The first CPU after SERVER_CPU on another core, for the load client."""
+    taken = siblings(SERVER_CPU)
+    for c in sorted(os.sched_getaffinity(0)):
+        if c > SERVER_CPU and c not in taken:
+            return c
+    sys.exit('no CPU on a core apart from CPU %d\'s; use --no-pin' % SERVER_CPU)
+
+
 def run_server(name, exe, args, loader, pin, pool=0):
     env = dict(os.environ, OBX_CHECK='1', GOMAXPROCS='1')
     cmd = list(exe) if isinstance(exe, tuple) else [exe]
     cmd += ['0.0.0.0:0'] + ([str(pool)] if pool else [])
     if pin:
-        cmd = ['taskset', '-c', '0'] + cmd
+        cmd = ['taskset', '-c', str(SERVER_CPU)] + cmd
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     res = {'name': name, 'ok': True, 'notes': []}
     try:
@@ -250,9 +291,10 @@ def run_server(name, exe, args, loader, pin, pool=0):
                 raise RuntimeError('/db: %r %r' % (st, body))
         res['load'] = []
         for c in args.conns:
-            lcmd = [loader, addr, str(c), str(args.seconds)] + (['/db'] if pool else [])
+            lcmd = [loader] + (['--client'] if args.client else []) + [addr, str(c), str(args.seconds)] + \
+                (['/db'] if pool else [])
             if pin:
-                lcmd = ['taskset', '-c', '1'] + lcmd
+                lcmd = ['taskset', '-c', str(load_cpu())] + lcmd
             r = subprocess.run(lcmd, capture_output=True, text=True, timeout=args.seconds + 60)
             if r.returncode != 0:
                 raise RuntimeError('httpload %d: %s%s' % (c, r.stdout, r.stderr))
@@ -307,7 +349,7 @@ def run_server(name, exe, args, loader, pin, pool=0):
 # ---- the stage C2 gate: worker processes
 
 SERVER_CPUS = [0, 2, 4, 6, 1, 3, 5, 7]   # one thread of each of the first four cores, then the second
-LOAD_CPUS = '8-15'
+LOAD_CPUS = '8-15'                         # the other four cores: no core holds both a worker and the load
 LOAD_PROCS = 8
 
 
@@ -469,6 +511,8 @@ def main_workers(args, ap):
     pool = int(args.db.split(',')[0]) if args.db else 0
     paths = ['/'] + (['/db'] if pool else [])
     pin = not args.no_pin and shutil.which('taskset') is not None and os.cpu_count() >= 16
+    if pin and cores(SERVER_CPUS) & cores(cpu_list(LOAD_CPUS)):
+        sys.exit('CPUs %s and %s share a core here (SMT); use --no-pin' % (SERVER_CPUS, LOAD_CPUS))
     log('pinning: %s' % ('n workers on CPUs %s[:n], the load (httpload -p %d) on CPUs %s' %
                          (SERVER_CPUS, LOAD_PROCS, LOAD_CPUS) if pin else 'none'))
     tmp = tempfile.mkdtemp(prefix='obx-http-')
@@ -522,6 +566,7 @@ def main(argv):
     ap.add_argument('--servers', default='native,c,go,node')
     ap.add_argument('--compiler', default=os.environ.get('OBXC', DEFAULT_OBXC))
     ap.add_argument('--no-pin', action='store_true')
+    ap.add_argument('--client', action='store_true', help='the load through lib/http (httpload --client)')
     ap.add_argument('--db', default='', help='pool sizes: serve GET /db through a Postgres pool')
     ap.add_argument('--workers', default='', help='worker counts: the stage C2 gate (see above)')
     ap.add_argument('--listen', default='shared', help='with --workers: shared, reuseport or both')
@@ -554,9 +599,10 @@ def main(argv):
                 log('%s: no Postgres driver installed, skipped' % name)
                 continue
             label = 'obx ' + name if name in ('native', 'c') else name
-            log('== %s: %d idle connections, load %s%s for %d s each%s' %
-                (label, args.idle, args.conns, ' on /db, pool %d' % pool if pool else '', args.seconds,
-                 ' (pinned)' if pin else ''))
+            log('== %s: %d idle connections, load%s %s%s for %d s each%s' %
+                (label, args.idle, ' through http.Client' if args.client else '', args.conns,
+                 ' on /db, pool %d' % pool if pool else '', args.seconds,
+                 ' (server on CPU %d, load on CPU %d)' % (SERVER_CPU, load_cpu()) if pin else ''))
             r = run_server(label, exes[key], args, exes['httpload'], pin, pool)
             results.append(r)
             if 'per_conn' in r:
