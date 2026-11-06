@@ -1,0 +1,29 @@
+// u128 division and remainder (native backend: by a divisor below 2^64 one or two div
+// instructions, the quotient and remainder of the same operands from one division, the
+// runtime above 2^64): both backends the same.
+// expect: 113427455640312821154458202477256070485 0 48611766702991209066196372490252601636 3 42535295865117307932921825928971026431 7
+// expect: 1 1 48611766702991209066196372490252601636 3 42535295865117307932921825928971026431 7
+// expect: 669 4807115922877859688 1763668414462081127160 3 1543209862654320986265 3
+// expect: 0 5 0 5 0 5
+// expect: 1 1 2635249153387078802 1 2305843009213693951 7
+// expect: 1 0 0 1 0 1
+fn dm(a: u128, b: u128): str {
+    var q: u128 = 0
+    var r: u128 = 0
+    q = a / b
+    r = a % b
+    let q2 = a / 7
+    let r2 = a % 7
+    let q3 = a / 8
+    let r3 = a % 8
+    return q.toStr() + " " + r.toStr() + " " + q2.toStr() + " " + r2.toStr() + " " + q3.toStr() + " " + r3.toStr()
+}
+fn main() {
+    let m: u128 = 340282366920938463463374607431768211455
+    println(dm(m, 3))
+    println(dm(m, m - 1))
+    println(dm(12345678901234567890123, 18446744073709551615))
+    println(dm(5, 18446744073709551616))
+    println(dm(18446744073709551615, 18446744073709551614))
+    println(dm(1, 1))
+}

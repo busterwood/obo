@@ -438,6 +438,16 @@ the IR; the C is unchanged), repeated on a block while statements drop out:
   member of one) that is never address-taken and that E does not assign
   (`T t4 = fib(n - 2); T r = rt_add_int(t3, t4)` becomes
   `rt_add_int(t3, fib(n - 2))`);
+- (2) also takes a parameter s of the function, named nowhere after `T t =
+  s;` in its body (the parameter's memory is the function's own): makeDec's
+  `var v = c` no longer copies its 32-byte U256 (2026-11-06);
+- (7) `T t = {...}; S` with T an aggregate and t named once more, as a value
+  in S (an entry of a record literal, a call's argument, the returned value,
+  a declaration's initializer): S gets the literal in t's place, so it is
+  built where it goes (`Ok(Decimal{...})` straight behind the result pointer);
+- (8) `T t = s.f;` with T 128-bit, s a local whose address is not taken and
+  the statements naming t (in the block) assigning neither: t's uses read
+  `s.f` (a cloned member chain);
 - use counts (static, per function) are kept exact through these rewrites;
   a walk that meets a node kind it does not know leaves the function as it
   is.
@@ -588,8 +598,56 @@ Then:
   integer entry may be a pure expression, generated first), also through the
   `T r = CLIT; return r` that `fusedReturn` takes (`retLitVals`);
 - a copy of an aggregate (`copyMem`) of 32 bytes or more moves 16 bytes at a
-  time through `xmm15` (`movdqu`; never allocated), an 8/4/2/1-byte tail as
-  before; smaller copies stay 8 bytes at a time;
+  time through `xmm15` (`movdqu`; never allocated) only from memory that was
+  most likely written long before: an array element, a place reached through
+  a pointer local or a loaded pointer, and the value a function returns
+  (`wideAt`, the code position right after rax was set to such an address);
+  every other copy moves 8 bytes at a time (an 8/4/2/1-byte tail). A 16-byte
+  load of two recent 8-byte stores cannot be store-forwarded and waits about
+  12 cycles on the Zen 4: such copies of call results, parameters and records
+  just built took a fifth of native Decimal add's cycles. Measured site by
+  site (2026-11-06): wide assignments `l = v` cost Decimal div 70 cycles an
+  operation, wide stack arguments 7% of a fromUnits sum; wide returns cost
+  nothing and save the compiler 0.3% of its instructions;
+- record literals are built in place (2026-11-06): a returned literal of a
+  type returned in memory behind the hidden result pointer (`initResult`; r11
+  reloaded from its slot when an entry's code may have changed it), an
+  argument passed on the stack straight into the outgoing area when the later
+  arguments make no call but quiet runtime ones (`outFree`), a nested literal
+  in its parent's bytes; an unsigned or bool field below 8 bytes alone in its
+  8-byte word is stored as the whole word, zero-extended (a later 8-byte load
+  of the word is forwarded from one store, not two). `return f(...)` with a
+  result in memory passes the caller's own hidden pointer on (`RET_MEM`);
+  `l = f(...)` with l a local whose address is not taken gives the callee l
+  itself; `T r = p->u.V_Ok.f_0; return r;` copies from the place to the result
+  (`placeRead`, in `fusedReturn`);
+- **128-bit locals in register pairs** (2026-11-06): a u128/i128 local whose
+  address is not taken gets two registers (`preg`, `preg2`): rsi and rdi when
+  no position of its range is loud (a call, or a 128-bit operation that the
+  runtime makes), else two callee-saved ones (new saves only for a weight of
+  48 or more). 128-bit operations that call nothing (add, sub, the checked
+  multiply, shifts by constants, division by a constant below 2^64:
+  `inline128`) only change r8-r11, which `loud89` marks: r8 and r9 are then
+  not given to other locals live there. Operands that need no code (`op128`:
+  a constant, a pair, a frame slot) are used in place (`add rax, r12; adc rdx,
+  r13`); a compare with 0 is `or`, `x > c` is `x >= c + 1`. The checked u128
+  multiply is inline (`mul`, the cross products, `jo`/`jb` to the trap);
+  u128 `/` and `%` by a divisor below 2^64 is one `div` (two when the high
+  word is not below it), by a power of two a shift or a mask, above 2^64 the
+  runtime's; `q = a / b; r = a % b;` of the same operands is one division
+  (`fusedDivMod`). `rt_cvs_u128` and `rt_cvu_i128` are a sign test;
+- selects (2026-11-06): opt.obx's `select` makes a function whose last
+  statement is an if/else returning on both sides return one conditional
+  (`return c ? a : b`), and `lazyCmp` passes a compare of values read from
+  locals straight to a parameter named once (body and arguments without
+  effects), so `int.cmp` is `a < b ? -1 : a > b ? 1 : 0` where min, max and
+  sort inline it. A compare of such a select with a constant is a branch on
+  its conditions, the arms known at compile time need no code (`branchSel`:
+  `x.cmp(&y) < 0` is one `cmp; jl`); as a value, a select with constant arms
+  and compare conditions is made with setcc and a mask or `cmov`
+  (`constSel`), not branches: on Decimal cmp the branches cost 16 cycles an
+  operation in mispredictions (4.6 times the misses) and disturbed the
+  prediction of digits' compare tree after it;
 - **doubles in `xmm` registers** (2026-11-06): a double local whose address is
   not taken gets one of `xmm8`-`xmm14` when no position of its live range is
   `fpLoud`: a call that is not generated in place, other than a call of the
