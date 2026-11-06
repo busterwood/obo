@@ -1006,6 +1006,26 @@ div 357 cycles against 266 and mul 180 against 149: the stalls come back);
 16-byte copies for assignments (div +70 cycles) and for stack arguments (the
 fromUnits sum +7%).
 
+### Oracle client speed (2026-11-06)
+
+The native Oracle client was slower than the SQL Server and PostgreSQL
+clients on the 1,000,000-row bench. Measured per process (perf stat on the
+client, the servers' and podman's CPU from /proc), nearly all of the gap was
+the client's own CPU: Oracle sends fewer bytes a row (26 against SQL
+Server's 43), and its server spends about as much CPU as SQL Server's. The
+profile put 60 % of the stream in reading each value through a cursor
+that returned a `Result` per byte and built an error text per value, and
+the buffered query in a cell per value with a heap string of digits per
+NUMBER (410 MB). Rows are now scanned in place from the packet, buffered
+rows are kept as their bytes and decoded when read, packets are sliced
+from a larger inbox, and once rows have arrived a FETCH asks for 256 KB at
+their own size (at most 4 MB at the widest row) instead of at the widest
+row the describe allows (456 round trips to 101). Native, before and
+after: streamed 2,817 to 1,169 cycles a row (SQL Server 1,290), 810 to 450
+ms; buffered 3,894 to 1,010 cycles a row, 1,332 to 578 ms, 410 to 111 MB.
+Results are unchanged; the details are in obx/design/oracle.md ("As built:
+decoding speed") and obx/design/db-streaming.md section 7.
+
 ## The performance record, 2026-11-03 to 2026-11-06
 
 PERFORMANCE.md as it stood at `05cdac6`, before it became a report of the
